@@ -1,0 +1,23 @@
+# Build
+/target
+
+# Config with secrets
+config.toml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# OS
+Thumbs.db
+
+# Memory database
+*.db
+*.db-wal
+*.db-shm
+
+# Downloaded models (fastembed cache)
+.cache/

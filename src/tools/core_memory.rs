@@ -1,0 +1,179 @@
+use anyhow::{Context, Result};
+use async_trait::async_trait;
+use serde_json::{Value, json};
+use std::sync::{Arc, Mutex};
+
+use crate::memory::MemoryManager;
+use crate::tools::Tool;
+
+pub struct CoreMemoryAppendTool {
+    memory: Arc<Mutex<MemoryManager>>,
+}
+
+impl CoreMemoryAppendTool {
+    pub fn new(memory: Arc<Mutex<MemoryManager>>) -> Self {
+        Self { memory }
+    }
+}
+
+#[async_trait]
+impl Tool for CoreMemoryAppendTool {
+    fn name(&self) -> &str {
+        "core_memory_append"
+    }
+
+    fn description(&self) -> &str {
+        "Append content to a core memory block. Use this to update user info, persona, or task state."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "block_id": {
+                    "type": "string",
+                    "description": "The memory block ID (e.g. 'human', 'persona', 'task')"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "The content to append"
+                }
+            },
+            "required": ["block_id", "content"]
+        })
+    }
+
+    async fn execute(&self, args: Value) -> Result<String> {
+        let block_id = args["block_id"].as_str().context("missing 'block_id'")?;
+        let content = args["content"].as_str().context("missing 'content'")?;
+
+        let mut memory = self.memory.lock().unwrap();
+        memory.core_mut().append(block_id, content)?;
+
+        let block = memory.core().get(block_id);
+        Ok(json!({
+            "success": true,
+            "block_id": block_id,
+            "content": block.map(|b| b.content.as_str()).unwrap_or("")
+        })
+        .to_string())
+    }
+}
+
+pub struct CoreMemoryReplaceTool {
+    memory: Arc<Mutex<MemoryManager>>,
+}
+
+impl CoreMemoryReplaceTool {
+    pub fn new(memory: Arc<Mutex<MemoryManager>>) -> Self {
+        Self { memory }
+    }
+}
+
+#[async_trait]
+impl Tool for CoreMemoryReplaceTool {
+    fn name(&self) -> &str {
+        "core_memory_replace"
+    }
+
+    fn description(&self) -> &str {
+        "Replace content in a core memory block. Provide the old text to find and the new text to replace it with."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "block_id": {
+                    "type": "string",
+                    "description": "The memory block ID"
+                },
+                "old_content": {
+                    "type": "string",
+                    "description": "The text to find and replace"
+                },
+                "new_content": {
+                    "type": "string",
+                    "description": "The replacement text"
+                }
+            },
+            "required": ["block_id", "old_content", "new_content"]
+        })
+    }
+
+    async fn execute(&self, args: Value) -> Result<String> {
+        let block_id = args["block_id"].as_str().context("missing 'block_id'")?;
+        let old_content = args["old_content"]
+            .as_str()
+            .context("missing 'old_content'")?;
+        let new_content = args["new_content"]
+            .as_str()
+            .context("missing 'new_content'")?;
+
+        let mut memory = self.memory.lock().unwrap();
+        memory
+            .core_mut()
+            .replace(block_id, old_content, new_content)?;
+
+        let block = memory.core().get(block_id);
+        Ok(json!({
+            "success": true,
+            "block_id": block_id,
+            "content": block.map(|b| b.content.as_str()).unwrap_or("")
+        })
+        .to_string())
+    }
+}
+
+pub struct CoreMemoryReadTool {
+    memory: Arc<Mutex<MemoryManager>>,
+}
+
+impl CoreMemoryReadTool {
+    pub fn new(memory: Arc<Mutex<MemoryManager>>) -> Self {
+        Self { memory }
+    }
+}
+
+#[async_trait]
+impl Tool for CoreMemoryReadTool {
+    fn name(&self) -> &str {
+        "core_memory_read"
+    }
+
+    fn description(&self) -> &str {
+        "Read the content of a core memory block."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "block_id": {
+                    "type": "string",
+                    "description": "The memory block ID to read"
+                }
+            },
+            "required": ["block_id"]
+        })
+    }
+
+    async fn execute(&self, args: Value) -> Result<String> {
+        let block_id = args["block_id"].as_str().context("missing 'block_id'")?;
+
+        let memory = self.memory.lock().unwrap();
+        match memory.core().get(block_id) {
+            Some(block) => Ok(json!({
+                "block_id": block_id,
+                "label": block.label,
+                "content": block.content,
+                "updated_at": block.updated_at
+            })
+            .to_string()),
+            None => Ok(json!({
+                "error": format!("memory block '{}' not found", block_id)
+            })
+            .to_string()),
+        }
+    }
+}
