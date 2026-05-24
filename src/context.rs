@@ -133,7 +133,8 @@ impl Context {
         for msg in &old_messages {
             if let Some(ref content) = msg.content {
                 let preview = if content.len() > 200 {
-                    format!("{}...", &content[..200])
+                    let end = content.floor_char_boundary(200);
+                    format!("{}...", &content[..end])
                 } else {
                     content.clone()
                 };

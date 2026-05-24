@@ -10,6 +10,7 @@ pub mod run_command;
 pub mod skill;
 pub mod subagent;
 pub mod todo;
+pub mod webfetch;
 pub mod write_file;
 
 use crate::memory::MemoryManager;
@@ -79,6 +80,7 @@ impl ToolRegistry {
         registry.register(Box::new(grep::GrepTool));
         registry.register(Box::new(glob::GlobTool));
         registry.register(Box::new(run_command::RunCommandTool));
+        registry.register(Box::new(webfetch::WebFetchTool));
         registry.register(Box::new(git::GitStatusTool));
         registry.register(Box::new(git::GitDiffTool));
         registry.register(Box::new(git::GitLogTool));

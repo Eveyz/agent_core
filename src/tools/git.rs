@@ -107,7 +107,8 @@ impl Tool for GitDiffTool {
 
         let result = stdout.to_string();
         if result.len() > 8000 {
-            return Ok(format!("{}... (truncated)", &result[..8000]));
+            let end = result.floor_char_boundary(8000);
+            return Ok(format!("{}... (truncated)", &result[..end]));
         }
 
         Ok(result)
@@ -285,7 +286,8 @@ impl Tool for GitShowTool {
 
         let result = stdout.to_string();
         if result.len() > 8000 {
-            return Ok(format!("{}... (truncated)", &result[..8000]));
+            let end = result.floor_char_boundary(8000);
+            return Ok(format!("{}... (truncated)", &result[..end]));
         }
 
         Ok(result)

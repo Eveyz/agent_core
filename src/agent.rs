@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use futures::StreamExt;
 use serde_json::Value;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -364,11 +364,9 @@ impl Agent {
             }
 
             if turn_index == max_iterations - 1 {
-                let msg = format!(
-                    "Reached iteration limit ({max_iterations}). Stopping to prevent infinite loop."
-                );
-                on_event(AgentEvent::Error(msg.clone()));
-                return Ok(msg);
+                let summary = build_iteration_limit_summary(&self.context, max_iterations);
+                on_event(AgentEvent::Error(summary.clone()));
+                return Ok(summary);
             }
         }
 
@@ -784,4 +782,85 @@ impl Agent {
     pub fn config(&self) -> &Config {
         &self.config
     }
+}
+
+fn build_iteration_limit_summary(context: &crate::context::Context, max_iterations: usize) -> String {
+    let messages = context.messages();
+
+    let user_request = messages
+        .iter()
+        .filter(|m| m.role == crate::types::Role::User)
+        .last()
+        .map(|m| m.content.as_deref().unwrap_or(""))
+        .unwrap_or("your request");
+
+    let mut tool_counts: HashMap<&str, usize> = HashMap::new();
+    let mut tool_errors: Vec<&str> = Vec::new();
+    let mut total_tool_calls = 0;
+
+    for msg in &messages {
+        if msg.role == crate::types::Role::Assistant {
+            if let Some(ref calls) = msg.tool_calls {
+                for call in calls {
+                    *tool_counts.entry(&call.function.name).or_insert(0) += 1;
+                    total_tool_calls += 1;
+                }
+            }
+        }
+        if msg.role == crate::types::Role::Tool {
+            if let Some(ref content) = msg.content {
+                let trimmed = content.trim();
+                if trimmed.starts_with("Error") || trimmed.starts_with("Failed to fetch") {
+                    if let Some(ref name) = msg.name {
+                        tool_errors.push(name);
+                    }
+                }
+            }
+        }
+    }
+
+    let tool_summary: Vec<String> = tool_counts
+        .iter()
+        .map(|(name, count)| format!("  - {name}: {count} time(s)"))
+        .collect();
+
+    let mut msg = format!(
+        "I've reached the maximum number of steps ({max_iterations}) while working on: \"{user_request}\"\n\n",
+    );
+
+    if !tool_summary.is_empty() {
+        msg.push_str(&format!(
+            "Here is a summary of the tools used:\n{}\n\n",
+            tool_summary.join("\n")
+        ));
+    }
+
+    let webfetch_count = tool_counts.get("webfetch").copied().unwrap_or(0);
+    let webfetch_errors = tool_errors.iter().filter(|&&n| n == "webfetch").count();
+
+    if total_tool_calls == 0 {
+        msg.push_str("I wasn't able to take any action. This may indicate an issue with tool availability or model configuration.");
+    } else if webfetch_count > 0 && webfetch_errors as f64 >= webfetch_count as f64 * 0.5 {
+        msg.push_str(&format!(
+            "Web fetching was attempted {webfetch_count} time(s) but encountered {webfetch_errors} errors. \
+             Many websites block automated access or return errors when fetched programmatically. \
+             To get better results:\n\
+             - Provide the information you're looking for directly rather than URLs to fetch\n\
+             - Use a search-based approach or specify known accessible URLs\n\
+             - If you have a specific webpage in mind, paste its relevant content instead of asking me to fetch it\n\
+             - Consider using an API or RSS feed endpoint instead of a regular webpage"
+        ));
+    } else if tool_errors.len() as f64 >= total_tool_calls as f64 * 0.5 {
+        msg.push_str(&format!(
+            "{total_tool_calls} total tool call(s) were made with high failure rate. \
+             Please provide more specific guidance or simplify the task so I can complete it within the step limit."
+        ));
+    } else {
+        msg.push_str(&format!(
+            "The task may be more complex than can be completed in {max_iterations} steps. \
+             Please try breaking it down into smaller sub-tasks, or provide more specific instructions."
+        ));
+    }
+
+    msg
 }

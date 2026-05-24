@@ -155,7 +155,8 @@ impl Hook for LoggingHook {
                 ..
             } => {
                 let preview = if output.len() > 200 {
-                    format!("{}...", &output[..200])
+                    let safe_end = output.floor_char_boundary(200);
+                    format!("{}...", &output[..safe_end])
                 } else {
                     output.clone()
                 };

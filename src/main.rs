@@ -203,7 +203,17 @@ async fn main() -> anyhow::Result<()> {
                 } else {
                     println!("=== Available Skills ===");
                     for (skill, source) in &skills {
-                        println!("  {}: {}", skill.name, skill.description);
+                        let preview: String = skill.description
+                            .split_whitespace()
+                            .take(50)
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        let truncated = if skill.description.split_whitespace().count() > 50 {
+                            format!("{}...", preview)
+                        } else {
+                            preview
+                        };
+                        println!("  {}: {}", skill.name, truncated);
                         println!("    source: {}", source.display());
                         if !skill.triggers.is_empty() {
                             println!("    triggers: {}", skill.triggers.join(", "));
@@ -544,10 +554,12 @@ async fn run_agent(agent: &mut agent_core::Agent, input: &str) {
                     if tool_name.starts_with("[APPROVAL") {
                         print!("\n  {tool_name}");
                     } else {
-                        let args_preview = if args.to_string().len() > 80 {
-                            format!("{}...", &args.to_string()[..80])
+                let args_str = args.to_string();
+                        let args_preview = if args_str.len() > 80 {
+                            let end = args_str.floor_char_boundary(80);
+                            format!("{}...", &args_str[..end])
                         } else {
-                            args.to_string()
+                            args_str
                         };
                         print!("\n  [{tool_name}] ({args_preview})");
                     }
@@ -559,7 +571,8 @@ async fn run_agent(agent: &mut agent_core::Agent, input: &str) {
                     ..
                 } => {
                     let preview = if partial_result.len() > 80 {
-                        format!("{}...", &partial_result[..80])
+                        let end = partial_result.floor_char_boundary(80);
+                        format!("{}...", &partial_result[..end])
                     } else {
                         partial_result
                     };
@@ -574,14 +587,16 @@ async fn run_agent(agent: &mut agent_core::Agent, input: &str) {
                 } => {
                     if is_error {
                         let preview = if result.len() > 120 {
-                            format!("{}...", &result[..120])
+                            let end = result.floor_char_boundary(120);
+                            format!("{}...", &result[..end])
                         } else {
                             result
                         };
                         print!("\n  [{tool_name}] ERROR: {preview}");
                     } else {
                         let preview = if result.len() > 120 {
-                            format!("{}...", &result[..120])
+                            let end = result.floor_char_boundary(120);
+                            format!("{}...", &result[..end])
                         } else {
                             result
                         };
@@ -594,7 +609,8 @@ async fn run_agent(agent: &mut agent_core::Agent, input: &str) {
                 // ── Subagent events ───────────────────────────────────
                 AgentEvent::SubagentStart { subagent_id, task } => {
                     let task_preview = if task.len() > 80 {
-                        format!("{}...", &task[..80])
+                        let end = task.floor_char_boundary(80);
+                        format!("{}...", &task[..end])
                     } else {
                         task
                     };
@@ -623,10 +639,12 @@ async fn run_agent(agent: &mut agent_core::Agent, input: &str) {
                     args,
                     ..
                 } => {
-                    let args_preview = if args.to_string().len() > 60 {
-                        format!("{}...", &args.to_string()[..60])
+                    let args_str = args.to_string();
+                    let args_preview = if args_str.len() > 60 {
+                        let end = args_str.floor_char_boundary(60);
+                        format!("{}...", &args_str[..end])
                     } else {
-                        args.to_string()
+                        args_str
                     };
                     println!("  │  [{subagent_id}] [{tool_name}] ({args_preview})");
                 }
@@ -638,7 +656,8 @@ async fn run_agent(agent: &mut agent_core::Agent, input: &str) {
                     ..
                 } => {
                     let preview = if result.len() > 100 {
-                        format!("{}...", &result[..100])
+                        let end = result.floor_char_boundary(100);
+                        format!("{}...", &result[..end])
                     } else {
                         result
                     };

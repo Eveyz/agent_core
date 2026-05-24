@@ -39,6 +39,7 @@ impl SkillLoader {
             cwd.join(".claude").join("skills"),
             cwd.join("skills"),
             PathBuf::from(&home).join(".agent").join("skills"),
+            PathBuf::from(&home).join(".agents").join("skills"),
             PathBuf::from(&home).join(".claude").join("skills"),
         ];
 
