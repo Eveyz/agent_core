@@ -1,5 +1,8 @@
 use anyhow::{Result, bail};
 use futures::StreamExt;
+use serde_json::Value;
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::client::OpenAIClient;
@@ -9,8 +12,15 @@ use crate::hooks::{HookRegistry, PreToolResult};
 use crate::memory::MemoryManager;
 use crate::permission::{PermissionDecision, PermissionPolicy};
 use crate::prompt::PromptBuilder;
-use crate::tools::ToolRegistry;
-use crate::types::{AgentEvent, Message, StreamEvent, ToolCall};
+use crate::tools::{ToolRegistry, ToolUpdateFn};
+use crate::types::{
+    AgentEvent, AgentState, Message, MessageDelta, StreamEvent, ToolCall, ToolExecutionMode,
+    ToolResultRecord,
+};
+
+/// Callback type for transform_context: receives messages, returns transformed messages.
+pub type TransformContextFn =
+    Box<dyn Fn(Vec<Message>) -> Vec<Message> + Send + Sync>;
 
 pub struct AgentBuilder {
     config: Config,
@@ -19,6 +29,8 @@ pub struct AgentBuilder {
     enable_memory: bool,
     permission_policy: Option<PermissionPolicy>,
     hook_registry: Option<HookRegistry>,
+    tool_execution_mode: ToolExecutionMode,
+    transform_context: Option<TransformContextFn>,
 }
 
 impl AgentBuilder {
@@ -31,6 +43,8 @@ impl AgentBuilder {
             enable_memory: false,
             permission_policy: None,
             hook_registry: None,
+            tool_execution_mode: ToolExecutionMode::Parallel,
+            transform_context: None,
         })
     }
 
@@ -43,6 +57,8 @@ impl AgentBuilder {
             enable_memory: false,
             permission_policy: None,
             hook_registry: None,
+            tool_execution_mode: ToolExecutionMode::Parallel,
+            transform_context: None,
         })
     }
 
@@ -68,6 +84,19 @@ impl AgentBuilder {
 
     pub fn with_hook_registry(mut self, registry: HookRegistry) -> Self {
         self.hook_registry = Some(registry);
+        self
+    }
+
+    pub fn with_tool_execution_mode(mut self, mode: ToolExecutionMode) -> Self {
+        self.tool_execution_mode = mode;
+        self
+    }
+
+    pub fn with_transform_context(
+        mut self,
+        f: impl Fn(Vec<Message>) -> Vec<Message> + Send + Sync + 'static,
+    ) -> Self {
+        self.transform_context = Some(Box::new(f));
         self
     }
 
@@ -135,6 +164,12 @@ impl AgentBuilder {
             memory,
             permission_policy: self.permission_policy.unwrap_or_default(),
             hook_registry: self.hook_registry.unwrap_or_default(),
+            state: AgentState::Idle,
+            tool_execution_mode: self.tool_execution_mode,
+            steering_queue: VecDeque::new(),
+            follow_up_queue: VecDeque::new(),
+            abort_flag: Arc::new(AtomicBool::new(false)),
+            transform_context: self.transform_context,
         })
     }
 }
@@ -148,6 +183,12 @@ pub struct Agent {
     memory: Option<Arc<Mutex<MemoryManager>>>,
     permission_policy: PermissionPolicy,
     hook_registry: HookRegistry,
+    state: AgentState,
+    tool_execution_mode: ToolExecutionMode,
+    steering_queue: VecDeque<Message>,
+    follow_up_queue: VecDeque<Message>,
+    pub abort_flag: Arc<AtomicBool>,
+    transform_context: Option<TransformContextFn>,
 }
 
 impl Agent {
@@ -168,12 +209,42 @@ impl Agent {
             }
         }
 
+        on_event(AgentEvent::AgentStart);
+        self.state = AgentState::Streaming;
+        self.abort_flag.store(false, Ordering::Relaxed);
+
+        let result = self.run_loop(&on_event).await;
+
+        self.state = AgentState::Idle;
+        self.steering_queue.clear();
+        self.follow_up_queue.clear();
+        on_event(AgentEvent::AgentEnd {
+            messages: self.context.messages(),
+        });
+
+        result
+    }
+
+    async fn run_loop(&mut self, on_event: &impl Fn(AgentEvent)) -> Result<String> {
         let max_iterations = self.client.model.max_iterations;
 
-        for iteration in 0..max_iterations {
+        for turn_index in 0..max_iterations {
+            if self.abort_flag.load(Ordering::Relaxed) {
+                self.state = AgentState::Aborted;
+                return Ok("Agent aborted by user.".to_string());
+            }
+
+            on_event(AgentEvent::TurnStart { turn_index });
+
             self.context.trim_to_fit();
 
-            let messages = self.context.messages();
+            // Build messages with optional transform
+            let raw_messages = self.context.messages();
+            let messages = if let Some(ref transform) = self.transform_context {
+                transform(raw_messages)
+            } else {
+                raw_messages
+            };
             let tools = self.registry.tool_definitions();
 
             let stream = match self.client.chat_completion_stream(&messages, &tools).await {
@@ -181,23 +252,38 @@ impl Agent {
                 Err(e) => {
                     let err_msg = format!("LLM request failed: {e}");
                     on_event(AgentEvent::Error(err_msg.clone()));
-                    // Return error as final answer so the loop doesn't break silently
-                    return Ok(format!("I encountered an error communicating with the model: {e}. Please try again."));
+                    return Ok(format!(
+                        "I encountered an error communicating with the model: {e}. Please try again."
+                    ));
                 }
             };
 
             let (text, tool_calls) = match self.collect_stream(stream, &on_event).await {
                 Ok(r) => r,
                 Err(e) => {
+                    if self.abort_flag.load(Ordering::Relaxed) {
+                        return Ok("Agent aborted by user.".to_string());
+                    }
                     let err_msg = format!("Stream error: {e}");
                     on_event(AgentEvent::Error(err_msg));
-                    return Ok(format!("I encountered an error reading the model response: {e}. Please try again."));
+                    return Ok(format!(
+                        "I encountered an error reading the model response: {e}. Please try again."
+                    ));
                 }
             };
 
             if tool_calls.is_empty() {
-                self.context.add(Message::assistant(&text));
-                on_event(AgentEvent::FinalAnswer(text.clone()));
+                // No tool calls — this is the final answer
+                let assistant_msg = Message::assistant(&text);
+                self.context.add(assistant_msg.clone());
+                on_event(AgentEvent::MessageEnd {
+                    message: assistant_msg.clone(),
+                });
+                on_event(AgentEvent::TurnEnd {
+                    turn_index,
+                    assistant_message: assistant_msg,
+                    tool_results: vec![],
+                });
 
                 if let Some(ref mem) = self.memory {
                     if let Ok(m) = mem.lock() {
@@ -207,29 +293,79 @@ impl Agent {
                     self.maybe_consolidate();
                 }
 
+                // Check for follow-up messages
+                if let Some(follow_up) = self.follow_up_queue.pop_front() {
+                    self.context.add(follow_up);
+                    continue;
+                }
+
                 return Ok(text);
             }
 
-            if !text.is_empty() {
-                self.context
-                    .add(Message::assistant_with_tools(&text, tool_calls.clone()));
-            }
+            // Add assistant message with tool calls
+            let assistant_msg = if !text.is_empty() {
+                let msg = Message::assistant_with_tools(&text, tool_calls.clone());
+                self.context.add(msg.clone());
+                msg
+            } else {
+                let msg = Message::assistant_with_tools("", tool_calls.clone());
+                self.context.add(msg.clone());
+                msg
+            };
 
-            for call in &tool_calls {
-                on_event(AgentEvent::ToolStart(call.function.name.clone()));
-            }
+            on_event(AgentEvent::MessageEnd {
+                message: assistant_msg.clone(),
+            });
 
-            let results = self.execute_tools_with_hooks(&tool_calls, &on_event).await;
+            // Execute tools
+            self.state = AgentState::ExecutingTools;
+            let tool_results = self.execute_tools_with_hooks(&tool_calls, &on_event).await;
+            self.state = AgentState::Streaming;
 
-            for (call, result) in tool_calls.iter().zip(&results) {
-                on_event(AgentEvent::ToolResult(result.clone()));
+            // Add tool results to context and emit events
+            let mut result_records = Vec::new();
+            for (call, result) in tool_calls.iter().zip(&tool_results) {
+                let is_error = result.starts_with("Error")
+                    || result.starts_with("Permission denied")
+                    || result.starts_with("Hook vetoed");
+
+                result_records.push(ToolResultRecord {
+                    tool_call_id: call.id.clone(),
+                    tool_name: call.function.name.clone(),
+                    result: result.clone(),
+                    is_error,
+                });
+
+                on_event(AgentEvent::ToolExecutionEnd {
+                    tool_call_id: call.id.clone(),
+                    tool_name: call.function.name.clone(),
+                    result: result.clone(),
+                    is_error,
+                });
+
                 self.context
                     .add(Message::tool(call.id.clone(), result.clone()));
             }
 
-            if iteration == max_iterations - 1 {
+            on_event(AgentEvent::TurnEnd {
+                turn_index,
+                assistant_message: assistant_msg,
+                tool_results: result_records,
+            });
+
+            // Check for steering messages (injected before next LLM call)
+            if let Some(steer_msg) = self.steering_queue.pop_front() {
+                self.context.add(steer_msg);
+            }
+
+            // Check for follow-up messages (only when no more tool calls pending)
+            if let Some(follow_up) = self.follow_up_queue.pop_front() {
+                self.context.add(follow_up);
+            }
+
+            if turn_index == max_iterations - 1 {
                 let msg = format!(
-                    "Reached iteration limit ({max_iterations}). Stopping to prevent infinite loop. Last response:\n{text}"
+                    "Reached iteration limit ({max_iterations}). Stopping to prevent infinite loop."
                 );
                 on_event(AgentEvent::Error(msg.clone()));
                 return Ok(msg);
@@ -244,10 +380,17 @@ impl Agent {
         calls: &[ToolCall],
         on_event: &impl Fn(AgentEvent),
     ) -> Vec<String> {
-        let mut results = Vec::new();
+        // Resolve execution mode (per-tool override wins)
+        let mode = self
+            .registry
+            .resolve_execution_mode(calls, self.tool_execution_mode);
 
-        for call in calls {
-            let args: serde_json::Value =
+        // Always preflight sequentially (permission + hooks)
+        let mut allowed: Vec<(usize, ToolCall, Value)> = Vec::new();
+        let mut results = vec![String::new(); calls.len()];
+
+        for (i, call) in calls.iter().enumerate() {
+            let args: Value =
                 serde_json::from_str(&call.function.arguments).unwrap_or_default();
 
             // Permission check
@@ -256,14 +399,15 @@ impl Agent {
                 .check(&call.function.name, &call.function.arguments)
             {
                 PermissionDecision::Deny(reason) => {
-                    results.push(format!("Permission denied: {}", reason));
+                    results[i] = format!("Permission denied: {}", reason);
                     continue;
                 }
                 PermissionDecision::Ask(reason) => {
-                    on_event(AgentEvent::ToolStart(format!(
-                        "[APPROVAL NEEDED] {}: {}",
-                        call.function.name, reason
-                    )));
+                    on_event(AgentEvent::ToolExecutionStart {
+                        tool_call_id: call.id.clone(),
+                        tool_name: format!("[APPROVAL NEEDED] {}: {}", call.function.name, reason),
+                        args: args.clone(),
+                    });
                 }
                 PermissionDecision::Allow => {}
             }
@@ -271,43 +415,132 @@ impl Agent {
             // Pre-tool hook
             match self.hook_registry.fire_pre_tool_use(&call.function.name, &args) {
                 PreToolResult::Veto(reason) => {
-                    results.push(format!("Hook vetoed: {}", reason));
+                    results[i] = format!("Hook vetoed: {}", reason);
                     continue;
                 }
                 PreToolResult::Proceed(modified_args) => {
-                    let tool = self.registry.get(&call.function.name);
-                    match tool {
-                        Some(t) => {
-                            match t.execute(modified_args.clone()).await {
-                                Ok(output) => {
-                                    let final_output = self.hook_registry.fire_post_tool_use(
-                                        &call.function.name,
-                                        &modified_args,
-                                        &output,
-                                    );
-                                    results.push(final_output);
-                                }
-                                Err(e) => {
-                                    results.push(format!(
-                                        "Error executing tool '{}': {}",
-                                        call.function.name, e
-                                    ));
-                                }
-                            }
-                        }
-                        None => {
-                            results.push(format!(
-                                "Tool '{}' not found. Available: {}",
-                                call.function.name,
-                                self.registry.list_names().join(", ")
-                            ));
-                        }
-                    }
+                    on_event(AgentEvent::ToolExecutionStart {
+                        tool_call_id: call.id.clone(),
+                        tool_name: call.function.name.clone(),
+                        args: modified_args.clone(),
+                    });
+                    allowed.push((i, call.clone(), modified_args));
                 }
             }
         }
 
+        if allowed.is_empty() {
+            return results;
+        }
+
+        match mode {
+            ToolExecutionMode::Sequential => {
+                for (i, call, args) in &allowed {
+                    let abort = self.abort_flag.clone();
+                    let result = self
+                        .execute_single_tool(
+                            &call.function.name,
+                            &call.id,
+                            args.clone(),
+                            abort,
+                            on_event,
+                        )
+                        .await;
+                    results[*i] = result;
+                }
+            }
+            ToolExecutionMode::Parallel => {
+                let abort = self.abort_flag.clone();
+
+                // TODO: wrap ToolRegistry in Arc to enable true parallel execution
+                // via JoinSet. Currently sequential due to &self borrow constraints.
+                for (i, call, args) in &allowed {
+                    if abort.load(Ordering::Relaxed) {
+                        results[*i] = "Aborted".to_string();
+                        continue;
+                    }
+                    let result = self
+                        .execute_single_tool(
+                            &call.function.name,
+                            &call.id,
+                            args.clone(),
+                            abort.clone(),
+                            on_event,
+                        )
+                        .await;
+                    results[*i] = result;
+                }
+            }
+        }
+
+        // Post-tool hooks
+        for (i, call, args) in &allowed {
+            let output = results[*i].clone();
+            let is_error = output.starts_with("Error")
+                || output.starts_with("Permission denied")
+                || output.starts_with("Hook vetoed");
+
+            if !is_error {
+                let final_output =
+                    self.hook_registry
+                        .fire_post_tool_use(&call.function.name, args, &output);
+                results[*i] = final_output;
+            }
+        }
+
         results
+    }
+
+    async fn execute_single_tool(
+        &self,
+        tool_name: &str,
+        tool_call_id: &str,
+        args: serde_json::Value,
+        abort: Arc<AtomicBool>,
+        on_event: &impl Fn(AgentEvent),
+    ) -> String {
+        let tool = match self.registry.get(tool_name) {
+            Some(t) => t,
+            None => {
+                return format!(
+                    "Tool '{}' not found. Available: {}",
+                    tool_name,
+                    self.registry.list_names().join(", ")
+                );
+            }
+        };
+
+        // Collect streaming updates from the tool into a shared buffer.
+        // The callback is synchronous (called during execute_with_stream),
+        // so we buffer events and flush them after execution completes.
+        let updates: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let updates_clone = updates.clone();
+        let abort_clone = abort.clone();
+        let on_update: ToolUpdateFn = Arc::new(move |partial: &str| {
+            if !abort_clone.load(Ordering::Relaxed) {
+                if let Ok(mut buf) = updates_clone.lock() {
+                    buf.push(partial.to_string());
+                }
+            }
+        });
+
+        let result = tool.execute_with_stream(args, Some(on_update)).await;
+
+        // Flush buffered streaming updates as ToolExecutionUpdate events
+        if let Ok(buf) = updates.lock() {
+            for partial in buf.iter() {
+                on_event(AgentEvent::ToolExecutionUpdate {
+                    tool_call_id: tool_call_id.to_string(),
+                    tool_name: tool_name.to_string(),
+                    partial_result: partial.clone(),
+                });
+            }
+        }
+
+        match result {
+            Ok(output) => output,
+            Err(e) => format!("Error executing tool '{}': {}", tool_name, e),
+        }
     }
 
     async fn collect_stream(
@@ -320,20 +553,29 @@ impl Agent {
         let mut text_buffer = String::new();
         let mut accumulator = ToolCallAccumulator::new();
         let mut has_tool_calls = false;
+        let abort = self.abort_flag.clone();
 
         tokio::pin!(stream);
         while let Some(event) = stream.next().await {
+            if abort.load(Ordering::Relaxed) {
+                break;
+            }
+
             let event = event?;
             match event {
                 StreamEvent::ThinkingDelta(delta) => {
                     if !delta.is_empty() {
-                        on_event(AgentEvent::Thinking(delta));
+                        on_event(AgentEvent::MessageUpdate {
+                            delta: MessageDelta::Thinking(delta),
+                        });
                     }
                 }
                 StreamEvent::TextDelta(delta) => {
                     if !delta.is_empty() {
                         text_buffer.push_str(&delta);
-                        on_event(AgentEvent::Thought(delta));
+                        on_event(AgentEvent::MessageUpdate {
+                            delta: MessageDelta::Text(delta),
+                        });
                     }
                 }
                 StreamEvent::ToolCallDelta { .. } => {
@@ -393,6 +635,59 @@ impl Agent {
                 });
             }
         }
+    }
+
+    // ── Public control methods ──────────────────────────────────────
+
+    /// Abort the current agent run. The stream will be cancelled and the loop
+    /// will exit at the next iteration boundary.
+    pub fn abort(&self) {
+        self.abort_flag.store(true, Ordering::Relaxed);
+    }
+
+    /// Inject a steering message. This is processed after the current turn
+    /// completes, before the next LLM call. Use it to redirect the agent
+    /// while tools are still running.
+    pub fn steer(&mut self, message: Message) {
+        self.steering_queue.push_back(message);
+    }
+
+    /// Queue a follow-up message. This is processed after the agent would
+    /// normally stop (no more tool calls). Use it to add extra work.
+    pub fn follow_up(&mut self, message: Message) {
+        self.follow_up_queue.push_back(message);
+    }
+
+    pub fn clear_steering_queue(&mut self) {
+        self.steering_queue.clear();
+    }
+
+    pub fn clear_follow_up_queue(&mut self) {
+        self.follow_up_queue.clear();
+    }
+
+    pub fn clear_all_queues(&mut self) {
+        self.steering_queue.clear();
+        self.follow_up_queue.clear();
+    }
+
+    pub fn state(&self) -> &AgentState {
+        &self.state
+    }
+
+    pub fn tool_execution_mode(&self) -> ToolExecutionMode {
+        self.tool_execution_mode
+    }
+
+    pub fn set_tool_execution_mode(&mut self, mode: ToolExecutionMode) {
+        self.tool_execution_mode = mode;
+    }
+
+    pub fn set_transform_context(
+        &mut self,
+        f: impl Fn(Vec<Message>) -> Vec<Message> + Send + Sync + 'static,
+    ) {
+        self.transform_context = Some(Box::new(f));
     }
 
     pub fn switch_model(&mut self, name: &str) -> Result<()> {

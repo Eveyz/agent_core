@@ -13,19 +13,40 @@ pub mod todo;
 pub mod write_file;
 
 use crate::memory::MemoryManager;
-use crate::types::{FunctionSchema, ToolCall, ToolDefinition};
+use crate::types::{FunctionSchema, ToolCall, ToolDefinition, ToolExecutionMode};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+/// Callback for streaming tool progress updates.
+pub type ToolUpdateFn = Arc<dyn Fn(&str) + Send + Sync>;
+
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters_schema(&self) -> Value;
+
+    /// Execute the tool and return a complete result string.
     async fn execute(&self, args: Value) -> Result<String>;
+
+    /// Execute with streaming progress updates. Default delegates to `execute`.
+    /// Override this method to provide incremental progress via `on_update`.
+    async fn execute_with_stream(
+        &self,
+        args: Value,
+        on_update: Option<ToolUpdateFn>,
+    ) -> Result<String> {
+        let _ = on_update;
+        self.execute(args).await
+    }
+
+    /// Per-tool execution mode override. `None` means use global config.
+    fn execution_mode(&self) -> Option<ToolExecutionMode> {
+        None
+    }
 }
 
 pub struct ToolRegistry {
@@ -104,18 +125,20 @@ impl ToolRegistry {
         Ok(())
     }
 
+    /// Execute all tool calls sequentially.
     pub async fn call_all(&self, calls: &[ToolCall]) -> Vec<String> {
         let mut results = Vec::new();
 
         for call in calls {
-            let result = self.call_one(call).await;
+            let result = self.call_one(call, None).await;
             results.push(result);
         }
 
         results
     }
 
-    async fn call_one(&self, call: &ToolCall) -> String {
+    /// Execute a single tool call with optional streaming callback.
+    pub async fn call_one(&self, call: &ToolCall, on_update: Option<ToolUpdateFn>) -> String {
         let tool = match self.tools.get(&call.function.name) {
             Some(t) => t,
             None => {
@@ -145,12 +168,31 @@ impl ToolRegistry {
         }
 
         let name = call.function.name.clone();
-        match tool.execute(args).await {
+        match tool.execute_with_stream(args, on_update).await {
             Ok(output) => output,
             Err(e) => {
                 format!("Error executing tool '{}': {}", name, e)
             }
         }
+    }
+
+    /// Determine the execution mode for a batch of tool calls.
+    /// If any tool in the batch has `execution_mode: Sequential`, the whole batch runs sequentially.
+    pub fn resolve_execution_mode(
+        &self,
+        calls: &[ToolCall],
+        global_mode: ToolExecutionMode,
+    ) -> ToolExecutionMode {
+        for call in calls {
+            if let Some(tool) = self.tools.get(&call.function.name) {
+                if let Some(mode) = tool.execution_mode() {
+                    if mode == ToolExecutionMode::Sequential {
+                        return ToolExecutionMode::Sequential;
+                    }
+                }
+            }
+        }
+        global_mode
     }
 
     pub fn list_names(&self) -> Vec<&str> {

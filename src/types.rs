@@ -75,15 +75,99 @@ pub enum StreamEvent {
     Done,
 }
 
+// ── Tool execution mode ─────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolExecutionMode {
+    Sequential,
+    Parallel,
+}
+
+impl Default for ToolExecutionMode {
+    fn default() -> Self {
+        Self::Parallel
+    }
+}
+
+// ── Rich Agent Events ───────────────────────────────────────────────
+
 #[derive(Debug, Clone)]
 pub enum AgentEvent {
-    Thinking(String),
-    Thought(String),
-    FinalAnswer(String),
-    ToolStart(String),
-    ToolResult(String),
+    // ── Agent lifecycle ─────────────────────────────────────────────
+    AgentStart,
+    AgentEnd {
+        messages: Vec<Message>,
+    },
+
+    // ── Turn lifecycle ──────────────────────────────────────────────
+    TurnStart {
+        turn_index: usize,
+    },
+    TurnEnd {
+        turn_index: usize,
+        assistant_message: Message,
+        tool_results: Vec<ToolResultRecord>,
+    },
+
+    // ── Message lifecycle (user, assistant, toolResult) ─────────────
+    MessageStart {
+        message: Message,
+    },
+    MessageUpdate {
+        delta: MessageDelta,
+    },
+    MessageEnd {
+        message: Message,
+    },
+
+    // ── Tool execution ─────────────────────────────────────────────
+    ToolExecutionStart {
+        tool_call_id: String,
+        tool_name: String,
+        args: serde_json::Value,
+    },
+    ToolExecutionUpdate {
+        tool_call_id: String,
+        tool_name: String,
+        partial_result: String,
+    },
+    ToolExecutionEnd {
+        tool_call_id: String,
+        tool_name: String,
+        result: String,
+        is_error: bool,
+    },
+
+    // ── Errors ─────────────────────────────────────────────────────
     Error(String),
 }
+
+#[derive(Debug, Clone)]
+pub enum MessageDelta {
+    Thinking(String),
+    Text(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolResultRecord {
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub result: String,
+    pub is_error: bool,
+}
+
+// ── Agent runtime state ─────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentState {
+    Idle,
+    Streaming,
+    ExecutingTools,
+    Aborted,
+}
+
+// ── Message constructors ────────────────────────────────────────────
 
 impl Message {
     pub fn system(content: &str) -> Self {
@@ -149,5 +233,135 @@ impl Message {
             }
         }
         count
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_agent_event_variants() {
+        let events = vec![
+            AgentEvent::AgentStart,
+            AgentEvent::TurnStart { turn_index: 0 },
+            AgentEvent::TurnEnd {
+                turn_index: 0,
+                assistant_message: Message::assistant("done"),
+                tool_results: vec![],
+            },
+            AgentEvent::MessageStart {
+                message: Message::user("hello"),
+            },
+            AgentEvent::MessageUpdate {
+                delta: MessageDelta::Text("chunk".to_string()),
+            },
+            AgentEvent::MessageUpdate {
+                delta: MessageDelta::Thinking("reasoning".to_string()),
+            },
+            AgentEvent::MessageEnd {
+                message: Message::assistant("response"),
+            },
+            AgentEvent::ToolExecutionStart {
+                tool_call_id: "call_1".to_string(),
+                tool_name: "read_file".to_string(),
+                args: serde_json::json!({"path": "/tmp/test"}),
+            },
+            AgentEvent::ToolExecutionUpdate {
+                tool_call_id: "call_1".to_string(),
+                tool_name: "read_file".to_string(),
+                partial_result: "partial...".to_string(),
+            },
+            AgentEvent::ToolExecutionEnd {
+                tool_call_id: "call_1".to_string(),
+                tool_name: "read_file".to_string(),
+                result: "file content".to_string(),
+                is_error: false,
+            },
+            AgentEvent::Error("something went wrong".to_string()),
+        ];
+
+        assert_eq!(events.len(), 11);
+    }
+
+    #[test]
+    fn test_agent_state_transitions() {
+        assert_eq!(AgentState::Idle, AgentState::Idle);
+        assert_ne!(AgentState::Idle, AgentState::Streaming);
+        assert_ne!(AgentState::Streaming, AgentState::ExecutingTools);
+        assert_ne!(AgentState::ExecutingTools, AgentState::Aborted);
+    }
+
+    #[test]
+    fn test_tool_execution_mode_default() {
+        assert_eq!(ToolExecutionMode::default(), ToolExecutionMode::Parallel);
+    }
+
+    #[test]
+    fn test_tool_result_record() {
+        let record = ToolResultRecord {
+            tool_call_id: "call_1".to_string(),
+            tool_name: "read_file".to_string(),
+            result: "content".to_string(),
+            is_error: false,
+        };
+        assert_eq!(record.tool_name, "read_file");
+        assert!(!record.is_error);
+    }
+
+    #[test]
+    fn test_message_delta_variants() {
+        let thinking = MessageDelta::Thinking("reasoning".to_string());
+        let text = MessageDelta::Text("output".to_string());
+
+        match thinking {
+            MessageDelta::Thinking(s) => assert_eq!(s, "reasoning"),
+            _ => panic!("expected Thinking"),
+        }
+        match text {
+            MessageDelta::Text(s) => assert_eq!(s, "output"),
+            _ => panic!("expected Text"),
+        }
+    }
+
+    #[test]
+    fn test_agent_end_contains_messages() {
+        let msgs = vec![Message::user("hi"), Message::assistant("hello")];
+        let event = AgentEvent::AgentEnd {
+            messages: msgs.clone(),
+        };
+        match event {
+            AgentEvent::AgentEnd { messages } => {
+                assert_eq!(messages.len(), 2);
+            }
+            _ => panic!("expected AgentEnd"),
+        }
+    }
+
+    #[test]
+    fn test_turn_end_with_tool_results() {
+        let results = vec![ToolResultRecord {
+            tool_call_id: "c1".to_string(),
+            tool_name: "bash".to_string(),
+            result: "ok".to_string(),
+            is_error: false,
+        }];
+        let event = AgentEvent::TurnEnd {
+            turn_index: 2,
+            assistant_message: Message::assistant("done"),
+            tool_results: results,
+        };
+        match event {
+            AgentEvent::TurnEnd {
+                turn_index,
+                tool_results,
+                ..
+            } => {
+                assert_eq!(turn_index, 2);
+                assert_eq!(tool_results.len(), 1);
+                assert_eq!(tool_results[0].tool_name, "bash");
+            }
+            _ => panic!("expected TurnEnd"),
+        }
     }
 }

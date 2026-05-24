@@ -24,9 +24,10 @@ pub use agent::{Agent, AgentBuilder};
 pub use config::{Config, MemoryConfig, ModelConfig, RuntimeOverrides};
 pub use context::Context;
 pub use memory::MemoryManager;
-pub use tools::{Tool, ToolRegistry};
+pub use tools::{Tool, ToolRegistry, ToolUpdateFn};
 pub use types::{
-    AgentEvent, FunctionCall, FunctionSchema, Message, Role, StreamEvent, ToolCall, ToolDefinition,
+    AgentEvent, AgentState, FunctionCall, FunctionSchema, Message, MessageDelta, Role, StreamEvent,
+    ToolCall, ToolDefinition, ToolExecutionMode, ToolResultRecord,
 };
 
 // New harness modules

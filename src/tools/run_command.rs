@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use super::Tool;
+use super::{Tool, ToolUpdateFn};
 
 pub struct RunCommandTool;
 
@@ -38,31 +38,60 @@ impl Tool for RunCommandTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String> {
+        self.execute_with_stream(args, None).await
+    }
+
+    async fn execute_with_stream(
+        &self,
+        args: Value,
+        on_update: Option<ToolUpdateFn>,
+    ) -> Result<String> {
         let command = args["command"].as_str().context("missing 'command'")?;
         let working_dir = args["working_dir"].as_str().unwrap_or(".");
         let timeout_secs = args["timeout_secs"].as_u64().unwrap_or(60);
 
-        let output = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
-            tokio::process::Command::new("sh")
-                .arg("-c")
-                .arg(command)
-                .current_dir(working_dir)
-                .output(),
-        )
-        .await
-        .context("command timed out")?
-        .context("failed to execute command")?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let status = output.status.code().unwrap_or(-1);
+        let mut child = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .current_dir(working_dir)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .context("failed to spawn command")?;
 
         let mut result = String::new();
 
-        if !stdout.is_empty() {
+        // Stream stdout lines if on_update callback is provided
+        if let (Some(on_update), Some(stdout)) = (on_update.as_ref(), child.stdout.take()) {
+            let reader = tokio::io::BufReader::new(stdout);
+            use tokio::io::AsyncBufReadExt;
+            let mut lines = reader.lines();
+
+            while let Ok(Some(line)) = lines.next_line().await {
+                on_update(&line);
+                result.push_str(&line);
+                result.push('\n');
+            }
+        }
+
+        // Wait for the process to finish
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(timeout_secs),
+            child.wait_with_output(),
+        )
+        .await
+        .context("command timed out")?
+        .context("failed to wait for command")?;
+
+        // If we didn't stream (no on_update), collect stdout normally
+        if on_update.is_none() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
             result.push_str(&stdout);
         }
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let status = output.status.code().unwrap_or(-1);
+
         if !stderr.is_empty() {
             if !result.is_empty() {
                 result.push_str("\n--- stderr ---\n");

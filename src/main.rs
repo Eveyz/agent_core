@@ -1,11 +1,12 @@
 use agent_core::{
-    AgentBuilder, AgentEvent, PermissionPolicy,
-    TodoList, TodoItem, TodoStatus, TaskBoard, TaskStatus, SkillLoader,
+    AgentBuilder, AgentEvent, Message, MessageDelta, PermissionPolicy, TodoItem,
+    TodoList, TodoStatus, TaskBoard, TaskStatus, ToolExecutionMode, SkillLoader,
     hooks::LoggingHook,
     tools, tasks,
 };
 use std::cell::Cell;
 use std::io::{self, Write};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 #[tokio::main]
@@ -50,6 +51,17 @@ async fn main() -> anyhow::Result<()> {
         builder = builder.with_hook_registry(hooks);
     }
 
+    // Tool execution mode
+    print!("Tool execution mode (parallel/sequential) [parallel]: ");
+    io::stdout().flush()?;
+    let mut input = String::new();
+    io::stdin().read_line(&mut input)?;
+    let tool_mode = match input.trim().to_lowercase().as_str() {
+        "sequential" | "seq" => ToolExecutionMode::Sequential,
+        _ => ToolExecutionMode::Parallel,
+    };
+    builder = builder.with_tool_execution_mode(tool_mode);
+
     let mut agent = builder.build()?;
 
     // Optional subsystems
@@ -72,16 +84,34 @@ async fn main() -> anyhow::Result<()> {
     // Register subagent tool (needs model config + tool names)
     {
         let model_config = agent.current_model_config().clone();
-        let tool_names: Vec<String> = agent.tool_registry().list_names().iter().map(|s| s.to_string()).collect();
+        let tool_names: Vec<String> = agent
+            .tool_registry()
+            .list_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let reg = agent.tool_registry_mut();
         tools::subagent::register_subagent_tools(reg, model_config, tool_names);
     }
 
+    // Share abort_flag so CLI can abort mid-run
+    let abort_flag = agent.abort_flag.clone();
+
     // Print status
     println!("\n--- Status ---");
-    println!("Memory:      {}", if enable_memory { "enabled" } else { "disabled" });
-    println!("Permission:  {}", if enable_permission { "enabled" } else { "disabled" });
-    println!("Hooks:       {}", if enable_hooks { "enabled" } else { "disabled" });
+    println!(
+        "Memory:      {}",
+        if enable_memory { "enabled" } else { "disabled" }
+    );
+    println!(
+        "Permission:  {}",
+        if enable_permission { "enabled" } else { "disabled" }
+    );
+    println!(
+        "Hooks:       {}",
+        if enable_hooks { "enabled" } else { "disabled" }
+    );
+    println!("Tool mode:   {:?}", agent.tool_execution_mode());
     println!("Tools:       {}", agent.tool_registry().list_names().len());
     println!("Model:       {}", agent.current_model());
     println!("--------------\n");
@@ -135,13 +165,19 @@ async fn main() -> anyhow::Result<()> {
             }
             "/permission" | "/perm" => {
                 println!("=== Permission Policy ===");
-                println!("Permission system: {}", if enable_permission { "active" } else { "disabled" });
+                println!(
+                    "Permission system: {}",
+                    if enable_permission { "active" } else { "disabled" }
+                );
                 println!("Rules are checked before each tool execution.");
                 println!("Use /perm test <tool> <input> to check a specific call.");
             }
             "/hooks" => {
                 println!("=== Hook Registry ===");
-                println!("Hook system: {}", if enable_hooks { "active" } else { "disabled" });
+                println!(
+                    "Hook system: {}",
+                    if enable_hooks { "active" } else { "disabled" }
+                );
                 println!("Hooks fire on: PreToolUse, PostToolUse, SessionStart, SessionEnd");
             }
             "/todo" => {
@@ -181,25 +217,29 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             "/status" => {
-                println!("=== Agent Status ===");
-                println!("Model:       {}", agent.current_model());
-                println!("Tokens:      {}", agent.context_token_count());
-                println!("Memory:      {}", if enable_memory { "on" } else { "off" });
-                println!("Permission:  {}", if enable_permission { "on" } else { "off" });
-                println!("Hooks:       {}", if enable_hooks { "on" } else { "off" });
-                println!("Tools:       {}", agent.tool_registry().list_names().len());
-                {
-                    let list = todo_list.lock().unwrap();
-                    println!("Todo:        {}", list.summary());
-                }
-                {
-                    let board = task_board.lock().unwrap();
-                    println!("Tasks:       {} total", board.all_tasks().len());
-                }
-                {
-                    let loader = skill_loader.lock().unwrap();
-                    println!("Skills:      {} loaded", loader.list().len());
-                }
+                print_status(
+                    &agent,
+                    enable_memory,
+                    enable_permission,
+                    enable_hooks,
+                    &todo_list,
+                    &task_board,
+                    &skill_loader,
+                );
+            }
+            "/abort" => {
+                abort_flag.store(true, Ordering::Relaxed);
+                println!("Abort signal sent. The agent will stop at the next opportunity.");
+            }
+            "/state" => {
+                println!("Agent state: {:?}", agent.state());
+            }
+            "/tool-mode" => {
+                println!("Tool execution mode: {:?}", agent.tool_execution_mode());
+            }
+            "/clear-queues" => {
+                agent.clear_all_queues();
+                println!("Steering and follow-up queues cleared.");
             }
             cmd if cmd.starts_with("/model ") => {
                 let name = cmd.strip_prefix("/model ").unwrap().trim();
@@ -228,6 +268,32 @@ async fn main() -> anyhow::Result<()> {
                     Err(_) => eprintln!("Invalid max-tokens value"),
                 }
             }
+            cmd if cmd.starts_with("/tool-mode ") => {
+                let mode_str = cmd.strip_prefix("/tool-mode ").unwrap().trim();
+                match mode_str.to_lowercase().as_str() {
+                    "parallel" | "par" => {
+                        agent.set_tool_execution_mode(ToolExecutionMode::Parallel);
+                        println!("Tool execution mode set to: parallel");
+                    }
+                    "sequential" | "seq" => {
+                        agent.set_tool_execution_mode(ToolExecutionMode::Sequential);
+                        println!("Tool execution mode set to: sequential");
+                    }
+                    _ => {
+                        eprintln!("Usage: /tool-mode <parallel|sequential>");
+                    }
+                }
+            }
+            cmd if cmd.starts_with("/steer ") => {
+                let msg = cmd.strip_prefix("/steer ").unwrap().trim();
+                agent.steer(Message::user(msg));
+                println!("Steering message queued. It will be injected after the current turn.");
+            }
+            cmd if cmd.starts_with("/follow-up ") => {
+                let msg = cmd.strip_prefix("/follow-up ").unwrap().trim();
+                agent.follow_up(Message::user(msg));
+                println!("Follow-up message queued. It will be processed after the agent finishes.");
+            }
             cmd if cmd.starts_with("/todo ") => {
                 handle_todo_cmd(cmd, &todo_list);
             }
@@ -255,7 +321,10 @@ async fn main() -> anyhow::Result<()> {
                     let tool_name = parts[0];
                     let tool_input = parts.get(1).unwrap_or(&"{}");
                     let decision = agent.permission_policy().check(tool_name, tool_input);
-                    println!("Permission check: {}({}) -> {:?}", tool_name, tool_input, decision);
+                    println!(
+                        "Permission check: {}({}) -> {:?}",
+                        tool_name, tool_input, decision
+                    );
                 } else {
                     eprintln!("Usage: /perm test <tool_name> <input_json>");
                 }
@@ -353,7 +422,7 @@ fn handle_tasks_cmd(cmd: &str, task_board: &Arc<Mutex<TaskBoard>>) {
         let mut board = task_board.lock().unwrap();
         match board.update(id, TaskStatus::Completed, None) {
             Ok(()) => println!("Task '{}' completed.", id),
-            Err(e) => eprintln!("Error: {}", e),
+            Err(e) => eprintln!("Error: {e}"),
         }
         return;
     }
@@ -363,7 +432,7 @@ fn handle_tasks_cmd(cmd: &str, task_board: &Arc<Mutex<TaskBoard>>) {
         let mut board = task_board.lock().unwrap();
         match board.update(id, TaskStatus::InProgress, None) {
             Ok(()) => println!("Task '{}' started.", id),
-            Err(e) => eprintln!("Error: {}", e),
+            Err(e) => eprintln!("Error: {e}"),
         }
         return;
     }
@@ -371,6 +440,44 @@ fn handle_tasks_cmd(cmd: &str, task_board: &Arc<Mutex<TaskBoard>>) {
     // Default: show board
     let board = task_board.lock().unwrap();
     println!("{}", board.summary());
+}
+
+fn print_status(
+    agent: &agent_core::Agent,
+    enable_memory: bool,
+    enable_permission: bool,
+    enable_hooks: bool,
+    todo_list: &Arc<Mutex<TodoList>>,
+    task_board: &Arc<Mutex<TaskBoard>>,
+    skill_loader: &Arc<Mutex<SkillLoader>>,
+) {
+    println!("=== Agent Status ===");
+    println!("Model:       {}", agent.current_model());
+    println!("State:       {:?}", agent.state());
+    println!("Tool mode:   {:?}", agent.tool_execution_mode());
+    println!("Tokens:      {}", agent.context_token_count());
+    println!("Memory:      {}", if enable_memory { "on" } else { "off" });
+    println!(
+        "Permission:  {}",
+        if enable_permission { "on" } else { "off" }
+    );
+    println!("Hooks:       {}", if enable_hooks { "on" } else { "off" });
+    println!(
+        "Tools:       {}",
+        agent.tool_registry().list_names().len()
+    );
+    {
+        let list = todo_list.lock().unwrap();
+        println!("Todo:        {}", list.summary());
+    }
+    {
+        let board = task_board.lock().unwrap();
+        println!("Tasks:       {} total", board.all_tasks().len());
+    }
+    {
+        let loader = skill_loader.lock().unwrap();
+        println!("Skills:      {} loaded", loader.list().len());
+    }
 }
 
 async fn run_agent(agent: &mut agent_core::Agent, input: &str) {
@@ -387,44 +494,101 @@ async fn run_agent(agent: &mut agent_core::Agent, input: &str) {
                 first_event.set(false);
             }
             match event {
-                AgentEvent::Thinking(t) => {
-                    if !in_thinking.get() {
-                        print!("\nThinking: ");
-                        in_thinking.set(true);
+                AgentEvent::AgentStart => {}
+                AgentEvent::AgentEnd { .. } => {}
+                AgentEvent::TurnStart { turn_index } => {
+                    if turn_index > 0 {
+                        println!("\n  --- Turn {turn_index} ---");
                     }
-                    print!("{t}");
-                    io::stdout().flush().ok();
                 }
-                AgentEvent::Thought(t) => {
+                AgentEvent::TurnEnd { .. } => {}
+                AgentEvent::MessageStart { .. } => {}
+                AgentEvent::MessageUpdate { delta } => match delta {
+                    MessageDelta::Thinking(t) => {
+                        if !in_thinking.get() {
+                            print!("\nThinking: ");
+                            in_thinking.set(true);
+                        }
+                        print!("{t}");
+                        io::stdout().flush().ok();
+                    }
+                    MessageDelta::Text(t) => {
+                        if in_thinking.get() {
+                            println!();
+                            in_thinking.set(false);
+                        }
+                        print!("{t}");
+                        io::stdout().flush().ok();
+                    }
+                },
+                AgentEvent::MessageEnd { message } => {
                     if in_thinking.get() {
                         println!();
                         in_thinking.set(false);
                     }
-                    print!("{t}");
-                    io::stdout().flush().ok();
+                    // If the assistant message has tool calls, print them
+                    if let Some(ref tool_calls) = message.tool_calls {
+                        for tc in tool_calls {
+                            print!("\n  [{}]", tc.function.name);
+                            io::stdout().flush().ok();
+                        }
+                    }
                 }
-                AgentEvent::ToolStart(name) => {
+                AgentEvent::ToolExecutionStart {
+                    tool_name, args, ..
+                } => {
                     if in_thinking.get() {
                         println!();
                         in_thinking.set(false);
                     }
-                    if name.starts_with("[APPROVAL") {
-                        print!("\n  {name}");
+                    if tool_name.starts_with("[APPROVAL") {
+                        print!("\n  {tool_name}");
                     } else {
-                        print!("\n  [{name}]");
+                        let args_preview = if args.to_string().len() > 80 {
+                            format!("{}...", &args.to_string()[..80])
+                        } else {
+                            args.to_string()
+                        };
+                        print!("\n  [{tool_name}] ({args_preview})");
                     }
                     io::stdout().flush().ok();
                 }
-                AgentEvent::ToolResult(r) => {
-                    let preview = if r.len() > 120 {
-                        format!("{}...", &r[..120])
+                AgentEvent::ToolExecutionUpdate {
+                    tool_name,
+                    partial_result,
+                    ..
+                } => {
+                    let preview = if partial_result.len() > 80 {
+                        format!("{}...", &partial_result[..80])
                     } else {
-                        r
+                        partial_result
                     };
-                    print!(" -> {preview}");
+                    print!("\n  [{tool_name}] >> {preview}");
                     io::stdout().flush().ok();
                 }
-                AgentEvent::FinalAnswer(_) => {}
+                AgentEvent::ToolExecutionEnd {
+                    tool_name,
+                    result,
+                    is_error,
+                    ..
+                } => {
+                    if is_error {
+                        let preview = if result.len() > 120 {
+                            format!("{}...", &result[..120])
+                        } else {
+                            result
+                        };
+                        print!("\n  [{tool_name}] ERROR: {preview}");
+                    } else {
+                        let preview = if result.len() > 120 {
+                            format!("{}...", &result[..120])
+                        } else {
+                            result
+                        };
+                        print!("\n  [{tool_name}] -> {preview}");
+                    }
+                    io::stdout().flush().ok();
+                }
                 AgentEvent::Error(e) => eprintln!("\n  Error: {e}"),
             }
         })
@@ -455,6 +619,15 @@ fn print_help() {
     /max-tokens <int>  Set max output tokens
     /tokens            Show current token count
     /clear             Clear conversation context
+
+  Agent Control
+    /abort             Abort the current agent run
+    /state             Show current agent state (Idle/Streaming/ExecutingTools/Aborted)
+    /tool-mode         Show current tool execution mode
+    /tool-mode <mode>  Set tool execution mode (parallel|sequential)
+    /steer <message>   Inject a steering message mid-run
+    /follow-up <msg>   Queue a follow-up message after agent finishes
+    /clear-queues      Clear steering and follow-up queues
 
   Memory
     /memory            Show core memory blocks
