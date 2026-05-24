@@ -44,14 +44,15 @@ impl OpenAIClient {
         tools: &[ToolDefinition],
         stream: bool,
     ) -> Value {
-        let temperature = self.overrides.temperature.unwrap_or(self.model.temperature);
-
         let mut body = serde_json::json!({
             "model": self.model.model_id,
             "messages": messages,
-            "temperature": temperature,
             "stream": stream,
         });
+
+        if let Some(temp) = self.overrides.temperature.or(self.model.temperature) {
+            body["temperature"] = serde_json::json!(temp);
+        }
 
         if let Some(max_tokens) = self.overrides.max_tokens.or(self.model.max_tokens) {
             body["max_tokens"] = serde_json::json!(max_tokens);

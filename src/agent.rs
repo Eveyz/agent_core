@@ -102,7 +102,7 @@ impl AgentBuilder {
 
     pub fn build(self) -> Result<Agent> {
         let default_model_name = self.config.default_model.clone();
-        let model_config = self.config.default_model().clone();
+        let model_config = self.config.default_model()?.clone();
 
         let system_prompt = if let Some(ref custom) = self.system_prompt {
             custom.clone()

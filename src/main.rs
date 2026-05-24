@@ -14,7 +14,8 @@ async fn main() -> anyhow::Result<()> {
     let mut builder = match AgentBuilder::from_config("config.toml") {
         Ok(b) => b,
         Err(e) => {
-            eprintln!("config.toml load failed: {e}");
+            eprintln!("config.toml: {e}");
+            eprintln!("Falling back to OPENAI_API_KEY environment variable...");
             AgentBuilder::from_env()?
         }
     };
