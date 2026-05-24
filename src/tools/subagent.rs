@@ -1,6 +1,7 @@
 use crate::config::ModelConfig;
 use crate::subagent::{Subagent, SubagentConfig};
-use crate::tools::{Tool, ToolRegistry};
+use crate::tools::{Tool, ToolRegistry, ToolUpdateFn};
+use crate::types::EventSender;
 use anyhow::Result;
 use serde_json::Value;
 
@@ -70,6 +71,15 @@ impl Tool for SubagentSpawnTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String> {
+        self.execute_with_stream(args, None, None).await
+    }
+
+    async fn execute_with_stream(
+        &self,
+        args: Value,
+        _on_update: Option<ToolUpdateFn>,
+        event_sender: Option<EventSender>,
+    ) -> Result<String> {
         let id = args["id"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
@@ -82,9 +92,7 @@ impl Tool for SubagentSpawnTool {
             .unwrap_or("You are a focused sub-agent. Complete the given task and return the result. Be concise.")
             .to_string();
 
-        let max_iterations = args["max_iterations"]
-            .as_u64()
-            .unwrap_or(5) as usize;
+        let max_iterations = args["max_iterations"].as_u64().unwrap_or(5) as usize;
 
         let tools_list: Vec<String> = if let Some(arr) = args["tools"].as_array() {
             arr.iter()
@@ -119,7 +127,7 @@ impl Tool for SubagentSpawnTool {
 
         let mut subagent = Subagent::new(id, config, &self.model_config, ToolRegistry::new());
 
-        let result = subagent.run(task).await?;
+        let result = subagent.run_with_sender(task, event_sender).await?;
 
         let mut output = format!(
             "[Sub-agent '{}'] ({} iterations, {})\n\n{}",

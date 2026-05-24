@@ -590,6 +590,74 @@ async fn run_agent(agent: &mut agent_core::Agent, input: &str) {
                     io::stdout().flush().ok();
                 }
                 AgentEvent::Error(e) => eprintln!("\n  Error: {e}"),
+
+                // ── Subagent events ───────────────────────────────────
+                AgentEvent::SubagentStart { subagent_id, task } => {
+                    let task_preview = if task.len() > 80 {
+                        format!("{}...", &task[..80])
+                    } else {
+                        task
+                    };
+                    println!("\n  ┌─ Sub-agent '{subagent_id}' spawned: {task_preview}");
+                }
+                AgentEvent::SubagentTurnStart {
+                    subagent_id,
+                    turn_index,
+                } => {
+                    println!("  │  ── Turn {turn_index} [{subagent_id}] ──");
+                }
+                AgentEvent::SubagentMessageUpdate { subagent_id, delta } => {
+                    match delta {
+                        MessageDelta::Thinking(t) => {
+                            print!("  │  [{subagent_id}] Thinking: {t}");
+                        }
+                        MessageDelta::Text(t) => {
+                            print!("  │  [{subagent_id}] {t}");
+                        }
+                    }
+                    io::stdout().flush().ok();
+                }
+                AgentEvent::SubagentToolStart {
+                    subagent_id,
+                    tool_name,
+                    args,
+                    ..
+                } => {
+                    let args_preview = if args.to_string().len() > 60 {
+                        format!("{}...", &args.to_string()[..60])
+                    } else {
+                        args.to_string()
+                    };
+                    println!("  │  [{subagent_id}] [{tool_name}] ({args_preview})");
+                }
+                AgentEvent::SubagentToolEnd {
+                    subagent_id,
+                    tool_name,
+                    result,
+                    is_error,
+                    ..
+                } => {
+                    let preview = if result.len() > 100 {
+                        format!("{}...", &result[..100])
+                    } else {
+                        result
+                    };
+                    if is_error {
+                        println!("  │  [{subagent_id}] [{tool_name}] ERROR: {preview}");
+                    } else {
+                        println!("  │  [{subagent_id}] [{tool_name}] -> {preview}");
+                    }
+                }
+                AgentEvent::SubagentEnd {
+                    subagent_id,
+                    success,
+                    iterations_used,
+                } => {
+                    let status = if success { "done" } else { "incomplete" };
+                    println!(
+                        "  └─ Sub-agent '{subagent_id}' finished: {status} ({iterations_used} iterations)"
+                    );
+                }
             }
         })
         .await

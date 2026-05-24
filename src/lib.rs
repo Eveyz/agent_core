@@ -26,8 +26,8 @@ pub use context::Context;
 pub use memory::MemoryManager;
 pub use tools::{Tool, ToolRegistry, ToolUpdateFn};
 pub use types::{
-    AgentEvent, AgentState, FunctionCall, FunctionSchema, Message, MessageDelta, Role, StreamEvent,
-    ToolCall, ToolDefinition, ToolExecutionMode, ToolResultRecord,
+    AgentEvent, AgentState, EventReceiver, EventSender, FunctionCall, FunctionSchema, Message,
+    MessageDelta, Role, StreamEvent, ToolCall, ToolDefinition, ToolExecutionMode, ToolResultRecord,
 };
 
 // New harness modules

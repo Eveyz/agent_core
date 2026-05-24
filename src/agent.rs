@@ -511,8 +511,6 @@ impl Agent {
         };
 
         // Collect streaming updates from the tool into a shared buffer.
-        // The callback is synchronous (called during execute_with_stream),
-        // so we buffer events and flush them after execution completes.
         let updates: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let updates_clone = updates.clone();
         let abort_clone = abort.clone();
@@ -524,7 +522,17 @@ impl Agent {
             }
         });
 
-        let result = tool.execute_with_stream(args, Some(on_update)).await;
+        // Create event channel for tools that emit structured events (e.g. subagent).
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+
+        let result = tool
+            .execute_with_stream(args, Some(on_update), Some(event_tx))
+            .await;
+
+        // Drain all events emitted by the tool via the channel
+        while let Ok(event) = event_rx.try_recv() {
+            on_event(event);
+        }
 
         // Flush buffered streaming updates as ToolExecutionUpdate events
         if let Ok(buf) = updates.lock() {

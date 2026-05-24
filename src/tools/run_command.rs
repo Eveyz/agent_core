@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use super::{Tool, ToolUpdateFn};
+use crate::types::EventSender;
 
 pub struct RunCommandTool;
 
@@ -38,13 +39,14 @@ impl Tool for RunCommandTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String> {
-        self.execute_with_stream(args, None).await
+        self.execute_with_stream(args, None, None).await
     }
 
     async fn execute_with_stream(
         &self,
         args: Value,
         on_update: Option<ToolUpdateFn>,
+        _event_sender: Option<EventSender>,
     ) -> Result<String> {
         let command = args["command"].as_str().context("missing 'command'")?;
         let working_dir = args["working_dir"].as_str().unwrap_or(".");

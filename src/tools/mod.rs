@@ -13,7 +13,7 @@ pub mod todo;
 pub mod write_file;
 
 use crate::memory::MemoryManager;
-use crate::types::{FunctionSchema, ToolCall, ToolDefinition, ToolExecutionMode};
+use crate::types::{EventSender, FunctionSchema, ToolCall, ToolDefinition, ToolExecutionMode};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -32,14 +32,19 @@ pub trait Tool: Send + Sync {
     /// Execute the tool and return a complete result string.
     async fn execute(&self, args: Value) -> Result<String>;
 
-    /// Execute with streaming progress updates. Default delegates to `execute`.
-    /// Override this method to provide incremental progress via `on_update`.
+    /// Execute with streaming progress updates and optional event sender.
+    /// - `on_update`: fire-and-forget progress callback (e.g. for stdout streaming)
+    /// - `event_sender`: channel to emit structured `AgentEvent`s back to the parent
+    ///
+    /// Default delegates to `execute`, ignoring both callbacks.
     async fn execute_with_stream(
         &self,
         args: Value,
         on_update: Option<ToolUpdateFn>,
+        event_sender: Option<EventSender>,
     ) -> Result<String> {
         let _ = on_update;
+        let _ = event_sender;
         self.execute(args).await
     }
 
@@ -127,18 +132,32 @@ impl ToolRegistry {
 
     /// Execute all tool calls sequentially.
     pub async fn call_all(&self, calls: &[ToolCall]) -> Vec<String> {
+        self.call_all_with_sender(calls, None).await
+    }
+
+    /// Execute all tool calls sequentially, forwarding events via sender.
+    pub async fn call_all_with_sender(
+        &self,
+        calls: &[ToolCall],
+        event_sender: Option<EventSender>,
+    ) -> Vec<String> {
         let mut results = Vec::new();
 
         for call in calls {
-            let result = self.call_one(call, None).await;
+            let result = self.call_one(call, None, event_sender.clone()).await;
             results.push(result);
         }
 
         results
     }
 
-    /// Execute a single tool call with optional streaming callback.
-    pub async fn call_one(&self, call: &ToolCall, on_update: Option<ToolUpdateFn>) -> String {
+    /// Execute a single tool call with optional streaming callback and event sender.
+    pub async fn call_one(
+        &self,
+        call: &ToolCall,
+        on_update: Option<ToolUpdateFn>,
+        event_sender: Option<EventSender>,
+    ) -> String {
         let tool = match self.tools.get(&call.function.name) {
             Some(t) => t,
             None => {
@@ -168,7 +187,7 @@ impl ToolRegistry {
         }
 
         let name = call.function.name.clone();
-        match tool.execute_with_stream(args, on_update).await {
+        match tool.execute_with_stream(args, on_update, event_sender).await {
             Ok(output) => output,
             Err(e) => {
                 format!("Error executing tool '{}': {}", name, e)

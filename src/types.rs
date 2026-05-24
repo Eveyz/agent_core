@@ -1,6 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+/// Channel sender for tools to emit `AgentEvent`s back to the parent agent.
+pub type EventSender = tokio::sync::mpsc::UnboundedSender<AgentEvent>;
+/// Channel receiver for the parent agent to consume tool-emitted events.
+pub type EventReceiver = tokio::sync::mpsc::UnboundedReceiver<AgentEvent>;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
@@ -137,6 +142,38 @@ pub enum AgentEvent {
         tool_name: String,
         result: String,
         is_error: bool,
+    },
+
+    // ── Subagent lifecycle ─────────────────────────────────────────
+    SubagentStart {
+        subagent_id: String,
+        task: String,
+    },
+    SubagentTurnStart {
+        subagent_id: String,
+        turn_index: usize,
+    },
+    SubagentMessageUpdate {
+        subagent_id: String,
+        delta: MessageDelta,
+    },
+    SubagentToolStart {
+        subagent_id: String,
+        tool_call_id: String,
+        tool_name: String,
+        args: serde_json::Value,
+    },
+    SubagentToolEnd {
+        subagent_id: String,
+        tool_call_id: String,
+        tool_name: String,
+        result: String,
+        is_error: bool,
+    },
+    SubagentEnd {
+        subagent_id: String,
+        success: bool,
+        iterations_used: usize,
     },
 
     // ── Errors ─────────────────────────────────────────────────────
@@ -363,5 +400,94 @@ mod tests {
             }
             _ => panic!("expected TurnEnd"),
         }
+    }
+
+    #[test]
+    fn test_subagent_events() {
+        let events = vec![
+            AgentEvent::SubagentStart {
+                subagent_id: "researcher".to_string(),
+                task: "analyze codebase".to_string(),
+            },
+            AgentEvent::SubagentTurnStart {
+                subagent_id: "researcher".to_string(),
+                turn_index: 0,
+            },
+            AgentEvent::SubagentMessageUpdate {
+                subagent_id: "researcher".to_string(),
+                delta: MessageDelta::Text("looking at files...".to_string()),
+            },
+            AgentEvent::SubagentToolStart {
+                subagent_id: "researcher".to_string(),
+                tool_call_id: "call_1".to_string(),
+                tool_name: "read_file".to_string(),
+                args: serde_json::json!({"path": "Cargo.toml"}),
+            },
+            AgentEvent::SubagentToolEnd {
+                subagent_id: "researcher".to_string(),
+                tool_call_id: "call_1".to_string(),
+                tool_name: "read_file".to_string(),
+                result: "[package]...".to_string(),
+                is_error: false,
+            },
+            AgentEvent::SubagentEnd {
+                subagent_id: "researcher".to_string(),
+                success: true,
+                iterations_used: 2,
+            },
+        ];
+        assert_eq!(events.len(), 6);
+
+        // Verify SubagentStart structure
+        match &events[0] {
+            AgentEvent::SubagentStart {
+                subagent_id, task, ..
+            } => {
+                assert_eq!(subagent_id, "researcher");
+                assert_eq!(task, "analyze codebase");
+            }
+            _ => panic!("expected SubagentStart"),
+        }
+
+        // Verify SubagentEnd structure
+        match &events[5] {
+            AgentEvent::SubagentEnd {
+                subagent_id,
+                success,
+                iterations_used,
+            } => {
+                assert_eq!(subagent_id, "researcher");
+                assert!(success);
+                assert_eq!(*iterations_used, 2);
+            }
+            _ => panic!("expected SubagentEnd"),
+        }
+    }
+
+    #[test]
+    fn test_event_sender_channel() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+
+        tx.send(AgentEvent::SubagentStart {
+            subagent_id: "test".to_string(),
+            task: "test task".to_string(),
+        })
+        .unwrap();
+
+        tx.send(AgentEvent::SubagentEnd {
+            subagent_id: "test".to_string(),
+            success: true,
+            iterations_used: 1,
+        })
+        .unwrap();
+
+        drop(tx);
+
+        let mut received = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            received.push(event);
+        }
+
+        assert_eq!(received.len(), 2);
     }
 }

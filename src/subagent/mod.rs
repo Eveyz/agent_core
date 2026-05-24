@@ -6,7 +6,7 @@ use crate::client::OpenAIClient;
 use crate::config::ModelConfig;
 use crate::context::Context;
 use crate::tools::ToolRegistry;
-use crate::types::{Message, StreamEvent, ToolCall};
+use crate::types::{AgentEvent, EventSender, Message, MessageDelta, StreamEvent, ToolCall};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubagentConfig {
@@ -63,9 +63,33 @@ impl Subagent {
     }
 
     pub async fn run(&mut self, task: &str) -> Result<SubagentResult> {
+        self.run_with_sender(task, None).await
+    }
+
+    pub async fn run_with_sender(
+        &mut self,
+        task: &str,
+        event_sender: Option<EventSender>,
+    ) -> Result<SubagentResult> {
         self.context.add(Message::user(task));
 
+        // Emit SubagentStart
+        if let Some(ref tx) = event_sender {
+            let _ = tx.send(AgentEvent::SubagentStart {
+                subagent_id: self.id.clone(),
+                task: task.to_string(),
+            });
+        }
+
         for iteration in 0..self.config.max_iterations {
+            // Emit SubagentTurnStart
+            if let Some(ref tx) = event_sender {
+                let _ = tx.send(AgentEvent::SubagentTurnStart {
+                    subagent_id: self.id.clone(),
+                    turn_index: iteration,
+                });
+            }
+
             self.context.trim_to_fit();
 
             let messages = self.context.messages();
@@ -76,9 +100,20 @@ impl Subagent {
                 .chat_completion_stream(&messages, &tools)
                 .await?;
 
-            let (text, tool_calls) = self.collect_stream(stream).await?;
+            let (text, tool_calls) = self
+                .collect_stream(stream, event_sender.as_ref())
+                .await?;
 
             if tool_calls.is_empty() {
+                // Emit SubagentEnd
+                if let Some(ref tx) = event_sender {
+                    let _ = tx.send(AgentEvent::SubagentEnd {
+                        subagent_id: self.id.clone(),
+                        success: true,
+                        iterations_used: iteration + 1,
+                    });
+                }
+
                 return Ok(SubagentResult {
                     subagent_id: self.id.clone(),
                     output: text,
@@ -92,14 +127,51 @@ impl Subagent {
                     .add(Message::assistant_with_tools(&text, tool_calls.clone()));
             }
 
-            match self.registry.call_all(&tool_calls).await {
-                results => {
-                    for (call, result) in tool_calls.iter().zip(&results) {
-                        self.context
-                            .add(Message::tool(call.id.clone(), result.clone()));
-                    }
+            // Execute tools, emitting SubagentToolStart/SubagentToolEnd events
+            let results = self
+                .registry
+                .call_all_with_sender(&tool_calls, event_sender.clone())
+                .await;
+
+            for (call, result) in tool_calls.iter().zip(&results) {
+                // Emit SubagentToolStart
+                if let Some(ref tx) = event_sender {
+                    let args: serde_json::Value =
+                        serde_json::from_str(&call.function.arguments).unwrap_or_default();
+                    let _ = tx.send(AgentEvent::SubagentToolStart {
+                        subagent_id: self.id.clone(),
+                        tool_call_id: call.id.clone(),
+                        tool_name: call.function.name.clone(),
+                        args,
+                    });
                 }
+
+                // Emit SubagentToolEnd
+                let is_error = result.starts_with("Error")
+                    || result.starts_with("Permission denied")
+                    || result.starts_with("Hook vetoed");
+                if let Some(ref tx) = event_sender {
+                    let _ = tx.send(AgentEvent::SubagentToolEnd {
+                        subagent_id: self.id.clone(),
+                        tool_call_id: call.id.clone(),
+                        tool_name: call.function.name.clone(),
+                        result: result.clone(),
+                        is_error,
+                    });
+                }
+
+                self.context
+                    .add(Message::tool(call.id.clone(), result.clone()));
             }
+        }
+
+        // Emit SubagentEnd (max iterations reached)
+        if let Some(ref tx) = event_sender {
+            let _ = tx.send(AgentEvent::SubagentEnd {
+                subagent_id: self.id.clone(),
+                success: false,
+                iterations_used: self.config.max_iterations,
+            });
         }
 
         Ok(SubagentResult {
@@ -116,6 +188,7 @@ impl Subagent {
     async fn collect_stream(
         &self,
         stream: impl futures::Stream<Item = Result<StreamEvent>>,
+        event_sender: Option<&EventSender>,
     ) -> Result<(String, Vec<ToolCall>)> {
         use crate::client::streaming::ToolCallAccumulator;
         use futures::StreamExt;
@@ -129,14 +202,28 @@ impl Subagent {
             let event = event?;
             match event {
                 StreamEvent::TextDelta(delta) => {
+                    // Emit SubagentMessageUpdate
+                    if let Some(tx) = event_sender {
+                        let _ = tx.send(AgentEvent::SubagentMessageUpdate {
+                            subagent_id: self.id.clone(),
+                            delta: MessageDelta::Text(delta.clone()),
+                        });
+                    }
                     text_buffer.push_str(&delta);
+                }
+                StreamEvent::ThinkingDelta(delta) => {
+                    if let Some(tx) = event_sender {
+                        let _ = tx.send(AgentEvent::SubagentMessageUpdate {
+                            subagent_id: self.id.clone(),
+                            delta: MessageDelta::Thinking(delta),
+                        });
+                    }
                 }
                 StreamEvent::ToolCallDelta { .. } => {
                     has_tool_calls = true;
                     accumulator.push(event);
                 }
                 StreamEvent::Done => break,
-                _ => {}
             }
         }
 
