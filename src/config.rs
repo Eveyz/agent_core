@@ -109,8 +109,8 @@ impl Config {
     pub fn load(path: &str) -> Result<Self> {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read config from {path}"))?;
-        let mut config: Config =
-            toml::from_str(&content).with_context(|| format!("failed to parse config from {path}"))?;
+        let mut config: Config = toml::from_str(&content)
+            .with_context(|| format!("failed to parse config from {path}"))?;
 
         if !config.models.contains_key(&config.default_model) {
             let available: Vec<_> = config.models.keys().map(|s| s.as_str()).collect();
@@ -135,8 +135,7 @@ impl Config {
             .context("OPENAI_API_KEY environment variable not set. Set it or provide a valid config.toml file.")?;
         let base_url = std::env::var("OPENAI_BASE_URL")
             .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
-        let model_id = std::env::var("OPENAI_MODEL")
-            .unwrap_or_else(|_| "gpt-4o-mini".to_string());
+        let model_id = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string());
 
         let model = ModelConfig {
             name: "default".to_string(),
@@ -462,4 +461,3 @@ default_model = "gpt"
         assert!(msg.contains("Available models: []"));
     }
 }
-

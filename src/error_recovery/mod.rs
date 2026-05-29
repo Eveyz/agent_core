@@ -62,12 +62,10 @@ pub struct RecoveryEngine {
 impl Default for RecoveryEngine {
     fn default() -> Self {
         Self {
-            _strategies: vec![
-                RecoveryStrategy::RetryWithBackoff {
-                    max_retries: 3,
-                    base_delay_ms: 500,
-                },
-            ],
+            _strategies: vec![RecoveryStrategy::RetryWithBackoff {
+                max_retries: 3,
+                base_delay_ms: 500,
+            }],
             fallback_model: None,
             max_retries: 3,
             token_escalation_factor: 1.5,
@@ -100,12 +98,12 @@ impl RecoveryEngine {
             }
 
             if error.contains("rate limit") || error.contains("429") {
-                if let Some(ref fallback) = self.fallback_model {
-                    if ctx.attempt >= self.max_retries {
-                        return RecoveryAction::SwitchModel {
-                            model: fallback.clone(),
-                        };
-                    }
+                if let Some(ref fallback) = self.fallback_model
+                    && ctx.attempt >= self.max_retries
+                {
+                    return RecoveryAction::SwitchModel {
+                        model: fallback.clone(),
+                    };
                 }
                 return RecoveryAction::Retry {
                     delay_ms: 500 * 2u64.pow(ctx.attempt),
@@ -113,8 +111,7 @@ impl RecoveryEngine {
             }
 
             if error.contains("length") || error.contains("truncat") {
-                let new_max =
-                    (ctx.max_tokens as f64 * self.token_escalation_factor) as u32;
+                let new_max = (ctx.max_tokens as f64 * self.token_escalation_factor) as u32;
                 return RecoveryAction::EscalateTokens {
                     new_max_tokens: new_max,
                 };
@@ -190,7 +187,9 @@ mod tests {
 
     #[test]
     fn test_fallback_model_after_max_retries() {
-        let engine = RecoveryEngine::new().with_fallback_model("gpt-3.5").with_max_retries(2);
+        let engine = RecoveryEngine::new()
+            .with_fallback_model("gpt-3.5")
+            .with_max_retries(2);
         let mut ctx = RecoveryContext::new("test", 4096);
         ctx.record_error("rate limit");
         ctx.record_error("rate limit");

@@ -1,5 +1,5 @@
-use crate::tools::{Tool, ToolRegistry};
 use crate::todo::{TodoItem, TodoList, TodoStatus};
+use crate::tools::{Tool, ToolRegistry};
 use anyhow::Result;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
@@ -47,11 +47,19 @@ impl Tool for TodoWriteTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String> {
-        let id = args["id"].as_str().ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
-        let description = args["description"].as_str().ok_or_else(|| anyhow::anyhow!("missing 'description'"))?;
+        let id = args["id"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
+        let description = args["description"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing 'description'"))?;
         let depends_on: Vec<String> = args["depends_on"]
             .as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
 
         let mut list = self.todo_list.lock().unwrap();
@@ -126,8 +134,13 @@ impl Tool for TodoUpdateTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String> {
-        let id = args["id"].as_str().ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
-        let status = match args["status"].as_str().ok_or_else(|| anyhow::anyhow!("missing 'status'"))? {
+        let id = args["id"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
+        let status = match args["status"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing 'status'"))?
+        {
             "pending" => TodoStatus::Pending,
             "in_progress" => TodoStatus::InProgress,
             "completed" => TodoStatus::Completed,
@@ -138,6 +151,10 @@ impl Tool for TodoUpdateTool {
         let mut list = self.todo_list.lock().unwrap();
         list.update_status(id, status)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
-        Ok(format!("Todo '{}' updated to {}", id, args["status"].as_str().unwrap_or("")))
+        Ok(format!(
+            "Todo '{}' updated to {}",
+            id,
+            args["status"].as_str().unwrap_or("")
+        ))
     }
 }

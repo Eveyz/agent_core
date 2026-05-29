@@ -72,10 +72,7 @@ fn serde_yaml_like(content: &str) -> Result<SkillManifest> {
             in_triggers = false;
             in_tags = false;
         } else if line.starts_with("content_path:") || line.starts_with("content:") {
-            let val = line
-                .split_once(':')
-                .map(|(_, v)| v.trim())
-                .unwrap_or("");
+            let val = line.split_once(':').map(|(_, v)| v.trim()).unwrap_or("");
             content_path = PathBuf::from(val);
             in_triggers = false;
             in_tags = false;

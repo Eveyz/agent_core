@@ -105,12 +105,7 @@ impl TaskBoard {
         self.persist();
     }
 
-    pub fn update(
-        &mut self,
-        id: &str,
-        status: TaskStatus,
-        result: Option<String>,
-    ) -> Result<()> {
+    pub fn update(&mut self, id: &str, status: TaskStatus, result: Option<String>) -> Result<()> {
         let task = self
             .tasks
             .iter_mut()
@@ -151,10 +146,7 @@ impl TaskBoard {
 
         for task in &mut self.tasks {
             if task.status == TaskStatus::Pending {
-                let has_failed_dep = task
-                    .blocked_by
-                    .iter()
-                    .any(|dep| failed_ids.contains(dep));
+                let has_failed_dep = task.blocked_by.iter().any(|dep| failed_ids.contains(dep));
 
                 if has_failed_dep {
                     task.status = TaskStatus::Blocked;
@@ -289,12 +281,9 @@ mod tests {
     fn test_assign_and_result() {
         let mut board = TaskBoard::new();
         board.create("1", "Task", vec![]);
-        board.update(
-            "1",
-            TaskStatus::Completed,
-            Some("done".to_string()),
-        )
-        .unwrap();
+        board
+            .update("1", TaskStatus::Completed, Some("done".to_string()))
+            .unwrap();
 
         let task = board.get("1").unwrap();
         assert_eq!(task.result.as_deref(), Some("done"));
@@ -306,7 +295,9 @@ mod tests {
         board.create("1", "First", vec![]);
         board.create("2", "Second", vec!["1".to_string()]);
 
-        board.update("1", TaskStatus::Failed, Some("error".to_string())).unwrap();
+        board
+            .update("1", TaskStatus::Failed, Some("error".to_string()))
+            .unwrap();
 
         let task = board.get("2").unwrap();
         assert_eq!(task.status, TaskStatus::Blocked);

@@ -116,10 +116,7 @@ impl PromptAssembler {
     }
 
     pub fn add_tools(&mut self, tool_names: &[&str]) {
-        let content = format!(
-            "Available tools: {}",
-            tool_names.join(", ")
-        );
+        let content = format!("Available tools: {}", tool_names.join(", "));
         self.add_section("tools", &content, 10);
     }
 

@@ -73,7 +73,12 @@ impl Tool for WebFetchTool {
             .to_string();
 
         if !response.status().is_success() {
-            return Ok(format_http_status(url, &url_to_fetch, status_code, &response));
+            return Ok(format_http_status(
+                url,
+                &url_to_fetch,
+                status_code,
+                &response,
+            ));
         }
 
         let body = match response.text().await {
@@ -162,9 +167,16 @@ fn format_http_error(url: &str, error: &reqwest::Error) -> String {
         )
     } else {
         let err_str = error.to_string();
-        let suggestion = if err_str.contains("dns") || err_str.contains("resolve") || err_str.contains("Name") {
+        let suggestion = if err_str.contains("dns")
+            || err_str.contains("resolve")
+            || err_str.contains("Name")
+        {
             "\nSuggestion: The domain name could not be resolved. Verify the URL is correct."
-        } else if err_str.contains("certificate") || err_str.contains("SSL") || err_str.contains("TLS") || err_str.contains("tls") {
+        } else if err_str.contains("certificate")
+            || err_str.contains("SSL")
+            || err_str.contains("TLS")
+            || err_str.contains("tls")
+        {
             "\nSuggestion: SSL/TLS certificate error. The site's certificate may be invalid or self-signed. Try using http:// if appropriate."
         } else {
             "\nSuggestion: This is a network-level error. Verify the URL, check your internet connection, and try again."
@@ -174,7 +186,12 @@ fn format_http_error(url: &str, error: &reqwest::Error) -> String {
     }
 }
 
-fn format_http_status(original_url: &str, final_url: &str, status_code: u16, response: &reqwest::Response) -> String {
+fn format_http_status(
+    original_url: &str,
+    final_url: &str,
+    status_code: u16,
+    response: &reqwest::Response,
+) -> String {
     let reason = response.status().canonical_reason().unwrap_or("unknown");
 
     let (explanation, suggestion) = match status_code {
@@ -208,9 +225,15 @@ fn format_http_status(original_url: &str, final_url: &str, status_code: u16, res
         ),
         _ => {
             if status_code >= 400 {
-                ("The server returned a client or server error.", "Try a different URL or source for this information.")
+                (
+                    "The server returned a client or server error.",
+                    "Try a different URL or source for this information.",
+                )
             } else {
-                ("The server returned an unexpected non-success status.", "Try again or use an alternative source.")
+                (
+                    "The server returned an unexpected non-success status.",
+                    "Try again or use an alternative source.",
+                )
             }
         }
     };
@@ -246,9 +269,9 @@ fn strip_html(html: &str) -> String {
                     in_style_script = true;
                 } else if tag_lower == "/script" || tag_lower == "/style" {
                     in_style_script = false;
-                } else if tag_lower == "br" || tag_lower == "hr" {
-                    result.push('\n');
-                } else if tag_lower == "p"
+                } else if tag_lower == "br"
+                    || tag_lower == "hr"
+                    || tag_lower == "p"
                     || tag_lower.starts_with("/h")
                     || tag_lower == "/div"
                     || tag_lower == "/li"
@@ -291,7 +314,11 @@ fn is_garbled(text: &str) -> bool {
         return false;
     }
 
-    let sample = if text.len() > 2000 { &text[..text.floor_char_boundary(2000)] } else { text };
+    let sample = if text.len() > 2000 {
+        &text[..text.floor_char_boundary(2000)]
+    } else {
+        text
+    };
 
     let total = sample.chars().count() as f64;
     if total < 10.0 {

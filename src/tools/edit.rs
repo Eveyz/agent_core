@@ -27,9 +27,15 @@ impl Tool for EditTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String> {
-        let file_path = args["file_path"].as_str().ok_or_else(|| anyhow::anyhow!("missing 'file_path'"))?;
-        let old_string = args["old_string"].as_str().ok_or_else(|| anyhow::anyhow!("missing 'old_string'"))?;
-        let new_string = args["new_string"].as_str().ok_or_else(|| anyhow::anyhow!("missing 'new_string'"))?;
+        let file_path = args["file_path"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing 'file_path'"))?;
+        let old_string = args["old_string"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing 'old_string'"))?;
+        let new_string = args["new_string"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing 'new_string'"))?;
 
         let content = std::fs::read_to_string(file_path)
             .map_err(|e| anyhow::anyhow!("failed to read '{}': {}", file_path, e))?;
@@ -39,7 +45,11 @@ impl Tool for EditTool {
             anyhow::bail!("old_string not found in '{}'", file_path);
         }
         if count > 1 {
-            anyhow::bail!("old_string found {} times in '{}'; provide more context to make it unique", count, file_path);
+            anyhow::bail!(
+                "old_string found {} times in '{}'; provide more context to make it unique",
+                count,
+                file_path
+            );
         }
 
         let new_content = content.replacen(old_string, new_string, 1);

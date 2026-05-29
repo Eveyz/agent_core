@@ -71,17 +71,17 @@ impl SkillLoader {
                 }
 
                 let manifest_path = path.join("SKILL.md");
-                if manifest_path.exists() {
-                    if let Ok(mut manifest) = SkillManifest::from_file(&manifest_path) {
-                        if manifest.content_path.as_os_str().is_empty() {
-                            manifest.content_path = manifest_path;
-                        }
-                        if seen_names.insert(manifest.name.clone()) {
-                            self.manifests.push(LoadedSkill {
-                                manifest,
-                                source_dir: dir.clone(),
-                            });
-                        }
+                if manifest_path.exists()
+                    && let Ok(mut manifest) = SkillManifest::from_file(&manifest_path)
+                {
+                    if manifest.content_path.as_os_str().is_empty() {
+                        manifest.content_path = manifest_path;
+                    }
+                    if seen_names.insert(manifest.name.clone()) {
+                        self.manifests.push(LoadedSkill {
+                            manifest,
+                            source_dir: dir.clone(),
+                        });
                     }
                 }
             }
@@ -102,7 +102,10 @@ impl SkillLoader {
     }
 
     pub fn find_by_name(&self, name: &str) -> Option<&SkillManifest> {
-        self.manifests.iter().find(|s| s.manifest.name == name).map(|s| &s.manifest)
+        self.manifests
+            .iter()
+            .find(|s| s.manifest.name == name)
+            .map(|s| &s.manifest)
     }
 
     pub fn find_by_trigger(&self, query: &str) -> Vec<&SkillManifest> {
@@ -234,7 +237,9 @@ Test content"#,
         let mut loader = SkillLoader::with_dirs(vec![dir1.clone(), dir2.clone()]);
         loader.scan().unwrap();
 
-        let content = loader.load_content(loader.find_by_name("dup").unwrap()).unwrap();
+        let content = loader
+            .load_content(loader.find_by_name("dup").unwrap())
+            .unwrap();
         assert!(content.contains("dir1 content"));
 
         let _ = fs::remove_dir_all(&dir1);

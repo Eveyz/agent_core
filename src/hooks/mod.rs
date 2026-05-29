@@ -75,12 +75,7 @@ impl HookRegistry {
         PreToolResult::Proceed(current_input)
     }
 
-    pub fn fire_post_tool_use(
-        &self,
-        tool_name: &str,
-        input: &Value,
-        output: &str,
-    ) -> String {
+    pub fn fire_post_tool_use(&self, tool_name: &str, input: &Value, output: &str) -> String {
         let event = HookEvent::PostToolUse {
             tool_name: tool_name.to_string(),
             input: input.clone(),
@@ -150,9 +145,7 @@ impl Hook for LoggingHook {
                 eprintln!("[hook] pre_tool_use: {} input={}", tool_name, input);
             }
             HookEvent::PostToolUse {
-                tool_name,
-                output,
-                ..
+                tool_name, output, ..
             } => {
                 let preview = if output.len() > 200 {
                     let safe_end = output.floor_char_boundary(200);

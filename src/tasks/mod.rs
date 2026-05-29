@@ -29,7 +29,10 @@ fn detect_cycle(board: &TaskBoard, new_id: &str, depends_on: &[String]) -> Resul
 
     while let Some(dep_id) = stack.pop() {
         if dep_id == new_id {
-            return Err(format!("Circular dependency detected: {} -> {}", dep_id, new_id));
+            return Err(format!(
+                "Circular dependency detected: {} -> {}",
+                dep_id, new_id
+            ));
         }
         if !visited.insert(dep_id.clone()) {
             continue;
@@ -57,7 +60,10 @@ fn build_dependency_context(board: &TaskBoard, task_id: &str) -> String {
     for dep_id in &task.blocked_by {
         if let Some(dep) = board.get(dep_id) {
             let result = dep.result.as_deref().unwrap_or("(no result)");
-            ctx.push_str(&format!("--- {} ({}) ---\n{}\n\n", dep_id, dep.goal, result));
+            ctx.push_str(&format!(
+                "--- {} ({}) ---\n{}\n\n",
+                dep_id, dep.goal, result
+            ));
         }
     }
     ctx.push_str("== End dependency results ==\n");
@@ -116,7 +122,10 @@ impl Tool for TaskCreateTool {
             })
             .unwrap_or_default();
 
-        let mut board = self.board.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let mut board = self
+            .board
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
 
         if board.get(id).is_some() {
             anyhow::bail!("Task '{}' already exists", id);
@@ -195,7 +204,10 @@ impl Tool for TaskUpdateTool {
             s => anyhow::bail!("invalid status: {}", s),
         };
 
-        let mut board = self.board.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let mut board = self
+            .board
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
 
         let status_str = format!("{}", status);
         board.update(id, status, result)?;
@@ -240,7 +252,10 @@ impl Tool for TaskListTool {
     }
 
     async fn execute(&self, _args: Value) -> anyhow::Result<String> {
-        let board = self.board.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let board = self
+            .board
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
         Ok(board.summary())
     }
 }
@@ -279,7 +294,10 @@ impl Tool for TaskGetTool {
         let id = args["id"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
-        let board = self.board.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let board = self
+            .board
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
         let task = board
             .get(id)
             .ok_or_else(|| anyhow::anyhow!("task '{}' not found", id))?;
@@ -324,7 +342,10 @@ impl Tool for TaskPlanTool {
     }
 
     async fn execute(&self, _args: Value) -> anyhow::Result<String> {
-        let board = self.board.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let board = self
+            .board
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
         let tasks = board.all_tasks();
 
         if tasks.is_empty() {
@@ -414,7 +435,10 @@ impl Tool for TaskReadyTool {
     }
 
     async fn execute(&self, _args: Value) -> anyhow::Result<String> {
-        let board = self.board.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let board = self
+            .board
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
         let ready = board.ready_tasks();
 
         if ready.is_empty() {
@@ -434,10 +458,7 @@ impl Tool for TaskReadyTool {
 
         let mut out = String::from("Ready to execute:\n");
         for task in &ready {
-            out.push_str(&format!(
-                "  -> {} — {}\n",
-                task.id, task.goal
-            ));
+            out.push_str(&format!("  -> {} — {}\n", task.id, task.goal));
         }
         out.push_str("\nUse task_execute <id> to run a task with a sub-agent.");
         Ok(out)
@@ -451,7 +472,10 @@ struct TaskExecuteTool {
 
 impl TaskExecuteTool {
     fn new(board: Arc<Mutex<TaskBoard>>, model_config: ModelConfig) -> Self {
-        Self { board, model_config }
+        Self {
+            board,
+            model_config,
+        }
     }
 }
 
@@ -513,7 +537,10 @@ impl Tool for TaskExecuteTool {
 
         // Check task is ready and get dependency context
         let (goal, dep_context) = {
-            let board = self.board.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let board = self
+                .board
+                .lock()
+                .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             let task = board
                 .get(id)
                 .ok_or_else(|| anyhow::anyhow!("task '{}' not found", id))?;
@@ -538,7 +565,10 @@ impl Tool for TaskExecuteTool {
 
         // Mark in-progress
         {
-            let mut board = self.board.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let mut board = self
+                .board
+                .lock()
+                .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             board.update(id, TaskStatus::InProgress, None)?;
         }
 
@@ -548,9 +578,7 @@ impl Tool for TaskExecuteTool {
         if !dep_context.is_empty() {
             task_prompt.push_str(&format!("\n{}", dep_context));
         }
-        task_prompt.push_str(&format!(
-            "\nComplete this task and return the result. When done, your output will be stored as the task result."
-        ));
+        task_prompt.push_str("\nComplete this task and return the result. When done, your output will be stored as the task result.");
 
         // Spawn subagent
         let config = SubagentConfig {
@@ -565,7 +593,10 @@ impl Tool for TaskExecuteTool {
 
         // Update task with result
         {
-            let mut board = self.board.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let mut board = self
+                .board
+                .lock()
+                .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
             if result.success {
                 board.update(id, TaskStatus::Completed, Some(result.output.clone()))?;
             } else {
@@ -583,16 +614,17 @@ impl Tool for TaskExecuteTool {
             let mut output = format!(
                 "[Task '{}'] {} ({} iterations)\n\n{}",
                 id,
-                if result.success { "completed" } else { "failed" },
+                if result.success {
+                    "completed"
+                } else {
+                    "failed"
+                },
                 result.iterations_used,
                 result.output
             );
 
             if !unblocked.is_empty() {
-                output.push_str(&format!(
-                    "\n\nUnblocked tasks: {}",
-                    unblocked.join(", ")
-                ));
+                output.push_str(&format!("\n\nUnblocked tasks: {}", unblocked.join(", ")));
             }
 
             Ok(output)

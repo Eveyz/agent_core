@@ -189,7 +189,10 @@ impl ToolRegistry {
         }
 
         let name = call.function.name.clone();
-        match tool.execute_with_stream(args, on_update, event_sender).await {
+        match tool
+            .execute_with_stream(args, on_update, event_sender)
+            .await
+        {
             Ok(output) => output,
             Err(e) => {
                 format!("Error executing tool '{}': {}", name, e)
@@ -205,12 +208,11 @@ impl ToolRegistry {
         global_mode: ToolExecutionMode,
     ) -> ToolExecutionMode {
         for call in calls {
-            if let Some(tool) = self.tools.get(&call.function.name) {
-                if let Some(mode) = tool.execution_mode() {
-                    if mode == ToolExecutionMode::Sequential {
-                        return ToolExecutionMode::Sequential;
-                    }
-                }
+            if let Some(tool) = self.tools.get(&call.function.name)
+                && let Some(mode) = tool.execution_mode()
+                && mode == ToolExecutionMode::Sequential
+            {
+                return ToolExecutionMode::Sequential;
             }
         }
         global_mode

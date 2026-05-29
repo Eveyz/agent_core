@@ -4,18 +4,9 @@ use tokio::sync::mpsc;
 
 #[derive(Debug, Clone)]
 pub enum Notification {
-    Completed {
-        task_id: String,
-        output: String,
-    },
-    Failed {
-        task_id: String,
-        error: String,
-    },
-    Progress {
-        task_id: String,
-        message: String,
-    },
+    Completed { task_id: String, output: String },
+    Failed { task_id: String, error: String },
+    Progress { task_id: String, message: String },
 }
 
 pub struct BackgroundTask {
@@ -59,8 +50,7 @@ impl BackgroundPool {
         let id = task_id.to_string();
         let tx = self.tx.clone();
 
-        self.tasks
-            .insert(id.clone(), BackgroundStatus::Running);
+        self.tasks.insert(id.clone(), BackgroundStatus::Running);
 
         tokio::spawn(async move {
             let result = f(tx.clone()).await;

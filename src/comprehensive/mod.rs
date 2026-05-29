@@ -266,43 +266,43 @@ impl ComprehensiveAgent {
         if self.has_hooks() {
             parts.push("Hooks: enabled".to_string());
         }
-        if self.has_todo() {
-            if let Some(ref todo) = self.todo_list {
-                parts.push(format!("Todo: {}", todo.summary()));
-            }
+        if self.has_todo()
+            && let Some(ref todo) = self.todo_list
+        {
+            parts.push(format!("Todo: {}", todo.summary()));
         }
-        if self.has_tasks() {
-            if let Some(ref board) = self.task_board {
-                parts.push(format!(
-                    "Tasks: {} total",
-                    board.lock().unwrap().all_tasks().len()
-                ));
-            }
+        if self.has_tasks()
+            && let Some(ref board) = self.task_board
+        {
+            parts.push(format!(
+                "Tasks: {} total",
+                board.lock().unwrap().all_tasks().len()
+            ));
         }
-        if self.has_background() {
-            if let Some(ref pool) = self.background_pool {
-                parts.push(format!("Background: {} running", pool.running_count()));
-            }
+        if self.has_background()
+            && let Some(ref pool) = self.background_pool
+        {
+            parts.push(format!("Background: {} running", pool.running_count()));
         }
-        if self.has_cron() {
-            if let Some(ref scheduler) = self.cron_scheduler {
-                parts.push(format!("Cron: {} jobs", scheduler.len()));
-            }
+        if self.has_cron()
+            && let Some(ref scheduler) = self.cron_scheduler
+        {
+            parts.push(format!("Cron: {} jobs", scheduler.len()));
         }
-        if self.has_skills() {
-            if let Some(ref loader) = self.skill_loader {
-                parts.push(format!("Skills: {} loaded", loader.list().len()));
-            }
+        if self.has_skills()
+            && let Some(ref loader) = self.skill_loader
+        {
+            parts.push(format!("Skills: {} loaded", loader.list().len()));
         }
-        if self.has_team() {
-            if let Some(ref team) = self.team {
-                parts.push(format!("Team: {} agents", team.agent_count()));
-            }
+        if self.has_team()
+            && let Some(ref team) = self.team
+        {
+            parts.push(format!("Team: {} agents", team.agent_count()));
         }
-        if self.has_worktree() {
-            if let Some(ref wt) = self.worktree_manager {
-                parts.push(format!("Worktrees: {} active", wt.list_active().len()));
-            }
+        if self.has_worktree()
+            && let Some(ref wt) = self.worktree_manager
+        {
+            parts.push(format!("Worktrees: {} active", wt.list_active().len()));
         }
 
         parts.join("\n")

@@ -133,7 +133,11 @@ impl Tool for SubagentSpawnTool {
             "[Sub-agent '{}'] ({} iterations, {})\n\n{}",
             result.subagent_id,
             result.iterations_used,
-            if result.success { "success" } else { "incomplete" },
+            if result.success {
+                "success"
+            } else {
+                "incomplete"
+            },
             result.output
         );
 

@@ -32,26 +32,20 @@ impl MessageBus {
 
     pub fn send(&self, msg: TeamMessage) {
         let mut inboxes = self.inboxes.lock().unwrap();
-        inboxes
-            .entry(msg.to.clone())
-            .or_default()
-            .push(msg);
+        inboxes.entry(msg.to.clone()).or_default().push(msg);
     }
 
     pub fn receive(&self, agent_id: &str) -> Vec<TeamMessage> {
         let mut inboxes = self.inboxes.lock().unwrap();
         inboxes
             .get_mut(agent_id)
-            .map(|inbox| inbox.drain(..).collect())
+            .map(std::mem::take)
             .unwrap_or_default()
     }
 
     pub fn peek(&self, agent_id: &str) -> Vec<TeamMessage> {
         let inboxes = self.inboxes.lock().unwrap();
-        inboxes
-            .get(agent_id)
-            .cloned()
-            .unwrap_or_default()
+        inboxes.get(agent_id).cloned().unwrap_or_default()
     }
 
     pub fn message_count(&self, agent_id: &str) -> usize {

@@ -84,15 +84,11 @@ pub enum StreamEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum ToolExecutionMode {
     Sequential,
+    #[default]
     Parallel,
-}
-
-impl Default for ToolExecutionMode {
-    fn default() -> Self {
-        Self::Parallel
-    }
 }
 
 // ── Rich Agent Events ───────────────────────────────────────────────
@@ -404,7 +400,7 @@ mod tests {
 
     #[test]
     fn test_subagent_events() {
-        let events = vec![
+        let events = [
             AgentEvent::SubagentStart {
                 subagent_id: "researcher".to_string(),
                 task: "analyze codebase".to_string(),

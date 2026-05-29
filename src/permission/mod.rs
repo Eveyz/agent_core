@@ -101,18 +101,14 @@ impl PermissionPolicy {
             if rule.matches(tool_name, tool_input) {
                 return match rule.level {
                     ApprovalLevel::Allow => PermissionDecision::Allow,
-                    ApprovalLevel::Ask => {
-                        PermissionDecision::Ask(format!(
-                            "Tool '{}' matched rule requiring approval",
-                            tool_name
-                        ))
-                    }
-                    ApprovalLevel::Deny => {
-                        PermissionDecision::Deny(format!(
-                            "Tool '{}' is denied by policy",
-                            tool_name
-                        ))
-                    }
+                    ApprovalLevel::Ask => PermissionDecision::Ask(format!(
+                        "Tool '{}' matched rule requiring approval",
+                        tool_name
+                    )),
+                    ApprovalLevel::Deny => PermissionDecision::Deny(format!(
+                        "Tool '{}' is denied by policy",
+                        tool_name
+                    )),
                 };
             }
         }
@@ -126,9 +122,7 @@ impl PermissionPolicy {
         }
 
         let path = Path::new(path);
-        let canonical = path
-            .canonicalize()
-            .unwrap_or_else(|_| path.to_path_buf());
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
         for sandbox in &self.sandbox_paths {
             if canonical.starts_with(sandbox) {
@@ -213,8 +207,8 @@ mod tests {
 
     #[test]
     fn test_sandbox_path() {
-        let policy = PermissionPolicy::new()
-            .with_sandbox_paths(vec![PathBuf::from("/tmp/sandbox")]);
+        let policy =
+            PermissionPolicy::new().with_sandbox_paths(vec![PathBuf::from("/tmp/sandbox")]);
 
         assert!(policy.check_path("/etc/passwd").is_err());
         assert!(policy.check_path("/home/user/file.txt").is_err());

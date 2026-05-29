@@ -68,12 +68,7 @@ impl AgentTeam {
     }
 }
 
-pub fn create_request(
-    from: &str,
-    to: &str,
-    content: &str,
-    msg_id: &str,
-) -> TeamMessage {
+pub fn create_request(from: &str, to: &str, content: &str, msg_id: &str) -> TeamMessage {
     TeamMessage {
         id: msg_id.to_string(),
         from: from.to_string(),
@@ -84,12 +79,7 @@ pub fn create_request(
     }
 }
 
-pub fn create_reply(
-    from: &str,
-    to: &str,
-    content: &str,
-    msg_id: &str,
-) -> TeamMessage {
+pub fn create_reply(from: &str, to: &str, content: &str, msg_id: &str) -> TeamMessage {
     TeamMessage {
         id: msg_id.to_string(),
         from: from.to_string(),

@@ -100,9 +100,7 @@ impl Subagent {
                 .chat_completion_stream(&messages, &tools)
                 .await?;
 
-            let (text, tool_calls) = self
-                .collect_stream(stream, event_sender.as_ref())
-                .await?;
+            let (text, tool_calls) = self.collect_stream(stream, event_sender.as_ref()).await?;
 
             if tool_calls.is_empty() {
                 // Emit SubagentEnd

@@ -19,8 +19,7 @@ use crate::types::{
 };
 
 /// Callback type for transform_context: receives messages, returns transformed messages.
-pub type TransformContextFn =
-    Box<dyn Fn(Vec<Message>) -> Vec<Message> + Send + Sync>;
+pub type TransformContextFn = Box<dyn Fn(Vec<Message>) -> Vec<Message> + Send + Sync>;
 
 pub struct AgentBuilder {
     config: Config,
@@ -121,11 +120,8 @@ impl AgentBuilder {
                 )?;
                 Some(Arc::new(Mutex::new(m)))
             } else {
-                let m = MemoryManager::new(
-                    "~/.agent_core/memory.db",
-                    "BAAI/bge-small-en-v1.5",
-                    2000,
-                )?;
+                let m =
+                    MemoryManager::new("~/.agent_core/memory.db", "BAAI/bge-small-en-v1.5", 2000)?;
                 Some(Arc::new(Mutex::new(m)))
             }
         } else {
@@ -144,12 +140,12 @@ impl AgentBuilder {
 
         let mut context = Context::new(&system_prompt, model_config.max_context_tokens);
 
-        if let Some(ref mem) = memory {
-            if let Ok(m) = mem.lock() {
-                let core_memory_str = m.core().to_context_string();
-                if !core_memory_str.is_empty() {
-                    context.set_core_memory(&core_memory_str);
-                }
+        if let Some(ref mem) = memory
+            && let Ok(m) = mem.lock()
+        {
+            let core_memory_str = m.core().to_context_string();
+            if !core_memory_str.is_empty() {
+                context.set_core_memory(&core_memory_str);
             }
         }
 
@@ -203,10 +199,10 @@ impl Agent {
     ) -> Result<String> {
         self.context.add(Message::user(input));
 
-        if let Some(ref mem) = self.memory {
-            if let Ok(m) = mem.lock() {
-                let _ = m.store_conversation("user", input);
-            }
+        if let Some(ref mem) = self.memory
+            && let Ok(m) = mem.lock()
+        {
+            let _ = m.store_conversation("user", input);
         }
 
         on_event(AgentEvent::AgentStart);
@@ -388,8 +384,7 @@ impl Agent {
         let mut results = vec![String::new(); calls.len()];
 
         for (i, call) in calls.iter().enumerate() {
-            let args: Value =
-                serde_json::from_str(&call.function.arguments).unwrap_or_default();
+            let args: Value = serde_json::from_str(&call.function.arguments).unwrap_or_default();
 
             // Permission check
             match self
@@ -411,7 +406,10 @@ impl Agent {
             }
 
             // Pre-tool hook
-            match self.hook_registry.fire_pre_tool_use(&call.function.name, &args) {
+            match self
+                .hook_registry
+                .fire_pre_tool_use(&call.function.name, &args)
+            {
                 PreToolResult::Veto(reason) => {
                     results[i] = format!("Hook vetoed: {}", reason);
                     continue;
@@ -513,10 +511,10 @@ impl Agent {
         let updates_clone = updates.clone();
         let abort_clone = abort.clone();
         let on_update: ToolUpdateFn = Arc::new(move |partial: &str| {
-            if !abort_clone.load(Ordering::Relaxed) {
-                if let Ok(mut buf) = updates_clone.lock() {
-                    buf.push(partial.to_string());
-                }
+            if !abort_clone.load(Ordering::Relaxed)
+                && let Ok(mut buf) = updates_clone.lock()
+            {
+                buf.push(partial.to_string());
             }
         });
 
@@ -602,11 +600,11 @@ impl Agent {
     }
 
     fn refresh_core_memory_in_context(&mut self) {
-        if let Some(ref mem) = self.memory {
-            if let Ok(m) = mem.lock() {
-                let core_str = m.core().to_context_string();
-                self.context.set_core_memory(&core_str);
-            }
+        if let Some(ref mem) = self.memory
+            && let Ok(m) = mem.lock()
+        {
+            let core_str = m.core().to_context_string();
+            self.context.set_core_memory(&core_str);
         }
     }
 
@@ -732,10 +730,10 @@ impl Agent {
 
     pub fn clear_context(&mut self) {
         self.context.clear();
-        if let Some(ref mem) = self.memory {
-            if let Ok(mut m) = mem.lock() {
-                m.new_session();
-            }
+        if let Some(ref mem) = self.memory
+            && let Ok(mut m) = mem.lock()
+        {
+            m.new_session();
         }
     }
 
@@ -784,13 +782,15 @@ impl Agent {
     }
 }
 
-fn build_iteration_limit_summary(context: &crate::context::Context, max_iterations: usize) -> String {
+fn build_iteration_limit_summary(
+    context: &crate::context::Context,
+    max_iterations: usize,
+) -> String {
     let messages = context.messages();
 
     let user_request = messages
         .iter()
-        .filter(|m| m.role == crate::types::Role::User)
-        .last()
+        .rfind(|m| m.role == crate::types::Role::User)
         .map(|m| m.content.as_deref().unwrap_or(""))
         .unwrap_or("your request");
 
@@ -799,22 +799,22 @@ fn build_iteration_limit_summary(context: &crate::context::Context, max_iteratio
     let mut total_tool_calls = 0;
 
     for msg in &messages {
-        if msg.role == crate::types::Role::Assistant {
-            if let Some(ref calls) = msg.tool_calls {
-                for call in calls {
-                    *tool_counts.entry(&call.function.name).or_insert(0) += 1;
-                    total_tool_calls += 1;
-                }
+        if msg.role == crate::types::Role::Assistant
+            && let Some(ref calls) = msg.tool_calls
+        {
+            for call in calls {
+                *tool_counts.entry(&call.function.name).or_insert(0) += 1;
+                total_tool_calls += 1;
             }
         }
-        if msg.role == crate::types::Role::Tool {
-            if let Some(ref content) = msg.content {
-                let trimmed = content.trim();
-                if trimmed.starts_with("Error") || trimmed.starts_with("Failed to fetch") {
-                    if let Some(ref name) = msg.name {
-                        tool_errors.push(name);
-                    }
-                }
+        if msg.role == crate::types::Role::Tool
+            && let Some(ref content) = msg.content
+        {
+            let trimmed = content.trim();
+            if (trimmed.starts_with("Error") || trimmed.starts_with("Failed to fetch"))
+                && let Some(ref name) = msg.name
+            {
+                tool_errors.push(name);
             }
         }
     }

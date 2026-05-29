@@ -87,11 +87,16 @@ impl Tool for SkillLoadTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String> {
-        let name = args["name"].as_str().ok_or_else(|| anyhow::anyhow!("missing 'name'"))?;
+        let name = args["name"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing 'name'"))?;
         let loader = self.loader.lock().unwrap();
         match loader.load_skill_context(name)? {
             Some(content) => Ok(content),
-            None => Ok(format!("Skill '{}' not found. Use skill_list to see available skills.", name)),
+            None => Ok(format!(
+                "Skill '{}' not found. Use skill_list to see available skills.",
+                name
+            )),
         }
     }
 }

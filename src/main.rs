@@ -1,26 +1,67 @@
 use agent_core::{
-    AgentBuilder, AgentEvent, Message, MessageDelta, PermissionPolicy, TodoItem,
-    TodoList, TodoStatus, TaskBoard, TaskStatus, ToolExecutionMode, SkillLoader,
-    hooks::LoggingHook,
-    tools, tasks,
+    AgentBuilder, AgentEvent, Message, MessageDelta, PermissionPolicy, SkillLoader, TaskBoard,
+    TaskStatus, TodoItem, TodoList, TodoStatus, ToolExecutionMode, hooks::LoggingHook, tasks,
+    tools,
 };
 use std::cell::Cell;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
+// ── Terminal styling ───────────────────────────────────────────────
+
+fn dim(use_styles: bool) -> &'static str {
+    if use_styles { "\x1b[2m" } else { "" }
+}
+fn bold(use_styles: bool) -> &'static str {
+    if use_styles { "\x1b[1m" } else { "" }
+}
+fn cyan(use_styles: bool) -> &'static str {
+    if use_styles { "\x1b[36m" } else { "" }
+}
+fn yellow(use_styles: bool) -> &'static str {
+    if use_styles { "\x1b[33m" } else { "" }
+}
+fn green(use_styles: bool) -> &'static str {
+    if use_styles { "\x1b[32m" } else { "" }
+}
+fn red(use_styles: bool) -> &'static str {
+    if use_styles { "\x1b[31m" } else { "" }
+}
+#[allow(dead_code)]
+ fn blue(use_styles: bool) -> &'static str {
+    if use_styles { "\x1b[34m" } else { "" }
+}
+#[allow(dead_code)]
+ fn magenta(use_styles: bool) -> &'static str {
+    if use_styles { "\x1b[35m" } else { "" }
+}
+fn reset(use_styles: bool) -> &'static str {
+    if use_styles { "\x1b[0m" } else { "" }
+}
+
+fn truncate(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        let end = s.floor_char_boundary(max_len);
+        format!("{}...", &s[..end])
+    }
+}
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let mut builder = match AgentBuilder::from_config("config.toml") {
-        Ok(b) => b,
+     let mut builder = match AgentBuilder::from_config("config.toml") {
+         Ok(b) => b,
         Err(e) => {
             eprintln!("config.toml: {e}");
             eprintln!("Falling back to OPENAI_API_KEY environment variable...");
             AgentBuilder::from_env()?
         }
-    };
+     };
 
-    println!("=== Agent Core CLI ===\n");
+    // Detect whether stdout is a terminal for styled output
+    let use_styles = std::io::stdout().is_terminal();
+     println!("=== Agent Core CLI ===\n");
 
     // Memory
     print!("Enable memory system? (y/N): ");
@@ -106,7 +147,11 @@ async fn main() -> anyhow::Result<()> {
     );
     println!(
         "Permission:  {}",
-        if enable_permission { "enabled" } else { "disabled" }
+        if enable_permission {
+            "enabled"
+        } else {
+            "disabled"
+        }
     );
     println!(
         "Hooks:       {}",
@@ -168,7 +213,11 @@ async fn main() -> anyhow::Result<()> {
                 println!("=== Permission Policy ===");
                 println!(
                     "Permission system: {}",
-                    if enable_permission { "active" } else { "disabled" }
+                    if enable_permission {
+                        "active"
+                    } else {
+                        "disabled"
+                    }
                 );
                 println!("Rules are checked before each tool execution.");
                 println!("Use /perm test <tool> <input> to check a specific call.");
@@ -204,7 +253,8 @@ async fn main() -> anyhow::Result<()> {
                 } else {
                     println!("=== Available Skills ===");
                     for (skill, source) in &skills {
-                        let preview: String = skill.description
+                        let preview: String = skill
+                            .description
                             .split_whitespace()
                             .take(50)
                             .collect::<Vec<_>>()
@@ -303,7 +353,9 @@ async fn main() -> anyhow::Result<()> {
             cmd if cmd.starts_with("/follow-up ") => {
                 let msg = cmd.strip_prefix("/follow-up ").unwrap().trim();
                 agent.follow_up(Message::user(msg));
-                println!("Follow-up message queued. It will be processed after the agent finishes.");
+                println!(
+                    "Follow-up message queued. It will be processed after the agent finishes."
+                );
             }
             cmd if cmd.starts_with("/todo ") => {
                 handle_todo_cmd(cmd, &todo_list);
@@ -341,7 +393,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             _ => {
-                run_agent(&mut agent, input).await;
+                run_agent(&mut agent, input, use_styles).await;
             }
         }
     }
@@ -473,10 +525,7 @@ fn print_status(
         if enable_permission { "on" } else { "off" }
     );
     println!("Hooks:       {}", if enable_hooks { "on" } else { "off" });
-    println!(
-        "Tools:       {}",
-        agent.tool_registry().list_names().len()
-    );
+    println!("Tools:       {}", agent.tool_registry().list_names().len());
     {
         let list = todo_list.lock().unwrap();
         println!("Todo:        {}", list.summary());
@@ -491,16 +540,24 @@ fn print_status(
     }
 }
 
-async fn run_agent(agent: &mut agent_core::Agent, input: &str) {
-    print!("\rThinking...");
+async fn run_agent(agent: &mut agent_core::Agent, input: &str, use_styles: bool) {
+    print!(
+        "\r  {}{}...{}{}",
+        dim(use_styles),
+        bold(use_styles),
+        reset(use_styles),
+        reset(use_styles)
+    );
     io::stdout().flush().ok();
 
-    let first_event = Cell::new(true);
-    let in_thinking = Cell::new(false);
-    match agent
+     let first_event = Cell::new(true);
+     let in_thinking = Cell::new(false);
+     let in_agent_text = Cell::new(false);
+    let skin = termimad::MadSkin::default();
+     match agent
         .run_with_events(input, |event| {
             if first_event.get() {
-                print!("\r                              \r");
+                print!("\r                                    \r");
                 io::stdout().flush().ok();
                 first_event.set(false);
             }
@@ -508,40 +565,61 @@ async fn run_agent(agent: &mut agent_core::Agent, input: &str) {
                 AgentEvent::AgentStart => {}
                 AgentEvent::AgentEnd { .. } => {}
                 AgentEvent::TurnStart { turn_index } => {
+                    in_thinking.set(false);
+                    in_agent_text.set(false);
                     if turn_index > 0 {
-                        println!("\n  --- Turn {turn_index} ---");
+                        println!();
+                        println!("  {}{}-- Turn {turn_index} --{}", bold(use_styles), reset(use_styles), reset(use_styles));
                     }
                 }
-                AgentEvent::TurnEnd { .. } => {}
+                AgentEvent::TurnEnd { .. } => {
+                    in_thinking.set(false);
+                    in_agent_text.set(false);
+                }
                 AgentEvent::MessageStart { .. } => {}
                 AgentEvent::MessageUpdate { delta } => match delta {
                     MessageDelta::Thinking(t) => {
+                        if in_agent_text.get() {
+                            println!();
+                            in_agent_text.set(false);
+                        }
                         if !in_thinking.get() {
-                            print!("\nThinking: ");
+                            print!("\n  {}{}...{}{} ", bold(use_styles), yellow(use_styles), dim(use_styles), reset(use_styles));
                             in_thinking.set(true);
                         }
-                        print!("{t}");
+                        print!("{}{}{}", dim(use_styles), t, reset(use_styles));
                         io::stdout().flush().ok();
                     }
                     MessageDelta::Text(t) => {
                         if in_thinking.get() {
-                            println!();
+                            println!("{}", reset(use_styles));
                             in_thinking.set(false);
                         }
-                        print!("{t}");
+                        if !in_agent_text.get() {
+                            print!("  {}{}>> {}{}", bold(use_styles), green(use_styles), reset(use_styles), reset(use_styles));
+                            in_agent_text.set(true);
+                        }
+                        if use_styles {
+                            skin.print_inline(&t);
+                        } else {
+                            print!("{t}");
+                        }
                         io::stdout().flush().ok();
                     }
                 },
                 AgentEvent::MessageEnd { message } => {
                     if in_thinking.get() {
-                        println!();
+                        println!("{}", reset(use_styles));
                         in_thinking.set(false);
                     }
-                    // If the assistant message has tool calls, print them
                     if let Some(ref tool_calls) = message.tool_calls {
+                        if in_agent_text.get() {
+                            println!();
+                            in_agent_text.set(false);
+                        }
                         for tc in tool_calls {
-                            print!("\n  [{}]", tc.function.name);
-                            io::stdout().flush().ok();
+                            let args_str = tc.function.arguments.clone();
+                            println!("  {}{}@@ {}{}{}({}{}{}){}{}", bold(use_styles), cyan(use_styles), reset(use_styles), bold(use_styles), tc.function.name, reset(use_styles), dim(use_styles), truncate(&args_str, 80), reset(use_styles), reset(use_styles));
                         }
                     }
                 }
@@ -549,20 +627,18 @@ async fn run_agent(agent: &mut agent_core::Agent, input: &str) {
                     tool_name, args, ..
                 } => {
                     if in_thinking.get() {
-                        println!();
+                        println!("{}", reset(use_styles));
                         in_thinking.set(false);
                     }
+                    if in_agent_text.get() {
+                        println!();
+                        in_agent_text.set(false);
+                    }
                     if tool_name.starts_with("[APPROVAL") {
-                        print!("\n  {tool_name}");
+                        println!("  {}{}!! {}{}{}", bold(use_styles), red(use_styles), reset(use_styles), tool_name, reset(use_styles));
                     } else {
-                let args_str = args.to_string();
-                        let args_preview = if args_str.len() > 80 {
-                            let end = args_str.floor_char_boundary(80);
-                            format!("{}...", &args_str[..end])
-                        } else {
-                            args_str
-                        };
-                        print!("\n  [{tool_name}] ({args_preview})");
+                        let args_str = args.to_string();
+                        println!("  {}{}@@ {}{}{}({}{}{}){}{}", bold(use_styles), cyan(use_styles), reset(use_styles), bold(use_styles), tool_name, reset(use_styles), dim(use_styles), truncate(&args_str, 80), reset(use_styles), reset(use_styles));
                     }
                     io::stdout().flush().ok();
                 }
@@ -571,13 +647,7 @@ async fn run_agent(agent: &mut agent_core::Agent, input: &str) {
                     partial_result,
                     ..
                 } => {
-                    let preview = if partial_result.len() > 80 {
-                        let end = partial_result.floor_char_boundary(80);
-                        format!("{}...", &partial_result[..end])
-                    } else {
-                        partial_result
-                    };
-                    print!("\n  [{tool_name}] >> {preview}");
+                    println!("     {}{}.. {}{}{} {}{}{}{}", dim(use_styles), cyan(use_styles), reset(use_styles), bold(use_styles), tool_name, reset(use_styles), dim(use_styles), truncate(&partial_result, 80), reset(use_styles));
                     io::stdout().flush().ok();
                 }
                 AgentEvent::ToolExecutionEnd {
@@ -587,85 +657,64 @@ async fn run_agent(agent: &mut agent_core::Agent, input: &str) {
                     ..
                 } => {
                     if is_error {
-                        let preview = if result.len() > 120 {
-                            let end = result.floor_char_boundary(120);
-                            format!("{}...", &result[..end])
-                        } else {
-                            result
-                        };
-                        print!("\n  [{tool_name}] ERROR: {preview}");
+                        println!("     {}{}XX {}{}{} {}{}{}{}", bold(use_styles), red(use_styles), reset(use_styles), bold(use_styles), tool_name, reset(use_styles), red(use_styles), truncate(&result, 120), reset(use_styles));
                     } else {
-                        let preview = if result.len() > 120 {
-                            let end = result.floor_char_boundary(120);
-                            format!("{}...", &result[..end])
-                        } else {
-                            result
-                        };
-                        print!("\n  [{tool_name}] -> {preview}");
+                        println!("     {}{}>> {}{}{} {}{}{}{}", bold(use_styles), green(use_styles), reset(use_styles), bold(use_styles), tool_name, reset(use_styles), dim(use_styles), truncate(&result, 120), reset(use_styles));
                     }
                     io::stdout().flush().ok();
                 }
-                AgentEvent::Error(e) => eprintln!("\n  Error: {e}"),
+                AgentEvent::Error(e) => {
+                    eprintln!("  {}{}XX {}{}{}{}", bold(use_styles), red(use_styles), reset(use_styles), bold(use_styles), e, reset(use_styles));
+                }
 
-                // ── Subagent events ───────────────────────────────────
+                // -- Subagent events --
                 AgentEvent::SubagentStart { subagent_id, task } => {
-                    let task_preview = if task.len() > 80 {
-                        let end = task.floor_char_boundary(80);
-                        format!("{}...", &task[..end])
-                    } else {
-                        task
-                    };
-                    println!("\n  ┌─ Sub-agent '{subagent_id}' spawned: {task_preview}");
+                    println!();
+                    println!("  {}{}|-{} Sub-agent {}{}'{subagent_id}'{}: {}{}{}", bold(use_styles), yellow(use_styles), reset(use_styles), bold(use_styles), yellow(use_styles), reset(use_styles), dim(use_styles), truncate(&task, 60), reset(use_styles));
                 }
                 AgentEvent::SubagentTurnStart {
-                    subagent_id,
+                    subagent_id: _,
                     turn_index,
                 } => {
-                    println!("  │  ── Turn {turn_index} [{subagent_id}] ──");
+                    println!("  {}{}|{}  {}{}-- Turn {turn_index} --{}", bold(use_styles), yellow(use_styles), reset(use_styles), dim(use_styles), reset(use_styles), reset(use_styles));
                 }
-                AgentEvent::SubagentMessageUpdate { subagent_id, delta } => {
+                AgentEvent::SubagentMessageUpdate { subagent_id: _, delta } => {
                     match delta {
                         MessageDelta::Thinking(t) => {
-                            print!("  │  [{subagent_id}] Thinking: {t}");
+                            print!("  {}{}|{}  {}{}... {}{}{}", bold(use_styles), yellow(use_styles), reset(use_styles), dim(use_styles), reset(use_styles), dim(use_styles), t, reset(use_styles));
                         }
                         MessageDelta::Text(t) => {
-                            print!("  │  [{subagent_id}] {t}");
+                            print!("  {}{}|{}  {}{}>> {}", bold(use_styles), yellow(use_styles), reset(use_styles), green(use_styles), reset(use_styles), reset(use_styles));
+                            if use_styles {
+                                skin.print_inline(&t);
+                            } else {
+                                print!("{t}");
+                            }
                         }
                     }
                     io::stdout().flush().ok();
                 }
                 AgentEvent::SubagentToolStart {
-                    subagent_id,
+                    subagent_id: _,
                     tool_name,
                     args,
                     ..
                 } => {
                     let args_str = args.to_string();
-                    let args_preview = if args_str.len() > 60 {
-                        let end = args_str.floor_char_boundary(60);
-                        format!("{}...", &args_str[..end])
-                    } else {
-                        args_str
-                    };
-                    println!("  │  [{subagent_id}] [{tool_name}] ({args_preview})");
+                    println!("  {}{}|{}  {}{}@@ {}{}{}({}{}{}){}{}", bold(use_styles), yellow(use_styles), reset(use_styles), bold(use_styles), cyan(use_styles), reset(use_styles), bold(use_styles), tool_name, reset(use_styles), dim(use_styles), truncate(&args_str, 60), reset(use_styles), reset(use_styles));
                 }
                 AgentEvent::SubagentToolEnd {
-                    subagent_id,
+                    subagent_id: _,
                     tool_name,
                     result,
                     is_error,
                     ..
                 } => {
-                    let preview = if result.len() > 100 {
-                        let end = result.floor_char_boundary(100);
-                        format!("{}...", &result[..end])
-                    } else {
-                        result
-                    };
+                    let preview = truncate(&result, 100);
                     if is_error {
-                        println!("  │  [{subagent_id}] [{tool_name}] ERROR: {preview}");
+                        println!("  {}{}|{}{}  {}{}XX {}{}{} {}{}{}{}", bold(use_styles), yellow(use_styles), reset(use_styles), reset(use_styles), bold(use_styles), red(use_styles), reset(use_styles), bold(use_styles), tool_name, reset(use_styles), red(use_styles), preview, reset(use_styles));
                     } else {
-                        println!("  │  [{subagent_id}] [{tool_name}] -> {preview}");
+                        println!("  {}{}|{}{}  {}{}>> {}{}{} {}{}{}{}", bold(use_styles), yellow(use_styles), reset(use_styles), reset(use_styles), bold(use_styles), green(use_styles), reset(use_styles), bold(use_styles), tool_name, reset(use_styles), dim(use_styles), preview, reset(use_styles));
                     }
                 }
                 AgentEvent::SubagentEnd {
@@ -673,23 +722,26 @@ async fn run_agent(agent: &mut agent_core::Agent, input: &str) {
                     success,
                     iterations_used,
                 } => {
-                    let status = if success { "done" } else { "incomplete" };
-                    println!(
-                        "  └─ Sub-agent '{subagent_id}' finished: {status} ({iterations_used} iterations)"
-                    );
+                    let (_status, icon, color): (&str, &str, fn(bool) -> &'static str) = if success {
+                        ("done", "ok", green as fn(bool) -> &'static str)
+                    } else {
+                        ("incomplete", "err", red as fn(bool) -> &'static str)
+                    };
+                    println!("  {}{}|-{} Sub-agent {}{}'{subagent_id}'{}{}: {}{} {}{}({iterations_used} iterations){}{}", bold(use_styles), yellow(use_styles), reset(use_styles), bold(use_styles), yellow(use_styles), reset(use_styles), color(use_styles), bold(use_styles), icon, reset(use_styles), dim(use_styles), reset(use_styles), reset(use_styles));
                 }
             }
         })
         .await
     {
-        Ok(answer) => {
-            println!("\n\n{answer}");
+        Ok(_answer) => {
+            println!();
         }
         Err(e) => {
-            eprintln!("\n  Error: {e}");
+            eprintln!("\n  {}{}XX {}{}{}{}", bold(use_styles), red(use_styles), reset(use_styles), bold(use_styles), e, reset(use_styles));
         }
     }
 }
+
 
 fn print_help() {
     println!(

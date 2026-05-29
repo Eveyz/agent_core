@@ -106,17 +106,16 @@ impl Context {
 
     fn snip_compact(&mut self) {
         for msg in &mut self.messages {
-            if msg.role == crate::types::Role::Tool {
-                if let Some(ref content) = msg.content {
-                    if content.len() > self.tool_result_budget {
-                        let truncated = format!(
-                            "{}\n[... truncated from {} chars]",
-                            &content[..self.tool_result_budget],
-                            content.len()
-                        );
-                        msg.content = Some(truncated);
-                    }
-                }
+            if msg.role == crate::types::Role::Tool
+                && let Some(ref content) = msg.content
+                && content.len() > self.tool_result_budget
+            {
+                let truncated = format!(
+                    "{}\n[... truncated from {} chars]",
+                    &content[..self.tool_result_budget],
+                    content.len()
+                );
+                msg.content = Some(truncated);
             }
         }
     }
@@ -149,8 +148,7 @@ impl Context {
         );
 
         self.messages.drain(..split_point);
-        self.messages
-            .insert(0, Message::system(&summary));
+        self.messages.insert(0, Message::system(&summary));
 
         Some(summary)
     }
