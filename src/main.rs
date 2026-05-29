@@ -1,8 +1,11 @@
+mod tui;
+
 use agent_core::{
     AgentBuilder, AgentEvent, Message, MessageDelta, PermissionPolicy, SkillLoader, TaskBoard,
     TaskStatus, TodoItem, TodoList, TodoStatus, ToolExecutionMode, hooks::LoggingHook, tasks,
     tools,
 };
+use argh::FromArgs;
 use std::cell::Cell;
 use std::io::{self, IsTerminal, Write};
 use std::sync::atomic::Ordering;
@@ -29,11 +32,11 @@ fn red(use_styles: bool) -> &'static str {
     if use_styles { "\x1b[31m" } else { "" }
 }
 #[allow(dead_code)]
- fn blue(use_styles: bool) -> &'static str {
+fn blue(use_styles: bool) -> &'static str {
     if use_styles { "\x1b[34m" } else { "" }
 }
 #[allow(dead_code)]
- fn magenta(use_styles: bool) -> &'static str {
+fn magenta(use_styles: bool) -> &'static str {
     if use_styles { "\x1b[35m" } else { "" }
 }
 fn reset(use_styles: bool) -> &'static str {
@@ -48,20 +51,78 @@ fn truncate(s: &str, max_len: usize) -> String {
         format!("{}...", &s[..end])
     }
 }
+/// CLI arguments for agent-cli
+#[derive(FromArgs)]
+struct Args {
+    /// launch TUI mode
+    #[argh(switch, short = 't')]
+    tui: bool,
+}
+
+async fn run_tui_mode() -> anyhow::Result<()> {
+    let builder = match AgentBuilder::from_config("config.toml") {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("config.toml: {e}, falling back to env");
+            AgentBuilder::from_env()?
+        }
+    };
+    let builder = builder
+        .with_memory(false)
+        .with_tool_execution_mode(ToolExecutionMode::Parallel);
+
+    let mut agent = builder.build()?;
+
+    // Register tools
+    let todo_list: Arc<Mutex<TodoList>> = Arc::new(Mutex::new(TodoList::new()));
+    let task_board: Arc<Mutex<TaskBoard>> = Arc::new(Mutex::new(TaskBoard::new()));
+    let mut skill_loader = SkillLoader::with_defaults();
+    let _ = skill_loader.scan();
+    let skill_loader = Arc::new(Mutex::new(skill_loader));
+
+    {
+        let model_config = agent.current_model_config().clone();
+        let reg = agent.tool_registry_mut();
+        tools::todo::register_todo_tools(reg, todo_list.clone());
+        tools::skill::register_skill_tools(reg, skill_loader.clone());
+        let task_board_clone = task_board.clone();
+        tasks::register_task_tools(reg, task_board_clone, model_config);
+    }
+    {
+        let model_config = agent.current_model_config().clone();
+        let tool_names: Vec<String> = agent
+            .tool_registry()
+            .list_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let reg = agent.tool_registry_mut();
+        tools::subagent::register_subagent_tools(reg, model_config, tool_names);
+    }
+
+    let agent = Arc::new(tokio::sync::Mutex::new(agent));
+    tui::run_tui(agent).await
+}
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-     let mut builder = match AgentBuilder::from_config("config.toml") {
-         Ok(b) => b,
+    let args: Args = argh::from_env();
+    // ── TUI mode ──────────────────────────────────────────────────
+    if args.tui {
+        return run_tui_mode().await;
+    }
+    // ── CLI mode (existing) ───────────────────────────────────────
+    let mut builder = match AgentBuilder::from_config("config.toml") {
+        Ok(b) => b,
         Err(e) => {
             eprintln!("config.toml: {e}");
             eprintln!("Falling back to OPENAI_API_KEY environment variable...");
             AgentBuilder::from_env()?
         }
-     };
+    };
 
     // Detect whether stdout is a terminal for styled output
     let use_styles = std::io::stdout().is_terminal();
-     println!("=== Agent Core CLI ===\n");
+    println!("=== Agent Core CLI ===\n");
 
     // Memory
     print!("Enable memory system? (y/N): ");
@@ -550,11 +611,11 @@ async fn run_agent(agent: &mut agent_core::Agent, input: &str, use_styles: bool)
     );
     io::stdout().flush().ok();
 
-     let first_event = Cell::new(true);
-     let in_thinking = Cell::new(false);
-     let in_agent_text = Cell::new(false);
+    let first_event = Cell::new(true);
+    let in_thinking = Cell::new(false);
+    let in_agent_text = Cell::new(false);
     let skin = termimad::MadSkin::default();
-     match agent
+    match agent
         .run_with_events(input, |event| {
             if first_event.get() {
                 print!("\r                                    \r");
@@ -741,7 +802,6 @@ async fn run_agent(agent: &mut agent_core::Agent, input: &str, use_styles: bool)
         }
     }
 }
-
 
 fn print_help() {
     println!(
