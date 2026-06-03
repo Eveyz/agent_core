@@ -437,26 +437,39 @@ fn markdown_to_lines(text: &str, width: usize) -> Vec<Line<'static>> {
             continue;
         }
 
+        // Horizontal rule
+        if trimmed == "---" {
+            lines.push(Line::from(Span::styled(format!(" {}", "─".repeat(width.saturating_sub(4))), Style::default().fg(Color::DarkGray))));
+            idx += 1; continue;
+        }
+
         // Headers
         if let Some(content) = trimmed.strip_prefix("### ") {
-            lines.push(Line::from(Span::styled(content.to_string(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD))));
+            let mut spans = parse_inline_spans(content);
+            for span in &mut spans { span.style = span.style.fg(Color::White).add_modifier(Modifier::BOLD); }
+            lines.push(Line::from(spans));
             idx += 1; continue;
         }
         if let Some(content) = trimmed.strip_prefix("## ") {
-            lines.push(Line::from(Span::styled(content.to_string(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD))));
+            let mut spans = parse_inline_spans(content);
+            for span in &mut spans { span.style = span.style.fg(Color::White).add_modifier(Modifier::BOLD); }
+            lines.push(Line::from(spans));
             idx += 1; continue;
         }
         if let Some(content) = trimmed.strip_prefix("# ") {
-            lines.push(Line::from(Span::styled(content.to_string(), Style::default().fg(TOOL_COLOR).add_modifier(Modifier::BOLD))));
+            let mut spans = parse_inline_spans(content);
+            for span in &mut spans { span.style = span.style.fg(TOOL_COLOR).add_modifier(Modifier::BOLD); }
+            lines.push(Line::from(spans));
             idx += 1; continue;
         }
 
         // Blockquotes
         if let Some(content) = trimmed.strip_prefix("> ") {
-            lines.push(Line::from(vec![
-                Span::styled("│ ", Style::default().fg(Color::DarkGray)),
-                Span::styled(content.to_string(), Style::default().fg(Color::Gray).add_modifier(Modifier::ITALIC)),
-            ]));
+            let mut spans = vec![Span::styled("│ ", Style::default().fg(Color::DarkGray))];
+            let mut inner = parse_inline_spans(content);
+            for span in &mut inner { span.style = span.style.fg(Color::Gray).add_modifier(Modifier::ITALIC); }
+            spans.extend(inner);
+            lines.push(Line::from(spans));
             idx += 1; continue;
         }
 
@@ -739,4 +752,21 @@ fn truncate_str_w(s: &str, max_width: usize) -> String {
         result.push(c);
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_inline() {
+        let spans = parse_inline_spans("🌤️ **Shenzhen**");
+        for span in &spans {
+            println!("SPAN: '{}' BOLD: {}", span.content, span.style.add_modifier.contains(Modifier::BOLD));
+        }
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].content, "🌤️ ");
+        assert_eq!(spans[1].content, "Shenzhen");
+        assert!(spans[1].style.add_modifier.contains(Modifier::BOLD));
+    }
 }
