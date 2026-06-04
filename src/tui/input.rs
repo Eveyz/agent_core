@@ -6,6 +6,10 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
     match key.code {
         // ── Quit ──────────────────────────────────────────────────
         KeyCode::Esc => {
+            if state.autocomplete.active {
+                state.autocomplete.active = false;
+                return Ok(());
+            }
             state.should_quit = true;
         }
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -16,7 +20,28 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
         }
 
         // ── Submit ────────────────────────────────────────────────
+        KeyCode::Tab => {
+            if state.autocomplete.active {
+                if state.autocomplete.selected_index < state.autocomplete.filtered_options.len() {
+                    let selected = &state.autocomplete.filtered_options[state.autocomplete.selected_index];
+                    state.input = format!("{} ", selected);
+                    state.cursor_pos = state.input.len();
+                    state.autocomplete.active = false;
+                }
+                return Ok(());
+            }
+        }
         KeyCode::Enter => {
+            if state.autocomplete.active {
+                if state.autocomplete.selected_index < state.autocomplete.filtered_options.len() {
+                    let selected = &state.autocomplete.filtered_options[state.autocomplete.selected_index];
+                    state.input = format!("{} ", selected);
+                    state.cursor_pos = state.input.len();
+                    state.autocomplete.active = false;
+                }
+                return Ok(());
+            }
+
             // Check if a subagent block is focused — toggle it
             if let Some(idx) = state.focus_index {
                 toggle_focus(state, idx);
@@ -40,6 +65,14 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
             state.scroll = state.scroll.saturating_sub(5);
         }
         KeyCode::Up => {
+            if state.autocomplete.active {
+                if state.autocomplete.selected_index > 0 {
+                    state.autocomplete.selected_index -= 1;
+                } else {
+                    state.autocomplete.selected_index = state.autocomplete.filtered_options.len().saturating_sub(1);
+                }
+                return Ok(());
+            }
             if state.focus_index.is_some() {
                 let idx = state.focus_index.unwrap();
                 if idx > 0 {
@@ -50,6 +83,14 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
             }
         }
         KeyCode::Down => {
+            if state.autocomplete.active {
+                if state.autocomplete.selected_index + 1 < state.autocomplete.filtered_options.len() {
+                    state.autocomplete.selected_index += 1;
+                } else {
+                    state.autocomplete.selected_index = 0;
+                }
+                return Ok(());
+            }
             if state.focus_index.is_some() {
                 let idx = state.focus_index.unwrap();
                 state.focus_index = Some(idx + 1);
@@ -62,17 +103,20 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
         KeyCode::Char(c) => {
             state.input.insert(state.cursor_pos, c);
             state.cursor_pos += c.len_utf8();
+            state.update_autocomplete();
         }
         KeyCode::Backspace => {
             if state.cursor_pos > 0 {
                 state.cursor_pos = prev_char_boundary(&state.input, state.cursor_pos);
                 state.input.remove(state.cursor_pos);
+                state.update_autocomplete();
             }
         }
         KeyCode::Delete => {
             if state.cursor_pos < state.input.len() {
                 let next = next_char_boundary(&state.input, state.cursor_pos);
                 state.input.replace_range(state.cursor_pos..next, "");
+                state.update_autocomplete();
             }
         }
         KeyCode::Left => {

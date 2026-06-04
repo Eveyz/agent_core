@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, BorderType, Paragraph, Wrap},
+    widgets::{Block, Borders, BorderType, Clear, List, ListItem, Paragraph, Wrap},
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -31,6 +31,7 @@ pub fn render(frame: &mut Frame, state: &AppState) {
     render_status(frame, state, status_area);
     render_conversation(frame, state, main_area);
     render_input(frame, state, input_area);
+    render_autocomplete(frame, state, input_area);
 }
 
 // ── Status bar ──────────────────────────────────────────────────────
@@ -89,6 +90,61 @@ fn render_input(frame: &mut Frame, state: &AppState, area: Rect) {
     frame.set_cursor_position((area.x + cursor_x, area.y + 1));
 }
 
+// ── Autocomplete ────────────────────────────────────────────────────
+
+fn render_autocomplete(frame: &mut Frame, state: &AppState, input_area: Rect) {
+    if !state.autocomplete.active || state.autocomplete.filtered_options.is_empty() {
+        return;
+    }
+
+    let max_height = 10;
+    let total_options = state.autocomplete.filtered_options.len();
+    
+    let start = if total_options > (max_height - 2) {
+        state.autocomplete.selected_index.saturating_sub(max_height - 3).min(total_options.saturating_sub(max_height - 2))
+    } else {
+        0
+    };
+    let end = (start + max_height - 2).min(total_options);
+
+    let display_options = &state.autocomplete.filtered_options[start..end];
+
+    let items: Vec<ListItem> = display_options
+        .iter()
+        .enumerate()
+        .map(|(i, opt)| {
+            let actual_idx = start + i;
+            let style = if actual_idx == state.autocomplete.selected_index {
+                Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(Span::styled(format!(" {} ", opt), style))
+        })
+        .collect();
+
+    let height = items.len() as u16 + 2; // +2 for borders
+    let height = height.min(max_height as u16);
+
+    // Calculate Rect above the input area
+    let x = input_area.x;
+    let y = input_area.y.saturating_sub(height);
+    let width = 30.min(input_area.width);
+    
+    let area = Rect::new(x, y, width, height);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title(" Commands ");
+
+    let list = List::new(items).block(block);
+
+    frame.render_widget(Clear, area);
+    frame.render_widget(list, area);
+}
+
 // ── Conversation ────────────────────────────────────────────────────
 
 fn render_conversation(frame: &mut Frame, state: &AppState, area: Rect) {
@@ -137,6 +193,12 @@ fn wrapped_line_count(text: &Text<'_>, width: u16) -> usize {
 
 fn render_entry<'a>(entry: &'a Entry, lines: &mut Vec<Line<'a>>, width: usize) {
     match entry {
+        Entry::System { text } => {
+            let style = Style::default().fg(Color::Cyan);
+            for line in text.lines() {
+                lines.push(Line::from(vec![Span::styled(line, style)]));
+            }
+        }
         Entry::User { text } => {
             render_user_block(text, lines, width);
         }

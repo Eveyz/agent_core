@@ -34,6 +34,33 @@ impl EventPump {
 
 // ── App state ───────────────────────────────────────────────────────
 
+pub struct AutocompleteState {
+    pub options: Vec<String>,
+    pub filtered_options: Vec<String>,
+    pub selected_index: usize,
+    pub active: bool,
+}
+
+impl AutocompleteState {
+    pub fn new() -> Self {
+        let options = vec![
+            "/quit".into(), "/exit".into(), "/help".into(), "/models".into(),
+            "/clear".into(), "/memory".into(), "/tokens".into(), "/permission".into(),
+            "/perm".into(), "/hooks".into(), "/todo".into(), "/tasks".into(),
+            "/skills".into(), "/status".into(), "/abort".into(), "/state".into(),
+            "/tool-mode".into(), "/clear-queues".into(), "/model".into(),
+            "/temp".into(), "/max-tokens".into(), "/steer".into(), "/follow-up".into(),
+            "/skill".into()
+        ];
+        Self {
+            options,
+            filtered_options: Vec::new(),
+            selected_index: 0,
+            active: false,
+        }
+    }
+}
+
 pub struct AppState {
     pub entries: Vec<Entry>,
     pub streaming: Option<Streaming>,
@@ -46,9 +73,10 @@ pub struct AppState {
     pub tool_mode: String,
     pub focus_index: Option<usize>,
     pub should_quit: bool,
-    agent_running: bool,
+    pub agent_running: bool,
     pending_request: Option<String>,
     pending_tools: HashMap<String, PendingToolCall>,
+    pub autocomplete: AutocompleteState,
 }
 
 impl AppState {
@@ -68,6 +96,27 @@ impl AppState {
             agent_running: false,
             pending_request: None,
             pending_tools: HashMap::new(),
+            autocomplete: AutocompleteState::new(),
+        }
+    }
+
+    pub fn update_autocomplete(&mut self) {
+        if self.input.starts_with('/') {
+            self.autocomplete.active = true;
+            let filter_text = &self.input;
+            self.autocomplete.filtered_options = self.autocomplete.options
+                .iter()
+                .filter(|opt| opt.starts_with(filter_text))
+                .cloned()
+                .collect();
+            
+            if self.autocomplete.filtered_options.is_empty() {
+                self.autocomplete.active = false;
+            } else if self.autocomplete.selected_index >= self.autocomplete.filtered_options.len() {
+                self.autocomplete.selected_index = self.autocomplete.filtered_options.len().saturating_sub(1);
+            }
+        } else {
+            self.autocomplete.active = false;
         }
     }
 
@@ -372,6 +421,7 @@ impl AppState {
 #[derive(Clone)]
 #[allow(dead_code)]
 pub enum Entry {
+    System { text: String },
     User { text: String },
     Turn { turn: usize, blocks: Vec<TurnBlock> },
 }
