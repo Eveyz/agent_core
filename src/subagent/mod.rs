@@ -237,6 +237,17 @@ impl Subagent {
     pub fn id(&self) -> &str {
         &self.id
     }
+
+    /// Consume the subagent and return its conversation messages.
+    /// Useful for saving the subagent's session.
+    pub fn into_messages(self) -> Vec<Message> {
+        self.context.messages()
+    }
+
+    /// Get a reference to the subagent's context messages (non-consuming).
+    pub fn messages(&self) -> Vec<Message> {
+        self.context.messages()
+    }
 }
 
 pub struct SubagentManager {

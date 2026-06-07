@@ -10,8 +10,12 @@ use crate::config::Config;
 use crate::context::Context;
 use crate::hooks::{HookRegistry, PreToolResult};
 use crate::memory::MemoryManager;
-use crate::permission::{PermissionDecision, PermissionPolicy};
-use crate::prompt::PromptBuilder;
+use crate::permission::{
+    ApprovalChoice, ApprovalScope, PermissionDecision, PermissionPolicy, ToolPermissionPattern,
+    WhitelistEntry,
+};
+use crate::skills::SkillManager;
+use crate::prompt::{self, PromptBuilder};
 use crate::tools::{ToolRegistry, ToolUpdateFn};
 use crate::types::{
     AgentEvent, AgentState, Message, MessageDelta, StreamEvent, ToolCall, ToolExecutionMode,
@@ -30,6 +34,7 @@ pub struct AgentBuilder {
     hook_registry: Option<HookRegistry>,
     tool_execution_mode: ToolExecutionMode,
     transform_context: Option<TransformContextFn>,
+    skill_manager: Option<Arc<Mutex<SkillManager>>>,
 }
 
 impl AgentBuilder {
@@ -44,6 +49,7 @@ impl AgentBuilder {
             hook_registry: None,
             tool_execution_mode: ToolExecutionMode::Parallel,
             transform_context: None,
+            skill_manager: None,
         })
     }
 
@@ -58,6 +64,7 @@ impl AgentBuilder {
             hook_registry: None,
             tool_execution_mode: ToolExecutionMode::Parallel,
             transform_context: None,
+            skill_manager: None,
         })
     }
 
@@ -71,13 +78,28 @@ impl AgentBuilder {
         self
     }
 
-    pub fn with_memory(mut self, enable: bool) -> Self {
-        self.enable_memory = enable;
-        self
+    /// Build from an already-loaded Config (useful for tests).
+    pub fn with_config(config: Config) -> Self {
+        Self {
+            config,
+            tools: Vec::new(),
+            system_prompt: None,
+            enable_memory: false,
+            permission_policy: None,
+            hook_registry: None,
+            tool_execution_mode: ToolExecutionMode::Parallel,
+            transform_context: None,
+            skill_manager: None,
+        }
     }
 
     pub fn with_permission_policy(mut self, policy: PermissionPolicy) -> Self {
         self.permission_policy = Some(policy);
+        self
+    }
+
+    pub fn with_memory(mut self, enable: bool) -> Self {
+        self.enable_memory = enable;
         self
     }
 
@@ -96,6 +118,12 @@ impl AgentBuilder {
         f: impl Fn(Vec<Message>) -> Vec<Message> + Send + Sync + 'static,
     ) -> Self {
         self.transform_context = Some(Box::new(f));
+        self
+    }
+
+    /// Attach a SkillManager for auto-trigger and catalog management.
+    pub fn with_skill_manager(mut self, mgr: Arc<Mutex<SkillManager>>) -> Self {
+        self.skill_manager = Some(mgr);
         self
     }
 
@@ -138,18 +166,83 @@ impl AgentBuilder {
             registry.register(tool);
         }
 
-        let mut context = Context::new(&system_prompt, model_config.max_context_tokens);
+        // ── 7-segment context engine setup ──────────────────────────
+        let (identity_text, principles_text) = if self.system_prompt.is_some()
+            || model_config.system_prompt.is_some()
+        {
+            (system_prompt.clone(), prompt::DEFAULT_PRINCIPLES.to_string())
+        } else {
+            (
+                prompt::DEFAULT_IDENTITY.to_string(),
+                prompt::DEFAULT_PRINCIPLES.to_string(),
+            )
+        };
 
+        let mut context = Context::new(&identity_text, model_config.max_context_tokens);
+
+        // Segment 2: PRINCIPLES
+        let perm_mode_str = self
+            .permission_policy
+            .as_ref()
+            .map(|p| format!("{:?}", p.mode()))
+            .unwrap_or_else(|| "standard".to_string());
+        let full_principles = format!(
+            "{}\n\nPermission Mode: {} — tools may require user approval before execution.",
+            principles_text, perm_mode_str
+        );
+        context.set_principles(&full_principles);
+
+        // Segment 3: ENVIRONMENT — initial
+        let initial_env = Context::build_environment_string(
+            std::env::current_dir()
+                .ok()
+                .as_ref()
+                .and_then(|p| p.to_str()),
+            None,
+            None,
+        );
+        context.set_environment(&initial_env);
+
+        // Segment 4: TOOL CATALOG — initial
+        let tool_defs = registry.tool_definitions();
+        let danger_map = build_danger_map(
+            &tool_defs,
+            &crate::permission::PermissionPolicy::with_builtin_defaults(),
+        );
+        let tool_catalog = Context::build_tool_catalog_string(&tool_defs, &danger_map);
+        context.set_tool_catalog(&tool_catalog);
+
+        // Segment 5: ACTIVE MEMORY
         if let Some(ref mem) = memory
             && let Ok(m) = mem.lock()
         {
             let core_memory_str = m.core().to_context_string();
             if !core_memory_str.is_empty() {
-                context.set_core_memory(&core_memory_str);
+                context.set_active_memory(&core_memory_str);
+            }
+        }
+
+        // Segment 6: LOADED SKILLS — catalog of available skills
+        if let Some(ref mgr) = self.skill_manager {
+            if let Ok(mgr) = mgr.lock() {
+                let catalog = mgr.build_catalog();
+                if !catalog.is_empty() {
+                    context.set_loaded_skills(&catalog);
+                }
             }
         }
 
         let client = OpenAIClient::new(model_config);
+
+        // Build permission policy with built-in defaults if none was provided
+        let permission_policy = self.permission_policy.unwrap_or_else(|| {
+            let mut policy = PermissionPolicy::with_builtin_defaults();
+            // Apply config-level permission settings
+            policy = policy.with_config(&self.config.permissions);
+            policy
+        });
+
+        let pending_approvals = Arc::new(Mutex::new(HashMap::new()));
 
         Ok(Agent {
             config: self.config,
@@ -158,7 +251,7 @@ impl AgentBuilder {
             registry,
             context,
             memory,
-            permission_policy: self.permission_policy.unwrap_or_default(),
+            permission_policy,
             hook_registry: self.hook_registry.unwrap_or_default(),
             state: AgentState::Idle,
             tool_execution_mode: self.tool_execution_mode,
@@ -166,6 +259,8 @@ impl AgentBuilder {
             follow_up_queue: VecDeque::new(),
             abort_flag: Arc::new(AtomicBool::new(false)),
             transform_context: self.transform_context,
+            pending_approvals,
+            skill_manager: self.skill_manager,
         })
     }
 }
@@ -185,6 +280,10 @@ pub struct Agent {
     follow_up_queue: VecDeque<Message>,
     pub abort_flag: Arc<AtomicBool>,
     transform_context: Option<TransformContextFn>,
+    /// Pending approval channels: prompt_id → oneshot sender
+    pending_approvals: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<ApprovalChoice>>>>,
+    /// Skill manager for auto-trigger and catalog
+    skill_manager: Option<Arc<Mutex<SkillManager>>>,
 }
 
 impl Agent {
@@ -203,6 +302,40 @@ impl Agent {
             && let Ok(m) = mem.lock()
         {
             let _ = m.store_conversation("user", input);
+        }
+
+        // ── Skill auto-trigger ──────────────────────────────────────────
+        // Check user message against skill triggers, auto-load matching skills
+        if let Some(ref mgr) = self.skill_manager {
+            let matched: Vec<(String, String)> = {
+                let mgr = mgr.lock().unwrap();
+                let matched = mgr.check_triggers(input);
+                let mut result = Vec::new();
+                for skill in &matched {
+                    if let Ok(content) = mgr.load_content(skill) {
+                        result.push((
+                            skill.name.clone(),
+                            format!(
+                                "== Skill: {} (v{}) ==\n{}\n== End Skill: {} ==\n",
+                                skill.name, skill.version, content, skill.name
+                            ),
+                        ));
+                    }
+                }
+                result
+            };
+
+            // Inject into context
+            for (_, text) in &matched {
+                self.context.set_loaded_skills(text);
+            }
+
+            // Activate matched skills
+            if let Ok(mut mgr) = mgr.lock() {
+                for (name, _) in &matched {
+                    mgr.activate(name);
+                }
+            }
         }
 
         on_event(AgentEvent::AgentStart);
@@ -232,7 +365,13 @@ impl Agent {
 
             on_event(AgentEvent::TurnStart { turn_index });
 
+            // Refresh per-turn context segments
+            self.refresh_context_segments();
+
             self.context.trim_to_fit();
+
+            // Stage 4 LLM compaction: if still near limit, summarize old turns
+            self.maybe_llm_compact().await;
 
             // Build messages with optional transform
             let raw_messages = self.context.messages();
@@ -370,7 +509,7 @@ impl Agent {
     }
 
     async fn execute_tools_with_hooks(
-        &self,
+        &mut self,
         calls: &[ToolCall],
         on_event: &impl Fn(AgentEvent),
     ) -> Vec<String> {
@@ -386,23 +525,146 @@ impl Agent {
         for (i, call) in calls.iter().enumerate() {
             let args: Value = serde_json::from_str(&call.function.arguments).unwrap_or_default();
 
-            // Permission check
-            match self
-                .permission_policy
-                .check(&call.function.name, &call.function.arguments)
-            {
+            // Permission check — layered: Deny → Ask(with approval) → Allow
+            let decision = {
+                // Extract command/path for fine-grained matching
+                let command = args.get("command").and_then(|v| v.as_str());
+                let path = args
+                    .get("path")
+                    .or(args.get("file_path"))
+                    .or(args.get("file"))
+                    .and_then(|v| v.as_str());
+                let host = args.get("url").or(args.get("host")).and_then(|v| v.as_str());
+
+                self.permission_policy.check(
+                    &call.function.name,
+                    &call.function.arguments,
+                    command,
+                    path,
+                    host,
+                )
+            };
+
+            match decision {
                 PermissionDecision::Deny(reason) => {
                     results[i] = format!("Permission denied: {}", reason);
                     continue;
                 }
-                PermissionDecision::Ask(reason) => {
+                PermissionDecision::Ask(reason, prompt) => {
+                    // Create oneshot channel for approval
+                    let (tx, rx) = tokio::sync::oneshot::channel();
+                    {
+                        let mut pending = self.pending_approvals.lock().unwrap();
+                        pending.insert(prompt.prompt_id.clone(), tx);
+                    }
+
+                    // Emit approval event
+                    on_event(AgentEvent::ApprovalRequired {
+                        prompt_id: prompt.prompt_id.clone(),
+                        tool_name: prompt.tool_name.clone(),
+                        tool_input: prompt.tool_input.clone(),
+                        danger_level: format!("{:?}", prompt.danger_level),
+                        explanation: prompt.explanation.clone(),
+                    });
+
                     on_event(AgentEvent::ToolExecutionStart {
                         tool_call_id: call.id.clone(),
-                        tool_name: format!("[APPROVAL NEEDED] {}: {}", call.function.name, reason),
+                        tool_name: format!(
+                            "[AWAITING APPROVAL] {} — {} (reason: {})",
+                            call.function.name, prompt.explanation, reason
+                        ),
                         args: args.clone(),
                     });
+
+                    // Wait for user response
+                    match rx.await {
+                        Ok(choice) => {
+                            match &choice {
+                                ApprovalChoice::Deny | ApprovalChoice::DenyPersistent => {
+                                    results[i] = format!(
+                                        "Permission denied by user: tool '{}' was not approved",
+                                        call.function.name
+                                    );
+
+                                    // Add to blacklist if persistent deny
+                                    if matches!(choice, ApprovalChoice::DenyPersistent) {
+                                        self.permission_policy.add_rule(
+                                            crate::permission::ConfigRule {
+                                                pattern: ToolPermissionPattern::simple(
+                                                    &call.function.name,
+                                                ),
+                                                level: crate::permission::ApprovalLevel::Deny,
+                                            },
+                                        );
+                                    }
+                                    continue;
+                                }
+                                ApprovalChoice::AllowOnce => {
+                                    // One-time allow — just proceed
+                                }
+                                ApprovalChoice::AllowSession => {
+                                    // Add to session whitelist
+                                    self.permission_policy.whitelist_mut().add(
+                                        WhitelistEntry::new(
+                                            ToolPermissionPattern::simple(
+                                                &call.function.name,
+                                            ),
+                                            ApprovalScope::Session,
+                                        ),
+                                    );
+                                }
+                                ApprovalChoice::AllowFor(duration) => {
+                                    let secs = duration.as_secs();
+                                    let dur_str = if secs >= 3600 {
+                                        format!("{}h", secs / 3600)
+                                    } else if secs >= 60 {
+                                        format!("{}m", secs / 60)
+                                    } else {
+                                        format!("{}s", secs)
+                                    };
+                                    self.permission_policy.whitelist_mut().add(
+                                        WhitelistEntry::new(
+                                            ToolPermissionPattern::simple(
+                                                &call.function.name,
+                                            ),
+                                            ApprovalScope::Duration(dur_str),
+                                        ),
+                                    );
+                                }
+                                ApprovalChoice::AllowPersistent => {
+                                    self.permission_policy.whitelist_mut().add(
+                                        WhitelistEntry::new(
+                                            ToolPermissionPattern::simple(
+                                                &call.function.name,
+                                            ),
+                                            ApprovalScope::Persistent,
+                                        ),
+                                    );
+                                }
+                            }
+                            // Clean up pending approval
+                            {
+                                let mut pending = self.pending_approvals.lock().unwrap();
+                                pending.remove(&prompt.prompt_id);
+                            }
+                        }
+                        Err(_) => {
+                            // Channel closed = cancelled/timed out → deny
+                            results[i] = format!(
+                                "Approval cancelled for tool '{}'",
+                                call.function.name
+                            );
+                            {
+                                let mut pending = self.pending_approvals.lock().unwrap();
+                                pending.remove(&prompt.prompt_id);
+                            }
+                            continue;
+                        }
+                    }
                 }
-                PermissionDecision::Allow => {}
+                PermissionDecision::Allow => {
+                    // Allowed, no action needed
+                }
             }
 
             // Pre-tool hook
@@ -604,8 +866,74 @@ impl Agent {
             && let Ok(m) = mem.lock()
         {
             let core_str = m.core().to_context_string();
-            self.context.set_core_memory(&core_str);
+            self.context.set_active_memory(&core_str);
         }
+    }
+
+    /// Refresh per-turn context segments: environment, tool catalog,
+    /// active memory, and execution plan.
+    fn refresh_context_segments(&mut self) {
+        // Segment 3: ENVIRONMENT
+        let cwd = std::env::current_dir()
+            .ok()
+            .and_then(|p| p.to_str().map(|s| s.to_string()));
+        let env_str = Context::build_environment_string(cwd.as_deref(), None, None);
+        self.context.set_environment(&env_str);
+
+        // Segment 4: TOOL CATALOG
+        let tool_defs = self.registry.tool_definitions();
+        let danger_map = build_danger_map(&tool_defs, &self.permission_policy);
+        let tool_catalog = Context::build_tool_catalog_string(&tool_defs, &danger_map);
+        self.context.set_tool_catalog(&tool_catalog);
+
+        // Segment 5: ACTIVE MEMORY — refresh from memory manager if enabled
+        if let Some(ref mem) = self.memory
+            && let Ok(m) = mem.lock()
+        {
+            let core_str = m.core().to_context_string();
+            if !core_str.is_empty() {
+                self.context.set_active_memory(&core_str);
+            }
+        }
+
+        // Segment 7: EXECUTION PLAN — placeholder, can be filled by external hooks
+        // (the todo/task modules can push updates via set_execution_plan)
+    }
+
+    /// Stage 4 LLM compaction: if tokens are critically high (>95%),
+    /// request an LLM summary of old turns and apply it.
+    /// Also writes the summary to Recall Memory for long-term retention.
+    async fn maybe_llm_compact(&mut self) {
+        let current = self.context.current_token_count();
+        let critical = (self.client.model.max_context_tokens as f64 * 0.95) as usize;
+
+        if current < critical {
+            return;
+        }
+
+        // Summarize the oldest ~40% of turns
+        let num_turns = self.context.len().max(4) * 2 / 5;
+        let request = match self.context.prepare_summary(num_turns) {
+            Some(r) => r,
+            None => return,
+        };
+
+        // Build a lightweight summarization request
+        let messages = vec![Message::system(&request.prompt)];
+        let (result_text, _) = match self.client.chat_completion(&messages, &[]).await {
+            Ok(r) => r,
+            Err(_) => return, // summarization failed, skip
+        };
+
+        // Parse the LLM response as TurnSummary
+        let summary: crate::compressor::TurnSummary = match serde_json::from_str(&result_text) {
+            Ok(s) => s,
+            Err(_) => return, // couldn't parse summary
+        };
+
+        // Apply summary — replace old messages with compressed version
+        self.context
+            .apply_summary(request.split_index, &summary, num_turns);
     }
 
     fn maybe_consolidate(&self) {
@@ -741,6 +1069,21 @@ impl Agent {
         self.context.current_token_count()
     }
 
+    /// Get KV cache hints for the current context.
+    pub fn context_cache_hint(&self) -> Option<crate::context::CacheHint> {
+        Some(self.context.cache_hint())
+    }
+
+    /// Get a copy of the current conversation messages (for session save).
+    pub fn context_messages(&self) -> Vec<Message> {
+        self.context.messages()
+    }
+
+    /// Get mutable access to the context engine (for session resume).
+    pub fn context_mut(&mut self) -> &mut crate::context::ContextEngine {
+        &mut self.context
+    }
+
     pub fn memory(&self) -> Option<std::sync::MutexGuard<'_, MemoryManager>> {
         self.memory.as_ref().and_then(|m| m.lock().ok())
     }
@@ -765,6 +1108,29 @@ impl Agent {
         &mut self.permission_policy
     }
 
+    /// Get a clone of the pending approvals map for use in event handlers.
+    pub fn pending_approvals_clone(
+        &self,
+    ) -> Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<ApprovalChoice>>>> {
+        self.pending_approvals.clone()
+    }
+
+    /// Approve a pending permission request.
+    /// Call this after receiving `AgentEvent::ApprovalRequired`.
+    pub fn approve(&self, prompt_id: &str, choice: ApprovalChoice) -> bool {
+        if let Ok(mut pending) = self.pending_approvals.lock() {
+            if let Some(tx) = pending.remove(prompt_id) {
+                return tx.send(choice).is_ok();
+            }
+        }
+        false
+    }
+
+    /// Deny a pending permission request (shorthand for approve with Deny).
+    pub fn deny_approval(&self, prompt_id: &str) -> bool {
+        self.approve(prompt_id, ApprovalChoice::Deny)
+    }
+
     pub fn hook_registry(&self) -> &HookRegistry {
         &self.hook_registry
     }
@@ -780,6 +1146,19 @@ impl Agent {
     pub fn config(&self) -> &Config {
         &self.config
     }
+}
+
+/// Build a map from tool name → DangerLevel using the permission policy's built-in rules.
+fn build_danger_map(
+    tools: &[crate::types::ToolDefinition],
+    policy: &PermissionPolicy,
+) -> HashMap<String, crate::permission::DangerLevel> {
+    let mut map = HashMap::new();
+    for tool in tools {
+        let danger = policy.danger_level_for(&tool.function.name, "{}", None);
+        map.insert(tool.function.name.clone(), danger);
+    }
+    map
 }
 
 fn build_iteration_limit_summary(

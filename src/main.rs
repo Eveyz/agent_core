@@ -1,14 +1,16 @@
 mod tui;
 
 use agent_core::{
-    AgentBuilder, AgentEvent, Message, MessageDelta, PermissionPolicy, SkillLoader, TaskBoard,
-    TaskStatus, TodoItem, TodoList, TodoStatus, ToolExecutionMode, hooks::LoggingHook, tasks,
-    tools,
+    AgentBuilder, AgentEvent, ApprovalChoice, McpClientManager, Message, MessageDelta,
+    PermissionPolicy, Role, SessionManager, SkillManager, TaskBoard, TaskStatus,
+    TodoItem, TodoList, TodoStatus, ToolExecutionMode, hooks::LoggingHook, tasks, tools,
 };
 use argh::FromArgs;
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::io::{self, IsTerminal, Write};
-use std::sync::atomic::Ordering;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 // ── Terminal styling ───────────────────────────────────────────────
@@ -59,16 +61,90 @@ struct Args {
     tui: bool,
 }
 
-async fn run_tui_mode() -> anyhow::Result<()> {
-    let builder = match AgentBuilder::from_config("config.toml") {
-        Ok(b) => b,
+/// Try to load config.toml; if the file doesn't exist, generate a template and
+/// still attempt the env-var fallback.
+fn try_load_config() -> anyhow::Result<AgentBuilder> {
+    match AgentBuilder::from_config("config.toml") {
+        Ok(b) => return Ok(b),
         Err(e) => {
-            eprintln!("config.toml: {e}, falling back to env");
-            AgentBuilder::from_env()?
+            if !Path::new("config.toml").exists() {
+                generate_config_template("config.toml");
+            } else {
+                eprintln!("config.toml: {e}");
+            }
+            eprintln!("Falling back to OPENAI_API_KEY environment variable...");
+            AgentBuilder::from_env()
         }
-    };
+    }
+}
+
+/// Write a well-commented config.toml template so the user only needs to fill in their API keys.
+fn generate_config_template(path: &str) {
+    let template = r#"# =============================================================================
+# Agent Core 配置文件
+# 刚生成模板 — 请填入你的 API Key 后重新运行
+# =============================================================================
+# 语法说明:
+#   api_key = "sk-xxx"             → 直接写明文
+#   api_key = "${DEEPSEEK_KEY}"    → 从环境变量读取 (更安全)
+# =============================================================================
+
+# 默认使用的模型 (必须与下方 [models.xxx] 中的某一个一致)
+default_model = "deepseek"
+
+# ── 记忆系统 (可选，全部可省略使用默认值) ────────────────────────────
+[memory]
+# db_path = "~/.agent_core/memory.db"
+# embedding_model = "BAAI/bge-small-en-v1.5"
+# max_core_blocks = 5
+# default_block_max_chars = 2000
+# consolidation_enabled = true
+
+# ── DeepSeek ──────────────────────────────────────────────────────────
+[models.deepseek]
+base_url = "https://api.deepseek.com/v1"
+api_key = "${DEEPSEEK_KEY}"              # 改成你的 key，或用环境变量 DEEPSEEK_KEY
+model_id = "deepseek-chat"
+max_context_tokens = 65536
+# temperature = 0.7
+# max_tokens = 4096
+# react_enabled = true
+# max_iterations = 10
+
+# ── OpenAI GPT-4o ─────────────────────────────────────────────────────
+[models.gpt4o]
+base_url = "https://api.openai.com/v1"
+api_key = "${OPENAI_API_KEY}"
+model_id = "gpt-4o"
+max_context_tokens = 128000
+# temperature = 0.7
+
+# ── 本地 Ollama (取消注释即可使用) ────────────────────────────────────
+# [models.local]
+# base_url = "http://localhost:11434/v1"
+# api_key = "ollama"
+# model_id = "qwen2.5:7b"
+# max_context_tokens = 32768
+"#;
+    if let Err(e) = std::fs::write(path, template) {
+        eprintln!("warning: could not write config template to {path}: {e}");
+    } else {
+        eprintln!("No config.toml found — a template has been generated at {path}");
+        eprintln!("Please edit it with your API keys and re-run.\n");
+    }
+}
+
+async fn run_tui_mode() -> anyhow::Result<()> {
+    let builder = try_load_config()?;
+
+    // Skill manager (created before build so it can be passed to agent)
+    let mut skill_manager = SkillManager::with_defaults();
+    let _ = skill_manager.scan();
+    let skill_manager = Arc::new(Mutex::new(skill_manager));
+
     let builder = builder
         .with_memory(false)
+        .with_skill_manager(skill_manager.clone())
         .with_tool_execution_mode(ToolExecutionMode::Parallel);
 
     let mut agent = builder.build()?;
@@ -76,15 +152,12 @@ async fn run_tui_mode() -> anyhow::Result<()> {
     // Register tools
     let todo_list: Arc<Mutex<TodoList>> = Arc::new(Mutex::new(TodoList::new()));
     let task_board: Arc<Mutex<TaskBoard>> = Arc::new(Mutex::new(TaskBoard::new()));
-    let mut skill_loader = SkillLoader::with_defaults();
-    let _ = skill_loader.scan();
-    let skill_loader = Arc::new(Mutex::new(skill_loader));
 
     {
         let model_config = agent.current_model_config().clone();
         let reg = agent.tool_registry_mut();
         tools::todo::register_todo_tools(reg, todo_list.clone());
-        tools::skill::register_skill_tools(reg, skill_loader.clone());
+        tools::skill::register_skill_tools(reg, skill_manager.clone());
         let task_board_clone = task_board.clone();
         tasks::register_task_tools(reg, task_board_clone, model_config);
     }
@@ -97,7 +170,7 @@ async fn run_tui_mode() -> anyhow::Result<()> {
             .map(|s| s.to_string())
             .collect();
         let reg = agent.tool_registry_mut();
-        tools::subagent::register_subagent_tools(reg, model_config, tool_names);
+        tools::subagent::register_subagent_tools(reg, model_config, tool_names, None);
     }
 
     let agent = Arc::new(tokio::sync::Mutex::new(agent));
@@ -111,14 +184,7 @@ async fn main() -> anyhow::Result<()> {
         return run_tui_mode().await;
     }
     // ── CLI mode (existing) ───────────────────────────────────────
-    let mut builder = match AgentBuilder::from_config("config.toml") {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("config.toml: {e}");
-            eprintln!("Falling back to OPENAI_API_KEY environment variable...");
-            AgentBuilder::from_env()?
-        }
-    };
+    let mut builder = try_load_config()?;
 
     // Detect whether stdout is a terminal for styled output
     let use_styles = std::io::stdout().is_terminal();
@@ -165,26 +231,37 @@ async fn main() -> anyhow::Result<()> {
     };
     builder = builder.with_tool_execution_mode(tool_mode);
 
+    // Skill manager (created before build to pass to agent)
+    let mut skill_manager = SkillManager::with_defaults();
+    let _ = skill_manager.scan();
+    let skill_manager = Arc::new(Mutex::new(skill_manager));
+    builder = builder.with_skill_manager(skill_manager.clone());
+
     let mut agent = builder.build()?;
 
     // Optional subsystems
     let todo_list: Arc<Mutex<TodoList>> = Arc::new(Mutex::new(TodoList::new()));
     let task_board: Arc<Mutex<TaskBoard>> = Arc::new(Mutex::new(TaskBoard::new()));
-    let mut skill_loader = SkillLoader::with_defaults();
-    let _ = skill_loader.scan();
-    let skill_loader = Arc::new(Mutex::new(skill_loader));
 
     // Register todo, skill, task, and subagent tools
     {
         let model_config = agent.current_model_config().clone();
         let reg = agent.tool_registry_mut();
         tools::todo::register_todo_tools(reg, todo_list.clone());
-        tools::skill::register_skill_tools(reg, skill_loader.clone());
+        tools::skill::register_skill_tools(reg, skill_manager.clone());
         let task_board_clone = task_board.clone();
         tasks::register_task_tools(reg, task_board_clone, model_config);
     }
 
-    // Register subagent tool (needs model config + tool names)
+    // Session manager — create before tool registration for subagent sessions
+    let session_db = "~/.agent_core/memory.db";
+    let session_storage =
+        agent_core::memory::storage::Storage::new(session_db)
+            .expect("Failed to open session DB");
+    let session_mgr = Arc::new(Mutex::new(SessionManager::new(session_storage)));
+    let _current_session_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+    // Register subagent tool (needs model config + tool names + session_mgr)
     {
         let model_config = agent.current_model_config().clone();
         let tool_names: Vec<String> = agent
@@ -194,8 +271,34 @@ async fn main() -> anyhow::Result<()> {
             .map(|s| s.to_string())
             .collect();
         let reg = agent.tool_registry_mut();
-        tools::subagent::register_subagent_tools(reg, model_config, tool_names);
+        tools::subagent::register_subagent_tools(
+            reg,
+            model_config,
+            tool_names,
+            Some(session_mgr.clone()),
+        );
     }
+
+    // MCP — connect to configured servers
+    let mcp_mgr = {
+        let config = agent.config();
+        let mut mgr = McpClientManager::from_config(&config.mcp);
+        let errors = mgr.connect_all().await;
+        for (name, errs) in &errors {
+            for err in errs {
+                eprintln!("[MCP] Server '{}' connection failed: {}", name, err);
+            }
+        }
+        if mgr.tool_count() > 0 {
+            println!("[MCP] {} tools from {} servers", mgr.tool_count(), mgr.connected_servers().len());
+            // Register MCP tools
+            let mgr_arc = Arc::new(tokio::sync::Mutex::new(mgr));
+            agent_core::McpTool::register_all(agent.tool_registry_mut(), mgr_arc.clone());
+            mgr_arc
+        } else {
+            Arc::new(tokio::sync::Mutex::new(mgr))
+        }
+    };
 
     // Share abort_flag so CLI can abort mid-run
     let abort_flag = agent.abort_flag.clone();
@@ -240,6 +343,25 @@ async fn main() -> anyhow::Result<()> {
 
         match input {
             "/quit" | "/exit" => {
+                // Auto-save session before exit
+                let all_messages = agent.context_messages();
+                let messages: Vec<Message> = all_messages
+                    .into_iter()
+                    .filter(|m| m.role != Role::System)
+                    .collect();
+                if !messages.is_empty() {
+                    let cwd = std::env::current_dir()
+                        .ok()
+                        .and_then(|p| p.to_str().map(|s| s.to_string()))
+                        .unwrap_or_default();
+                    let model = agent.current_model();
+                    if let Ok(mgr) = session_mgr.lock() {
+                        let current_id = _current_session_id.lock().unwrap().clone();
+                        if let Ok(id) = mgr.save(current_id.as_deref(), &messages, &cwd, &model) {
+                            println!("Session auto-saved: {}", &id[..8]);
+                        }
+                    }
+                }
                 println!("Bye!");
                 break;
             }
@@ -255,17 +377,6 @@ async fn main() -> anyhow::Result<()> {
             "/clear" => {
                 agent.clear_context();
                 println!("Context cleared. New session started.");
-            }
-            "/memory" => {
-                if let Some(memory) = agent.memory() {
-                    println!("=== Core Memory ===");
-                    for block in memory.core().list() {
-                        println!("[{}]: {}", block.id, block.content);
-                    }
-                    println!("\nSession: {}", memory.session_id());
-                } else {
-                    println!("Memory is disabled.");
-                }
             }
             "/tokens" => {
                 println!("Current tokens: {}", agent.context_token_count());
@@ -291,6 +402,27 @@ async fn main() -> anyhow::Result<()> {
                 );
                 println!("Hooks fire on: PreToolUse, PostToolUse, SessionStart, SessionEnd");
             }
+            "/mcp" => {
+                let mgr = mcp_mgr.blocking_lock();
+                let servers = mgr.connected_servers();
+                if servers.is_empty() {
+                    println!("No MCP servers connected. Configure in [mcp.servers] in config.toml.");
+                } else {
+                    println!("=== MCP Servers ({}) ===", servers.len());
+                    for s in &servers {
+                        println!("  • {} ({})", s, "connected");
+                    }
+                    let tools = mgr.all_tools();
+                    if tools.is_empty() {
+                        println!("\nNo tools discovered.");
+                    } else {
+                        println!("\n=== MCP Tools ({}) ===", tools.len());
+                        for t in &tools {
+                            println!("  • mcp__{}__{} — {}", t.server, t.name, t.description);
+                        }
+                    }
+                }
+            }
             "/todo" => {
                 let list = todo_list.lock().unwrap();
                 if list.items.is_empty() {
@@ -304,11 +436,11 @@ async fn main() -> anyhow::Result<()> {
                 println!("{}", board.summary());
             }
             "/skills" => {
-                let loader = skill_loader.lock().unwrap();
-                let skills = loader.list_with_sources();
+                let mgr = skill_manager.lock().unwrap();
+                let skills = mgr.list_with_sources();
                 if skills.is_empty() {
                     println!("No skills found. Searched:");
-                    for dir in loader.search_dirs() {
+                    for dir in mgr.search_dirs() {
                         println!("  {}", dir.display());
                     }
                 } else {
@@ -332,7 +464,7 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                     println!("\nSearch dirs:");
-                    for dir in loader.search_dirs() {
+                    for dir in mgr.search_dirs() {
                         let exists = if dir.exists() { "ok" } else { "missing" };
                         println!("  {} [{}]", dir.display(), exists);
                     }
@@ -346,8 +478,140 @@ async fn main() -> anyhow::Result<()> {
                     enable_hooks,
                     &todo_list,
                     &task_board,
-                    &skill_loader,
+                    &skill_manager,
                 );
+            }
+            "/sessions" => {
+                let mgr = session_mgr.lock().unwrap();
+                match mgr.list(false) {
+                    Ok(sessions) => {
+                        if sessions.is_empty() {
+                            println!("No sessions saved. Use /session save to save the current session.");
+                        } else {
+                            println!("--- Sessions ({}) ---", sessions.len());
+                            for s in &sessions {
+                                println!("  {}", s.display_line());
+                            }
+                        }
+                    }
+                    Err(e) => eprintln!("Failed to list sessions: {e}"),
+                }
+            }
+            cmd if cmd.starts_with("/session") => {
+                let mgr = session_mgr.lock().unwrap();
+                let args: Vec<&str> = cmd.splitn(4, ' ').collect();
+
+                match args.get(1).copied() {
+                    Some("save") => {
+                        let all_messages = agent.context_messages();
+                        // Filter out system messages — they're generated from segments,
+                        // not part of the conversation history
+                        let messages: Vec<Message> = all_messages
+                            .into_iter()
+                            .filter(|m| m.role != Role::System)
+                            .collect();
+                        let cwd = std::env::current_dir()
+                            .ok()
+                            .and_then(|p| p.to_str().map(|s| s.to_string()))
+                            .unwrap_or_default();
+                        let model = agent.current_model();
+                        let current_id = _current_session_id.lock().unwrap().clone();
+                        match mgr.save(current_id.as_deref(), &messages, &cwd, &model) {
+                            Ok(id) => {
+                                *_current_session_id.lock().unwrap() = Some(id.clone());
+                                println!("Session saved: {}", &id[..8]);
+                            }
+                            Err(e) => eprintln!("Failed to save session: {e}"),
+                        }
+                    }
+                    Some("resume") => {
+                        let session_id = args.get(2).copied().unwrap_or("");
+                        if session_id.is_empty() {
+                            println!("Usage: /session resume <id>");
+                        } else {
+                            match mgr.resume(session_id) {
+                                Ok(Some(session)) => {
+                                    agent.clear_context();
+                                    for msg in &session.messages {
+                                        agent.context_mut().add(msg.clone());
+                                    }
+                                    *_current_session_id.lock().unwrap() = Some(session_id.to_string());
+                                    println!(
+                                        "Resumed session '{}' ({} messages).",
+                                        session.meta.title, session.messages.len()
+                                    );
+                                }
+                                Ok(None) => println!("Session not found: {session_id}"),
+                                Err(e) => eprintln!("Failed to resume: {e}"),
+                            }
+                        }
+                    }
+                    Some("delete") => {
+                        let session_id = args.get(2).copied().unwrap_or("");
+                        if session_id.is_empty() {
+                            println!("Usage: /session delete <id>");
+                        } else {
+                            match mgr.delete(session_id) {
+                                Ok(true) => println!("Session deleted: {session_id}"),
+                                Ok(false) => println!("Session not found: {session_id}"),
+                                Err(e) => eprintln!("Failed to delete: {e}"),
+                            }
+                        }
+                    }
+                    Some("rename") => {
+                        let session_id = args.get(2).copied().unwrap_or("");
+                        let new_title = args.get(3).copied().unwrap_or("");
+                        if session_id.is_empty() || new_title.is_empty() {
+                            println!("Usage: /session rename <id> <new_title>");
+                        } else {
+                            match mgr.rename(session_id, new_title) {
+                                Ok(true) => println!("Renamed to: {new_title}"),
+                                Ok(false) => println!("Session not found: {session_id}"),
+                                Err(e) => eprintln!("Failed to rename: {e}"),
+                            }
+                        }
+                    }
+                    Some("archive") => {
+                        let session_id = args.get(2).copied().unwrap_or("");
+                        if session_id.is_empty() {
+                            println!("Usage: /session archive <id>");
+                        } else {
+                            match mgr.archive(session_id) {
+                                Ok(true) => println!("Archived: {session_id}"),
+                                _ => println!("Session not found."),
+                            }
+                        }
+                    }
+                    Some("search") => {
+                        let keyword = args.get(2).copied().unwrap_or("");
+                        if keyword.is_empty() {
+                            println!("Usage: /session search <keyword>");
+                        } else {
+                            match mgr.search(keyword, 20) {
+                                Ok(sessions) => {
+                                    if sessions.is_empty() {
+                                        println!("No sessions matching '{}'", keyword);
+                                    } else {
+                                        for s in &sessions {
+                                            println!("  {}", s.display_line());
+                                        }
+                                    }
+                                }
+                                Err(e) => eprintln!("Search failed: {e}"),
+                            }
+                        }
+                    }
+                    _ => {
+                        println!("Session commands:");
+                        println!("  /sessions               — list all sessions");
+                        println!("  /session save           — save current session");
+                        println!("  /session resume <id>    — resume a session");
+                        println!("  /session delete <id>    — delete a session");
+                        println!("  /session rename <id> <t>— rename a session");
+                        println!("  /session archive <id>   — archive a session");
+                        println!("  /session search <kw>    — search sessions");
+                    }
+                }
             }
             "/abort" => {
                 abort_flag.store(true, Ordering::Relaxed);
@@ -425,16 +689,45 @@ async fn main() -> anyhow::Result<()> {
                 handle_tasks_cmd(cmd, &task_board);
             }
             cmd if cmd.starts_with("/skill ") => {
-                let name = cmd.strip_prefix("/skill ").unwrap().trim();
-                let loader = skill_loader.lock().unwrap();
-                match loader.load_skill_context(name) {
-                    Ok(Some(content)) => {
-                        println!("{}", content);
+                let rest = cmd.strip_prefix("/skill ").unwrap().trim();
+                
+                if rest.starts_with("deactivate ") {
+                    let name = rest.strip_prefix("deactivate ").unwrap().trim();
+                    let mut mgr = skill_manager.lock().unwrap();
+                    if name == "all" {
+                        mgr.deactivate_all();
+                        println!("All skills deactivated.");
+                    } else if mgr.deactivate(name) {
+                        println!("Skill '{}' deactivated.", name);
+                    } else {
+                        eprintln!("Skill '{}' is not active.", name);
                     }
-                    Ok(None) => {
-                        eprintln!("Skill '{}' not found. Use /skills to list.", name);
+                } else if rest == "reload" {
+                    let mut mgr = skill_manager.lock().unwrap();
+                    match mgr.scan() {
+                        Ok(count) => println!("Reloaded {} skills from disk.", count),
+                        Err(e) => eprintln!("Reload failed: {e}"),
                     }
-                    Err(e) => eprintln!("Error loading skill: {e}"),
+                } else if rest == "active" {
+                    let mgr = skill_manager.lock().unwrap();
+                    let active = mgr.active_skill_names();
+                    if active.is_empty() {
+                        println!("No active skills.");
+                    } else {
+                        println!("Active skills: {}", active.join(", "));
+                    }
+                } else {
+                    // Default: load skill
+                    let mgr = skill_manager.lock().unwrap();
+                    match mgr.load_skill_context(rest) {
+                        Ok(Some(content)) => {
+                            println!("{}", content);
+                        }
+                        Ok(None) => {
+                            eprintln!("Skill '{}' not found. Use /skills to list.", rest);
+                        }
+                        Err(e) => eprintln!("Error loading skill: {e}"),
+                    }
                 }
             }
             cmd if cmd.starts_with("/perm ") => {
@@ -444,17 +737,112 @@ async fn main() -> anyhow::Result<()> {
                     let parts: Vec<&str> = rest.splitn(2, ' ').collect();
                     let tool_name = parts[0];
                     let tool_input = parts.get(1).unwrap_or(&"{}");
-                    let decision = agent.permission_policy().check(tool_name, tool_input);
+                    let decision = agent.permission_policy_mut().check(tool_name, tool_input, None, None, None);
                     println!(
                         "Permission check: {}({}) -> {:?}",
                         tool_name, tool_input, decision
                     );
+                } else if args.starts_with("mode ") {
+                    let mode_str = args.strip_prefix("mode ").unwrap().trim();
+                    use agent_core::PermissionMode;
+                    let mode = match mode_str.to_lowercase().as_str() {
+                        "paranoid" => PermissionMode::Paranoid,
+                        "standard" => PermissionMode::Standard,
+                        "permissive" => PermissionMode::Permissive,
+                        "yolo" => PermissionMode::Yolo,
+                        _ => {
+                            eprintln!("Invalid mode. Use: paranoid | standard | permissive | yolo");
+                            continue;
+                        }
+                    };
+                    agent.permission_policy_mut().set_mode(mode);
+                    println!("Permission mode set to: {:?}", mode);
                 } else {
-                    eprintln!("Usage: /perm test <tool_name> <input_json>");
+                    eprintln!("Usage:");
+                    eprintln!("  /perm test <tool_name> <input_json>");
+                    eprintln!("  /perm mode <paranoid|standard|permissive|yolo>");
+                }
+            }
+            "/context" => {
+                let msgs = agent.context_messages();
+                let tokens = agent.context_token_count();
+                println!("=== Context ({tokens} tokens, {} messages) ===", msgs.len());
+                // Show the 7-segment breakdown
+                if let Some(hint) = agent.context_cache_hint() {
+                    println!("KV Cache: {} stable tokens, strategy={}", hint.stable_prefix_tokens, hint.strategy);
+                }
+                println!("\nMessages (newest last):");
+                for (i, msg) in msgs.iter().enumerate() {
+                    let role_str = match msg.role {
+                        Role::System => "SYS",
+                        Role::User => "USR",
+                        Role::Assistant => "AST",
+                        Role::Tool => "TOL",
+                    };
+                    let content = msg.content.as_deref().unwrap_or("");
+                    let preview = truncate(content, 100);
+                    if let Some(ref tc) = msg.tool_calls {
+                        let tool_names: Vec<&str> = tc.iter().map(|t| t.function.name.as_str()).collect();
+                        println!("  [{i}] {role_str} [tools: {}] {}", tool_names.join(","), preview);
+                    } else {
+                        println!("  [{i}] {role_str} {preview}");
+                    }
+                }
+            }
+            cmd if cmd.starts_with("/memory ") => {
+                let rest = cmd.strip_prefix("/memory ").unwrap().trim();
+                if rest.starts_with("search ") {
+                    let query = rest.strip_prefix("search ").unwrap().trim();
+                    if let Some(memory) = agent.memory() {
+                        match memory.search_conversation(query, 5) {
+                            Ok(results) => {
+                                if results.is_empty() {
+                                    println!("No results for '{}'", query);
+                                } else {
+                                    println!("=== Memory search: '{}' ({}) ===", query, results.len());
+                                    for (i, r) in results.iter().enumerate() {
+                                        let preview = truncate(&r.content, 80);
+                                        println!("  [{i}] importance={:.2} | {}", r.importance, preview);
+                                    }
+                                }
+                            }
+                            Err(e) => eprintln!("Search error: {e}"),
+                        }
+                    } else {
+                        println!("Memory is disabled.");
+                    }
+                } else if rest == "stats" {
+                    if let Some(memory) = agent.memory() {
+                        match memory.stats() {
+                            Ok(stats) => {
+                                println!("=== Memory Stats ===");
+                                println!("Total:       {}", stats.total_count);
+                                println!("Avg strength:{:.2}", stats.avg_strength);
+                                println!("Avg importance:{:.2}", stats.avg_importance);
+                            }
+                            Err(e) => eprintln!("Stats error: {e}"),
+                        }
+                    } else {
+                        println!("Memory is disabled.");
+                    }
+                } else {
+                    eprintln!("Usage: /memory search <query> | /memory stats");
+                }
+            }
+            "/memory" => {
+                if let Some(memory) = agent.memory() {
+                    println!("=== Core Memory ===");
+                    for block in memory.core().list() {
+                        println!("[{}]: {}", block.id, block.content);
+                    }
+                    println!("\nSession: {}", memory.session_id());
+                } else {
+                    println!("Memory is disabled.");
                 }
             }
             _ => {
-                run_agent(&mut agent, input, use_styles).await;
+                let approvals = agent.pending_approvals_clone();
+                run_agent_async(&mut agent, input, &abort_flag, use_styles, &approvals).await;
             }
         }
     }
@@ -573,7 +961,7 @@ fn print_status(
     enable_hooks: bool,
     todo_list: &Arc<Mutex<TodoList>>,
     task_board: &Arc<Mutex<TaskBoard>>,
-    skill_loader: &Arc<Mutex<SkillLoader>>,
+    skill_manager: &Arc<Mutex<SkillManager>>,
 ) {
     println!("=== Agent Status ===");
     println!("Model:       {}", agent.current_model());
@@ -596,27 +984,40 @@ fn print_status(
         println!("Tasks:       {} total", board.all_tasks().len());
     }
     {
-        let loader = skill_loader.lock().unwrap();
-        println!("Skills:      {} loaded", loader.list().len());
+        let mgr = skill_manager.lock().unwrap();
+        println!("Skills:      {} loaded, {} active", mgr.count(), mgr.active_skill_names().len());
     }
 }
 
-async fn run_agent(agent: &mut agent_core::Agent, input: &str, use_styles: bool) {
-    print!(
-        "\r  {}{}...{}{}",
-        dim(use_styles),
-        bold(use_styles),
-        reset(use_styles),
-        reset(use_styles)
-    );
-    io::stdout().flush().ok();
+/// Run agent with real-time /abort support.
+/// Uses tokio::select! to read stdin while agent runs.
+async fn run_agent_async(
+    agent: &mut agent_core::Agent,
+    input: &str,
+    abort_flag: &Arc<AtomicBool>,
+    use_styles: bool,
+    pending_approvals: &Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<ApprovalChoice>>>>,
+) {
+    let abort = abort_flag.clone();
+    abort.store(false, Ordering::Relaxed);
 
-    let first_event = Cell::new(true);
-    let in_thinking = Cell::new(false);
-    let in_agent_text = Cell::new(false);
-    let skin = termimad::MadSkin::default();
-    match agent
-        .run_with_events(input, |event| {
+    let input_owned = input.to_string();
+    let approvals = pending_approvals.clone();
+    let use_styles_val = use_styles;
+
+    // Pin the agent future so we can select! on it
+    let agent_fut = async {
+        let first_event = Cell::new(true);
+        let in_thinking = Cell::new(false);
+        let in_agent_text = Cell::new(false);
+        let _in_subagent_thinking = Cell::new(false);
+        let _in_subagent_text = Cell::new(false);
+        let skin = termimad::MadSkin::default();
+
+        print!("\r  {}...{}", bold(use_styles_val), reset(use_styles_val));
+        io::stdout().flush().ok();
+
+        let result = agent.run_with_events(&input_owned, |event| {
             if first_event.get() {
                 print!("\r                                    \r");
                 io::stdout().flush().ok();
@@ -629,176 +1030,114 @@ async fn run_agent(agent: &mut agent_core::Agent, input: &str, use_styles: bool)
                     in_thinking.set(false);
                     in_agent_text.set(false);
                     if turn_index > 0 {
-                        println!();
-                        println!("  {}{}-- Turn {turn_index} --{}", bold(use_styles), reset(use_styles), reset(use_styles));
+                        println!("\n  {}--- Turn {turn_index} ---{}", dim(use_styles_val), reset(use_styles_val));
                     }
                 }
-                AgentEvent::TurnEnd { .. } => {
-                    in_thinking.set(false);
-                    in_agent_text.set(false);
-                }
-                AgentEvent::MessageStart { .. } => {}
                 AgentEvent::MessageUpdate { delta } => match delta {
                     MessageDelta::Thinking(t) => {
-                        if in_agent_text.get() {
-                            println!();
-                            in_agent_text.set(false);
-                        }
+                        if in_agent_text.get() { println!(); in_agent_text.set(false); }
                         if !in_thinking.get() {
-                            print!("\n  {}{}...{}{} ", bold(use_styles), yellow(use_styles), dim(use_styles), reset(use_styles));
+                            print!("\n  {}{}...{}{} ", bold(use_styles_val), yellow(use_styles_val), dim(use_styles_val), reset(use_styles_val));
                             in_thinking.set(true);
                         }
-                        print!("{}{}{}", dim(use_styles), t, reset(use_styles));
+                        print!("{}{}{}", dim(use_styles_val), t, reset(use_styles_val));
                         io::stdout().flush().ok();
                     }
                     MessageDelta::Text(t) => {
-                        if in_thinking.get() {
-                            println!("{}", reset(use_styles));
-                            in_thinking.set(false);
-                        }
+                        if in_thinking.get() { println!("{}", reset(use_styles_val)); in_thinking.set(false); }
                         if !in_agent_text.get() {
-                            print!("  {}{}>> {}{}", bold(use_styles), green(use_styles), reset(use_styles), reset(use_styles));
+                            print!("  {}{}>> {}{}", bold(use_styles_val), green(use_styles_val), reset(use_styles_val), reset(use_styles_val));
                             in_agent_text.set(true);
                         }
-                        if use_styles {
-                            skin.print_inline(&t);
-                        } else {
-                            print!("{t}");
-                        }
+                        if use_styles_val { skin.print_inline(&t); } else { print!("{t}"); }
                         io::stdout().flush().ok();
                     }
                 },
-                AgentEvent::MessageEnd { message } => {
-                    if in_thinking.get() {
-                        println!("{}", reset(use_styles));
-                        in_thinking.set(false);
-                    }
-                    if let Some(ref tool_calls) = message.tool_calls {
-                        if in_agent_text.get() {
-                            println!();
-                            in_agent_text.set(false);
-                        }
-                        for tc in tool_calls {
-                            let args_str = tc.function.arguments.clone();
-                            println!("  {}{}@@ {}{}{}({}{}{}){}{}", bold(use_styles), cyan(use_styles), reset(use_styles), bold(use_styles), tc.function.name, reset(use_styles), dim(use_styles), truncate(&args_str, 80), reset(use_styles), reset(use_styles));
-                        }
-                    }
+                AgentEvent::MessageEnd { .. } => {}
+                AgentEvent::ToolExecutionStart { tool_name, args, .. } => {
+                    let args_str = args.to_string();
+                    println!("\n  {}{}@@ {}{}{}({}{}{}){}{}", bold(use_styles_val), cyan(use_styles_val), reset(use_styles_val), bold(use_styles_val), tool_name, reset(use_styles_val), dim(use_styles_val), truncate(&args_str, 80), reset(use_styles_val), reset(use_styles_val));
                 }
-                AgentEvent::ToolExecutionStart {
-                    tool_name, args, ..
-                } => {
-                    if in_thinking.get() {
-                        println!("{}", reset(use_styles));
-                        in_thinking.set(false);
-                    }
-                    if in_agent_text.get() {
-                        println!();
-                        in_agent_text.set(false);
-                    }
-                    if tool_name.starts_with("[APPROVAL") {
-                        println!("  {}{}!! {}{}{}", bold(use_styles), red(use_styles), reset(use_styles), tool_name, reset(use_styles));
-                    } else {
-                        let args_str = args.to_string();
-                        println!("  {}{}@@ {}{}{}({}{}{}){}{}", bold(use_styles), cyan(use_styles), reset(use_styles), bold(use_styles), tool_name, reset(use_styles), dim(use_styles), truncate(&args_str, 80), reset(use_styles), reset(use_styles));
-                    }
-                    io::stdout().flush().ok();
-                }
-                AgentEvent::ToolExecutionUpdate {
-                    tool_name,
-                    partial_result,
-                    ..
-                } => {
-                    println!("     {}{}.. {}{}{} {}{}{}{}", dim(use_styles), cyan(use_styles), reset(use_styles), bold(use_styles), tool_name, reset(use_styles), dim(use_styles), truncate(&partial_result, 80), reset(use_styles));
-                    io::stdout().flush().ok();
-                }
-                AgentEvent::ToolExecutionEnd {
-                    tool_name,
-                    result,
-                    is_error,
-                    ..
-                } => {
+                AgentEvent::ToolExecutionEnd { tool_name, result, is_error, .. } => {
                     if is_error {
-                        println!("     {}{}XX {}{}{} {}{}{}{}", bold(use_styles), red(use_styles), reset(use_styles), bold(use_styles), tool_name, reset(use_styles), red(use_styles), truncate(&result, 120), reset(use_styles));
+                        println!("     {}{}XX {}{}{} {}{}{}{}", bold(use_styles_val), red(use_styles_val), reset(use_styles_val), bold(use_styles_val), tool_name, reset(use_styles_val), red(use_styles_val), truncate(&result, 120), reset(use_styles_val));
                     } else {
-                        println!("     {}{}>> {}{}{} {}{}{}{}", bold(use_styles), green(use_styles), reset(use_styles), bold(use_styles), tool_name, reset(use_styles), dim(use_styles), truncate(&result, 120), reset(use_styles));
+                        println!("     {}{}>> {}{}{} {}{}{}{}", bold(use_styles_val), green(use_styles_val), reset(use_styles_val), bold(use_styles_val), tool_name, reset(use_styles_val), dim(use_styles_val), truncate(&result, 120), reset(use_styles_val));
                     }
                     io::stdout().flush().ok();
                 }
                 AgentEvent::Error(e) => {
-                    eprintln!("  {}{}XX {}{}{}{}", bold(use_styles), red(use_styles), reset(use_styles), bold(use_styles), e, reset(use_styles));
+                    eprintln!("  {}{}XX {}{}{}{}", bold(use_styles_val), red(use_styles_val), reset(use_styles_val), bold(use_styles_val), e, reset(use_styles_val));
                 }
-
-                // -- Subagent events --
-                AgentEvent::SubagentStart { subagent_id, task } => {
+                AgentEvent::ApprovalRequired { prompt_id, tool_name, danger_level, explanation, .. } => {
                     println!();
-                    println!("  {}{}|-{} Sub-agent {}{}'{subagent_id}'{}: {}{}{}", bold(use_styles), yellow(use_styles), reset(use_styles), bold(use_styles), yellow(use_styles), reset(use_styles), dim(use_styles), truncate(&task, 60), reset(use_styles));
-                }
-                AgentEvent::SubagentTurnStart {
-                    subagent_id: _,
-                    turn_index,
-                } => {
-                    println!("  {}{}|{}  {}{}-- Turn {turn_index} --{}", bold(use_styles), yellow(use_styles), reset(use_styles), dim(use_styles), reset(use_styles), reset(use_styles));
-                }
-                AgentEvent::SubagentMessageUpdate { subagent_id: _, delta } => {
-                    match delta {
-                        MessageDelta::Thinking(t) => {
-                            print!("  {}{}|{}  {}{}... {}{}{}", bold(use_styles), yellow(use_styles), reset(use_styles), dim(use_styles), reset(use_styles), dim(use_styles), t, reset(use_styles));
-                        }
-                        MessageDelta::Text(t) => {
-                            print!("  {}{}|{}  {}{}>> {}", bold(use_styles), yellow(use_styles), reset(use_styles), green(use_styles), reset(use_styles), reset(use_styles));
-                            if use_styles {
-                                skin.print_inline(&t);
-                            } else {
-                                print!("{t}");
-                            }
+                    println!("  {}[⚠ APPROVAL]{} {} ({})", yellow(use_styles_val), reset(use_styles_val), tool_name, danger_level);
+                    println!("  {}   Reason: {}{}", dim(use_styles_val), explanation, reset(use_styles_val));
+                    if let Ok(mut pending) = approvals.lock() {
+                        if let Some(tx) = pending.remove(&prompt_id) {
+                            let _ = tx.send(ApprovalChoice::AllowSession);
                         }
                     }
-                    io::stdout().flush().ok();
                 }
-                AgentEvent::SubagentToolStart {
-                    subagent_id: _,
-                    tool_name,
-                    args,
-                    ..
-                } => {
+                AgentEvent::SubagentStart { subagent_id, task } => {
+                    println!("\n  {}|- Sub-agent '{subagent_id}': {}", yellow(use_styles_val), truncate(&task, 60));
+                }
+                AgentEvent::SubagentTurnStart { turn_index, .. } => {
+                    println!("  {}|  -- Turn {turn_index} --{}", dim(use_styles_val), reset(use_styles_val));
+                }
+                AgentEvent::SubagentMessageUpdate { delta, .. } => match delta {
+                    MessageDelta::Thinking(t) => { print!("{}{}{}", dim(use_styles_val), t, reset(use_styles_val)); io::stdout().flush().ok(); }
+                    MessageDelta::Text(t) => { print!("{}{}", t, reset(use_styles_val)); io::stdout().flush().ok(); }
+                },
+                AgentEvent::SubagentToolStart { tool_name, args, .. } => {
                     let args_str = args.to_string();
-                    println!("  {}{}|{}  {}{}@@ {}{}{}({}{}{}){}{}", bold(use_styles), yellow(use_styles), reset(use_styles), bold(use_styles), cyan(use_styles), reset(use_styles), bold(use_styles), tool_name, reset(use_styles), dim(use_styles), truncate(&args_str, 60), reset(use_styles), reset(use_styles));
+                    println!("  {}|  @@ {}({}){}", cyan(use_styles_val), tool_name, truncate(&args_str, 60), reset(use_styles_val));
                 }
-                AgentEvent::SubagentToolEnd {
-                    subagent_id: _,
-                    tool_name,
-                    result,
-                    is_error,
-                    ..
-                } => {
+                AgentEvent::SubagentToolEnd { tool_name, result, is_error, .. } => {
                     let preview = truncate(&result, 100);
                     if is_error {
-                        println!("  {}{}|{}{}  {}{}XX {}{}{} {}{}{}{}", bold(use_styles), yellow(use_styles), reset(use_styles), reset(use_styles), bold(use_styles), red(use_styles), reset(use_styles), bold(use_styles), tool_name, reset(use_styles), red(use_styles), preview, reset(use_styles));
+                        println!("  {}|  XX {}: {}{}", red(use_styles_val), tool_name, preview, reset(use_styles_val));
                     } else {
-                        println!("  {}{}|{}{}  {}{}>> {}{}{} {}{}{}{}", bold(use_styles), yellow(use_styles), reset(use_styles), reset(use_styles), bold(use_styles), green(use_styles), reset(use_styles), bold(use_styles), tool_name, reset(use_styles), dim(use_styles), preview, reset(use_styles));
+                        println!("  {}|  >> {}: {}{}", green(use_styles_val), tool_name, preview, reset(use_styles_val));
                     }
                 }
-                AgentEvent::SubagentEnd {
-                    subagent_id,
-                    success,
-                    iterations_used,
-                } => {
-                    let (_status, icon, color): (&str, &str, fn(bool) -> &'static str) = if success {
-                        ("done", "ok", green as fn(bool) -> &'static str)
-                    } else {
-                        ("incomplete", "err", red as fn(bool) -> &'static str)
-                    };
-                    println!("  {}{}|-{} Sub-agent {}{}'{subagent_id}'{}{}: {}{} {}{}({iterations_used} iterations){}{}", bold(use_styles), yellow(use_styles), reset(use_styles), bold(use_styles), yellow(use_styles), reset(use_styles), color(use_styles), bold(use_styles), icon, reset(use_styles), dim(use_styles), reset(use_styles), reset(use_styles));
+                AgentEvent::SubagentEnd { subagent_id, success, iterations_used } => {
+                    let icon = if success { "ok" } else { "err" };
+                    println!("  {}|- Sub-agent '{subagent_id}': {} ({iterations_used} iterations){}", yellow(use_styles_val), icon, reset(use_styles_val));
                 }
+                _ => {} // TurnEnd, MessageStart, ToolExecutionUpdate — silently ignored
             }
-        })
-        .await
-    {
-        Ok(_answer) => {
-            println!();
+        }).await;
+
+        match result {
+            Ok(_answer) => { println!(); }
+            Err(e) => { eprintln!("\n  {}XX {}{}", red(use_styles_val), e, reset(use_styles_val)); }
         }
-        Err(e) => {
-            eprintln!("\n  {}{}XX {}{}{}{}", bold(use_styles), red(use_styles), reset(use_styles), bold(use_styles), e, reset(use_styles));
+    };
+
+    // Race: agent future vs stdin abort
+    let stdin_abort = abort_flag.clone();
+    let stdin_task = tokio::task::spawn_blocking(move || {
+        let mut buf = String::new();
+        loop {
+            buf.clear();
+            match io::stdin().read_line(&mut buf) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if buf.trim() == "/abort" {
+                        stdin_abort.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    tokio::select! {
+        _ = agent_fut => {},
+        _ = stdin_task => {
+            // User typed /abort — agent will stop at next check
         }
     }
 }
@@ -810,7 +1149,7 @@ fn print_help() {
   General
     /help              Show this help
     /status            Show agent subsystem status
-    /quit, /exit       Exit
+    /quit, /exit       Exit (auto-saves current session)
 
   Model & Context
     /models            List available models
@@ -818,6 +1157,7 @@ fn print_help() {
     /temp <float>      Set temperature
     /max-tokens <int>  Set max output tokens
     /tokens            Show current token count
+    /context           Show message history with token breakdown
     /clear             Clear conversation context
 
   Agent Control
@@ -831,11 +1171,17 @@ fn print_help() {
 
   Memory
     /memory            Show core memory blocks
+    /memory search <q> Search conversation memory
+    /memory stats      Show memory statistics (count, strength, importance)
 
   Permission & Hooks
     /permission        Show permission policy
     /perm test <tool> <json>   Test permission for a tool call
+    /perm mode <mode>          Set mode: paranoid|standard|permissive|yolo
     /hooks             Show registered hooks
+
+  MCP (Model Context Protocol)
+    /mcp               Show connected MCP servers and discovered tools
 
   Planning (Todo)
     /todo              Show todo list
@@ -851,9 +1197,21 @@ fn print_help() {
     /tasks done <id>          Mark task completed
     /tasks clear              Clear all tasks
 
+  Sessions
+    /sessions          List saved sessions
+    /session save      Save current conversation
+    /session resume <id>     Resume a previous session
+    /session delete <id>     Delete a session
+    /session rename <id> <t> Rename a session
+    /session archive <id>    Archive a session
+    /session search <kw>     Search sessions by title/summary
+
   Skills
     /skills            List available skills
     /skill <name>      Load a skill into context
+    /skill active      Show currently active skills
+    /skill deactivate <name|all>  Deactivate a skill
+    /skill reload      Rescan skill directories
 
 Just type a message to chat with the agent."#
     );

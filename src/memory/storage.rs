@@ -58,6 +58,9 @@ impl Storage {
                 content TEXT NOT NULL,
                 embedding BLOB,
                 importance REAL DEFAULT 0.5,
+                memory_strength REAL DEFAULT 1.0,
+                access_count INTEGER DEFAULT 0,
+                last_accessed_at TEXT,
                 created_at TEXT NOT NULL
             );
 
@@ -80,8 +83,56 @@ impl Storage {
                 embedding BLOB,
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS sessions (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT 'Untitled',
+                summary TEXT NOT NULL DEFAULT '',
+                start_time TEXT NOT NULL,
+                end_time TEXT,
+                message_count INTEGER DEFAULT 0,
+                cwd TEXT DEFAULT '',
+                model_used TEXT DEFAULT '',
+                tags TEXT DEFAULT '[]',
+                archived INTEGER DEFAULT 0,
+                parent_session_id TEXT DEFAULT '',
+                session_type TEXT DEFAULT 'main',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at);
+            CREATE INDEX IF NOT EXISTS idx_sessions_archived ON sessions(archived);
+            CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
+
+            CREATE TABLE IF NOT EXISTS session_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                msg_index INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT DEFAULT '',
+                tool_calls TEXT DEFAULT '[]',
+                tool_call_id TEXT DEFAULT '',
+                name TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                UNIQUE(session_id, msg_index)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_session_msgs ON session_messages(session_id);
             ",
         )?;
+
+        // Migrate existing databases: add columns if missing (idempotent)
+        let migrations = &[
+            "ALTER TABLE recall_memory ADD COLUMN memory_strength REAL DEFAULT 1.0",
+            "ALTER TABLE recall_memory ADD COLUMN access_count INTEGER DEFAULT 0",
+            "ALTER TABLE recall_memory ADD COLUMN last_accessed_at TEXT",
+            "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT DEFAULT ''",
+            "ALTER TABLE sessions ADD COLUMN session_type TEXT DEFAULT 'main'",
+        ];
+        for migration in migrations {
+            let _ = db.execute_batch(migration);
+        }
 
         Ok(())
     }

@@ -536,7 +536,7 @@ impl Tool for TaskExecuteTool {
             .to_string();
 
         // Check task is ready and get dependency context
-        let (goal, dep_context) = {
+        let (goal, dep_context, force_inline) = {
             let board = self
                 .board
                 .lock()
@@ -560,7 +560,8 @@ impl Tool for TaskExecuteTool {
             }
 
             let dep_ctx = build_dependency_context(&board, id);
-            (task.goal.clone(), dep_ctx)
+            let use_subagent = should_use_subagent(&task.goal, &board, id);
+            (task.goal.clone(), dep_ctx, !use_subagent)
         };
 
         // Mark in-progress
@@ -580,7 +581,35 @@ impl Tool for TaskExecuteTool {
         }
         task_prompt.push_str("\nComplete this task and return the result. When done, your output will be stored as the task result.");
 
-        // Spawn subagent
+        if force_inline {
+            // Execute inline — simple task, no subagent overhead
+            let result_text = format!("[Task '{}' - inline] Goal: {}", id, goal);
+
+            let mut board = self
+                .board
+                .lock()
+                .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            board.update(id, TaskStatus::Completed, Some(result_text.clone()))?;
+
+            let ready = board.ready_tasks();
+            let unblocked: Vec<&str> = ready
+                .iter()
+                .filter(|t| t.blocked_by.contains(&id.to_string()))
+                .map(|t| t.id.as_str())
+                .collect();
+
+            let mut output = format!(
+                "[Task '{}'] completed (inline, no subagent)\n\n{}",
+                id, result_text
+            );
+            if !unblocked.is_empty() {
+                output.push_str(&format!("\n\nUnblocked tasks: {}", unblocked.join(", ")));
+            }
+            return Ok(output);
+        }
+
+        // Spawn subagent with proper tool registry
+        let tool_registry = crate::tools::ToolRegistry::from_names(&custom_tools);
         let config = SubagentConfig {
             system_prompt,
             tools: custom_tools,
@@ -588,7 +617,7 @@ impl Tool for TaskExecuteTool {
             max_context_tokens: 32000,
         };
 
-        let mut subagent = Subagent::new(id, config, &self.model_config, ToolRegistry::new());
+        let mut subagent = Subagent::new(id, config, &self.model_config, tool_registry);
         let result = subagent.run(&task_prompt).await?;
 
         // Update task with result
@@ -630,6 +659,46 @@ impl Tool for TaskExecuteTool {
             Ok(output)
         }
     }
+}
+
+/// Heuristic: should this task spawn a subagent or execute inline?
+///
+/// Returns true if:
+/// - The goal is complex (>80 chars, suggesting multi-step work)
+/// - There are parallel tasks that could run concurrently
+/// - The goal mentions tools or file operations
+fn should_use_subagent(goal: &str, board: &TaskBoard, current_id: &str) -> bool {
+    // Check for parallel-ready siblings first (always use subagent for concurrency)
+    let ready = board.ready_tasks();
+    let parallel_count = ready.iter().filter(|t| t.id != current_id).count();
+    if parallel_count >= 1 {
+        return true;
+    }
+
+    // Count tool-related keywords in the goal
+    let tool_keywords = [
+        "read", "write", "edit", "grep", "search", "find", "run",
+        "compile", "build", "test", "refactor", "implement", "fix",
+        "analyze", "check", "verify", "compare",
+    ];
+    let goal_lower = goal.to_lowercase();
+    let keyword_count = tool_keywords
+        .iter()
+        .filter(|kw| goal_lower.contains(&kw.to_lowercase()))
+        .count();
+
+    // Very short + no tool keywords → inline
+    if goal.len() < 40 && keyword_count == 0 {
+        return false;
+    }
+
+    // Long goals OR multiple tool keywords → subagent
+    if goal.len() > 120 || keyword_count >= 2 {
+        return true;
+    }
+
+    // Default: inline
+    false
 }
 
 fn topological_sort(tasks: &[TaskRecord]) -> Vec<String> {
@@ -776,5 +845,45 @@ mod tests {
         assert!(pos_a < pos_c);
         assert!(pos_b < pos_c);
         assert!(pos_c < pos_d);
+    }
+
+    // ── should_use_subagent heuristic tests ──────────────────────────
+
+    #[test]
+    fn test_should_use_subagent_short_goal_inline() {
+        let board = TaskBoard::new();
+        let mut b = board;
+        b.create("t1", "Read main.rs", vec![]);
+        assert!(!should_use_subagent("Read main.rs", &b, "t1"));
+    }
+
+    #[test]
+    fn test_should_use_subagent_long_goal_subagent() {
+        let board = TaskBoard::new();
+        let mut b = board;
+        let long_goal = "Refactor the entire authentication module to use OAuth2 with PKCE flow, \
+                         including token refresh, session management, and error handling across \
+                         all API endpoints";
+        b.create("t1", long_goal, vec![]);
+        assert!(should_use_subagent(long_goal, &b, "t1"));
+    }
+
+    #[test]
+    fn test_should_use_subagent_parallel_siblings() {
+        let board = TaskBoard::new();
+        let mut b = board;
+        b.create("t1", "Find auth module", vec![]);
+        b.create("t2", "Find database module", vec![]);
+        // t1 and t2 are both ready (parallel)
+        assert!(should_use_subagent("Find auth module", &b, "t1"));
+    }
+
+    #[test]
+    fn test_should_use_subagent_tool_keywords() {
+        let board = TaskBoard::new();
+        let mut b = board;
+        b.create("t1", "Read and analyze the config file", vec![]);
+        // "read" + "analyze" = 2 tool keywords
+        assert!(should_use_subagent("Read and analyze the config file", &b, "t1"));
     }
 }

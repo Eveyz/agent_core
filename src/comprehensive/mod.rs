@@ -6,7 +6,7 @@ use crate::background::BackgroundPool;
 use crate::cron::CronScheduler;
 use crate::hooks::HookRegistry;
 use crate::permission::PermissionPolicy;
-use crate::skills::SkillLoader;
+use crate::skills::SkillManager;
 use crate::tasks::TaskBoard;
 use crate::teams::AgentTeam;
 use crate::todo::TodoList;
@@ -159,11 +159,11 @@ impl ComprehensiveAgentBuilder {
             None
         };
 
-        let skill_loader = if self.enable_skills {
+        let skill_manager = if self.enable_skills {
             let mut loader = if let Some(dir) = self.skills_dir {
-                SkillLoader::new(std::path::PathBuf::from(dir))
+                SkillManager::new(std::path::PathBuf::from(dir))
             } else {
-                SkillLoader::with_defaults()
+                SkillManager::with_defaults()
             };
             let _ = loader.scan();
             Some(loader)
@@ -196,7 +196,7 @@ impl ComprehensiveAgentBuilder {
             task_board,
             background_pool,
             cron_scheduler,
-            skill_loader,
+            skill_manager,
             team,
             worktree_manager,
         })
@@ -211,7 +211,7 @@ pub struct ComprehensiveAgent {
     pub task_board: Option<Arc<Mutex<TaskBoard>>>,
     pub background_pool: Option<BackgroundPool>,
     pub cron_scheduler: Option<CronScheduler>,
-    pub skill_loader: Option<SkillLoader>,
+    pub skill_manager: Option<SkillManager>,
     pub team: Option<AgentTeam>,
     pub worktree_manager: Option<WorktreeManager>,
 }
@@ -246,7 +246,7 @@ impl ComprehensiveAgent {
     }
 
     pub fn has_skills(&self) -> bool {
-        self.skill_loader.is_some()
+        self.skill_manager.is_some()
     }
 
     pub fn has_team(&self) -> bool {
@@ -290,7 +290,7 @@ impl ComprehensiveAgent {
             parts.push(format!("Cron: {} jobs", scheduler.len()));
         }
         if self.has_skills()
-            && let Some(ref loader) = self.skill_loader
+            && let Some(ref loader) = self.skill_manager
         {
             parts.push(format!("Skills: {} loaded", loader.list().len()));
         }

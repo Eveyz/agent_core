@@ -1,62 +1,58 @@
-use super::McpToolDef;
+//! McpChannel — a lightweight handle to a single MCP server connection.
+//! Kept for backward compatibility and as a convenience wrapper.
+
 use anyhow::Result;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
+use super::{McpClientManager, McpToolDef};
+
+/// A channel to a specific MCP server.
+/// Wraps the shared McpClientManager and forwards calls to the named server.
 pub struct McpChannel {
-    tools: HashMap<String, McpToolDef>,
-}
-
-impl Default for McpChannel {
-    fn default() -> Self {
-        Self::new()
-    }
+    server: String,
+    manager: Arc<Mutex<McpClientManager>>,
 }
 
 impl McpChannel {
-    pub fn new() -> Self {
+    pub fn new(server: &str, manager: Arc<Mutex<McpClientManager>>) -> Self {
         Self {
-            tools: HashMap::new(),
+            server: server.to_string(),
+            manager,
         }
     }
 
-    pub fn register_tool(&mut self, tool: McpToolDef) {
-        self.tools.insert(tool.name.clone(), tool);
+    /// Get tool definitions for this server.
+    pub async fn tool_definitions(&self) -> Vec<McpToolDef> {
+        let mgr = self.manager.lock().await;
+        mgr.all_tools()
+            .into_iter()
+            .filter(|t| t.server == self.server)
+            .collect()
     }
 
-    pub fn has_tool(&self, name: &str) -> bool {
-        self.tools.contains_key(name)
+    /// Call a tool on this server.
+    pub async fn invoke(&self, tool_name: &str, args: &Value) -> Result<String> {
+        let mgr = self.manager.lock().await;
+        mgr.call_tool(&self.server, tool_name, args.clone()).await
     }
 
-    pub fn tool_names(&self) -> Vec<&str> {
-        self.tools.keys().map(|s| s.as_str()).collect()
-    }
-
-    pub fn tool_definitions(&self) -> Vec<Value> {
-        self.tools
-            .values()
+    /// Convert tool definitions to the format expected by LLM tool schema.
+    pub async fn tool_schemas(&self) -> Vec<Value> {
+        let defs = self.tool_definitions().await;
+        defs
+            .iter()
             .map(|t| {
                 serde_json::json!({
                     "type": "function",
                     "function": {
-                        "name": t.name,
+                        "name": t.qualified_name(),
                         "description": t.description,
                         "parameters": t.parameters,
                     }
                 })
             })
             .collect()
-    }
-
-    pub async fn invoke(&self, name: &str, args: &Value) -> Result<String> {
-        let _tool = self
-            .tools
-            .get(name)
-            .ok_or_else(|| anyhow::anyhow!("MCP tool '{}' not found in channel", name))?;
-
-        Ok(format!(
-            "[MCP Channel] Invoked '{}' with args {}: (stub)",
-            name, args
-        ))
     }
 }

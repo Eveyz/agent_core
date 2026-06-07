@@ -102,7 +102,12 @@ impl Default for MemoryConfig {
 pub struct Config {
     pub default_model: String,
     pub models: HashMap<String, ModelConfig>,
+    #[serde(default)]
     pub memory: Option<MemoryConfig>,
+    #[serde(default)]
+    pub permissions: crate::permission::PermissionConfig,
+    #[serde(default)]
+    pub mcp: crate::mcp::McpConfig,
 }
 
 impl Config {
@@ -152,6 +157,8 @@ impl Config {
             default_model: "default".to_string(),
             models,
             memory: None,
+            permissions: crate::permission::PermissionConfig::default(),
+            mcp: crate::mcp::McpConfig::default(),
         })
     }
 

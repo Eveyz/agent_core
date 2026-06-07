@@ -180,6 +180,17 @@ impl AppState {
                 self.push_stream_block(TurnBlock::Error(e));
             }
 
+            AgentEvent::ApprovalRequired {
+                tool_name,
+                explanation,
+                ..
+            } => {
+                self.push_stream_block(TurnBlock::Notice(format!(
+                    "[⚠ APPROVAL] {} — {}",
+                    tool_name, explanation
+                )));
+            }
+
             // ── Subagent events ──────────────────────────────────
             AgentEvent::SubagentStart { subagent_id, task } => {
                 let block = TurnBlock::Subagent(SubagentState {
@@ -386,6 +397,8 @@ pub enum TurnBlock {
         result: Option<ToolResult>,
     },
     Subagent(SubagentState),
+    /// System messages (approval prompts, notifications, etc.)
+    Notice(String),
     Error(String),
 }
 

@@ -16,6 +16,7 @@ const TOOL_COLOR: Color = Color::Rgb(86, 182, 194);
 const SUBAGENT_COLOR: Color = Color::Rgb(198, 120, 221);
 const SUCCESS_COLOR: Color = Color::Rgb(152, 195, 121);
 const ERROR_COLOR: Color = Color::Rgb(224, 108, 117);
+const WARN_COLOR: Color = Color::Rgb(229, 192, 123); // amber/gold
 
 // ── Layout ──────────────────────────────────────────────────────────
 
@@ -196,6 +197,12 @@ fn render_turn_block<'a>(block: &'a TurnBlock, lines: &mut Vec<Line<'a>>, width:
                 Span::styled(format!("✗ {e}"), Style::default().fg(ERROR_COLOR).add_modifier(Modifier::BOLD)),
             ]));
         }
+        TurnBlock::Notice(msg) => {
+            lines.push(Line::from(vec![
+                Span::raw(pad.to_string()),
+                Span::styled(format!("⚠ {msg}"), Style::default().fg(WARN_COLOR).add_modifier(Modifier::BOLD)),
+            ]));
+        }
     }
 }
 
@@ -370,7 +377,7 @@ fn render_subagent_block<'a>(sa: &'a SubagentState, lines: &mut Vec<Line<'a>>, w
             render_turn_block(child, &mut child_lines, inner_width, 0);
         }
         
-        for mut child_line in child_lines {
+        for child_line in child_lines {
             let lw = child_line.width();
             let fill = " ".repeat(inner_width.saturating_sub(lw));
             let mut final_spans = vec![Span::raw(pad.to_string()), Span::styled("│ ", border_style)];
