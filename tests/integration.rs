@@ -129,7 +129,7 @@ fn test_agent_from_config_file() {
 #[test]
 fn test_agent_tool_registry() {
     let config = build_test_config();
-    let mut agent = AgentBuilder::with_config(config)
+    let agent = AgentBuilder::with_config(config)
         .with_tool(StubTool)
         .with_memory(false)
         .build()

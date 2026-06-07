@@ -10,7 +10,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::io::{self, IsTerminal, Write};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 // ── Terminal styling ───────────────────────────────────────────────
@@ -841,8 +841,10 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             _ => {
+                // Reset abort flag before each run
+                agent.abort_flag.store(false, Ordering::Relaxed);
                 let approvals = agent.pending_approvals_clone();
-                run_agent_async(&mut agent, input, &abort_flag, use_styles, &approvals).await;
+                run_agent(&mut agent, input, use_styles, &approvals).await;
             }
         }
     }
@@ -989,35 +991,25 @@ fn print_status(
     }
 }
 
-/// Run agent with real-time /abort support.
-/// Uses tokio::select! to read stdin while agent runs.
-async fn run_agent_async(
+/// Run agent inline — aborts are handled via `abort_flag` which is
+/// checked inside `collect_stream` on every chunk and between turns.
+async fn run_agent(
     agent: &mut agent_core::Agent,
     input: &str,
-    abort_flag: &Arc<AtomicBool>,
     use_styles: bool,
     pending_approvals: &Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<ApprovalChoice>>>>,
 ) {
-    let abort = abort_flag.clone();
-    abort.store(false, Ordering::Relaxed);
-
-    let input_owned = input.to_string();
+    let first_event = Cell::new(true);
+    let in_thinking = Cell::new(false);
+    let in_agent_text = Cell::new(false);
+    let skin = termimad::MadSkin::default();
     let approvals = pending_approvals.clone();
-    let use_styles_val = use_styles;
 
-    // Pin the agent future so we can select! on it
-    let agent_fut = async {
-        let first_event = Cell::new(true);
-        let in_thinking = Cell::new(false);
-        let in_agent_text = Cell::new(false);
-        let _in_subagent_thinking = Cell::new(false);
-        let _in_subagent_text = Cell::new(false);
-        let skin = termimad::MadSkin::default();
+    print!("\r  {}...{}", bold(use_styles), reset(use_styles));
+    io::stdout().flush().ok();
 
-        print!("\r  {}...{}", bold(use_styles_val), reset(use_styles_val));
-        io::stdout().flush().ok();
-
-        let result = agent.run_with_events(&input_owned, |event| {
+    match agent
+        .run_with_events(input, |event| {
             if first_event.get() {
                 print!("\r                                    \r");
                 io::stdout().flush().ok();
@@ -1030,49 +1022,141 @@ async fn run_agent_async(
                     in_thinking.set(false);
                     in_agent_text.set(false);
                     if turn_index > 0 {
-                        println!("\n  {}--- Turn {turn_index} ---{}", dim(use_styles_val), reset(use_styles_val));
+                        println!(
+                            "\n  {}--- Turn {turn_index} ---{}",
+                            dim(use_styles),
+                            reset(use_styles)
+                        );
                     }
                 }
                 AgentEvent::MessageUpdate { delta } => match delta {
                     MessageDelta::Thinking(t) => {
-                        if in_agent_text.get() { println!(); in_agent_text.set(false); }
+                        if in_agent_text.get() {
+                            println!();
+                            in_agent_text.set(false);
+                        }
                         if !in_thinking.get() {
-                            print!("\n  {}{}...{}{} ", bold(use_styles_val), yellow(use_styles_val), dim(use_styles_val), reset(use_styles_val));
+                            print!(
+                                "\n  {}{}...{}{} ",
+                                bold(use_styles),
+                                yellow(use_styles),
+                                dim(use_styles),
+                                reset(use_styles)
+                            );
                             in_thinking.set(true);
                         }
-                        print!("{}{}{}", dim(use_styles_val), t, reset(use_styles_val));
+                        print!("{}{}{}", dim(use_styles), t, reset(use_styles));
                         io::stdout().flush().ok();
                     }
                     MessageDelta::Text(t) => {
-                        if in_thinking.get() { println!("{}", reset(use_styles_val)); in_thinking.set(false); }
+                        if in_thinking.get() {
+                            println!("{}", reset(use_styles));
+                            in_thinking.set(false);
+                        }
                         if !in_agent_text.get() {
-                            print!("  {}{}>> {}{}", bold(use_styles_val), green(use_styles_val), reset(use_styles_val), reset(use_styles_val));
+                            print!(
+                                "  {}{}>> {}{}",
+                                bold(use_styles),
+                                green(use_styles),
+                                reset(use_styles),
+                                reset(use_styles)
+                            );
                             in_agent_text.set(true);
                         }
-                        if use_styles_val { skin.print_inline(&t); } else { print!("{t}"); }
+                        if use_styles {
+                            skin.print_inline(&t);
+                        } else {
+                            print!("{t}");
+                        }
                         io::stdout().flush().ok();
                     }
                 },
                 AgentEvent::MessageEnd { .. } => {}
-                AgentEvent::ToolExecutionStart { tool_name, args, .. } => {
+                AgentEvent::ToolExecutionStart {
+                    tool_name, args, ..
+                } => {
                     let args_str = args.to_string();
-                    println!("\n  {}{}@@ {}{}{}({}{}{}){}{}", bold(use_styles_val), cyan(use_styles_val), reset(use_styles_val), bold(use_styles_val), tool_name, reset(use_styles_val), dim(use_styles_val), truncate(&args_str, 80), reset(use_styles_val), reset(use_styles_val));
+                    println!(
+                        "\n  {}{}@@ {}{}{}({}{}{}){}{}",
+                        bold(use_styles),
+                        cyan(use_styles),
+                        reset(use_styles),
+                        bold(use_styles),
+                        tool_name,
+                        reset(use_styles),
+                        dim(use_styles),
+                        truncate(&args_str, 80),
+                        reset(use_styles),
+                        reset(use_styles)
+                    );
                 }
-                AgentEvent::ToolExecutionEnd { tool_name, result, is_error, .. } => {
+                AgentEvent::ToolExecutionEnd {
+                    tool_name,
+                    result,
+                    is_error,
+                    ..
+                } => {
                     if is_error {
-                        println!("     {}{}XX {}{}{} {}{}{}{}", bold(use_styles_val), red(use_styles_val), reset(use_styles_val), bold(use_styles_val), tool_name, reset(use_styles_val), red(use_styles_val), truncate(&result, 120), reset(use_styles_val));
+                        println!(
+                            "     {}{}XX {}{}{} {}{}{}{}",
+                            bold(use_styles),
+                            red(use_styles),
+                            reset(use_styles),
+                            bold(use_styles),
+                            tool_name,
+                            reset(use_styles),
+                            red(use_styles),
+                            truncate(&result, 120),
+                            reset(use_styles)
+                        );
                     } else {
-                        println!("     {}{}>> {}{}{} {}{}{}{}", bold(use_styles_val), green(use_styles_val), reset(use_styles_val), bold(use_styles_val), tool_name, reset(use_styles_val), dim(use_styles_val), truncate(&result, 120), reset(use_styles_val));
+                        println!(
+                            "     {}{}>> {}{}{} {}{}{}{}",
+                            bold(use_styles),
+                            green(use_styles),
+                            reset(use_styles),
+                            bold(use_styles),
+                            tool_name,
+                            reset(use_styles),
+                            dim(use_styles),
+                            truncate(&result, 120),
+                            reset(use_styles)
+                        );
                     }
                     io::stdout().flush().ok();
                 }
                 AgentEvent::Error(e) => {
-                    eprintln!("  {}{}XX {}{}{}{}", bold(use_styles_val), red(use_styles_val), reset(use_styles_val), bold(use_styles_val), e, reset(use_styles_val));
+                    eprintln!(
+                        "  {}{}XX {}{}{}{}",
+                        bold(use_styles),
+                        red(use_styles),
+                        reset(use_styles),
+                        bold(use_styles),
+                        e,
+                        reset(use_styles)
+                    );
                 }
-                AgentEvent::ApprovalRequired { prompt_id, tool_name, danger_level, explanation, .. } => {
+                AgentEvent::ApprovalRequired {
+                    prompt_id,
+                    tool_name,
+                    danger_level,
+                    explanation,
+                    ..
+                } => {
                     println!();
-                    println!("  {}[⚠ APPROVAL]{} {} ({})", yellow(use_styles_val), reset(use_styles_val), tool_name, danger_level);
-                    println!("  {}   Reason: {}{}", dim(use_styles_val), explanation, reset(use_styles_val));
+                    println!(
+                        "  {}[⚠ APPROVAL]{} {} ({})",
+                        yellow(use_styles),
+                        reset(use_styles),
+                        tool_name,
+                        danger_level
+                    );
+                    println!(
+                        "  {}   Reason: {}{}",
+                        dim(use_styles),
+                        explanation,
+                        reset(use_styles)
+                    );
                     if let Ok(mut pending) = approvals.lock() {
                         if let Some(tx) = pending.remove(&prompt_id) {
                             let _ = tx.send(ApprovalChoice::AllowSession);
@@ -1080,64 +1164,97 @@ async fn run_agent_async(
                     }
                 }
                 AgentEvent::SubagentStart { subagent_id, task } => {
-                    println!("\n  {}|- Sub-agent '{subagent_id}': {}", yellow(use_styles_val), truncate(&task, 60));
+                    println!(
+                        "\n  {}|- Sub-agent '{subagent_id}': {}",
+                        yellow(use_styles),
+                        truncate(&task, 60)
+                    );
                 }
                 AgentEvent::SubagentTurnStart { turn_index, .. } => {
-                    println!("  {}|  -- Turn {turn_index} --{}", dim(use_styles_val), reset(use_styles_val));
+                    println!(
+                        "  {}|  -- Turn {turn_index} --{}",
+                        dim(use_styles),
+                        reset(use_styles)
+                    );
                 }
                 AgentEvent::SubagentMessageUpdate { delta, .. } => match delta {
-                    MessageDelta::Thinking(t) => { print!("{}{}{}", dim(use_styles_val), t, reset(use_styles_val)); io::stdout().flush().ok(); }
-                    MessageDelta::Text(t) => { print!("{}{}", t, reset(use_styles_val)); io::stdout().flush().ok(); }
+                    MessageDelta::Thinking(t) => {
+                        print!("{}{}{}", dim(use_styles), t, reset(use_styles));
+                        io::stdout().flush().ok();
+                    }
+                    MessageDelta::Text(t) => {
+                        print!("{}{}", t, reset(use_styles));
+                        io::stdout().flush().ok();
+                    }
                 },
-                AgentEvent::SubagentToolStart { tool_name, args, .. } => {
+                AgentEvent::SubagentToolStart {
+                    tool_name, args, ..
+                } => {
                     let args_str = args.to_string();
-                    println!("  {}|  @@ {}({}){}", cyan(use_styles_val), tool_name, truncate(&args_str, 60), reset(use_styles_val));
+                    println!(
+                        "  {}|  @@ {}({}){}",
+                        cyan(use_styles),
+                        tool_name,
+                        truncate(&args_str, 60),
+                        reset(use_styles)
+                    );
                 }
-                AgentEvent::SubagentToolEnd { tool_name, result, is_error, .. } => {
+                AgentEvent::SubagentToolEnd {
+                    tool_name,
+                    result,
+                    is_error,
+                    ..
+                } => {
                     let preview = truncate(&result, 100);
                     if is_error {
-                        println!("  {}|  XX {}: {}{}", red(use_styles_val), tool_name, preview, reset(use_styles_val));
+                        println!(
+                            "  {}|  XX {}: {}{}",
+                            red(use_styles),
+                            tool_name,
+                            preview,
+                            reset(use_styles)
+                        );
                     } else {
-                        println!("  {}|  >> {}: {}{}", green(use_styles_val), tool_name, preview, reset(use_styles_val));
+                        println!(
+                            "  {}|  >> {}: {}{}",
+                            green(use_styles),
+                            tool_name,
+                            preview,
+                            reset(use_styles)
+                        );
                     }
                 }
-                AgentEvent::SubagentEnd { subagent_id, success, iterations_used } => {
+                AgentEvent::SubagentEnd {
+                    subagent_id,
+                    success,
+                    iterations_used,
+                } => {
                     let icon = if success { "ok" } else { "err" };
-                    println!("  {}|- Sub-agent '{subagent_id}': {} ({iterations_used} iterations){}", yellow(use_styles_val), icon, reset(use_styles_val));
+                    println!(
+                        "  {}|- Sub-agent '{subagent_id}': {} ({iterations_used} iterations){}",
+                        yellow(use_styles),
+                        icon,
+                        reset(use_styles)
+                    );
                 }
                 _ => {} // TurnEnd, MessageStart, ToolExecutionUpdate — silently ignored
             }
-        }).await;
-
-        match result {
-            Ok(_answer) => { println!(); }
-            Err(e) => { eprintln!("\n  {}XX {}{}", red(use_styles_val), e, reset(use_styles_val)); }
+        })
+        .await
+    {
+        Ok(_answer) => {
+            println!();
         }
-    };
-
-    // Race: agent future vs stdin abort
-    let stdin_abort = abort_flag.clone();
-    let stdin_task = tokio::task::spawn_blocking(move || {
-        let mut buf = String::new();
-        loop {
-            buf.clear();
-            match io::stdin().read_line(&mut buf) {
-                Ok(0) => break,
-                Ok(_) => {
-                    if buf.trim() == "/abort" {
-                        stdin_abort.store(true, Ordering::Relaxed);
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-    });
-
-    tokio::select! {
-        _ = agent_fut => {},
-        _ = stdin_task => {
-            // User typed /abort — agent will stop at next check
+        Err(e) => {
+            eprintln!(
+                "\n  {}{}XX {}{}{}{}",
+                bold(use_styles),
+                red(use_styles),
+                reset(use_styles),
+                bold(use_styles),
+                e,
+                reset(use_styles)
+            );
         }
     }
 }
