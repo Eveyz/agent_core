@@ -148,6 +148,24 @@ fn render_conversation(frame: &mut Frame, state: &mut AppState, area: Rect) {
             }
         }
     }
+
+    // ── Loading indicator (between submit and first token) ──────────
+    let streaming_empty = state.streaming.as_ref().map_or(true, |s| s.blocks.is_empty());
+    if state.is_agent_running() && streaming_empty {
+        if !first {
+            lines.push(Line::raw(""));
+        }
+        let load_style = Style::default()
+            .fg(Color::Rgb(229, 192, 123))
+            .add_modifier(Modifier::BOLD);
+        lines.push(Line::from(vec![
+            Span::styled("  ⏳  ", load_style),
+            Span::styled(
+                "Thinking...",
+                Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+            ),
+        ]));
+    }
     lines.push(Line::raw(""));
 
     let text = Text::from(lines);
@@ -316,7 +334,7 @@ fn render_tool_block<'a>(
     ]));
 
     // Label line
-    let label = format!("  ⚙  {}  ", name);
+    let label = format!("⚙  {}  ", name);
     let label_fill = " ".repeat(inner_width.saturating_sub(label.width()));
     lines.push(Line::from(vec![
         Span::raw(pad.to_string()),
@@ -430,7 +448,7 @@ fn render_subagent_block<'a>(
     ]));
 
     // Label line
-    let label = format!("  ⚡  subagent: {}  ", sa.id);
+    let label = format!("⚡  subagent: {}  ", sa.id);
     let label_fill = " ".repeat(inner_width.saturating_sub(label.width()));
     lines.push(Line::from(vec![
         Span::raw(pad.to_string()),
@@ -581,7 +599,10 @@ fn markdown_to_lines(text: &str) -> Vec<Line<'static>> {
                 _ => {}
             },
             Event::End(tag) => match tag {
-                TagEnd::Paragraph => flush_md_line(&mut cur_spans, &mut lines, false),
+                TagEnd::Paragraph => {
+                    flush_md_line(&mut cur_spans, &mut lines, false);
+                    lines.push(Line::raw(""));
+                }
                 TagEnd::Heading(_) => {
                     heading_level = None;
                     flush_md_line(&mut cur_spans, &mut lines, false);
@@ -600,6 +621,7 @@ fn markdown_to_lines(text: &str) -> Vec<Line<'static>> {
                 }
                 TagEnd::List(_) => {
                     flush_md_line(&mut cur_spans, &mut lines, false);
+                    lines.push(Line::raw(""));
                     is_ordered = false;
                     ordered_num = 0;
                 }
@@ -615,8 +637,10 @@ fn markdown_to_lines(text: &str) -> Vec<Line<'static>> {
                 } else {
                     let style = *style_stack.last().unwrap();
                     let mut final_style = style;
-                    if heading_level.is_some() {
-                        final_style = final_style.add_modifier(Modifier::BOLD);
+                    if let Some(level) = heading_level {
+                        final_style = final_style
+                            .add_modifier(Modifier::BOLD)
+                            .fg(heading_color(level));
                     }
                     if in_blockquote {
                         final_style = final_style.add_modifier(Modifier::ITALIC);
@@ -685,6 +709,18 @@ fn merge_style(base: Style, addition: Style) -> Style {
         add_modifier: base.add_modifier | addition.add_modifier,
         sub_modifier: base.sub_modifier | addition.sub_modifier,
         underline_color: addition.underline_color.or(base.underline_color),
+    }
+}
+
+fn heading_color(level: pulldown_cmark::HeadingLevel) -> Color {
+    use pulldown_cmark::HeadingLevel;
+    match level {
+        HeadingLevel::H1 => Color::Rgb(97, 175, 239),   // blue
+        HeadingLevel::H2 => Color::Rgb(86, 182, 194),   // cyan
+        HeadingLevel::H3 => Color::Rgb(152, 195, 121),  // green
+        HeadingLevel::H4 => Color::Rgb(229, 192, 123),  // yellow
+        HeadingLevel::H5 => Color::Rgb(198, 120, 221),  // magenta
+        HeadingLevel::H6 => Color::Rgb(171, 178, 191),  // gray
     }
 }
 

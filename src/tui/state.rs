@@ -92,6 +92,11 @@ impl AppState {
         self.agent_state = "streaming".into();
     }
 
+    /// Whether the agent is currently running (processing a request).
+    pub fn is_agent_running(&self) -> bool {
+        self.agent_running
+    }
+
     // ── Agent event handling ──────────────────────────────────────
 
     pub fn handle_agent_event(&mut self, event: AgentEvent) {
