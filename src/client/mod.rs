@@ -127,13 +127,7 @@ impl OpenAIClient {
                         .and_then(|v| v.parse::<u64>().ok())
                         .map(Duration::from_secs);
 
-                    eprintln!(
-                        "retry {} due to status {}, backoff {:?}",
-                        attempt + 1,
-                        r.status(),
-                        retry_after.unwrap_or(backoff)
-                    );
-
+                    // retry silently — error will flow through Result if needed
                     tokio::time::sleep(retry_after.unwrap_or(backoff)).await;
                     backoff *= 2;
                 }
@@ -143,7 +137,6 @@ impl OpenAIClient {
                     bail!("API error {status}: {body_text}");
                 }
                 Err(e) if attempt < max_retries - 1 => {
-                    eprintln!("request error: {e}, retrying in {backoff:?}");
                     tokio::time::sleep(backoff).await;
                     backoff *= 2;
                 }
