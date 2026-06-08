@@ -33,8 +33,10 @@ ratatui = "0.30"
 crossterm = "0.29"
 argh = "0.1"
 unicode-width = "0.2"
-  glob = "0.3"
-rustyline = { version = "18.0.0", features = ["derive"] }
+glob = "0.3"
+rustyline = { version = "15", features = ["derive"] }
+pulldown-cmark = "0.13"
+syntect = { version = "5", features = ["default-syntaxes", "default-themes"] }
 
 [dev-dependencies]
 tempfile = "3"

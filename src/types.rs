@@ -172,6 +172,18 @@ pub enum AgentEvent {
         iterations_used: usize,
     },
 
+    // ── Permissions ─────────────────────────────────────────────────
+    /// Agent needs user approval before executing a tool.
+    /// The prompt contains all the info needed for the user to decide.
+    /// After the user responds, call `agent.approve(choice)` or `agent.deny(reason)`.
+    ApprovalRequired {
+        prompt_id: String,
+        tool_name: String,
+        tool_input: serde_json::Value,
+        danger_level: String,
+        explanation: String,
+    },
+
     // ── Errors ─────────────────────────────────────────────────────
     Error(String),
 }

@@ -21,11 +21,12 @@ async fn run_app(
 ) -> Result<()> {
     let mut state = AppState::new();
 
-    // Populate status info from agent
+    // Populate status info + share approvals Arc with state
     {
         let a = agent.lock().await;
         state.model = a.current_model().to_string();
         state.tool_mode = format!("{:?}", a.tool_execution_mode());
+        state.pending_approvals = Some(a.pending_approvals_clone());
     }
     let mut pump = EventPump::new();
     let mut last_draw = Instant::now();
@@ -33,6 +34,8 @@ async fn run_app(
     let mut needs_draw = true;
     loop {
         // Drain agent events (non-blocking)
+        // Approvals are handled directly inside handle_agent_event via
+        // the shared approvals Arc — avoids deadlock with the tokio mutex.
         let had_events = pump.drain(&mut state);
         // Handle keyboard input
         let had_input = if event::poll(Duration::from_millis(8))? {
@@ -78,12 +81,12 @@ async fn run_app(
         let now = Instant::now();
         let since_last = now.duration_since(last_draw);
         if needs_draw && since_last >= min_frame {
-            terminal.draw(|frame| render::render(frame, &state))?;
+            terminal.draw(|frame| render::render(frame, &mut state))?;
             last_draw = now;
             needs_draw = false;
         } else if since_last >= Duration::from_millis(500) {
             // Periodic refresh even if idle
-            terminal.draw(|frame| render::render(frame, &state))?;
+            terminal.draw(|frame| render::render(frame, &mut state))?;
             last_draw = now;
             needs_draw = false;
         }

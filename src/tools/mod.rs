@@ -222,14 +222,39 @@ impl ToolRegistry {
         self.tools.keys().map(|s| s.as_str()).collect()
     }
 
-    pub fn clone_subset(&self, _names: &[&str]) -> Self {
-        Self {
-            tools: HashMap::new(),
+    /// Build a registry from tool names using the factory. Unknown names are silently skipped.
+    pub fn from_names(names: &[String]) -> Self {
+        let mut registry = Self::new();
+        for name in names {
+            if let Some(tool) = build_tool_by_name(name) {
+                registry.register(tool);
+            }
         }
+        registry
     }
 
     pub fn clone_names(&self) -> Vec<String> {
         self.tools.keys().cloned().collect()
+    }
+}
+
+/// Factory: build a tool from its name. Returns None for unknown or memory tools
+/// (which require Arc<Mutex<MemoryManager>> and can't be built from name alone).
+pub fn build_tool_by_name(name: &str) -> Option<Box<dyn Tool>> {
+    match name {
+        "read_file" => Some(Box::new(read_file::ReadFileTool)),
+        "write_file" => Some(Box::new(write_file::WriteFileTool)),
+        "edit" => Some(Box::new(edit::EditTool)),
+        "grep" => Some(Box::new(grep::GrepTool)),
+        "glob" => Some(Box::new(glob::GlobTool)),
+        "run_command" => Some(Box::new(run_command::RunCommandTool)),
+        "webfetch" => Some(Box::new(webfetch::WebFetchTool)),
+        "git_status" => Some(Box::new(git::GitStatusTool)),
+        "git_diff" => Some(Box::new(git::GitDiffTool)),
+        "git_log" => Some(Box::new(git::GitLogTool)),
+        "git_commit" => Some(Box::new(git::GitCommitTool)),
+        "git_show" => Some(Box::new(git::GitShowTool)),
+        _ => None,
     }
 }
 

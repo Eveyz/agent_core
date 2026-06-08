@@ -21,4 +21,7 @@ Thumbs.db
 
 # Downloaded models (fastembed cache)
 .cache/
-*cache
+.deepseek
+.workbuddy
+.agent_core_history
+.fastembed_cache
