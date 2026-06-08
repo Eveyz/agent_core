@@ -23,3 +23,5 @@ Thumbs.db
 .cache/
 .deepseek
 .workbuddy
+.agent_core_history
+.fastembed_cache

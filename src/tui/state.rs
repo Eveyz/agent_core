@@ -11,9 +11,14 @@ pub enum CommandMode {
     /// /models new — collecting provider name
     ModelNewProvider,
     /// /models new — collecting base_url
-    ModelNewBaseUrl { provider: String },
+    ModelNewBaseUrl {
+        provider: String,
+    },
     /// /models new — collecting api_key
-    ModelNewApiKey { provider: String, base_url: String },
+    ModelNewApiKey {
+        provider: String,
+        base_url: String,
+    },
     /// /models new — collecting model_name
     ModelNewModelName {
         provider: String,
@@ -66,6 +71,65 @@ impl EventPump {
 
 // ── App state ───────────────────────────────────────────────────────
 
+pub struct AutocompleteState {
+    pub options: Vec<String>,
+    pub filtered_options: Vec<String>,
+    pub selected_index: usize,
+    pub active: bool,
+}
+
+impl AutocompleteState {
+    pub fn new() -> Self {
+        let options = vec![
+            "/quit".into(), "/exit".into(),
+            "/help".into(), "/status".into(),
+            "/models".into(), "/models new".into(), "/model".into(),
+            "/clear".into(), "/new".into(), "/clear-queues".into(),
+            "/memory".into(), "/memory search".into(), "/memory stats".into(),
+            "/tokens".into(), "/temp".into(), "/max-tokens".into(),
+            "/permission".into(), "/perm".into(), "/perm test".into(), "/perm mode".into(),
+            "/hooks".into(),
+            "/todo".into(), "/todo add".into(), "/todo start".into(),
+            "/todo done".into(), "/todo clear".into(),
+            "/tasks".into(), "/tasks add".into(), "/tasks start".into(),
+            "/tasks done".into(), "/tasks clear".into(),
+            "/skills".into(), "/skill".into(), "/skill active".into(),
+            "/skill deactivate".into(), "/skill reload".into(),
+            "/tool-mode".into(), "/steer".into(), "/follow-up".into(),
+            "/abort".into(), "/state".into(), "/rewind".into(),
+            "/sessions".into(), "/session".into(), "/session save".into(),
+            "/session resume".into(), "/session delete".into(),
+            "/session rename".into(), "/session archive".into(), "/session search".into(),
+        ];
+        Self {
+            options,
+            filtered_options: Vec::new(),
+            selected_index: 0,
+            active: false,
+        }
+    }
+}
+
+// ── Modal overlay (model picker, form) ──────────────────────────────
+
+#[derive(Clone)]
+pub enum ModalState {
+    None,
+    /// /models or /model — select from available models to switch
+    ModelPicker {
+        models: Vec<String>,
+        selected: usize,
+    },
+    /// /models new — register new model form
+    ModelForm {
+        provider: String,
+        base_url: String,
+        api_key: String,
+        model_id: String,
+        active_field: usize,
+    },
+}
+
 pub struct AppState {
     pub entries: Vec<Entry>,
     pub streaming: Option<Streaming>,
@@ -78,17 +142,21 @@ pub struct AppState {
     pub tool_mode: String,
     pub focus_index: Option<usize>,
     pub should_quit: bool,
+    pub agent_running: bool,
     /// Multi-step command input state (e.g., /models new)
     pub command_mode: CommandMode,
     /// Pending command result (e.g., "switch_model:name", "register_model:...")
     pub pending_command: Option<String>,
-    agent_running: bool,
     pending_request: Option<String>,
     /// Direct handle to the agent's pending approvals map — used to
     /// auto-approve without going through the tokio mutex lock on Agent.
     pub pending_approvals:
         Option<Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<ApprovalChoice>>>>>,
     pending_tools: HashMap<String, PendingToolCall>,
+    pub autocomplete: AutocompleteState,
+    pub modal: ModalState,
+    /// Simple frame counter for UI animation (increments each render)
+    pub frame_count: u64,
 }
 
 impl AppState {
@@ -111,6 +179,32 @@ impl AppState {
             pending_request: None,
             pending_approvals: None,
             pending_tools: HashMap::new(),
+            autocomplete: AutocompleteState::new(),
+            modal: ModalState::None,
+            frame_count: 0,
+        }
+    }
+
+    pub fn update_autocomplete(&mut self) {
+        if self.input.starts_with('/') {
+            self.autocomplete.active = true;
+            let filter_text = &self.input;
+            self.autocomplete.filtered_options = self
+                .autocomplete
+                .options
+                .iter()
+                .filter(|opt| opt.starts_with(filter_text))
+                .cloned()
+                .collect();
+
+            if self.autocomplete.filtered_options.is_empty() {
+                self.autocomplete.active = false;
+            } else if self.autocomplete.selected_index >= self.autocomplete.filtered_options.len() {
+                self.autocomplete.selected_index =
+                    self.autocomplete.filtered_options.len().saturating_sub(1);
+            }
+        } else {
+            self.autocomplete.active = false;
         }
     }
 
@@ -127,11 +221,6 @@ impl AppState {
         self.pending_request = Some(text);
         self.agent_running = true;
         self.agent_state = "streaming".into();
-    }
-
-    /// Whether the agent is currently running (processing a request).
-    pub fn is_agent_running(&self) -> bool {
-        self.agent_running
     }
 
     // ── Command handling ───────────────────────────────────────────
@@ -171,9 +260,25 @@ impl AppState {
             self.pending_command = Some("clear".to_string());
             return None;
         }
-        if input.starts_with('/') {
-            return Some(format!("unknown command: {}", input));
-        }
+        let known = matches!(input,
+        "/quit" | "/exit" | "/help" | "/models" | "/model" | "/models new" |
+        "/clear" | "/new" | "/clear-queues" | "/abort" | "/state" |
+        "/memory" | "/memory search" | "/memory stats" |
+        "/tokens" | "/temp" | "/max-tokens" | "/tool-mode" |
+        "/permission" | "/perm" | "/perm test" | "/perm mode" | "/hooks" |
+        "/todo" | "/todo add" | "/todo start" | "/todo done" | "/todo clear" |
+        "/tasks" | "/tasks add" | "/tasks start" | "/tasks done" | "/tasks clear" |
+        "/skills" | "/skill" | "/skill active" | "/skill deactivate" | "/skill reload" |
+        "/steer" | "/follow-up" | "/rewind" | "/status" |
+        "/sessions" | "/session" | "/session save" | "/session resume" |
+        "/session delete" | "/session rename" | "/session archive" | "/session search"
+    );
+    if input.starts_with('/') && !known {
+        return Some(format!("Unknown command: {}. Type /help for available commands.", input));
+    }
+    if input.starts_with('/') {
+        return Some(format!("Command '{}' not yet implemented in TUI.", input));
+    }
 
         // Not a command — treat as user message
         self.submit(input.to_string());
@@ -188,22 +293,16 @@ impl AppState {
         }
 
         let next = match &self.command_mode {
-            CommandMode::ModelNewProvider => {
-                CommandMode::ModelNewBaseUrl { provider: input }
-            }
-            CommandMode::ModelNewBaseUrl { provider } => {
-                CommandMode::ModelNewApiKey {
-                    provider: provider.clone(),
-                    base_url: input,
-                }
-            }
-            CommandMode::ModelNewApiKey { provider, base_url } => {
-                CommandMode::ModelNewModelName {
-                    provider: provider.clone(),
-                    base_url: base_url.clone(),
-                    api_key: input,
-                }
-            }
+            CommandMode::ModelNewProvider => CommandMode::ModelNewBaseUrl { provider: input },
+            CommandMode::ModelNewBaseUrl { provider } => CommandMode::ModelNewApiKey {
+                provider: provider.clone(),
+                base_url: input,
+            },
+            CommandMode::ModelNewApiKey { provider, base_url } => CommandMode::ModelNewModelName {
+                provider: provider.clone(),
+                base_url: base_url.clone(),
+                api_key: input,
+            },
             CommandMode::ModelNewModelName {
                 provider,
                 base_url,
@@ -231,6 +330,21 @@ impl AppState {
 
     pub fn cancel_command(&mut self) {
         self.command_mode = CommandMode::None;
+        self.modal = ModalState::None;
+    }
+
+    pub fn open_model_picker(&mut self, models: Vec<String>) {
+        self.modal = ModalState::ModelPicker { models, selected: 0 };
+    }
+
+    pub fn open_model_form(&mut self) {
+        self.modal = ModalState::ModelForm {
+            provider: String::new(),
+            base_url: String::new(),
+            api_key: String::new(),
+            model_id: String::new(),
+            active_field: 0,
+        };
     }
 
     // ── Agent event handling ──────────────────────────────────────
@@ -540,6 +654,7 @@ impl AppState {
 #[derive(Clone)]
 #[allow(dead_code)]
 pub enum Entry {
+    System { text: String },
     User { text: String },
     Turn { turn: usize, blocks: Vec<TurnBlock> },
 }
@@ -590,21 +705,28 @@ struct PendingToolCall {
 
 // ── TUI Command definitions ─────────────────────────────────────────
 
-pub const ALL_COMMANDS: &[&str] = &[
-    "/help",
-    "/quit",
-    "/exit",
-    "/models",
-    "/models new",
-    "/model",
-    "/clear",
-    "/new",
-];
-
 pub const COMMAND_HELP: &str = r#"Available commands:
   /help              Show this help
   /quit, /exit       Exit the TUI
-  /models            List registered models
-  /models new        Register a new model (ollama, custom, etc.)
-  /model <name>      Switch to a different model
-  /clear, /new       Clear conversation context"#;
+  /status            Show agent status
+  /models            List / switch models (modal)
+  /models new        Register a new model (form)
+  /model <name>      Switch to a model
+  /clear, /new       Clear conversation
+  /clear-queues      Clear steering queues
+  /abort             Abort current agent run
+  /state             Show agent state
+  /memory            Memory: list / search / stats
+  /tokens            Show token count
+  /temp <val>        Set temperature
+  /max-tokens <val>  Set max output tokens
+  /tool-mode <mode>  parallel / sequential
+  /permission, /perm Permission controls
+  /hooks             List registered hooks
+  /todo              Todo list management
+  /tasks             Task board management
+  /skills, /skill    Skill management
+  /steer <msg>       Steer agent direction
+  /follow-up <msg>   Queue follow-up message
+  /rewind <idx>      Rewind to earlier turn
+  /sessions, /session Session management"#;

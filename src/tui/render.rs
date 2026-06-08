@@ -1,11 +1,11 @@
-use super::state::{AppState, CommandMode, Entry, SubagentState, ToolResult, TurnBlock};
+use super::state::{AppState, CommandMode, Entry, ModalState, SubagentState, ToolResult, TurnBlock};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout, Rect},
+    layout::{Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, BorderType, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
 };
 use std::sync::LazyLock;
 use syntect::easy::HighlightLines;
@@ -36,46 +36,96 @@ static SYNTAX_THEME: LazyLock<syntect::highlighting::Theme> = LazyLock::new(|| {
 // ── Layout ──────────────────────────────────────────────────────────
 
 pub fn render(frame: &mut Frame, state: &mut AppState) {
+    state.frame_count = state.frame_count.wrapping_add(1);
     let area = frame.area();
-    let [status_area, main_area, input_area] = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Min(1),
-        Constraint::Length(3),
-    ])
-    .areas(area);
+
+    // Reserve space for autocomplete dropdown above input (if active)
+    let dropdown_h = if state.autocomplete.active {
+        (state.autocomplete.filtered_options.len().min(8) + 2) as u16
+    } else {
+        0
+    };
+
+    let main_bottom = area.height.saturating_sub(3 + dropdown_h);
+    let input_top = area.height.saturating_sub(3);
+
+    let status_area = Rect::new(area.x, area.y, area.width, 3);
+    let main_area = Rect::new(area.x, area.y + 3, area.width, main_bottom.saturating_sub(3));
+    let dropdown_area = if dropdown_h > 0 {
+        Rect::new(area.x, input_top.saturating_sub(dropdown_h), area.width, dropdown_h)
+    } else {
+        Rect::default()
+    };
+    let input_area = Rect::new(area.x, input_top, area.width, 3);
 
     render_status(frame, state, status_area);
     render_conversation(frame, state, main_area);
+    if dropdown_h > 0 {
+        render_dropdown(frame, state, dropdown_area);
+    }
     render_input(frame, state, input_area);
+    render_modal(frame, state, area);
 }
 
 // ── Status bar ──────────────────────────────────────────────────────
 
 fn render_status(frame: &mut Frame, state: &AppState, area: Rect) {
-    let state_color = match state.agent_state.as_str() {
+    let base_color = match state.agent_state.as_str() {
         "idle" => SUCCESS_COLOR,
         "streaming" => Color::Rgb(229, 192, 123),
         _ => Color::White,
     };
 
+    // Pulse the streaming color between yellow-orange for a subtle animation
+    let state_color = if state.agent_state == "streaming" {
+        let phase = (state.frame_count % 60) as f64 / 60.0;
+        let pulse = (phase * std::f64::consts::PI * 2.0).sin() * 0.3 + 0.7;
+        let r = (229.0 * pulse) as u8;
+        let g = (192.0 * pulse) as u8;
+        let b = (123.0 * pulse) as u8;
+        Color::Rgb(r, g, b)
+    } else {
+        base_color
+    };
+
     let mut status_spans = vec![
         Span::styled(
             " 🤖 Agent Core ",
-            Style::default().fg(Color::Rgb(97, 175, 239)).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Rgb(97, 175, 239))
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" │ "),
-        Span::styled(format!("Model: {} ", state.model), Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!("Model: {} ", state.model),
+            Style::default().fg(Color::DarkGray),
+        ),
         Span::raw(" │ "),
-        Span::styled(format!("Tokens: {} ", state.tokens), Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!("Tokens: {} ", state.tokens),
+            Style::default().fg(Color::DarkGray),
+        ),
         Span::raw(" │ "),
-        Span::styled(format!("State: {} ", state.agent_state), Style::default().fg(state_color)),
+        Span::styled(
+            format!("State: {} ", state.agent_state),
+            Style::default().fg(state_color),
+        ),
     ];
+
+    if state.agent_state == "streaming" {
+        status_spans.push(Span::styled(
+            "... [esc] ",
+            Style::default().fg(Color::Rgb(229, 192, 123)).add_modifier(Modifier::BOLD),
+        ));
+    }
 
     if state.scroll > 0 {
         status_spans.push(Span::raw(" │ "));
         status_spans.push(Span::styled(
             "⬆ scroll paused — press End to resume ",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         ));
     }
 
@@ -183,9 +233,8 @@ fn render_conversation(frame: &mut Frame, state: &mut AppState, area: Rect) {
         }
     }
 
-    // ── Loading indicator (between submit and first token) ──────────
     let streaming_empty = state.streaming.as_ref().map_or(true, |s| s.blocks.is_empty());
-    if state.is_agent_running() && streaming_empty {
+    if state.agent_running && streaming_empty {
         if !first {
             lines.push(Line::raw(""));
         }
@@ -204,17 +253,12 @@ fn render_conversation(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
     let text = Text::from(lines);
     let max_scroll = wrapped_line_count(&text, area.width).saturating_sub(area.height as usize);
-
-    // Clamp scroll offset so it never exceeds the actual scrollable range.
-    // This prevents jumps when content first exceeds the viewport.
     state.scroll = state.scroll.min(max_scroll);
-
     let scroll = max_scroll.saturating_sub(state.scroll);
 
     let para = Paragraph::new(text)
         .wrap(Wrap { trim: false })
         .scroll((scroll.min(u16::MAX as usize) as u16, 0));
-
     frame.render_widget(para, area);
 }
 
@@ -224,17 +268,19 @@ fn wrapped_line_count(text: &Text<'_>, width: u16) -> usize {
         .iter()
         .map(|line| {
             let lw = line.width();
-            if lw == 0 {
-                1
-            } else {
-                lw.div_ceil(width)
-            }
+            if lw == 0 { 1 } else { lw.div_ceil(width) }
         })
         .sum()
 }
 
 fn render_entry<'a>(entry: &'a Entry, lines: &mut Vec<Line<'a>>, width: usize) {
     match entry {
+        Entry::System { text } => {
+            let style = Style::default().fg(Color::Cyan);
+            for line in text.lines() {
+                lines.push(Line::from(vec![Span::styled(line, style)]));
+            }
+        }
         Entry::User { text } => {
             render_user_block(text, lines, width);
         }
@@ -260,7 +306,9 @@ fn render_turn_block<'a>(
 
     match block {
         TurnBlock::Thought(text) => {
-            let style = Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC);
+            let style = Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC);
             let mut first = true;
             for line in text.lines() {
                 let line = line.trim_start();
@@ -302,12 +350,24 @@ fn render_turn_block<'a>(
             lines.push(Line::from(vec![
                 Span::raw(pad.to_string()),
                 Span::styled(
-                    format!("✗ {e}"),
-                    Style::default().fg(ERROR_COLOR).add_modifier(Modifier::BOLD),
+                    format!("✗  {e}"),
+                    Style::default()
+                        .fg(ERROR_COLOR)
+                        .add_modifier(Modifier::BOLD),
                 ),
             ]));
         }
         TurnBlock::Notice(msg) => {
+            // Pick icon & style based on message content
+            let (icon, style) = if msg.contains("Failed") || msg.contains("Error") || msg.contains("nknown command") {
+                ("✗", Style::default().fg(ERROR_COLOR).add_modifier(Modifier::BOLD))
+            } else if msg.contains("registered") || msg.contains("Switched") || msg.contains("cleared") {
+                ("✓", Style::default().fg(SUCCESS_COLOR).add_modifier(Modifier::BOLD))
+            } else if msg.contains("Available") || msg.contains("help") || msg.contains("Registered") {
+                ("ℹ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            } else {
+                ("⚠", Style::default().fg(WARN_COLOR).add_modifier(Modifier::BOLD))
+            };
             for (i, line_text) in msg.lines().enumerate() {
                 if i > 0 {
                     lines.push(Line::from(vec![Span::raw(pad.to_string())]));
@@ -315,8 +375,8 @@ fn render_turn_block<'a>(
                 lines.push(Line::from(vec![
                     Span::raw(pad.to_string()),
                     Span::styled(
-                        format!("⚠ {line_text}"),
-                        Style::default().fg(WARN_COLOR).add_modifier(Modifier::BOLD),
+                        format!("{icon}  {line_text}"),
+                        style,
                     ),
                 ]));
             }
@@ -363,7 +423,10 @@ fn render_tool_block<'a>(
     // Account for pad + "  " left + "  " right = pad.width() + 4
     let inner_width = width.saturating_sub(4 + pad.width());
     let bg = Style::default().bg(CODE_BG);
-    let label_style = Style::default().fg(TOOL_COLOR).bg(CODE_BG).add_modifier(Modifier::BOLD);
+    let label_style = Style::default()
+        .fg(TOOL_COLOR)
+        .bg(CODE_BG)
+        .add_modifier(Modifier::BOLD);
 
     // Top padding — fill full width so no terminal default background shows
     let top_fill = width.saturating_sub(pad.width());
@@ -389,7 +452,10 @@ fn render_tool_block<'a>(
     lines.push(Line::from(vec![
         Span::raw(pad.to_string()),
         Span::styled("  ", bg),
-        Span::styled(sep, Style::default().fg(Color::Rgb(92, 99, 112)).bg(CODE_BG)),
+        Span::styled(
+            sep,
+            Style::default().fg(Color::Rgb(92, 99, 112)).bg(CODE_BG),
+        ),
         Span::styled(sep_fill, bg),
         Span::styled("  ", bg),
     ]));
@@ -477,7 +543,10 @@ fn render_subagent_block<'a>(
     // Account for pad + "  " left + "  " right = pad.width() + 4
     let inner_width = width.saturating_sub(4 + pad.width());
     let bg = Style::default().bg(CODE_BG);
-    let label_style = Style::default().fg(SUBAGENT_COLOR).bg(CODE_BG).add_modifier(Modifier::BOLD);
+    let label_style = Style::default()
+        .fg(SUBAGENT_COLOR)
+        .bg(CODE_BG)
+        .add_modifier(Modifier::BOLD);
 
     // Top padding — fill full width
     let top_fill = width.saturating_sub(pad.width());
@@ -503,7 +572,10 @@ fn render_subagent_block<'a>(
     lines.push(Line::from(vec![
         Span::raw(pad.to_string()),
         Span::styled("  ", bg),
-        Span::styled(sep, Style::default().fg(Color::Rgb(92, 99, 112)).bg(CODE_BG)),
+        Span::styled(
+            sep,
+            Style::default().fg(Color::Rgb(92, 99, 112)).bg(CODE_BG),
+        ),
         Span::styled(sep_fill, bg),
         Span::styled("  ", bg),
     ]));
@@ -536,10 +608,7 @@ fn render_subagent_block<'a>(
         for child_line in child_lines {
             let lw = child_line.width();
             let fill = " ".repeat(inner_width.saturating_sub(lw));
-            let mut final_spans = vec![
-                Span::raw(pad.to_string()),
-                Span::styled("  ", bg),
-            ];
+            let mut final_spans = vec![Span::raw(pad.to_string()), Span::styled("  ", bg)];
             final_spans.extend(child_line.spans);
             final_spans.push(Span::raw(fill));
             final_spans.push(Span::styled("  ", bg));
@@ -632,9 +701,18 @@ fn markdown_to_lines(text: &str) -> Vec<Line<'static>> {
                     };
                     cur_spans.push(prefix);
                 }
-                Tag::Emphasis => push_md_style(&mut style_stack, Style::default().add_modifier(Modifier::ITALIC)),
-                Tag::Strong => push_md_style(&mut style_stack, Style::default().add_modifier(Modifier::BOLD)),
-                Tag::Strikethrough => push_md_style(&mut style_stack, Style::default().add_modifier(Modifier::CROSSED_OUT)),
+                Tag::Emphasis => push_md_style(
+                    &mut style_stack,
+                    Style::default().add_modifier(Modifier::ITALIC),
+                ),
+                Tag::Strong => push_md_style(
+                    &mut style_stack,
+                    Style::default().add_modifier(Modifier::BOLD),
+                ),
+                Tag::Strikethrough => push_md_style(
+                    &mut style_stack,
+                    Style::default().add_modifier(Modifier::CROSSED_OUT),
+                ),
                 _ => {}
             },
             Event::End(tag) => match tag {
@@ -691,9 +769,7 @@ fn markdown_to_lines(text: &str) -> Vec<Line<'static>> {
                 if !in_code_block {
                     cur_spans.push(Span::styled(
                         text.to_string(),
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .bg(INLINE_CODE_BG),
+                        Style::default().fg(Color::Yellow).bg(INLINE_CODE_BG),
                     ));
                 }
             }
@@ -787,9 +863,19 @@ fn render_syntect_block(language: &str, code: &str) -> Vec<Line<'static>> {
 
     // Wrap in top label + background padding
     let border_style = Style::default().fg(Color::Rgb(92, 99, 112)).bg(CODE_BG);
-    let label_style = Style::default().fg(Color::Yellow).bg(CODE_BG).add_modifier(Modifier::BOLD);
+    let label_style = Style::default()
+        .fg(Color::Yellow)
+        .bg(CODE_BG)
+        .add_modifier(Modifier::BOLD);
 
-    let title = format!(" {} ", if language.is_empty() { "code" } else { language });
+    let title = format!(
+        " {} ",
+        if language.is_empty() {
+            "code"
+        } else {
+            language
+        }
+    );
     let mut result = vec![
         Line::from(Span::styled(" ", border_style)),
         Line::from(vec![
@@ -877,4 +963,168 @@ fn truncate_str_w(s: &str, max_width: usize) -> String {
         result.push(c);
     }
     result
+}
+
+// ── Autocomplete dropdown ───────────────────────────────────────────
+
+fn render_dropdown(frame: &mut Frame, state: &AppState, area: Rect) {
+    let options = &state.autocomplete.filtered_options;
+    let sel = state.autocomplete.selected_index;
+    let max_h = (area.height as usize).saturating_sub(2); // border takes 2
+    let max_w = (area.width as usize).saturating_sub(4);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, opt) in options.iter().enumerate().take(max_h) {
+        let truncated: String = opt.chars().take(max_w).collect();
+        let fill = " ".repeat(max_w.saturating_sub(truncated.width()));
+
+        if i == sel {
+            lines.push(Line::from(vec![
+                Span::styled("  ", Style::default().bg(TOOL_COLOR)),
+                Span::styled(truncated, Style::default().fg(Color::Black).bg(TOOL_COLOR).add_modifier(Modifier::BOLD)),
+                Span::styled(fill, Style::default().bg(TOOL_COLOR)),
+                Span::styled("  ", Style::default().bg(TOOL_COLOR)),
+            ]));
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled("  ", Style::default().bg(CODE_BG)),
+                Span::styled(truncated, Style::default().fg(Color::White).bg(CODE_BG)),
+                Span::styled(fill, Style::default().bg(CODE_BG)),
+                Span::styled("  ", Style::default().bg(CODE_BG)),
+            ]));
+        }
+    }
+
+    // Fill remaining lines
+    for _ in lines.len()..max_h {
+        lines.push(Line::from(Span::styled(" ".repeat(max_w + 4), Style::default().bg(CODE_BG))));
+    }
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Rgb(92, 99, 112)));
+
+    let para = Paragraph::new(Text::from(lines)).block(block);
+    frame.render_widget(para, area);
+}
+
+// ── Modal overlay ───────────────────────────────────────────────────
+
+fn render_modal(frame: &mut Frame, state: &AppState, screen: Rect) {
+    match &state.modal {
+        ModalState::ModelPicker { models, selected } => {
+            let modal_w = 50u16;
+            let modal_h = (models.len() + 4).min(16) as u16;
+            let x = screen.x + (screen.width.saturating_sub(modal_w)) / 2;
+            let y = screen.y + (screen.height.saturating_sub(modal_h)) / 2;
+            let area = Rect::new(x, y, modal_w, modal_h);
+            frame.render_widget(Clear, area);
+
+            let mut lines: Vec<Line> = Vec::new();
+            lines.push(Line::from(Span::styled(
+                " Select Model ",
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::raw(""));
+            for (i, name) in models.iter().enumerate() {
+                let prefix = if i == *selected { "▶ " } else { "  " };
+                let line_str = format!("{}{}", prefix, name);
+                if i == *selected {
+                    lines.push(Line::from(Span::styled(line_str, Style::default().fg(Color::Black).bg(TOOL_COLOR))));
+                } else {
+                    lines.push(Line::from(Span::raw(line_str)));
+                }
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled(
+                " ↑↓ navigate  Enter select  Esc cancel ",
+                Style::default().fg(Color::DarkGray),
+            )));
+
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(TOOL_COLOR))
+                .style(Style::default().bg(CODE_BG));
+
+            frame.render_widget(&block, area);
+            let inner = block.inner(area);
+            frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+        }
+        ModalState::ModelForm {
+            provider,
+            base_url,
+            api_key,
+            model_id,
+            active_field,
+        } => {
+            let modal_w = 60u16;
+            let modal_h = 14u16;
+            let x = screen.x + (screen.width.saturating_sub(modal_w)) / 2;
+            let y = screen.y + (screen.height.saturating_sub(modal_h)) / 2;
+            let area = Rect::new(x, y, modal_w, modal_h);
+            frame.render_widget(Clear, area);
+
+            let fields: [(&str, &str); 4] = [
+                ("Provider", provider),
+                ("Base URL", base_url),
+                ("API Key", api_key),
+                ("Model ID", model_id),
+            ];
+
+            let mut lines: Vec<Line> = Vec::new();
+            lines.push(Line::from(Span::styled(
+                " Register New Model ",
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::raw(""));
+            for (i, (label, val)) in fields.iter().enumerate() {
+                let cursor = if i == *active_field { "▌" } else { "" };
+                let display = format!("{:>10}: {}{}", label, val, cursor);
+                if i == *active_field {
+                    lines.push(Line::from(Span::styled(display, Style::default().fg(Color::Black).bg(TOOL_COLOR))));
+                } else {
+                    lines.push(Line::from(Span::raw(display)));
+                }
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled(
+                " ↑↓ switch field  Enter submit  Esc cancel ",
+                Style::default().fg(Color::DarkGray),
+            )));
+
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(TOOL_COLOR))
+                .style(Style::default().bg(CODE_BG));
+
+            frame.render_widget(&block, area);
+            let inner = block.inner(area);
+            frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+        }
+        ModalState::None => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_inline() {
+        let spans = parse_inline_spans("🌤️ **Shenzhen**");
+        for span in &spans {
+            println!(
+                "SPAN: '{}' BOLD: {}",
+                span.content,
+                span.style.add_modifier.contains(Modifier::BOLD)
+            );
+        }
+        assert_eq!(spans.len(), 2);
+        assert_eq!(spans[0].content, "🌤️ ");
+        assert_eq!(spans[1].content, "Shenzhen");
+        assert!(spans[1].style.add_modifier.contains(Modifier::BOLD));
+    }
 }

@@ -1,10 +1,32 @@
-use super::state::{AppState, CommandMode, Entry, TurnBlock, ALL_COMMANDS};
+use super::state::{AppState, CommandMode, Entry, ModalState, TurnBlock};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
+    // ── Modal navigation ──────────────────────────────────────────
+    if !matches!(state.modal, ModalState::None) {
+        return handle_modal_key(key, state);
+    }
+
     match key.code {
         // ── Quit ──────────────────────────────────────────────────
+        KeyCode::Esc => {
+            if state.autocomplete.active {
+                state.autocomplete.active = false;
+                return Ok(());
+            }
+            if !matches!(state.command_mode, CommandMode::None) {
+                state.cancel_command();
+                state.input.clear();
+                state.cursor_pos = 0;
+                return Ok(());
+            }
+            if matches!(state.modal, ModalState::None) && state.agent_running {
+                state.pending_command = Some("abort".to_string());
+                return Ok(());
+            }
+            state.should_quit = true;
+        }
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             state.should_quit = true;
         }
@@ -12,8 +34,40 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
             state.should_quit = true;
         }
 
-        // ── Submit (Enter) ────────────────────────────────────────
+        // ── Submit ────────────────────────────────────────────────
+        KeyCode::Tab => {
+            if state.autocomplete.active {
+                if state.autocomplete.selected_index < state.autocomplete.filtered_options.len() {
+                    let selected =
+                        &state.autocomplete.filtered_options[state.autocomplete.selected_index];
+                    state.input = format!("{} ", selected);
+                    state.cursor_pos = state.input.len();
+                    state.autocomplete.active = false;
+                }
+                return Ok(());
+            }
+        }
         KeyCode::Enter => {
+            // If autocomplete dropdown is active
+            if state.autocomplete.active {
+                let exact = state.autocomplete.filtered_options
+                    .iter()
+                    .any(|opt| *opt == state.input.trim());
+                // If user already typed the exact command, skip selection and execute
+                if !exact || state.autocomplete.filtered_options.len() > 1 {
+                    if state.autocomplete.selected_index < state.autocomplete.filtered_options.len() {
+                        let selected = &state.autocomplete.filtered_options[state.autocomplete.selected_index];
+                        state.input = format!("{} ", selected);
+                        state.cursor_pos = state.input.len();
+                        state.autocomplete.active = false;
+                        state.update_autocomplete();
+                    }
+                    return Ok(());
+                }
+                // Exact match with only one option — fall through to execute
+                state.autocomplete.active = false;
+            }
+
             // Check if a subagent block is focused — toggle it
             if let Some(idx) = state.focus_index {
                 toggle_focus(state, idx);
@@ -25,14 +79,34 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
                 return Ok(());
             }
 
-            // Dispatch command or submit to agent
+            // Handle slash commands with optional modal popup
+            if text == "/models" || text == "/model" {
+                state.pending_command = Some("show_model_picker".to_string());
+                state.input.clear();
+                state.cursor_pos = 0;
+                return Ok(());
+            }
+            if text.starts_with("/model ") {
+                let name = text.strip_prefix("/model ").unwrap().trim().to_string();
+                state.pending_command = Some(format!("switch_model:{}", name));
+                state.input.clear();
+                state.cursor_pos = 0;
+                return Ok(());
+            }
+            if text == "/models new" {
+                state.pending_command = Some("show_model_form".to_string());
+                state.input.clear();
+                state.cursor_pos = 0;
+                return Ok(());
+            }
+
+            // Dispatch other commands
             if text.starts_with('/') || !matches!(state.command_mode, CommandMode::None) {
                 let notice = state.handle_command(&text);
                 state.input.clear();
                 state.cursor_pos = 0;
 
                 if let Some(msg) = notice {
-                    // Push the command result as a Notice block for display
                     let notice_block = TurnBlock::Notice(msg);
                     if let Some(ref mut s) = state.streaming {
                         s.blocks.insert(0, notice_block);
@@ -50,17 +124,6 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
             }
         }
 
-        // ── Cancel command (Esc) ──────────────────────────────────
-        KeyCode::Esc => {
-            if !matches!(state.command_mode, CommandMode::None) {
-                state.cancel_command();
-                state.input.clear();
-                state.cursor_pos = 0;
-            } else {
-                state.should_quit = true;
-            }
-        }
-
         // ── Scroll ────────────────────────────────────────────────
         KeyCode::PageUp => {
             state.scroll = state.scroll.saturating_add(5);
@@ -69,6 +132,15 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
             state.scroll = state.scroll.saturating_sub(5);
         }
         KeyCode::Up => {
+            if state.autocomplete.active {
+                if state.autocomplete.selected_index > 0 {
+                    state.autocomplete.selected_index -= 1;
+                } else {
+                    state.autocomplete.selected_index =
+                        state.autocomplete.filtered_options.len().saturating_sub(1);
+                }
+                return Ok(());
+            }
             if state.focus_index.is_some() {
                 let idx = state.focus_index.unwrap();
                 if idx > 0 {
@@ -79,6 +151,15 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
             }
         }
         KeyCode::Down => {
+            if state.autocomplete.active {
+                if state.autocomplete.selected_index + 1 < state.autocomplete.filtered_options.len()
+                {
+                    state.autocomplete.selected_index += 1;
+                } else {
+                    state.autocomplete.selected_index = 0;
+                }
+                return Ok(());
+            }
             if state.focus_index.is_some() {
                 let idx = state.focus_index.unwrap();
                 state.focus_index = Some(idx + 1);
@@ -121,6 +202,7 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
                 state.input.remove(prev);
                 state.cursor_pos = prev;
             }
+            state.update_autocomplete();
         }
         KeyCode::Delete => {
             if key.modifiers.contains(KeyModifiers::CONTROL) {
@@ -130,6 +212,7 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
             } else if state.cursor_pos < state.input.len() {
                 let next = next_char_boundary(&state.input, state.cursor_pos);
                 state.input.replace_range(state.cursor_pos..next, "");
+                state.update_autocomplete();
             }
         }
 
@@ -154,27 +237,11 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
             state.cursor_pos = start;
         }
 
-        // ── Tab completion ────────────────────────────────────────
-        KeyCode::Tab => {
-            if state.input.starts_with('/') {
-                let matches: Vec<&&str> = ALL_COMMANDS
-                    .iter()
-                    .filter(|cmd| cmd.starts_with(&state.input) && ***cmd != state.input)
-                    .collect();
-                if !matches.is_empty() {
-                    // Cycle: if input already matches the first suggestion fully,
-                    // move to the second; otherwise complete to first
-                    let current = matches.first().unwrap();
-                    state.input = current.to_string();
-                    state.cursor_pos = state.input.len();
-                }
-            }
-        }
-
         // ── Character input ───────────────────────────────────────
         KeyCode::Char(c) => {
             state.input.insert(state.cursor_pos, c);
             state.cursor_pos += c.len_utf8();
+            state.update_autocomplete();
         }
 
         _ => {}
@@ -217,10 +284,7 @@ fn toggle_focus(state: &mut AppState, idx: usize) {
 // ── Character boundary helpers ──────────────────────────────────────
 
 fn prev_char_boundary(text: &str, pos: usize) -> usize {
-    text[..pos]
-        .char_indices()
-        .last()
-        .map_or(0, |(idx, _)| idx)
+    text[..pos].char_indices().last().map_or(0, |(idx, _)| idx)
 }
 
 fn next_char_boundary(text: &str, pos: usize) -> usize {
@@ -252,4 +316,71 @@ fn next_word_boundary(text: &str, pos: usize) -> usize {
     text[non_ws_start..]
         .find(char::is_whitespace)
         .map_or(text.len(), |i| non_ws_start + i)
+}
+
+// ── Modal key handler ───────────────────────────────────────────────
+
+fn handle_modal_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
+    match &mut state.modal {
+        ModalState::ModelPicker { models, selected } => match key.code {
+            KeyCode::Esc => state.modal = ModalState::None,
+            KeyCode::Up => *selected = selected.saturating_sub(1),
+            KeyCode::Down => {
+                if *selected + 1 < models.len() {
+                    *selected += 1;
+                }
+            }
+            KeyCode::Enter => {
+                if *selected < models.len() {
+                    let name = models[*selected].clone();
+                    state.modal = ModalState::None;
+                    state.pending_command = Some(format!("switch_model:{}", name));
+                }
+            }
+            _ => {}
+        },
+        ModalState::ModelForm {
+            provider,
+            base_url,
+            api_key,
+            model_id,
+            active_field,
+        } => match key.code {
+            KeyCode::Esc => state.modal = ModalState::None,
+            KeyCode::Up => *active_field = active_field.saturating_sub(1),
+            KeyCode::Down | KeyCode::Tab => *active_field = (*active_field + 1).min(3),
+            KeyCode::Enter => {
+                let cmd = format!(
+                    "register_model:{}|{}|{}|{}",
+                    provider.trim(),
+                    base_url.trim(),
+                    api_key.trim(),
+                    model_id.trim()
+                );
+                state.modal = ModalState::None;
+                state.pending_command = Some(cmd);
+            }
+            KeyCode::Backspace => {
+                let field: &mut String = match *active_field {
+                    0 => provider,
+                    1 => base_url,
+                    2 => api_key,
+                    _ => model_id,
+                };
+                field.pop();
+            }
+            KeyCode::Char(c) => {
+                let field: &mut String = match *active_field {
+                    0 => provider,
+                    1 => base_url,
+                    2 => api_key,
+                    _ => model_id,
+                };
+                field.push(c);
+            }
+            _ => {}
+        },
+        ModalState::None => {}
+    }
+    Ok(())
 }

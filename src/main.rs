@@ -1,3 +1,4 @@
+mod cli_completer;
 mod tui;
 
 use agent_core::{
@@ -365,8 +366,7 @@ async fn main() -> anyhow::Result<()> {
     // Session manager — create before tool registration for subagent sessions
     let session_db = "~/.agent_core/memory.db";
     let session_storage =
-        agent_core::memory::storage::Storage::new(session_db)
-            .expect("Failed to open session DB");
+        agent_core::memory::storage::Storage::new(session_db).expect("Failed to open session DB");
     let session_mgr = Arc::new(Mutex::new(SessionManager::new(session_storage)));
     let _current_session_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
@@ -399,7 +399,11 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         if mgr.tool_count() > 0 {
-            println!("[MCP] {} tools from {} servers", mgr.tool_count(), mgr.connected_servers().len());
+            println!(
+                "[MCP] {} tools from {} servers",
+                mgr.tool_count(),
+                mgr.connected_servers().len()
+            );
             // Register MCP tools
             let mgr_arc = Arc::new(tokio::sync::Mutex::new(mgr));
             agent_core::McpTool::register_all(agent.tool_registry_mut(), mgr_arc.clone());
@@ -599,7 +603,9 @@ async fn main() -> anyhow::Result<()> {
                 let mgr = mcp_mgr.lock().await;
                 let servers = mgr.connected_servers();
                 if servers.is_empty() {
-                    println!("No MCP servers connected. Configure in [mcp.servers] in config.toml.");
+                    println!(
+                        "No MCP servers connected. Configure in [mcp.servers] in config.toml."
+                    );
                 } else {
                     println!("=== MCP Servers ({}) ===", servers.len());
                     for s in &servers {
@@ -652,11 +658,7 @@ async fn main() -> anyhow::Result<()> {
                     for (source, group) in &by_source {
                         println!("\n{}", source);
                         for skill in group {
-                            let desc: String = skill
-                                .description
-                                .chars()
-                                .take(80)
-                                .collect();
+                            let desc: String = skill.description.chars().take(80).collect();
                             let truncated = if skill.description.chars().count() > 80 {
                                 format!("{}...", desc)
                             } else {
@@ -685,7 +687,9 @@ async fn main() -> anyhow::Result<()> {
                 match mgr.list(false) {
                     Ok(sessions) => {
                         if sessions.is_empty() {
-                            println!("No sessions saved. Use /session save to save the current session.");
+                            println!(
+                                "No sessions saved. Use /session save to save the current session."
+                            );
                         } else {
                             println!("--- Sessions ({}) ---", sessions.len());
                             for s in &sessions {
@@ -734,10 +738,12 @@ async fn main() -> anyhow::Result<()> {
                                     for msg in &session.messages {
                                         agent.context_mut().add(msg.clone());
                                     }
-                                    *_current_session_id.lock().unwrap() = Some(session_id.to_string());
+                                    *_current_session_id.lock().unwrap() =
+                                        Some(session_id.to_string());
                                     println!(
                                         "Resumed session '{}' ({} messages).",
-                                        session.meta.title, session.messages.len()
+                                        session.meta.title,
+                                        session.messages.len()
                                     );
                                 }
                                 Ok(None) => println!("Session not found: {session_id}"),
@@ -889,7 +895,7 @@ async fn main() -> anyhow::Result<()> {
             }
             cmd if cmd.starts_with("/skill ") => {
                 let rest = cmd.strip_prefix("/skill ").unwrap().trim();
-                
+
                 if rest.starts_with("deactivate ") {
                     let name = rest.strip_prefix("deactivate ").unwrap().trim();
                     let mut mgr = skill_manager.lock().unwrap();
@@ -936,7 +942,9 @@ async fn main() -> anyhow::Result<()> {
                     let parts: Vec<&str> = rest.splitn(2, ' ').collect();
                     let tool_name = parts[0];
                     let tool_input = parts.get(1).unwrap_or(&"{}");
-                    let decision = agent.permission_policy_mut().check(tool_name, tool_input, None, None, None);
+                    let decision = agent
+                        .permission_policy_mut()
+                        .check(tool_name, tool_input, None, None, None);
                     println!(
                         "Permission check: {}({}) -> {:?}",
                         tool_name, tool_input, decision
@@ -968,7 +976,10 @@ async fn main() -> anyhow::Result<()> {
                 println!("=== Context ({tokens} tokens, {} messages) ===", msgs.len());
                 // Show the 7-segment breakdown
                 if let Some(hint) = agent.context_cache_hint() {
-                    println!("KV Cache: {} stable tokens, strategy={}", hint.stable_prefix_tokens, hint.strategy);
+                    println!(
+                        "KV Cache: {} stable tokens, strategy={}",
+                        hint.stable_prefix_tokens, hint.strategy
+                    );
                 }
                 println!("\nMessages (newest last):");
                 for (i, msg) in msgs.iter().enumerate() {
@@ -981,8 +992,13 @@ async fn main() -> anyhow::Result<()> {
                     let content = msg.content.as_deref().unwrap_or("");
                     let preview = truncate(content, 100);
                     if let Some(ref tc) = msg.tool_calls {
-                        let tool_names: Vec<&str> = tc.iter().map(|t| t.function.name.as_str()).collect();
-                        println!("  [{i}] {role_str} [tools: {}] {}", tool_names.join(","), preview);
+                        let tool_names: Vec<&str> =
+                            tc.iter().map(|t| t.function.name.as_str()).collect();
+                        println!(
+                            "  [{i}] {role_str} [tools: {}] {}",
+                            tool_names.join(","),
+                            preview
+                        );
                     } else {
                         println!("  [{i}] {role_str} {preview}");
                     }
@@ -998,10 +1014,17 @@ async fn main() -> anyhow::Result<()> {
                                 if results.is_empty() {
                                     println!("No results for '{}'", query);
                                 } else {
-                                    println!("=== Memory search: '{}' ({}) ===", query, results.len());
+                                    println!(
+                                        "=== Memory search: '{}' ({}) ===",
+                                        query,
+                                        results.len()
+                                    );
                                     for (i, r) in results.iter().enumerate() {
                                         let preview = truncate(&r.content, 80);
-                                        println!("  [{i}] importance={:.2} | {}", r.importance, preview);
+                                        println!(
+                                            "  [{i}] importance={:.2} | {}",
+                                            r.importance, preview
+                                        );
                                     }
                                 }
                             }
@@ -1041,7 +1064,10 @@ async fn main() -> anyhow::Result<()> {
             }
             // Catch unknown /commands before they hit the agent
             input if input.starts_with('/') => {
-                eprintln!("Unknown command: {}. Type /help for available commands.", input);
+                eprintln!(
+                    "Unknown command: {}. Type /help for available commands.",
+                    input
+                );
             }
             _ => {
                 // Reset abort flag before each run
@@ -1190,7 +1216,11 @@ fn print_status(
     }
     {
         let mgr = skill_manager.lock().unwrap();
-        println!("Skills:      {} loaded, {} active", mgr.count(), mgr.active_skill_names().len());
+        println!(
+            "Skills:      {} loaded, {} active",
+            mgr.count(),
+            mgr.active_skill_names().len()
+        );
     }
 }
 
@@ -1344,9 +1374,7 @@ async fn run_agent(
                     // Defer — buffer it, print when ToolExecutionEnd arrives
                     pending_tool.set(Some((tool_name, args)));
                 }
-                AgentEvent::ToolExecutionUpdate {
-                    ..
-                } => {
+                AgentEvent::ToolExecutionUpdate { .. } => {
                     // Silently consume — end event will show final result
                 }
                 AgentEvent::ToolExecutionEnd {
@@ -1482,7 +1510,7 @@ async fn run_agent(
                             io::stdout().flush().ok();
                         }
                     }
-                },
+                }
                 AgentEvent::SubagentToolStart {
                     tool_name, args, ..
                 } => {

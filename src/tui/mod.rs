@@ -58,16 +58,27 @@ async fn run_app(
         // ── Process pending slash commands ─────────────────────────
         if let Some(cmd) = state.take_pending_command() {
             needs_draw = true;
-            let notice = process_command(&mut state, &agent, &cmd).await;
-            if let Some(msg) = notice {
-                let block = TurnBlock::Notice(msg);
-                if let Some(ref mut s) = state.streaming {
-                    s.blocks.insert(0, block);
-                } else {
-                    state.entries.push(Entry::Turn {
-                        turn: 0,
-                        blocks: vec![block],
-                    });
+            if cmd == "show_model_picker" {
+                let a = agent.lock().await;
+                let models: Vec<String> = a.list_models().into_iter().map(|(n, _)| n.to_string()).collect();
+                state.open_model_picker(models);
+            } else if cmd == "show_model_form" {
+                state.open_model_form();
+            } else if cmd == "abort" {
+                let a = agent.lock().await;
+                a.abort_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            } else {
+                let notice = process_command(&mut state, &agent, &cmd).await;
+                if let Some(msg) = notice {
+                    let block = TurnBlock::Notice(msg);
+                    if let Some(ref mut s) = state.streaming {
+                        s.blocks.insert(0, block);
+                    } else {
+                        state.entries.push(Entry::Turn {
+                            turn: 0,
+                            blocks: vec![block],
+                        });
+                    }
                 }
             }
         }
@@ -99,8 +110,7 @@ async fn run_app(
     }
 }
 
-// ── Slash command processor ─────────────────────────────────────────
-// Handles commands that need access to the Agent (model list, switch, etc.)
+// ── Pending command processor (for commands from state.rs handle_command) ─
 
 async fn process_command(
     state: &mut AppState,
@@ -126,10 +136,11 @@ async fn process_command(
         match a.switch_model(name) {
             Ok(()) => {
                 state.model = name.to_string();
-                return Some(format!("Switched to model:\n  {}", name));
+                update_default_model(name);
+                return Some(format!("Switched to model: {}", name));
             }
             Err(e) => {
-                return Some(format!("Failed to switch:\n  {}", e));
+                return Some(format!("Failed: {}", e));
             }
         }
     }
@@ -152,7 +163,6 @@ async fn process_command(
         let api_key = parts[2];
         let model_id = parts[3];
 
-        // Create model config
         let model_cfg = agent_core::config::ModelConfig {
             name: provider.to_string(),
             base_url: base_url.to_string(),
@@ -166,13 +176,11 @@ async fn process_command(
         let mut a = agent.lock().await;
         match a.register_model(&model_name, model_cfg) {
             Ok(()) => {
-                // Quote key if it contains special TOML characters
                 let toml_key = if model_name.contains(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-') {
                     format!("\"{}\"", model_name)
                 } else {
                     model_name.clone()
                 };
-                // Try to persist to config.toml
                 let entry = format!(
                     "\n[models.{}]\nbase_url = \"{}\"\napi_key = \"{}\"\nmodel_id = \"{}\"\nmax_context_tokens = 32768\n",
                     toml_key, base_url, api_key, model_id
@@ -182,20 +190,39 @@ async fn process_command(
                     std::fs::read_to_string("config.toml").unwrap_or_default() + &entry,
                 ) {
                     return Some(format!(
-                        "Model '{}' registered (memory only).\n  Config write failed: {}",
+                        "Model '{}' registered in memory, config write failed: {}",
                         model_name, e
                     ));
                 }
                 return Some(format!(
-                    "Model registered:\n  {}\n  Use /model {} to switch.",
-                    model_name, model_name
+                    "Model registered: {} — saved to config.toml",
+                    model_name
                 ));
             }
             Err(e) => {
-                return Some(format!("Failed to register model: {}", e));
+                return Some(format!("Failed: {}", e));
             }
         }
     }
 
     None
+}
+
+/// Rewrite config.toml's `default_model` to persist the current selection.
+fn update_default_model(model_name: &str) {
+    if let Ok(content) = std::fs::read_to_string("config.toml") {
+        // Replace the line that starts with "default_model = "
+        let updated: String = content
+            .lines()
+            .map(|line| {
+                if line.trim_start().starts_with("default_model") {
+                    format!("default_model = \"{}\"", model_name)
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let _ = std::fs::write("config.toml", updated);
+    }
 }
