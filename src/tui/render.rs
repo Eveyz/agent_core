@@ -303,7 +303,8 @@ fn render_tool_block<'a>(
     width: usize,
     pad: &str,
 ) {
-    let inner_width = width.saturating_sub(8);
+    // Account for pad + "  " left + "  " right = pad.width() + 4
+    let inner_width = width.saturating_sub(4 + pad.width());
     let bg = Style::default().bg(CODE_BG);
     let label_style = Style::default().fg(TOOL_COLOR).bg(CODE_BG).add_modifier(Modifier::BOLD);
 
@@ -416,7 +417,8 @@ fn render_subagent_block<'a>(
     width: usize,
     pad: &str,
 ) {
-    let inner_width = width.saturating_sub(8);
+    // Account for pad + "  " left + "  " right = pad.width() + 4
+    let inner_width = width.saturating_sub(4 + pad.width());
     let bg = Style::default().bg(CODE_BG);
     let label_style = Style::default().fg(SUBAGENT_COLOR).bg(CODE_BG).add_modifier(Modifier::BOLD);
 
