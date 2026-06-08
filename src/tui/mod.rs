@@ -37,6 +37,13 @@ async fn run_app(
         // Approvals are handled directly inside handle_agent_event via
         // the shared approvals Arc — avoids deadlock with the tokio mutex.
         let had_events = pump.drain(&mut state);
+
+        // Refresh token count from agent (non-blocking)
+        if had_events || needs_draw {
+            if let Ok(a) = agent.try_lock() {
+                state.tokens = a.context_token_count();
+            }
+        }
         // Handle keyboard input
         let had_input = if event::poll(Duration::from_millis(8))? {
             match event::read()? {
@@ -169,6 +176,7 @@ async fn process_command(
             api_key: api_key.to_string(),
             model_id: model_id.to_string(),
             max_context_tokens: 32768,
+            request_timeout_secs: 120,
             ..Default::default()
         };
 

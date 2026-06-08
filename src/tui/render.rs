@@ -70,22 +70,19 @@ pub fn render(frame: &mut Frame, state: &mut AppState) {
 // ── Status bar ──────────────────────────────────────────────────────
 
 fn render_status(frame: &mut Frame, state: &AppState, area: Rect) {
-    let base_color = match state.agent_state.as_str() {
-        "idle" => SUCCESS_COLOR,
-        "streaming" => Color::Rgb(229, 192, 123),
-        _ => Color::White,
-    };
-
-    // Pulse the streaming color between yellow-orange for a subtle animation
-    let state_color = if state.agent_state == "streaming" {
-        let phase = (state.frame_count % 60) as f64 / 60.0;
-        let pulse = (phase * std::f64::consts::PI * 2.0).sin() * 0.3 + 0.7;
-        let r = (229.0 * pulse) as u8;
-        let g = (192.0 * pulse) as u8;
-        let b = (123.0 * pulse) as u8;
-        Color::Rgb(r, g, b)
+    let (state_text, state_style) = if state.agent_state == "streaming" {
+        (
+            "streaming... [esc]",
+            Style::default()
+                .fg(Color::Rgb(229, 192, 123))
+                .add_modifier(Modifier::BOLD | Modifier::SLOW_BLINK),
+        )
     } else {
-        base_color
+        let color = match state.agent_state.as_str() {
+            "idle" => SUCCESS_COLOR,
+            _ => Color::White,
+        };
+        (state.agent_state.as_str(), Style::default().fg(color))
     };
 
     let mut status_spans = vec![
@@ -107,17 +104,10 @@ fn render_status(frame: &mut Frame, state: &AppState, area: Rect) {
         ),
         Span::raw(" │ "),
         Span::styled(
-            format!("State: {} ", state.agent_state),
-            Style::default().fg(state_color),
+            format!("State: {} ", state_text),
+            state_style,
         ),
     ];
-
-    if state.agent_state == "streaming" {
-        status_spans.push(Span::styled(
-            "... [esc] ",
-            Style::default().fg(Color::Rgb(229, 192, 123)).add_modifier(Modifier::BOLD),
-        ));
-    }
 
     if state.scroll > 0 {
         status_spans.push(Span::raw(" │ "));
@@ -332,7 +322,7 @@ fn render_turn_block<'a>(
             }
         }
         TurnBlock::Response(text) => {
-            let md_lines = markdown_to_lines(text);
+            let md_lines = markdown_to_lines(text, inner_width);
             for mut line in md_lines {
                 if !pad.is_empty() {
                     line.spans.insert(0, Span::raw(pad.clone()));
@@ -653,7 +643,7 @@ fn render_subagent_block<'a>(
 
 // ── Markdown → Ratatui (pulldown-cmark) ──────────────────────────────
 
-fn markdown_to_lines(text: &str) -> Vec<Line<'static>> {
+fn markdown_to_lines(text: &str, width: usize) -> Vec<Line<'static>> {
     let parser = Parser::new_ext(text, Options::all());
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut cur_spans: Vec<Span<'static>> = Vec::new();
@@ -731,7 +721,7 @@ fn markdown_to_lines(text: &str) -> Vec<Line<'static>> {
                 }
                 TagEnd::CodeBlock => {
                     in_code_block = false;
-                    lines.extend(render_syntect_block(&code_lang, &code_content));
+                    lines.extend(render_syntect_block(&code_lang, &code_content, width));
                     code_content.clear();
                     code_lang.clear();
                     lines.push(Line::raw(""));
@@ -841,54 +831,62 @@ fn heading_color(level: pulldown_cmark::HeadingLevel) -> Color {
 
 // ── Code blocks (syntect) ──────────────────────────────────────────
 
-fn render_syntect_block(language: &str, code: &str) -> Vec<Line<'static>> {
+fn render_syntect_block(language: &str, code: &str, width: usize) -> Vec<Line<'static>> {
     let syntax = find_syntax(language);
     let theme = &SYNTAX_THEME;
     let mut highlighter = HighlightLines::new(syntax, theme);
+    let fill_width = width.max(40);
 
     let mut lines = Vec::new();
     for line in LinesWithEndings::from(code) {
         let line = line.trim_end_matches(['\n', '\r']);
         if let Ok(ranges) = highlighter.highlight_line(line, &SYNTAX_SET) {
-            let spans: Vec<Span> = ranges
-                .iter()
-                .map(|(style, text)| {
-                    let fg = syntect_color_to_ratatui(style.foreground);
-                    Span::styled(text.to_string(), Style::default().fg(fg).bg(CODE_BG))
-                })
-                .collect();
+            // Collect highlighted spans
+            let mut spans: Vec<Span> = vec![
+                Span::styled("  ", Style::default().bg(CODE_BG)),
+            ];
+            for (style, text) in ranges {
+                let fg = syntect_color_to_ratatui(style.foreground);
+                spans.push(Span::styled(text.to_string(), Style::default().fg(fg).bg(CODE_BG)));
+            }
+            let line_w: usize = spans.iter().map(|s| s.width()).sum();
+            let fill = fill_width.saturating_sub(line_w);
+            if fill > 0 {
+                spans.push(Span::styled(" ".repeat(fill), Style::default().bg(CODE_BG)));
+            }
             lines.push(Line::from(spans));
         }
     }
 
-    // Wrap in top label + background padding
-    let border_style = Style::default().fg(Color::Rgb(92, 99, 112)).bg(CODE_BG);
-    let label_style = Style::default()
-        .fg(Color::Yellow)
-        .bg(CODE_BG)
-        .add_modifier(Modifier::BOLD);
+    // Label bar — like tool block, with CODE_BG full width, no border
+    let title = format!(" {}", if language.is_empty() { "code" } else { language });
+    let title_line = {
+        let title_fill = fill_width.saturating_sub(title.width() + 4);
+        vec![
+            Span::styled("  📋", Style::default().fg(Color::Yellow).bg(CODE_BG).add_modifier(Modifier::BOLD)),
+            Span::styled(title, Style::default().fg(Color::Yellow).bg(CODE_BG).add_modifier(Modifier::BOLD)),
+            Span::styled(" ".repeat(title_fill), Style::default().bg(CODE_BG)),
+        ]
+    };
 
-    let title = format!(
-        " {} ",
-        if language.is_empty() {
-            "code"
-        } else {
-            language
-        }
-    );
-    let mut result = vec![
-        Line::from(Span::styled(" ", border_style)),
-        Line::from(vec![
-            Span::styled("  ", border_style),
-            Span::styled(title, label_style),
-        ]),
-        Line::from(vec![
-            Span::styled("  ", border_style),
-            Span::styled("─".repeat(30), border_style),
-        ]),
-    ];
+    let sep_line = {
+        let sep = "─".repeat(30.min(fill_width));
+        let sep_fill = fill_width.saturating_sub(sep.width() + 4);
+        vec![
+            Span::styled("  ", Style::default().bg(CODE_BG)),
+            Span::styled(sep, Style::default().fg(Color::Rgb(92, 99, 112)).bg(CODE_BG)),
+            Span::styled(" ".repeat(sep_fill), Style::default().bg(CODE_BG)),
+        ]
+    };
+
+    let top_line = Span::styled(" ".repeat(fill_width), Style::default().bg(CODE_BG));
+    let bot_line = Span::styled(" ".repeat(fill_width), Style::default().bg(CODE_BG));
+
+    let mut result = vec![Line::from(top_line)];
+    result.push(Line::from(title_line));
+    result.push(Line::from(sep_line));
     result.append(&mut lines);
-    result.push(Line::from(Span::styled(" ", border_style)));
+    result.push(Line::from(bot_line));
     result
 }
 

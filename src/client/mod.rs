@@ -15,8 +15,10 @@ pub struct OpenAIClient {
 
 impl OpenAIClient {
     pub fn new(model: ModelConfig) -> Self {
+        let timeout = Duration::from_secs(model.request_timeout_secs);
         let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(300))
+            .timeout(timeout)
+            .connect_timeout(Duration::from_secs(15))
             .build()
             .expect("failed to build http client");
 

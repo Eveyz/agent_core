@@ -19,6 +19,14 @@ pub struct ModelConfig {
     pub system_prompt: Option<String>,
     #[serde(default = "default_max_iterations")]
     pub max_iterations: usize,
+    /// Per-model HTTP request timeout in seconds (default: 60).
+    /// Increase for slow models on weak hardware.
+    #[serde(default = "default_request_timeout")]
+    pub request_timeout_secs: u64,
+}
+
+fn default_request_timeout() -> u64 {
+    60
 }
 
 fn default_true() -> bool {
@@ -46,6 +54,7 @@ impl Default for ModelConfig {
             react_enabled: true,
             system_prompt: None,
             max_iterations: 10,
+            request_timeout_secs: 60,
         }
     }
 }
