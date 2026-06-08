@@ -3,6 +3,37 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
+// ── Command mode (multi-step input) ─────────────────────────────────
+
+#[derive(Clone)]
+pub enum CommandMode {
+    None,
+    /// /models new — collecting provider name
+    ModelNewProvider,
+    /// /models new — collecting base_url
+    ModelNewBaseUrl { provider: String },
+    /// /models new — collecting api_key
+    ModelNewApiKey { provider: String, base_url: String },
+    /// /models new — collecting model_name
+    ModelNewModelName {
+        provider: String,
+        base_url: String,
+        api_key: String,
+    },
+}
+
+impl CommandMode {
+    pub fn prompt(&self) -> &str {
+        match self {
+            CommandMode::None => "",
+            CommandMode::ModelNewProvider => "Provider name (e.g. ollama, openai):",
+            CommandMode::ModelNewBaseUrl { .. } => "Base URL:",
+            CommandMode::ModelNewApiKey { .. } => "API Key:",
+            CommandMode::ModelNewModelName { .. } => "Model name (e.g. qwen2.5:7b):",
+        }
+    }
+}
+
 // ── Event pump ──────────────────────────────────────────────────────
 
 /// Bridges the async agent (tokio) to the synchronous TUI event loop.
@@ -47,6 +78,10 @@ pub struct AppState {
     pub tool_mode: String,
     pub focus_index: Option<usize>,
     pub should_quit: bool,
+    /// Multi-step command input state (e.g., /models new)
+    pub command_mode: CommandMode,
+    /// Pending command result (e.g., "switch_model:name", "register_model:...")
+    pub pending_command: Option<String>,
     agent_running: bool,
     pending_request: Option<String>,
     /// Direct handle to the agent's pending approvals map — used to
@@ -70,6 +105,8 @@ impl AppState {
             tool_mode: String::from("parallel"),
             focus_index: None,
             should_quit: false,
+            command_mode: CommandMode::None,
+            pending_command: None,
             agent_running: false,
             pending_request: None,
             pending_approvals: None,
@@ -95,6 +132,105 @@ impl AppState {
     /// Whether the agent is currently running (processing a request).
     pub fn is_agent_running(&self) -> bool {
         self.agent_running
+    }
+
+    // ── Command handling ───────────────────────────────────────────
+
+    /// Process a slash command or advance a multi-step command mode.
+    /// Returns Some(text) to display as a Notice in chat, or None.
+    pub fn handle_command(&mut self, input: &str) -> Option<String> {
+        let input = input.trim();
+
+        // If in multi-step mode, advance the flow
+        if !matches!(self.command_mode, CommandMode::None) {
+            return self.advance_command_step(input);
+        }
+
+        // Dispatch slash commands
+        if input == "/quit" || input == "/exit" {
+            self.should_quit = true;
+            return None;
+        }
+        if input == "/help" {
+            return Some(COMMAND_HELP.to_string());
+        }
+        if input == "/models" {
+            self.pending_command = Some("list_models".to_string());
+            return None;
+        }
+        if input.starts_with("/model ") {
+            let name = input.strip_prefix("/model ").unwrap().trim().to_string();
+            self.pending_command = Some(format!("switch_model:{}", name));
+            return None;
+        }
+        if input == "/models new" {
+            self.command_mode = CommandMode::ModelNewProvider;
+            return None;
+        }
+        if input == "/clear" || input == "/new" {
+            self.pending_command = Some("clear".to_string());
+            return None;
+        }
+        if input.starts_with('/') {
+            return Some(format!("unknown command: {}", input));
+        }
+
+        // Not a command — treat as user message
+        self.submit(input.to_string());
+        None
+    }
+
+    /// Advance through /models new multi-step flow.
+    fn advance_command_step(&mut self, input: &str) -> Option<String> {
+        let input = input.trim().to_string();
+        if input.is_empty() {
+            return None; // don't advance on empty input
+        }
+
+        let next = match &self.command_mode {
+            CommandMode::ModelNewProvider => {
+                CommandMode::ModelNewBaseUrl { provider: input }
+            }
+            CommandMode::ModelNewBaseUrl { provider } => {
+                CommandMode::ModelNewApiKey {
+                    provider: provider.clone(),
+                    base_url: input,
+                }
+            }
+            CommandMode::ModelNewApiKey { provider, base_url } => {
+                CommandMode::ModelNewModelName {
+                    provider: provider.clone(),
+                    base_url: base_url.clone(),
+                    api_key: input,
+                }
+            }
+            CommandMode::ModelNewModelName {
+                provider,
+                base_url,
+                api_key,
+            } => {
+                let cmd = format!(
+                    "register_model:{}|{}|{}|{}",
+                    provider, base_url, api_key, input
+                );
+                self.command_mode = CommandMode::None;
+                self.pending_command = Some(cmd);
+                return None;
+            }
+            CommandMode::None => return None,
+        };
+
+        self.command_mode = next;
+        None
+    }
+
+    /// Take the pending command for processing by mod.rs (which has agent access).
+    pub fn take_pending_command(&mut self) -> Option<String> {
+        self.pending_command.take()
+    }
+
+    pub fn cancel_command(&mut self) {
+        self.command_mode = CommandMode::None;
     }
 
     // ── Agent event handling ──────────────────────────────────────
@@ -451,3 +587,24 @@ struct PendingToolCall {
     name: String,
     args: String,
 }
+
+// ── TUI Command definitions ─────────────────────────────────────────
+
+pub const ALL_COMMANDS: &[&str] = &[
+    "/help",
+    "/quit",
+    "/exit",
+    "/models",
+    "/models new",
+    "/model",
+    "/clear",
+    "/new",
+];
+
+pub const COMMAND_HELP: &str = r#"Available commands:
+  /help              Show this help
+  /quit, /exit       Exit the TUI
+  /models            List registered models
+  /models new        Register a new model (ollama, custom, etc.)
+  /model <name>      Switch to a different model
+  /clear, /new       Clear conversation context"#;

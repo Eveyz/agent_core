@@ -1,13 +1,10 @@
-use super::state::{AppState, Entry, TurnBlock};
+use super::state::{AppState, CommandMode, Entry, TurnBlock, ALL_COMMANDS};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
     match key.code {
         // ── Quit ──────────────────────────────────────────────────
-        KeyCode::Esc => {
-            state.should_quit = true;
-        }
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             state.should_quit = true;
         }
@@ -15,7 +12,7 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
             state.should_quit = true;
         }
 
-        // ── Submit ────────────────────────────────────────────────
+        // ── Submit (Enter) ────────────────────────────────────────
         KeyCode::Enter => {
             // Check if a subagent block is focused — toggle it
             if let Some(idx) = state.focus_index {
@@ -23,12 +20,44 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
                 return Ok(());
             }
 
-            // Submit input
             let text = state.input.trim().to_string();
-            if !text.is_empty() {
+            if text.is_empty() {
+                return Ok(());
+            }
+
+            // Dispatch command or submit to agent
+            if text.starts_with('/') || !matches!(state.command_mode, CommandMode::None) {
+                let notice = state.handle_command(&text);
+                state.input.clear();
+                state.cursor_pos = 0;
+
+                if let Some(msg) = notice {
+                    // Push the command result as a Notice block for display
+                    let notice_block = TurnBlock::Notice(msg);
+                    if let Some(ref mut s) = state.streaming {
+                        s.blocks.insert(0, notice_block);
+                    } else {
+                        state.entries.push(Entry::Turn {
+                            turn: 0,
+                            blocks: vec![notice_block],
+                        });
+                    }
+                }
+            } else {
                 state.submit(text);
                 state.input.clear();
                 state.cursor_pos = 0;
+            }
+        }
+
+        // ── Cancel command (Esc) ──────────────────────────────────
+        KeyCode::Esc => {
+            if !matches!(state.command_mode, CommandMode::None) {
+                state.cancel_command();
+                state.input.clear();
+                state.cursor_pos = 0;
+            } else {
+                state.should_quit = true;
             }
         }
 
@@ -123,6 +152,23 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
             let start = prev_word_boundary(&state.input, state.cursor_pos);
             state.input.replace_range(start..state.cursor_pos, "");
             state.cursor_pos = start;
+        }
+
+        // ── Tab completion ────────────────────────────────────────
+        KeyCode::Tab => {
+            if state.input.starts_with('/') {
+                let matches: Vec<&&str> = ALL_COMMANDS
+                    .iter()
+                    .filter(|cmd| cmd.starts_with(&state.input) && ***cmd != state.input)
+                    .collect();
+                if !matches.is_empty() {
+                    // Cycle: if input already matches the first suggestion fully,
+                    // move to the second; otherwise complete to first
+                    let current = matches.first().unwrap();
+                    state.input = current.to_string();
+                    state.cursor_pos = state.input.len();
+                }
+            }
         }
 
         // ── Character input ───────────────────────────────────────

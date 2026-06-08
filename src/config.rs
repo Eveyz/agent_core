@@ -171,6 +171,11 @@ impl Config {
             .get(&self.default_model)
             .with_context(|| format!("default model '{}' not found in config", self.default_model))
     }
+
+    /// Add or replace a model configuration at runtime.
+    pub fn add_model(&mut self, name: String, model: ModelConfig) {
+        self.models.insert(name, model);
+    }
 }
 
 fn resolve_env_value(raw: &str) -> String {

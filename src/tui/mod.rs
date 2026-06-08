@@ -5,7 +5,7 @@ pub mod state;
 use agent_core::Agent;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyEventKind};
-use state::{AppState, EventPump};
+use state::{AppState, Entry, EventPump, TurnBlock};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 pub async fn run_tui(agent: Arc<tokio::sync::Mutex<Agent>>) -> Result<()> {
@@ -54,6 +54,23 @@ async fn run_app(
         if state.should_quit {
             break Ok(());
         }
+
+        // ── Process pending slash commands ─────────────────────────
+        if let Some(cmd) = state.take_pending_command() {
+            needs_draw = true;
+            let notice = process_command(&mut state, &agent, &cmd).await;
+            if let Some(msg) = notice {
+                let block = TurnBlock::Notice(msg);
+                if let Some(ref mut s) = state.streaming {
+                    s.blocks.insert(0, block);
+                } else {
+                    state.entries.push(Entry::Turn {
+                        turn: 0,
+                        blocks: vec![block],
+                    });
+                }
+            }
+        }
         if let Some(req) = state.take_pending_request() {
             let tx = pump.sender();
             let agent_clone = agent.clone();
@@ -80,4 +97,105 @@ async fn run_app(
             needs_draw = false;
         }
     }
+}
+
+// ── Slash command processor ─────────────────────────────────────────
+// Handles commands that need access to the Agent (model list, switch, etc.)
+
+async fn process_command(
+    state: &mut AppState,
+    agent: &Arc<tokio::sync::Mutex<Agent>>,
+    cmd: &str,
+) -> Option<String> {
+    if cmd == "list_models" {
+        let a = agent.lock().await;
+        let mut lines = vec!["Registered models:".to_string()];
+        for (name, current) in a.list_models() {
+            lines.push(if current {
+                format!("  * {}", name)
+            } else {
+                format!("    {}", name)
+            });
+        }
+        return Some(lines.join("\n"));
+    }
+
+    if cmd.starts_with("switch_model:") {
+        let name = cmd.strip_prefix("switch_model:").unwrap();
+        let mut a = agent.lock().await;
+        match a.switch_model(name) {
+            Ok(()) => {
+                state.model = name.to_string();
+                return Some(format!("Switched to model:\n  {}", name));
+            }
+            Err(e) => {
+                return Some(format!("Failed to switch:\n  {}", e));
+            }
+        }
+    }
+
+    if cmd == "clear" {
+        let mut a = agent.lock().await;
+        a.clear_context();
+        state.entries.clear();
+        return Some("Context cleared. New session started.".to_string());
+    }
+
+    if cmd.starts_with("register_model:") {
+        let data = cmd.strip_prefix("register_model:").unwrap();
+        let parts: Vec<&str> = data.splitn(4, '|').collect();
+        if parts.len() != 4 {
+            return Some("Invalid register_model format".to_string());
+        }
+        let provider = parts[0];
+        let base_url = parts[1];
+        let api_key = parts[2];
+        let model_id = parts[3];
+
+        // Create model config
+        let model_cfg = agent_core::config::ModelConfig {
+            name: provider.to_string(),
+            base_url: base_url.to_string(),
+            api_key: api_key.to_string(),
+            model_id: model_id.to_string(),
+            max_context_tokens: 32768,
+            ..Default::default()
+        };
+
+        let model_name = format!("{}-{}", provider, model_id);
+        let mut a = agent.lock().await;
+        match a.register_model(&model_name, model_cfg) {
+            Ok(()) => {
+                // Quote key if it contains special TOML characters
+                let toml_key = if model_name.contains(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-') {
+                    format!("\"{}\"", model_name)
+                } else {
+                    model_name.clone()
+                };
+                // Try to persist to config.toml
+                let entry = format!(
+                    "\n[models.{}]\nbase_url = \"{}\"\napi_key = \"{}\"\nmodel_id = \"{}\"\nmax_context_tokens = 32768\n",
+                    toml_key, base_url, api_key, model_id
+                );
+                if let Err(e) = std::fs::write(
+                    "config.toml",
+                    std::fs::read_to_string("config.toml").unwrap_or_default() + &entry,
+                ) {
+                    return Some(format!(
+                        "Model '{}' registered (memory only).\n  Config write failed: {}",
+                        model_name, e
+                    ));
+                }
+                return Some(format!(
+                    "Model registered:\n  {}\n  Use /model {} to switch.",
+                    model_name, model_name
+                ));
+            }
+            Err(e) => {
+                return Some(format!("Failed to register model: {}", e));
+            }
+        }
+    }
+
+    None
 }

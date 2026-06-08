@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::client::OpenAIClient;
-use crate::config::Config;
+use crate::config::{Config, ModelConfig};
 use crate::context::Context;
 use crate::hooks::{HookRegistry, PreToolResult};
 use crate::memory::MemoryManager;
@@ -1066,6 +1066,20 @@ impl Agent {
             .keys()
             .map(|name| (name.as_str(), name == &self.current_model_name))
             .collect()
+    }
+
+    /// Register a new model at runtime. Does NOT persist to config.toml —
+    /// the caller is responsible for writing the file.
+    pub fn register_model(&mut self, name: &str, model: ModelConfig) -> Result<()> {
+        if self.config.models.contains_key(name) {
+            anyhow::bail!("model '{}' already exists", name);
+        }
+        self.config.add_model(name.to_string(), model);
+        Ok(())
+    }
+
+    pub fn model_config(&self, name: &str) -> Option<&ModelConfig> {
+        self.config.get_model(name)
     }
 
     pub fn set_temperature(&mut self, temp: f64) {

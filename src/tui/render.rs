@@ -1,4 +1,4 @@
-use super::state::{AppState, Entry, SubagentState, ToolResult, TurnBlock};
+use super::state::{AppState, CommandMode, Entry, SubagentState, ToolResult, TurnBlock};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::{
     Frame,
@@ -93,6 +93,40 @@ fn render_status(frame: &mut Frame, state: &AppState, area: Rect) {
 // ── Input bar ───────────────────────────────────────────────────────
 
 fn render_input(frame: &mut Frame, state: &AppState, area: Rect) {
+    // ── Command-mode prompt ─────────────────────────────────────────
+    if !matches!(state.command_mode, CommandMode::None) {
+        let hint = state.command_mode.prompt();
+        let prompt = Span::styled(
+            format!(" {hint} "),
+            Style::default()
+                .fg(Color::Rgb(229, 192, 123))
+                .add_modifier(Modifier::BOLD),
+        );
+        let text = Span::raw(&state.input);
+        let cursor = if state.input.is_empty() {
+            Span::styled(" ", Style::default().bg(Color::White))
+        } else {
+            Span::raw("")
+        };
+
+        let line = Line::from(vec![prompt, text, cursor]);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::Rgb(229, 192, 123)));
+
+        let para = Paragraph::new(line).block(block);
+        frame.render_widget(para, area);
+
+        let hint_w = hint.len() + 3;
+        let cursor_w = state.input[..state.cursor_pos.min(state.input.len())].width();
+        let cursor_x = (hint_w + cursor_w) as u16;
+        let max_x = area.width.saturating_sub(1);
+        frame.set_cursor_position((area.x + cursor_x.min(max_x), area.y + 1));
+        return;
+    }
+
+    // ── Normal prompt ──────────────────────────────────────────────
     let prompt = Span::styled(
         " ❯ ",
         Style::default()
@@ -274,13 +308,18 @@ fn render_turn_block<'a>(
             ]));
         }
         TurnBlock::Notice(msg) => {
-            lines.push(Line::from(vec![
-                Span::raw(pad.to_string()),
-                Span::styled(
-                    format!("⚠ {msg}"),
-                    Style::default().fg(WARN_COLOR).add_modifier(Modifier::BOLD),
-                ),
-            ]));
+            for (i, line_text) in msg.lines().enumerate() {
+                if i > 0 {
+                    lines.push(Line::from(vec![Span::raw(pad.to_string())]));
+                }
+                lines.push(Line::from(vec![
+                    Span::raw(pad.to_string()),
+                    Span::styled(
+                        format!("⚠ {line_text}"),
+                        Style::default().fg(WARN_COLOR).add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+            }
         }
     }
 }
