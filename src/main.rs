@@ -1,4 +1,5 @@
 mod tui;
+mod cli_completer;
 
 use agent_core::{
     AgentBuilder, AgentEvent, Message, MessageDelta, PermissionPolicy, SkillLoader, TaskBoard,
@@ -224,19 +225,27 @@ async fn main() -> anyhow::Result<()> {
     println!("--------------\n");
     println!("Type /help for commands, /quit to exit\n");
 
+    let mut editor = rustyline::Editor::<cli_completer::CommandCompleter, rustyline::history::DefaultHistory>::new()?;
+    editor.set_helper(Some(cli_completer::CommandCompleter::new()));
+
     loop {
-        print!("> ");
-        io::stdout().flush()?;
+        let readline = editor.readline("> ");
+        let input: String = match readline {
+            Ok(line) => line,
+            Err(rustyline::error::ReadlineError::Interrupted) => break,
+            Err(rustyline::error::ReadlineError::Eof) => break,
+            Err(err) => {
+                eprintln!("Error: {:?}", err);
+                break;
+            }
+        };
 
-        let mut input = String::new();
-        if io::stdin().read_line(&mut input)? == 0 {
-            break;
-        }
         let input = input.trim();
-
         if input.is_empty() {
             continue;
         }
+
+        let _ = editor.add_history_entry(input);
 
         match input {
             "/quit" | "/exit" => {
