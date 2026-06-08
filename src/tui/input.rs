@@ -1,4 +1,4 @@
-use super::state::{AppState, TurnBlock};
+use super::state::{AppState, Entry, TurnBlock};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -58,34 +58,77 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
             }
         }
 
-        // ── Input editing ─────────────────────────────────────────
-        KeyCode::Char(c) => {
-            state.input.insert(state.cursor_pos, c);
-            state.cursor_pos += c.len_utf8();
-        }
-        KeyCode::Backspace => {
-            if state.cursor_pos > 0 {
+        // ── Cursor movement ───────────────────────────────────────
+        KeyCode::Left => {
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                state.cursor_pos = prev_word_boundary(&state.input, state.cursor_pos);
+            } else {
                 state.cursor_pos = prev_char_boundary(&state.input, state.cursor_pos);
-                state.input.remove(state.cursor_pos);
+            }
+        }
+        KeyCode::Right => {
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                state.cursor_pos = next_word_boundary(&state.input, state.cursor_pos);
+            } else {
+                state.cursor_pos = next_char_boundary(&state.input, state.cursor_pos);
+            }
+        }
+        KeyCode::Home | KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.cursor_pos = 0;
+        }
+        KeyCode::End | KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state.cursor_pos = state.input.len();
+        }
+
+        // ── Deletion ──────────────────────────────────────────────
+        KeyCode::Backspace => {
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                // Ctrl+Backspace: delete previous word
+                let start = prev_word_boundary(&state.input, state.cursor_pos);
+                state.input.replace_range(start..state.cursor_pos, "");
+                state.cursor_pos = start;
+            } else if state.cursor_pos > 0 {
+                let prev = prev_char_boundary(&state.input, state.cursor_pos);
+                state.input.remove(prev);
+                state.cursor_pos = prev;
             }
         }
         KeyCode::Delete => {
-            if state.cursor_pos < state.input.len() {
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                // Ctrl+Delete: delete next word
+                let end = next_word_boundary(&state.input, state.cursor_pos);
+                state.input.replace_range(state.cursor_pos..end, "");
+            } else if state.cursor_pos < state.input.len() {
                 let next = next_char_boundary(&state.input, state.cursor_pos);
                 state.input.replace_range(state.cursor_pos..next, "");
             }
         }
-        KeyCode::Left => {
-            state.cursor_pos = prev_char_boundary(&state.input, state.cursor_pos);
+
+        // ── Kill line / word ──────────────────────────────────────
+        KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            // Kill to end of line
+            if state.cursor_pos < state.input.len() {
+                state.input.truncate(state.cursor_pos);
+            }
         }
-        KeyCode::Right => {
-            state.cursor_pos = next_char_boundary(&state.input, state.cursor_pos);
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            // Kill to start of line
+            if state.cursor_pos > 0 {
+                state.input.replace_range(0..state.cursor_pos, "");
+                state.cursor_pos = 0;
+            }
         }
-        KeyCode::Home => {
-            state.cursor_pos = 0;
+        KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            // Kill previous word
+            let start = prev_word_boundary(&state.input, state.cursor_pos);
+            state.input.replace_range(start..state.cursor_pos, "");
+            state.cursor_pos = start;
         }
-        KeyCode::End => {
-            state.cursor_pos = state.input.len();
+
+        // ── Character input ───────────────────────────────────────
+        KeyCode::Char(c) => {
+            state.input.insert(state.cursor_pos, c);
+            state.cursor_pos += c.len_utf8();
         }
 
         _ => {}
@@ -125,10 +168,13 @@ fn toggle_focus(state: &mut AppState, idx: usize) {
     }
 }
 
-use super::state::Entry;
+// ── Character boundary helpers ──────────────────────────────────────
 
 fn prev_char_boundary(text: &str, pos: usize) -> usize {
-    text[..pos].char_indices().last().map_or(0, |(idx, _)| idx)
+    text[..pos]
+        .char_indices()
+        .last()
+        .map_or(0, |(idx, _)| idx)
 }
 
 fn next_char_boundary(text: &str, pos: usize) -> usize {
@@ -136,4 +182,28 @@ fn next_char_boundary(text: &str, pos: usize) -> usize {
         .char_indices()
         .nth(1)
         .map_or(text.len(), |(idx, _)| pos + idx)
+}
+
+fn prev_word_boundary(text: &str, pos: usize) -> usize {
+    let s = &text[..pos];
+    // Skip trailing whitespace
+    let trimmed_end = s.trim_end();
+    let ws_len = s.len() - trimmed_end.len();
+    let non_ws_end = pos.saturating_sub(ws_len);
+    // Find previous whitespace boundary
+    text[..non_ws_end]
+        .rfind(char::is_whitespace)
+        .map_or(0, |i| i + 1)
+}
+
+fn next_word_boundary(text: &str, pos: usize) -> usize {
+    let s = &text[pos..];
+    // Skip leading whitespace
+    let trimmed_start = s.trim_start();
+    let ws_len = s.len() - trimmed_start.len();
+    let non_ws_start = pos + ws_len;
+    // Find next whitespace
+    text[non_ws_start..]
+        .find(char::is_whitespace)
+        .map_or(text.len(), |i| non_ws_start + i)
 }

@@ -2,10 +2,16 @@ mod tui;
 
 use agent_core::{
     AgentBuilder, AgentEvent, ApprovalChoice, McpClientManager, Message, MessageDelta,
-    PermissionPolicy, Role, SessionManager, SkillManager, TaskBoard, TaskStatus,
+    PermissionPolicy, Role, SessionManager, SkillManager, SkillManifest, TaskBoard, TaskStatus,
     TodoItem, TodoList, TodoStatus, ToolExecutionMode, hooks::LoggingHook, tasks, tools,
 };
 use argh::FromArgs;
+use rustyline::completion::Completer;
+use rustyline::error::ReadlineError;
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::validate::Validator;
+use rustyline::{CompletionType, Config, EditMode, Editor, Helper};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::io::{self, IsTerminal, Write};
@@ -13,7 +19,110 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
-// ── Terminal styling ───────────────────────────────────────────────
+// ── Tab completion ────────────────────────────────────────────────
+
+/// All slash-commands recognized by the CLI. Used for tab-completion and /help.
+const ALL_COMMANDS: &[&str] = &[
+    // General
+    "/help",
+    "/status",
+    "/quit",
+    "/exit",
+    // Model & Context
+    "/models",
+    "/model",
+    "/temp",
+    "/max-tokens",
+    "/tokens",
+    "/context",
+    "/clear",
+    "/new",
+    "/rewind",
+    // Agent Control
+    "/abort",
+    "/state",
+    "/tool-mode",
+    "/steer",
+    "/follow-up",
+    "/clear-queues",
+    // Memory
+    "/memory",
+    "/memory search",
+    "/memory stats",
+    // Permission & Hooks
+    "/permission",
+    "/perm",
+    "/perm test",
+    "/perm mode",
+    "/hooks",
+    // MCP
+    "/mcp",
+    // Planning
+    "/todo",
+    "/todo add",
+    "/todo start",
+    "/todo done",
+    "/todo clear",
+    // Task Board
+    "/tasks",
+    "/tasks add",
+    "/tasks start",
+    "/tasks done",
+    "/tasks clear",
+    // Sessions
+    "/sessions",
+    "/session",
+    "/session save",
+    "/session resume",
+    "/session delete",
+    "/session rename",
+    "/session archive",
+    "/session search",
+    // Skills
+    "/skills",
+    "/skill",
+    "/skill active",
+    "/skill deactivate",
+    "/skill reload",
+];
+
+struct CommandCompleter;
+
+impl Highlighter for CommandCompleter {}
+impl Hinter for CommandCompleter {
+    type Hint = String;
+}
+impl Validator for CommandCompleter {}
+impl Helper for CommandCompleter {}
+
+impl Completer for CommandCompleter {
+    type Candidate = String;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _ctx: &rustyline::Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<String>)> {
+        // Only complete commands starting with /
+        let prefix = &line[..pos];
+        if !prefix.starts_with('/') {
+            return Ok((0, vec![]));
+        }
+
+        let mut matches: Vec<String> = ALL_COMMANDS
+            .iter()
+            .filter(|cmd| cmd.starts_with(prefix) && **cmd != prefix)
+            .map(|s| s.to_string())
+            .collect();
+        matches.sort();
+
+        // Find the start position: we replace from the beginning of the / command
+        let start = line[..pos].rfind('/').unwrap_or(0);
+
+        Ok((start, matches))
+    }
+}
 
 fn dim(use_styles: bool) -> &'static str {
     if use_styles { "\x1b[2m" } else { "" }
@@ -327,23 +436,45 @@ async fn main() -> anyhow::Result<()> {
     println!("--------------\n");
     println!("Type /help for commands, /quit to exit\n");
 
-    loop {
-        print!("> ");
-        io::stdout().flush()?;
+    // ── Setup readline with tab-completion and history ──────────────
+    let config = Config::builder()
+        .completion_type(CompletionType::List)
+        .edit_mode(EditMode::Emacs)
+        .build();
+    let mut rl = Editor::with_config(config).expect("Failed to create line editor");
+    rl.set_helper(Some(CommandCompleter));
+    let _ = rl.load_history(".agent_core_history");
 
-        let mut input = String::new();
-        if io::stdin().read_line(&mut input)? == 0 {
-            break;
-        }
-        let input = input.trim();
+    loop {
+        let input = match rl.readline("> ") {
+            Ok(line) => {
+                let trimmed = line.trim().to_string();
+                let _ = rl.add_history_entry(&line);
+                trimmed
+            }
+            Err(ReadlineError::Interrupted) => {
+                // Ctrl-C
+                println!("^C");
+                continue;
+            }
+            Err(ReadlineError::Eof) => {
+                break;
+            }
+            Err(err) => {
+                eprintln!("Input error: {err}");
+                break;
+            }
+        };
 
         if input.is_empty() {
             continue;
         }
 
-        match input {
+        match input.as_str() {
             "/quit" | "/exit" => {
-                // Auto-save session before exit
+                // ── Graceful shutdown ────────────────────────────────
+
+                // 1. Auto-save session
                 let all_messages = agent.context_messages();
                 let messages: Vec<Message> = all_messages
                     .into_iter()
@@ -362,6 +493,20 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                 }
+
+                // 2. Shut down MCP connections (kill child processes)
+                {
+                    let mut mgr = mcp_mgr.lock().await;
+                    if let Err(e) = mgr.shutdown_all().await {
+                        eprintln!("MCP shutdown warning: {e}");
+                    }
+                }
+
+                // 3. Save command history
+                if let Err(e) = rl.save_history(".agent_core_history") {
+                    eprintln!("History save warning: {e}");
+                }
+
                 println!("Bye!");
                 break;
             }
@@ -376,7 +521,55 @@ async fn main() -> anyhow::Result<()> {
             }
             "/clear" => {
                 agent.clear_context();
+                *_current_session_id.lock().unwrap() = None;
                 println!("Context cleared. New session started.");
+            }
+            "/new" => {
+                agent.clear_context();
+                *_current_session_id.lock().unwrap() = None;
+                println!("Fresh session started. Previous context cleared.");
+            }
+            cmd if cmd.starts_with("/rewind") => {
+                let rest = cmd.strip_prefix("/rewind").unwrap_or("").trim();
+                if rest.is_empty() {
+                    // Show rewindable points
+                    let msgs = agent.context_messages();
+                    let user_indices: Vec<(usize, &str)> = msgs
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, m)| m.role == Role::User)
+                        .map(|(i, m)| (i, m.content.as_deref().unwrap_or("")))
+                        .collect();
+                    if user_indices.is_empty() {
+                        println!("No conversation history to rewind.");
+                    } else {
+                        println!("=== Rewind points (user messages) ===");
+                        for (idx, content) in &user_indices {
+                            let preview = truncate(content, 60);
+                            println!("  [{idx}] {preview}");
+                        }
+                        println!("\nUse /rewind <index> to go back to that point.");
+                    }
+                } else {
+                    match rest.parse::<usize>() {
+                        Ok(idx) => {
+                            let (removed, total) = agent.rewind_context_to(idx);
+                            if removed > 0 {
+                                println!(
+                                    "Rewound: kept first {idx} messages, removed {removed} (was {total} total)."
+                                );
+                            } else {
+                                println!(
+                                    "No messages removed (index {idx} >= {total} total messages)."
+                                );
+                            }
+                        }
+                        Err(_) => eprintln!(
+                            "Invalid index '{}'. Use /rewind to see available points.",
+                            rest
+                        ),
+                    }
+                }
             }
             "/tokens" => {
                 println!("Current tokens: {}", agent.context_token_count());
@@ -403,7 +596,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("Hooks fire on: PreToolUse, PostToolUse, SessionStart, SessionEnd");
             }
             "/mcp" => {
-                let mgr = mcp_mgr.blocking_lock();
+                let mgr = mcp_mgr.lock().await;
                 let servers = mgr.connected_servers();
                 if servers.is_empty() {
                     println!("No MCP servers connected. Configure in [mcp.servers] in config.toml.");
@@ -445,28 +638,34 @@ async fn main() -> anyhow::Result<()> {
                     }
                 } else {
                     println!("=== Available Skills ===");
+
+                    // Group by source directory
+                    let mut by_source: std::collections::BTreeMap<String, Vec<&SkillManifest>> =
+                        std::collections::BTreeMap::new();
                     for (skill, source) in &skills {
-                        let preview: String = skill
-                            .description
-                            .split_whitespace()
-                            .take(50)
-                            .collect::<Vec<_>>()
-                            .join(" ");
-                        let truncated = if skill.description.split_whitespace().count() > 50 {
-                            format!("{}...", preview)
-                        } else {
-                            preview
-                        };
-                        println!("  {}: {}", skill.name, truncated);
-                        println!("    source: {}", source.display());
-                        if !skill.triggers.is_empty() {
-                            println!("    triggers: {}", skill.triggers.join(", "));
-                        }
+                        by_source
+                            .entry(source.to_string_lossy().to_string())
+                            .or_default()
+                            .push(skill);
                     }
-                    println!("\nSearch dirs:");
-                    for dir in mgr.search_dirs() {
-                        let exists = if dir.exists() { "ok" } else { "missing" };
-                        println!("  {} [{}]", dir.display(), exists);
+
+                    for (source, group) in &by_source {
+                        println!("\n{}", source);
+                        for skill in group {
+                            let desc: String = skill
+                                .description
+                                .chars()
+                                .take(80)
+                                .collect();
+                            let truncated = if skill.description.chars().count() > 80 {
+                                format!("{}...", desc)
+                            } else {
+                                desc
+                            };
+                            // Replace newlines in description for single-line display
+                            let desc_one_line = truncated.replace('\n', " ");
+                            println!("  {}  {}", skill.name, desc_one_line);
+                        }
                     }
                 }
             }
@@ -840,11 +1039,15 @@ async fn main() -> anyhow::Result<()> {
                     println!("Memory is disabled.");
                 }
             }
+            // Catch unknown /commands before they hit the agent
+            input if input.starts_with('/') => {
+                eprintln!("Unknown command: {}. Type /help for available commands.", input);
+            }
             _ => {
                 // Reset abort flag before each run
                 agent.abort_flag.store(false, Ordering::Relaxed);
                 let approvals = agent.pending_approvals_clone();
-                run_agent(&mut agent, input, use_styles, &approvals).await;
+                run_agent(&mut agent, &input, use_styles, &approvals).await;
             }
         }
     }
@@ -991,6 +1194,56 @@ fn print_status(
     }
 }
 
+// ── UI helpers ─────────────────────────────────────────────────────
+
+/// Build args preview: strip `{}` for empty, show key-value pairs for others.
+fn fmt_tool_args(args: &serde_json::Value) -> String {
+    let s = args.to_string();
+    if s == "{}" {
+        return String::new();
+    }
+    // Truncate early so we don't print huge JSON blobs
+    truncate(&s, 100)
+}
+
+/// Output a single compact tool line:  🔧 tool(args) → result
+fn print_tool_line(
+    tool_name: &str,
+    args: &serde_json::Value,
+    result: &str,
+    is_error: bool,
+    use_styles: bool,
+) {
+    let args_str = fmt_tool_args(args);
+    let result_preview = truncate(result, 120).replace('\n', " ");
+
+    if is_error {
+        println!(
+            "  {bold}{cyan}🔧{reset} {bold}{tool}{reset}({dim}{args}{reset}) {red}✗{reset} {red}{result}{reset}",
+            bold = bold(use_styles),
+            cyan = cyan(use_styles),
+            reset = reset(use_styles),
+            tool = tool_name,
+            dim = dim(use_styles),
+            args = args_str,
+            red = red(use_styles),
+            result = result_preview,
+        );
+    } else {
+        println!(
+            "  {bold}{cyan}🔧{reset} {bold}{tool}{reset}({dim}{args}{reset}) {green}→{reset} {dim}{result}{reset}",
+            bold = bold(use_styles),
+            cyan = cyan(use_styles),
+            reset = reset(use_styles),
+            tool = tool_name,
+            dim = dim(use_styles),
+            args = args_str,
+            green = green(use_styles),
+            result = result_preview,
+        );
+    }
+}
+
 /// Run agent inline — aborts are handled via `abort_flag` which is
 /// checked inside `collect_stream` on every chunk and between turns.
 async fn run_agent(
@@ -1003,9 +1256,14 @@ async fn run_agent(
     let in_thinking = Cell::new(false);
     let in_agent_text = Cell::new(false);
     let skin = termimad::MadSkin::default();
+    let in_sub_thinking = Cell::new(false);
+    let in_sub_text = Cell::new(false);
     let approvals = pending_approvals.clone();
 
-    print!("\r  {}...{}", bold(use_styles), reset(use_styles));
+    // Deferred tool output: buffer ToolExecutionStart until ToolExecutionEnd arrives
+    let pending_tool: Cell<Option<(String, serde_json::Value)>> = Cell::new(None);
+
+    print!("\r  ⏳{}", reset(use_styles));
     io::stdout().flush().ok();
 
     match agent
@@ -1019,11 +1277,12 @@ async fn run_agent(
                 AgentEvent::AgentStart => {}
                 AgentEvent::AgentEnd { .. } => {}
                 AgentEvent::TurnStart { turn_index } => {
+                    // Flush any pending tool before new turn
                     in_thinking.set(false);
                     in_agent_text.set(false);
                     if turn_index > 0 {
                         println!(
-                            "\n  {}--- Turn {turn_index} ---{}",
+                            "\n  {}─── Turn {turn_index} ───{}",
                             dim(use_styles),
                             reset(use_styles)
                         );
@@ -1031,17 +1290,20 @@ async fn run_agent(
                 }
                 AgentEvent::MessageUpdate { delta } => match delta {
                     MessageDelta::Thinking(t) => {
+                        // Flush pending tool output before thinking
+                        pending_tool.set(None);
                         if in_agent_text.get() {
                             println!();
                             in_agent_text.set(false);
                         }
                         if !in_thinking.get() {
+                            println!(); // visual separator before think block
                             print!(
-                                "\n  {}{}...{}{} ",
+                                "  {}{}💭 Think{} {}",
                                 bold(use_styles),
                                 yellow(use_styles),
+                                reset(use_styles),
                                 dim(use_styles),
-                                reset(use_styles)
                             );
                             in_thinking.set(true);
                         }
@@ -1049,17 +1311,21 @@ async fn run_agent(
                         io::stdout().flush().ok();
                     }
                     MessageDelta::Text(t) => {
+                        // Flush pending tool output before text
+                        pending_tool.set(None);
                         if in_thinking.get() {
                             println!("{}", reset(use_styles));
                             in_thinking.set(false);
                         }
                         if !in_agent_text.get() {
+                            println!(); // visual separator before model output
                             print!(
-                                "  {}{}>> {}{}",
+                                "  {}{}>>{} {}{}",
                                 bold(use_styles),
                                 green(use_styles),
                                 reset(use_styles),
-                                reset(use_styles)
+                                reset(use_styles),
+                                reset(use_styles),
                             );
                             in_agent_text.set(true);
                         }
@@ -1075,20 +1341,13 @@ async fn run_agent(
                 AgentEvent::ToolExecutionStart {
                     tool_name, args, ..
                 } => {
-                    let args_str = args.to_string();
-                    println!(
-                        "\n  {}{}@@ {}{}{}({}{}{}){}{}",
-                        bold(use_styles),
-                        cyan(use_styles),
-                        reset(use_styles),
-                        bold(use_styles),
-                        tool_name,
-                        reset(use_styles),
-                        dim(use_styles),
-                        truncate(&args_str, 80),
-                        reset(use_styles),
-                        reset(use_styles)
-                    );
+                    // Defer — buffer it, print when ToolExecutionEnd arrives
+                    pending_tool.set(Some((tool_name, args)));
+                }
+                AgentEvent::ToolExecutionUpdate {
+                    ..
+                } => {
+                    // Silently consume — end event will show final result
                 }
                 AgentEvent::ToolExecutionEnd {
                     tool_name,
@@ -1096,44 +1355,36 @@ async fn run_agent(
                     is_error,
                     ..
                 } => {
-                    if is_error {
-                        println!(
-                            "     {}{}XX {}{}{} {}{}{}{}",
-                            bold(use_styles),
-                            red(use_styles),
-                            reset(use_styles),
-                            bold(use_styles),
-                            tool_name,
-                            reset(use_styles),
-                            red(use_styles),
-                            truncate(&result, 120),
-                            reset(use_styles)
-                        );
-                    } else {
-                        println!(
-                            "     {}{}>> {}{}{} {}{}{}{}",
-                            bold(use_styles),
-                            green(use_styles),
-                            reset(use_styles),
-                            bold(use_styles),
-                            tool_name,
-                            reset(use_styles),
-                            dim(use_styles),
-                            truncate(&result, 120),
-                            reset(use_styles)
-                        );
+                    // Flush thinking/text prefix before tool line
+                    if in_thinking.get() {
+                        println!("{}", reset(use_styles));
+                        in_thinking.set(false);
                     }
+                    if in_agent_text.get() {
+                        println!(); // end in-progress text line
+                        in_agent_text.set(false);
+                    }
+                    println!(); // visual separator before tool output
+
+                    let pt = pending_tool.take();
+                    let args = pt
+                        .as_ref()
+                        .map(|(_, a)| a.clone())
+                        .unwrap_or_else(|| serde_json::Value::String("?".to_string()));
+
+                    print_tool_line(&tool_name, &args, &result, is_error, use_styles);
                     io::stdout().flush().ok();
                 }
                 AgentEvent::Error(e) => {
+                    pending_tool.set(None);
                     eprintln!(
-                        "  {}{}XX {}{}{}{}",
+                        "  {}{}✗{}{} {}{}",
                         bold(use_styles),
                         red(use_styles),
                         reset(use_styles),
-                        bold(use_styles),
+                        reset(use_styles),
                         e,
-                        reset(use_styles)
+                        reset(use_styles),
                     );
                 }
                 AgentEvent::ApprovalRequired {
@@ -1143,9 +1394,10 @@ async fn run_agent(
                     explanation,
                     ..
                 } => {
+                    pending_tool.set(None);
                     println!();
                     println!(
-                        "  {}[⚠ APPROVAL]{} {} ({})",
+                        "  {}⚠ APPROVAL{} {} ({})",
                         yellow(use_styles),
                         reset(use_styles),
                         tool_name,
@@ -1163,40 +1415,93 @@ async fn run_agent(
                         }
                     }
                 }
+
+                // ── Subagent events ────────────────────────────────
                 AgentEvent::SubagentStart { subagent_id, task } => {
+                    pending_tool.set(None);
+                    in_sub_thinking.set(false);
+                    in_sub_text.set(false);
                     println!(
-                        "\n  {}|- Sub-agent '{subagent_id}': {}",
+                        "\n  {}├─ Sub-agent '{}':{} {}{}",
                         yellow(use_styles),
-                        truncate(&task, 60)
+                        subagent_id,
+                        reset(use_styles),
+                        dim(use_styles),
+                        truncate(&task, 60),
                     );
                 }
                 AgentEvent::SubagentTurnStart { turn_index, .. } => {
-                    println!(
-                        "  {}|  -- Turn {turn_index} --{}",
+                    in_sub_thinking.set(false);
+                    in_sub_text.set(false);
+                    // Print turn line + immediate "waiting" indicator
+                    print!(
+                        "\n  {}│  ── Turn {turn_index} ──{}  {}⏳{}",
                         dim(use_styles),
-                        reset(use_styles)
+                        reset(use_styles),
+                        yellow(use_styles),
+                        reset(use_styles),
                     );
+                    io::stdout().flush().ok();
                 }
-                AgentEvent::SubagentMessageUpdate { delta, .. } => match delta {
-                    MessageDelta::Thinking(t) => {
-                        print!("{}{}{}", dim(use_styles), t, reset(use_styles));
-                        io::stdout().flush().ok();
-                    }
-                    MessageDelta::Text(t) => {
-                        print!("{}{}", t, reset(use_styles));
-                        io::stdout().flush().ok();
+                AgentEvent::SubagentMessageUpdate { delta, .. } => {
+                    match delta {
+                        MessageDelta::Thinking(t) => {
+                            // Clear the ⏳ indicator on first thinking token
+                            if !in_sub_thinking.get() {
+                                in_sub_text.set(false);
+                                // Clear the ⏳ + newline + print prefix
+                                print!("\r                                    \r");
+                                print!(
+                                    "  {}│  {}💭 Think{} {}",
+                                    dim(use_styles),
+                                    yellow(use_styles),
+                                    reset(use_styles),
+                                    dim(use_styles),
+                                );
+                                in_sub_thinking.set(true);
+                            }
+                            print!("{}", t);
+                            io::stdout().flush().ok();
+                        }
+                        MessageDelta::Text(t) => {
+                            if in_sub_thinking.get() {
+                                println!("{}", reset(use_styles));
+                                in_sub_thinking.set(false);
+                            }
+                            if !in_sub_text.get() {
+                                println!(); // visual separator before sub-agent text
+                                print!(
+                                    "  {}│ {}{}",
+                                    dim(use_styles),
+                                    reset(use_styles),
+                                    reset(use_styles),
+                                );
+                                in_sub_text.set(true);
+                            }
+                            print!("{}", t);
+                            io::stdout().flush().ok();
+                        }
                     }
                 },
                 AgentEvent::SubagentToolStart {
                     tool_name, args, ..
                 } => {
-                    let args_str = args.to_string();
+                    // Flush any pending thinking/text before tool line
+                    if in_sub_thinking.get() {
+                        println!("{}", reset(use_styles));
+                        in_sub_thinking.set(false);
+                    }
+                    in_sub_text.set(false);
+                    println!(); // visual separator before sub-agent tool
+                    let args_str = fmt_tool_args(&args);
                     println!(
-                        "  {}|  @@ {}({}){}",
+                        "  {}│  {}{}🔧{} {}({})",
+                        dim(use_styles),
+                        bold(use_styles),
                         cyan(use_styles),
+                        reset(use_styles),
                         tool_name,
-                        truncate(&args_str, 60),
-                        reset(use_styles)
+                        args_str,
                     );
                 }
                 AgentEvent::SubagentToolEnd {
@@ -1205,22 +1510,24 @@ async fn run_agent(
                     is_error,
                     ..
                 } => {
-                    let preview = truncate(&result, 100);
+                    let preview = truncate(&result, 100).replace('\n', " ");
                     if is_error {
                         println!(
-                            "  {}|  XX {}: {}{}",
+                            "  {}│     {}✗{} {} {}",
+                            dim(use_styles),
                             red(use_styles),
+                            reset(use_styles),
                             tool_name,
                             preview,
-                            reset(use_styles)
                         );
                     } else {
                         println!(
-                            "  {}|  >> {}: {}{}",
+                            "  {}│     {}→{} {} {}",
+                            dim(use_styles),
                             green(use_styles),
+                            reset(use_styles),
                             tool_name,
                             preview,
-                            reset(use_styles)
                         );
                     }
                 }
@@ -1229,13 +1536,31 @@ async fn run_agent(
                     success,
                     iterations_used,
                 } => {
-                    let icon = if success { "ok" } else { "err" };
-                    println!(
-                        "  {}|- Sub-agent '{subagent_id}': {} ({iterations_used} iterations){}",
-                        yellow(use_styles),
-                        icon,
-                        reset(use_styles)
-                    );
+                    in_sub_thinking.set(false);
+                    in_sub_text.set(false);
+                    if success {
+                        println!(
+                            "  {}├─ '{}'{} {}✓{} ({} iterations){}",
+                            yellow(use_styles),
+                            subagent_id,
+                            reset(use_styles),
+                            green(use_styles),
+                            reset(use_styles),
+                            iterations_used,
+                            reset(use_styles),
+                        );
+                    } else {
+                        println!(
+                            "  {}├─ '{}'{} {}✗{} ({} iterations){}",
+                            yellow(use_styles),
+                            subagent_id,
+                            reset(use_styles),
+                            red(use_styles),
+                            reset(use_styles),
+                            iterations_used,
+                            reset(use_styles),
+                        );
+                    }
                 }
                 _ => {} // TurnEnd, MessageStart, ToolExecutionUpdate — silently ignored
             }
@@ -1247,13 +1572,13 @@ async fn run_agent(
         }
         Err(e) => {
             eprintln!(
-                "\n  {}{}XX {}{}{}{}",
+                "\n  {}{}✗{}{} {}{}",
                 bold(use_styles),
                 red(use_styles),
                 reset(use_styles),
-                bold(use_styles),
+                reset(use_styles),
                 e,
-                reset(use_styles)
+                reset(use_styles),
             );
         }
     }
@@ -1276,6 +1601,9 @@ fn print_help() {
     /tokens            Show current token count
     /context           Show message history with token breakdown
     /clear             Clear conversation context
+    /new               Start a fresh session (clear + new session ID)
+    /rewind            List rewindable conversation points
+    /rewind <idx>      Rewind conversation to message index
 
   Agent Control
     /abort             Abort the current agent run

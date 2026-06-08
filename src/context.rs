@@ -510,6 +510,21 @@ impl ContextEngine {
         self.messages.clear();
     }
 
+    /// Truncate messages to keep only the first `keep_count` messages.
+    /// Returns how many were removed.
+    pub fn truncate_to(&mut self, keep_count: usize) -> usize {
+        let before = self.messages.len();
+        if keep_count < before {
+            self.messages.truncate(keep_count);
+        }
+        before.saturating_sub(self.messages.len())
+    }
+
+    /// Get raw messages (without system prefix). Used for rewind/context display.
+    pub fn raw_messages(&self) -> &[Message] {
+        &self.messages
+    }
+
     /// Build the full message array: system (assembled from segments) + conversation.
     pub fn messages(&self) -> Vec<Message> {
         let mut result = Vec::new();
@@ -1067,5 +1082,36 @@ mod tests {
         assert!(summary.is_some());
         assert!(engine.len() <= 4); // summary msg + 3 kept
         assert!(summary.unwrap().contains("Context summary"));
+    }
+
+    #[test]
+    fn test_truncate_to() {
+        let mut engine = ContextEngine::new("test", 128000);
+        for i in 0..10 {
+            engine.add(Message::user(&format!("msg {}", i)));
+        }
+        assert_eq!(engine.len(), 10);
+        let removed = engine.truncate_to(5);
+        assert_eq!(removed, 5);
+        assert_eq!(engine.len(), 5);
+    }
+
+    #[test]
+    fn test_truncate_to_beyond_len_noop() {
+        let mut engine = ContextEngine::new("test", 128000);
+        engine.add(Message::user("hello"));
+        let removed = engine.truncate_to(10);
+        assert_eq!(removed, 0); // nothing removed
+        assert_eq!(engine.len(), 1);
+    }
+
+    #[test]
+    fn test_raw_messages() {
+        let mut engine = ContextEngine::new("test", 128000);
+        engine.add(Message::user("hello"));
+        engine.add(Message::assistant("hi"));
+        let raw = engine.raw_messages();
+        assert_eq!(raw.len(), 2);
+        assert_eq!(raw[0].role, Role::User);
     }
 }

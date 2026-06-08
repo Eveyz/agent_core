@@ -35,6 +35,11 @@ pub struct AgentBuilder {
     tool_execution_mode: ToolExecutionMode,
     transform_context: Option<TransformContextFn>,
     skill_manager: Option<Arc<Mutex<SkillManager>>>,
+    /// Share approvals map from parent agent — subagents use this to avoid
+    /// deadlocks when awaiting approval in TUI mode.
+    pending_approvals_override: Option<
+        Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<ApprovalChoice>>>>,
+    >,
 }
 
 impl AgentBuilder {
@@ -50,6 +55,7 @@ impl AgentBuilder {
             tool_execution_mode: ToolExecutionMode::Parallel,
             transform_context: None,
             skill_manager: None,
+            pending_approvals_override: None,
         })
     }
 
@@ -65,6 +71,7 @@ impl AgentBuilder {
             tool_execution_mode: ToolExecutionMode::Parallel,
             transform_context: None,
             skill_manager: None,
+            pending_approvals_override: None,
         })
     }
 
@@ -90,6 +97,7 @@ impl AgentBuilder {
             tool_execution_mode: ToolExecutionMode::Parallel,
             transform_context: None,
             skill_manager: None,
+            pending_approvals_override: None,
         }
     }
 
@@ -124,6 +132,16 @@ impl AgentBuilder {
     /// Attach a SkillManager for auto-trigger and catalog management.
     pub fn with_skill_manager(mut self, mgr: Arc<Mutex<SkillManager>>) -> Self {
         self.skill_manager = Some(mgr);
+        self
+    }
+
+    /// Share a parent agent's pending approvals map so that subagents can
+    /// receive approval responses through the same channel.
+    pub fn with_pending_approvals(
+        mut self,
+        approvals: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<ApprovalChoice>>>>,
+    ) -> Self {
+        self.pending_approvals_override = Some(approvals);
         self
     }
 
@@ -242,7 +260,9 @@ impl AgentBuilder {
             policy
         });
 
-        let pending_approvals = Arc::new(Mutex::new(HashMap::new()));
+        let pending_approvals = self
+            .pending_approvals_override
+            .unwrap_or_else(|| Arc::new(Mutex::new(HashMap::new())));
 
         Ok(Agent {
             config: self.config,
@@ -1063,6 +1083,14 @@ impl Agent {
         {
             m.new_session();
         }
+    }
+
+    /// Rewind context to only keep messages up to index `keep_count` (exclusive).
+    /// Returns (removed_count, total_before).
+    pub fn rewind_context_to(&mut self, keep_count: usize) -> (usize, usize) {
+        let total = self.context.raw_messages().len();
+        let removed = self.context.truncate_to(keep_count);
+        (removed, total)
     }
 
     pub fn context_token_count(&self) -> usize {

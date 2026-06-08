@@ -1,5 +1,6 @@
-use agent_core::{AgentEvent, MessageDelta};
+use agent_core::{AgentEvent, ApprovalChoice, MessageDelta};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
 // ── Event pump ──────────────────────────────────────────────────────
@@ -48,6 +49,10 @@ pub struct AppState {
     pub should_quit: bool,
     agent_running: bool,
     pending_request: Option<String>,
+    /// Direct handle to the agent's pending approvals map — used to
+    /// auto-approve without going through the tokio mutex lock on Agent.
+    pub pending_approvals:
+        Option<Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<ApprovalChoice>>>>>,
     pending_tools: HashMap<String, PendingToolCall>,
 }
 
@@ -67,6 +72,7 @@ impl AppState {
             should_quit: false,
             agent_running: false,
             pending_request: None,
+            pending_approvals: None,
             pending_tools: HashMap::new(),
         }
     }
@@ -181,12 +187,22 @@ impl AppState {
             }
 
             AgentEvent::ApprovalRequired {
+                prompt_id,
                 tool_name,
                 explanation,
                 ..
             } => {
+                // Respond directly via the approvals Arc — avoids deadlock
+                // with the tokio mutex on Agent (held by the spawned task).
+                if let Some(ref approvals) = self.pending_approvals {
+                    if let Ok(mut map) = approvals.lock() {
+                        if let Some(tx) = map.remove(&prompt_id) {
+                            let _ = tx.send(ApprovalChoice::AllowSession);
+                        }
+                    }
+                }
                 self.push_stream_block(TurnBlock::Notice(format!(
-                    "[⚠ APPROVAL] {} — {}",
+                    "[APPROVAL] {} — {} (auto-approved)",
                     tool_name, explanation
                 )));
             }

@@ -9,7 +9,55 @@ use std::path::{Path, PathBuf};
 /// Backward-compatible alias.
 pub type SkillLoader = SkillManager;
 
-// ── SkillManager ─────────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────
+
+/// Resolve the home directory, handling both Unix (HOME) and Windows (USERPROFILE).
+fn home_dir() -> PathBuf {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
+}
+
+/// Recursively walk a directory tree and collect directories whose
+/// immediate children contain SKILL.md files. These become search dirs
+/// for the skill scanner.
+///
+/// This handles both layouts found under WorkBuddy plugins:
+///   plugin/skills/skill-name/SKILL.md   → adds `plugin/skills/`
+///   external_plugins/skill-name/SKILL.md → adds `external_plugins/`
+fn collect_skills_dirs(root: &Path, dirs: &mut Vec<PathBuf>) {
+    if !root.exists() {
+        return;
+    }
+    let entries = match std::fs::read_dir(root) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    let mut has_skill_child = false;
+    let mut subdirs: Vec<PathBuf> = Vec::new();
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if path.join("SKILL.md").exists() {
+                // root/<name>/SKILL.md exists → root is a search dir
+                has_skill_child = true;
+            } else {
+                subdirs.push(path);
+            }
+        }
+    }
+
+    if has_skill_child {
+        dirs.push(root.to_path_buf());
+    }
+
+    for subdir in subdirs {
+        collect_skills_dirs(&subdir, dirs);
+    }
+}
 
 /// Manages skill loading, auto-triggering, and lifecycle.
 ///
@@ -48,17 +96,33 @@ impl SkillManager {
     }
 
     pub fn with_defaults() -> Self {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let home = home_dir();
         let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
-        let dirs = vec![
+        let mut dirs = vec![
+            // Standard agent skill dirs
             cwd.join(".agent").join("skills"),
             cwd.join(".claude").join("skills"),
             cwd.join("skills"),
-            PathBuf::from(&home).join(".agent").join("skills"),
-            PathBuf::from(&home).join(".agents").join("skills"),
-            PathBuf::from(&home).join(".claude").join("skills"),
+            home.join(".agent").join("skills"),
+            home.join(".agents").join("skills"),
+            home.join(".claude").join("skills"),
+            // WorkBuddy
+            home.join(".workbuddy").join("skills"),
         ];
+
+        // Collect all skills/ directories under WorkBuddy plugins
+        let plugins_root = home.join(".workbuddy").join("plugins");
+        if plugins_root.exists() {
+            collect_skills_dirs(&plugins_root, &mut dirs);
+        }
+
+        // Built-in skills shipped with the app (env var or auto-detect)
+        if let Ok(builtin) = std::env::var("WORKBUDDY_BUILTIN_SKILLS") {
+            dirs.push(PathBuf::from(builtin));
+        } else if let Ok(app_data) = std::env::var("WORKBUDDY_APP_RESOURCES") {
+            dirs.push(PathBuf::from(app_data).join("builtin-skills"));
+        }
 
         Self {
             search_dirs: dirs,
