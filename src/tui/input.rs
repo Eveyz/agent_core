@@ -9,10 +9,17 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
     }
 
     match key.code {
-        // ── Quit ──────────────────────────────────────────────────
+        // ── Quit / Back ───────────────────────────────────────────
         KeyCode::Esc => {
             if state.autocomplete.active {
                 state.autocomplete.active = false;
+                return Ok(());
+            }
+            if state.subagent_view.is_some() {
+                // Exit subagent detail view back to main conversation
+                state.subagent_view = None;
+                state.subagent_scroll = 0;
+                state.mark_dirty();
                 return Ok(());
             }
             if !matches!(state.command_mode, CommandMode::None) {
@@ -68,9 +75,14 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
                 state.autocomplete.active = false;
             }
 
-            // Check if a subagent block is focused — toggle it
+            // Check if a subagent block is focused — drill into detail view
             if let Some(idx) = state.focus_index {
-                toggle_focus(state, idx);
+                if let Some(sa_id) = find_subagent_id_at_index(state, idx) {
+                    state.subagent_view = Some(sa_id);
+                    state.subagent_scroll = 0;
+                    state.focus_index = None;
+                    state.mark_dirty();
+                }
                 return Ok(());
             }
 
@@ -129,10 +141,18 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
 
         // ── Scroll / History ────────────────────────────────────
         KeyCode::PageUp => {
-            state.scroll = state.scroll.saturating_add(5);
+            if state.subagent_view.is_some() {
+                state.subagent_scroll = state.subagent_scroll.saturating_add(5);
+            } else {
+                state.scroll = state.scroll.saturating_add(5);
+            }
         }
         KeyCode::PageDown => {
-            state.scroll = state.scroll.saturating_sub(5);
+            if state.subagent_view.is_some() {
+                state.subagent_scroll = state.subagent_scroll.saturating_sub(5);
+            } else {
+                state.scroll = state.scroll.saturating_sub(5);
+            }
         }
         KeyCode::Up => {
             if state.autocomplete.active {
@@ -270,7 +290,40 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
     Ok(())
 }
 
-/// Toggle a subagent block at the given focus index.
+/// Find the subagent_id at the given focus index.
+fn find_subagent_id_at_index(state: &AppState, idx: usize) -> Option<String> {
+    let mut count = 0;
+
+    if let Some(ref streaming) = state.streaming {
+        for block in &streaming.blocks {
+            if let TurnBlock::Subagent(sa) = block {
+                if count == idx {
+                    return Some(sa.id.clone());
+                }
+                count += 1;
+            }
+        }
+    }
+
+    for entry in &state.entries {
+        if let Entry::Turn { blocks, .. } = entry {
+            for block in blocks {
+                if let TurnBlock::Subagent(sa) = block {
+                    if count == idx {
+                        return Some(sa.id.clone());
+                    }
+                    count += 1;
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Toggle a subagent block at the given focus index (legacy — kept for
+/// potential future use, but subagent drill-in now uses detail view).
+#[allow(dead_code)]
 fn toggle_focus(state: &mut AppState, idx: usize) {
     let mut count = 0;
 

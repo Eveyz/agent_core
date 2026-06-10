@@ -177,6 +177,15 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
     }
 
     async fn execute(&self, args: Value) -> Result<String> {
+        self.execute_with_stream(args, None, None).await
+    }
+
+    async fn execute_with_stream(
+        &self,
+        args: Value,
+        _on_update: Option<ToolUpdateFn>,
+        event_sender: Option<EventSender>,
+    ) -> Result<String> {
         let tasks = args["tasks"]
             .as_array()
             .ok_or_else(|| anyhow::anyhow!("missing 'tasks' array"))?;
@@ -208,6 +217,8 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
             };
 
             let mgr_clone = self.session_mgr.clone();
+            // Clone event_sender for each concurrent subagent
+            let sub_sender = event_sender.clone();
 
             handles.push(tokio::spawn(async move {
                 // Build args for spawn_single
@@ -218,7 +229,7 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                     "max_iterations": max_iterations,
                 });
 
-                let result = spawn_single(&args, &model_config, &available_tools, None).await;
+                let result = spawn_single(&args, &model_config, &available_tools, sub_sender).await;
 
                 // Save subagent session
                 if let Some(ref mgr) = mgr_clone {

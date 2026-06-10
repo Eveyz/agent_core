@@ -67,7 +67,13 @@ pub fn render(frame: &mut Frame, state: &mut AppState) {
     let input_area = Rect::new(area.x, input_top, area.width, 3);
 
     render_status(frame, state, status_area);
-    render_conversation(frame, state, main_area);
+
+    if state.subagent_view.is_some() {
+        render_subagent_detail(frame, state, main_area);
+    } else {
+        render_conversation(frame, state, main_area);
+    }
+
     if dropdown_h > 0 {
         render_dropdown(frame, state, dropdown_area);
     }
@@ -78,19 +84,51 @@ pub fn render(frame: &mut Frame, state: &mut AppState) {
 // ── Status bar ──────────────────────────────────────────────────────
 
 fn render_status(frame: &mut Frame, state: &AppState, area: Rect) {
-    let (state_text, state_style) = if state.agent_state == "streaming" {
-        (
-            "streaming... [esc]",
-            Style::default()
-                .fg(Color::Rgb(229, 192, 123))
-                .add_modifier(Modifier::BOLD | Modifier::SLOW_BLINK),
-        )
-    } else {
-        let color = match state.agent_state.as_str() {
-            "idle" => SUCCESS_COLOR,
-            _ => Color::White,
-        };
-        (state.agent_state.as_str(), Style::default().fg(color))
+    let (state_text, state_style) = match state.agent_state.as_str() {
+        "streaming" => {
+            // "Working..." — waiting for first token from model
+            (
+                "working... [esc]",
+                Style::default()
+                    .fg(Color::Rgb(229, 192, 123))
+                    .add_modifier(Modifier::BOLD | Modifier::SLOW_BLINK),
+            )
+        }
+        "thinking" => {
+            // Model is thinking
+            (
+                "thinking... [esc]",
+                Style::default()
+                    .fg(Color::Rgb(198, 120, 221))
+                    .add_modifier(Modifier::BOLD),
+            )
+        }
+        "responding" => {
+            // Model is generating text
+            (
+                "responding... [esc]",
+                Style::default()
+                    .fg(Color::Rgb(86, 182, 194))
+                    .add_modifier(Modifier::BOLD),
+            )
+        }
+        "running tools" => {
+            // Executing tools
+            (
+                "running tools... [esc]",
+                Style::default()
+                    .fg(Color::Rgb(229, 192, 123))
+                    .add_modifier(Modifier::BOLD),
+            )
+        }
+        "idle" => (
+            "idle",
+            Style::default().fg(SUCCESS_COLOR),
+        ),
+        other => (
+            other,
+            Style::default().fg(Color::White),
+        ),
     };
 
     let mut status_spans = vec![
@@ -359,7 +397,10 @@ fn rebuild_cache(state: &mut AppState, width: u16) {
         lines.extend(state.cache.streaming_lines.iter().cloned());
     }
 
-    // "Thinking..." indicator
+    // "Working..." indicator — shown between submit and first token.
+    // Once we get a Thought or Response block, the state will be
+    // set to "thinking" or "streaming" by handle_agent_event,
+    // and this indicator disappears because streaming.blocks is no longer empty.
     let streaming_empty = state.streaming.as_ref().map_or(true, |s| s.blocks.is_empty());
     if state.agent_running && streaming_empty {
         if !lines.is_empty() {
@@ -371,7 +412,7 @@ fn rebuild_cache(state: &mut AppState, width: u16) {
         lines.push(Line::from(vec![
             Span::styled("  ⏳  ", load_style),
             Span::styled(
-                "Thinking...",
+                "Working...",
                 Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
             ),
         ]));
@@ -668,7 +709,11 @@ fn render_tool_block(
     ]));
 }
 
-// ── Subagent block ──────────────────────────────────────────────────
+// ── Subagent block (summary in main conversation) ───────────────────
+// In the main conversation view, subagents are shown as compact summary
+// boxes. The user can press Enter to drill into the detail view.
+// All children are hidden in the main view — they're shown in the
+// subagent detail view instead.
 
 fn render_subagent_block(
     sa: &SubagentState,
@@ -716,68 +761,47 @@ fn render_subagent_block(
         Span::styled("  ", bg),
     ]));
 
-    // Task line + toggle hint
-    let toggle_hint = if sa.collapsed {
-        "[Enter] expand"
-    } else {
-        "[Enter] collapse"
-    };
-    let task_avail = inner_width.saturating_sub(toggle_hint.width() + 1);
-    let task_str = truncate_str_w(&sa.task, task_avail);
-    let fill = " ".repeat(inner_width.saturating_sub(task_str.width() + toggle_hint.width() + 1));
+    // Task line
+    let task_str = truncate_str_w(&sa.task, inner_width);
+    let task_fill = " ".repeat(inner_width.saturating_sub(task_str.width()));
     lines.push(Line::from(vec![
         Span::raw(pad.to_string()),
         Span::styled("  ", bg),
         Span::styled(task_str, Style::default().fg(Color::DarkGray).bg(CODE_BG)),
-        Span::styled(fill, bg),
-        Span::raw(" "),
-        Span::styled(toggle_hint.to_string(), Style::default().fg(SUBAGENT_COLOR).bg(CODE_BG)),
+        Span::styled(task_fill, bg),
         Span::styled("  ", bg),
     ]));
 
-    if !sa.collapsed {
-        let mut child_lines = Vec::new();
-        for child in &sa.children {
-            render_turn_block_cloned(child, &mut child_lines, inner_width, 0);
+    // Status line (bottom of box) — shows state + [Enter] hint
+    let (status_icon, status_text) = if sa.done {
+        if sa.success {
+            ("✓", format!("done ({} iters)", sa.iterations))
+        } else {
+            ("✗", format!("incomplete ({} iters)", sa.iterations))
         }
-
-        for child_line in child_lines {
-            let lw = child_line.width();
-            let fill = " ".repeat(inner_width.saturating_sub(lw));
-            let mut final_spans = vec![Span::raw(pad.to_string()), Span::styled("  ", bg)];
-            final_spans.extend(child_line.spans);
-            final_spans.push(Span::raw(fill));
-            final_spans.push(Span::styled("  ", bg));
-            lines.push(Line::from(final_spans));
-        }
-
-        if sa.done {
-            let (status, status_style) = if sa.success {
-                (
-                    "✓ done",
-                    Style::default()
-                        .fg(SUCCESS_COLOR)
-                        .add_modifier(Modifier::BOLD),
-                )
-            } else {
-                (
-                    "✗ incomplete",
-                    Style::default()
-                        .fg(ERROR_COLOR)
-                        .add_modifier(Modifier::BOLD),
-                )
-            };
-            let status_str = format!("{} ({} iterations)", status, sa.iterations);
-            let fill = " ".repeat(inner_width.saturating_sub(status_str.width()));
-            lines.push(Line::from(vec![
-                Span::raw(pad.to_string()),
-                Span::styled("  ", bg),
-                Span::styled(status_str, status_style.bg(CODE_BG)),
-                Span::styled(fill, bg),
-                Span::styled("  ", bg),
-            ]));
-        }
-    }
+    } else {
+        ("⏳", "running...".to_string())
+    };
+    let status_color = if sa.done {
+        if sa.success { SUCCESS_COLOR } else { ERROR_COLOR }
+    } else {
+        Color::Rgb(229, 192, 123)
+    };
+    let enter_hint = "[Enter] details";
+    let status_full = format!("{} {}", status_icon, status_text);
+    let hint_space = 1 + enter_hint.width();
+    let status_avail = inner_width.saturating_sub(hint_space);
+    let status_str = truncate_str_w(&status_full, status_avail);
+    let fill = " ".repeat(inner_width.saturating_sub(status_str.width() + hint_space));
+    lines.push(Line::from(vec![
+        Span::raw(pad.to_string()),
+        Span::styled("  ", bg),
+        Span::styled(status_str, Style::default().fg(status_color).bg(CODE_BG).add_modifier(Modifier::BOLD)),
+        Span::styled(fill, bg),
+        Span::raw(" "),
+        Span::styled(enter_hint.to_string(), Style::default().fg(SUBAGENT_COLOR).bg(CODE_BG)),
+        Span::styled("  ", bg),
+    ]));
 
     // Bottom padding — fill full width
     let bot_fill = width.saturating_sub(pad.width());
@@ -785,6 +809,107 @@ fn render_subagent_block(
         Span::raw(pad.to_string()),
         Span::styled(" ".repeat(bot_fill), bg),
     ]));
+}
+
+// ── Subagent detail view ────────────────────────────────────────────
+// When the user presses Enter on a subagent box, we switch to a detail
+// view showing the subagent's full conversation (thoughts, responses,
+// tool calls). This is like the main view but scoped to one subagent.
+
+fn render_subagent_detail(frame: &mut Frame, state: &mut AppState, area: Rect) {
+    let width = area.width;
+    let visible_height = area.height as usize;
+
+    let subagent_id = match &state.subagent_view {
+        Some(id) => id.clone(),
+        None => return,
+    };
+
+    // Find the subagent and render its children as the conversation
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Header breadcrumb
+    let header_style = Style::default()
+        .fg(SUBAGENT_COLOR)
+        .add_modifier(Modifier::BOLD);
+    let back_hint = Style::default().fg(Color::DarkGray);
+    lines.push(Line::from(vec![
+        Span::styled(" ← ", Style::default().fg(SUCCESS_COLOR).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("subagent: {}", subagent_id), header_style),
+        Span::styled("  [Esc] back", back_hint),
+    ]));
+    lines.push(Line::from(Span::styled(
+        "─".repeat(width as usize),
+        Style::default().fg(Color::Rgb(60, 63, 70)),
+    )));
+
+    // Render the subagent's children like a normal conversation
+    if let Some(sa) = state.find_subagent(&subagent_id) {
+        for (i, child) in sa.children.iter().enumerate() {
+            if i > 0 {
+                lines.push(Line::raw(""));
+            }
+            render_turn_block_cloned(child, &mut lines, width as usize, 0);
+        }
+
+        // Status at the bottom
+        if sa.done {
+            let (icon, text, color) = if sa.success {
+                ("✓", format!("Completed ({} iterations)", sa.iterations), SUCCESS_COLOR)
+            } else {
+                ("✗", format!("Incomplete ({} iterations)", sa.iterations), ERROR_COLOR)
+            };
+            lines.push(Line::raw(""));
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {} ", icon), Style::default().fg(color).add_modifier(Modifier::BOLD)),
+                Span::styled(text, Style::default().fg(color)),
+            ]));
+        } else {
+            lines.push(Line::raw(""));
+            lines.push(Line::from(vec![
+                Span::styled(" ⏳ ", Style::default().fg(WARN_COLOR).add_modifier(Modifier::BOLD)),
+                Span::styled("Running...", Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
+            ]));
+        }
+    } else {
+        lines.push(Line::from(Span::styled(
+            format!("Subagent '{}' not found", subagent_id),
+            Style::default().fg(ERROR_COLOR),
+        )));
+    }
+
+    lines.push(Line::raw(""));
+
+    // Compute scrolling
+    let row_offsets = compute_row_offsets(&lines, width);
+    let total = row_offsets.last().copied().unwrap_or(0);
+    let max_scroll = total.saturating_sub(visible_height);
+    state.subagent_scroll = state.subagent_scroll.min(max_scroll);
+    let scroll_from_top = max_scroll.saturating_sub(state.subagent_scroll);
+
+    let visible_lines = get_visible_lines(&lines, &row_offsets, scroll_from_top, visible_height);
+
+    let para = Paragraph::new(Text::from(visible_lines)).wrap(Wrap { trim: false });
+    frame.render_widget(para, area);
+
+    // Scrollbar
+    if max_scroll > 0 {
+        let scrollbar_area = area.inner(Margin {
+            vertical: 0,
+            horizontal: 0,
+        });
+        let mut scrollbar_state = ScrollbarState::new(max_scroll).position(scroll_from_top);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("▲"))
+                .track_symbol(Some("│"))
+                .end_symbol(Some("▼"))
+                .thumb_style(Style::default().fg(Color::Rgb(92, 99, 112)))
+                .track_style(Style::default().fg(Color::Rgb(40, 44, 52))),
+            scrollbar_area,
+            &mut scrollbar_state,
+        );
+    }
 }
 
 // ── Markdown → Ratatui (pulldown-cmark) ──────────────────────────────

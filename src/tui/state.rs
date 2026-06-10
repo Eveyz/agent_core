@@ -218,6 +218,13 @@ pub struct AppState {
     /// Snapshot of the user's in-progress input before they started
     /// pressing Up — restored when they press Down past the newest entry.
     pub input_snapshot: String,
+    // ── Subagent detail view ─────────────────────────────────────
+    /// If Some, we are showing the detail view for a specific subagent
+    /// instead of the main conversation. The user pressed Enter on a
+    /// subagent box and can press Esc to go back.
+    pub subagent_view: Option<String>, // subagent_id
+    /// Scroll position within the subagent detail view.
+    pub subagent_scroll: usize,
     // ── Rendering cache ──────────────────────────────────────────
     /// Cached rendered lines — rebuilt only when content or width changes.
     pub cache: CachedConversation,
@@ -253,6 +260,8 @@ impl AppState {
             input_history: Vec::new(),
             history_index: None,
             input_snapshot: String::new(),
+            subagent_view: None,
+            subagent_scroll: 0,
             cache: CachedConversation::new(),
             content_version: 0,
             cache_dirty: true,
@@ -353,6 +362,31 @@ impl AppState {
         self.input = self.input_history[idx].clone();
         self.cursor_pos = self.input.len();
         &self.input
+    }
+
+    /// Find a subagent block by ID and return a reference to it.
+    pub fn find_subagent(&self, id: &str) -> Option<&SubagentState> {
+        if let Some(ref streaming) = self.streaming {
+            for b in &streaming.blocks {
+                if let TurnBlock::Subagent(sa) = b {
+                    if sa.id == id {
+                        return Some(sa);
+                    }
+                }
+            }
+        }
+        for entry in &self.entries {
+            if let Entry::Turn { blocks, .. } = entry {
+                for b in blocks {
+                    if let TurnBlock::Subagent(sa) = b {
+                        if sa.id == id {
+                            return Some(sa);
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     pub fn take_pending_request(&mut self) -> Option<String> {
@@ -527,6 +561,10 @@ impl AppState {
             AgentEvent::MessageUpdate { delta } => {
                 match delta {
                     MessageDelta::Thinking(t) => {
+                        // Transition from "working" to "thinking"
+                        if self.agent_state == "streaming" {
+                            self.agent_state = "thinking".into();
+                        }
                         self.push_stream_block(TurnBlock::Thought(String::new()));
                         if let Some(s) = &mut self.streaming {
                             if let Some(TurnBlock::Thought(text)) = s.blocks.last_mut() {
@@ -536,6 +574,10 @@ impl AppState {
                         self.mark_dirty();
                     }
                     MessageDelta::Text(t) => {
+                        // Transition from "working"/"thinking" to "responding"
+                        if self.agent_state == "streaming" || self.agent_state == "thinking" {
+                            self.agent_state = "responding".into();
+                        }
                         self.push_stream_block(TurnBlock::Response(String::new()));
                         if let Some(s) = &mut self.streaming {
                             if let Some(TurnBlock::Response(text)) = s.blocks.last_mut() {
@@ -565,6 +607,10 @@ impl AppState {
                 tool_name,
                 args,
             } => {
+                // Transition to "running tools" state
+                if self.agent_running && !matches!(self.agent_state.as_str(), "idle") {
+                    self.agent_state = "running tools".into();
+                }
                 self.pending_tools
                     .entry(tool_call_id)
                     .or_insert_with(|| PendingToolCall {

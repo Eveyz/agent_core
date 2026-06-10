@@ -145,10 +145,18 @@ async fn run_app(
 fn handle_mouse(mouse: MouseEvent, state: &mut AppState) {
     match mouse.kind {
         MouseEventKind::ScrollUp => {
-            state.scroll = state.scroll.saturating_add(3);
+            if state.subagent_view.is_some() {
+                state.subagent_scroll = state.subagent_scroll.saturating_add(3);
+            } else {
+                state.scroll = state.scroll.saturating_add(3);
+            }
         }
         MouseEventKind::ScrollDown => {
-            state.scroll = state.scroll.saturating_sub(3);
+            if state.subagent_view.is_some() {
+                state.subagent_scroll = state.subagent_scroll.saturating_sub(3);
+            } else {
+                state.scroll = state.scroll.saturating_sub(3);
+            }
         }
         _ => {}
     }
