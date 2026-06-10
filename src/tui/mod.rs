@@ -4,10 +4,11 @@ pub mod state;
 
 use agent_core::Agent;
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyEventKind};
+use crossterm::event::{self, Event, KeyEventKind, MouseEvent, MouseEventKind};
 use state::{AppState, Entry, EventPump, TurnBlock};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
 pub async fn run_tui(agent: Arc<tokio::sync::Mutex<Agent>>) -> Result<()> {
     let mut terminal = ratatui::init();
     let result = run_app(&mut terminal, agent).await;
@@ -33,36 +34,49 @@ async fn run_app(
     let min_frame = Duration::from_millis(16); // ~60 fps cap while streaming/input is active
     let mut needs_draw = true;
     loop {
-        // Drain agent events (non-blocking)
-        // Approvals are handled directly inside handle_agent_event via
-        // the shared approvals Arc — avoids deadlock with the tokio mutex.
+        // ── 1. Drain agent events (non-blocking) ────────────────────
         let had_events = pump.drain(&mut state);
 
         // Refresh token count from agent (non-blocking)
-        if had_events || needs_draw {
+        if had_events {
             if let Ok(a) = agent.try_lock() {
                 state.tokens = a.context_token_count();
             }
         }
-        // Handle keyboard input
-        let had_input = if event::poll(Duration::from_millis(8))? {
-            match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    input::handle_key(key, &mut state)?;
-                    true
+
+        // ── 2. Handle ALL pending input events before rendering ─────
+        // This is critical: we must drain all queued key/mouse events
+        // before any render call, otherwise input appears unresponsive
+        // when rendering is slow (during streaming rebuilds).
+        let mut had_input = false;
+        loop {
+            if event::poll(Duration::from_millis(0))? {
+                match event::read()? {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        input::handle_key(key, &mut state)?;
+                        had_input = true;
+                    }
+                    Event::Mouse(mouse) => {
+                        handle_mouse(mouse, &mut state);
+                        had_input = true;
+                    }
+                    Event::Resize(_, _) => {
+                        state.cache_dirty = true;
+                        had_input = true;
+                    }
+                    _ => {}
                 }
-                Event::Resize(_, _) => true,
-                _ => false,
+            } else {
+                break; // No more pending input
             }
-        } else {
-            false
-        };
-        needs_draw |= had_events || had_input;
+        }
+
+        needs_draw |= had_events || had_input || state.cache_dirty;
         if state.should_quit {
             break Ok(());
         }
 
-        // ── Process pending slash commands ─────────────────────────
+        // ── 3. Process pending slash commands ───────────────────────
         if let Some(cmd) = state.take_pending_command() {
             needs_draw = true;
             if cmd == "show_model_picker" {
@@ -101,7 +115,8 @@ async fn run_app(
                     .await;
             });
         }
-        // Frame rate limited redraw
+
+        // ── 4. Frame rate limited redraw ────────────────────────────
         let now = Instant::now();
         let since_last = now.duration_since(last_draw);
         if needs_draw && since_last >= min_frame {
@@ -113,7 +128,25 @@ async fn run_app(
             terminal.draw(|frame| render::render(frame, &mut state))?;
             last_draw = now;
             needs_draw = false;
+        } else if needs_draw {
+            // We have something to draw but haven't hit the frame interval.
+            // Sleep briefly to avoid busy-looping, but keep it short
+            // so we stay responsive to input.
+            std::thread::sleep(Duration::from_millis(4));
         }
+    }
+}
+
+/// Handle mouse events — smooth scroll wheel support.
+fn handle_mouse(mouse: MouseEvent, state: &mut AppState) {
+    match mouse.kind {
+        MouseEventKind::ScrollUp => {
+            state.scroll = state.scroll.saturating_add(3);
+        }
+        MouseEventKind::ScrollDown => {
+            state.scroll = state.scroll.saturating_sub(3);
+        }
+        _ => {}
     }
 }
 
@@ -156,6 +189,7 @@ async fn process_command(
         let mut a = agent.lock().await;
         a.clear_context();
         state.entries.clear();
+        state.mark_dirty();
         return Some("Context cleared. New session started.".to_string());
     }
 

@@ -2,12 +2,16 @@ use super::state::{AppState, CommandMode, Entry, ModalState, SubagentState, Tool
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::{
     Frame,
-    layout::{Rect},
+    layout::{Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
+    widgets::{
+        Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Wrap,
+    },
 };
 use std::sync::LazyLock;
+use std::time::{Duration, Instant};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
@@ -24,6 +28,10 @@ const SUBAGENT_COLOR: Color = Color::Rgb(198, 120, 221);
 const SUCCESS_COLOR: Color = Color::Rgb(152, 195, 121);
 const ERROR_COLOR: Color = Color::Rgb(224, 108, 117);
 const WARN_COLOR: Color = Color::Rgb(229, 192, 123);
+
+/// Minimum time between cache rebuilds during streaming (milliseconds).
+/// Prevents every single token from triggering a full markdown+syntect reparse.
+const STREAMING_REBUILD_THROTTLE: Duration = Duration::from_millis(80);
 
 // ── Syntect globals (loaded once) ────────────────────────────────────
 
@@ -194,38 +202,167 @@ fn render_input(frame: &mut Frame, state: &AppState, area: Rect) {
     frame.set_cursor_position((area.x + cursor_x, area.y + 1));
 }
 
-// ── Conversation ────────────────────────────────────────────────────
+// ── Conversation (with split cache + throttle + window rendering) ─────
 
 fn render_conversation(frame: &mut Frame, state: &mut AppState, area: Rect) {
-    let mut lines: Vec<Line> = Vec::new();
-    let width = area.width as usize;
+    let width = area.width;
+    let visible_height = area.height as usize;
 
-    let mut first = true;
-    for entry in &state.entries {
-        if !first {
-            lines.push(Line::raw(""));
+    // ── Streaming throttle ──────────────────────────────────────────
+    // During streaming, only rebuild the cache at most every
+    // STREAMING_REBUILD_THROTTLE ms. This prevents every single token
+    // from triggering a full markdown+syntect reparse.
+    let needs_rebuild = state.cache_dirty || state.cache.width != width;
+    if needs_rebuild {
+        let should_rebuild_now = if state.agent_running {
+            // Throttle during streaming
+            match state.cache.last_rebuild {
+                Some(last) => Instant::now().duration_since(last) >= STREAMING_REBUILD_THROTTLE,
+                None => true,
+            }
+        } else {
+            // No throttle when idle — always rebuild immediately
+            true
+        };
+
+        if should_rebuild_now {
+            rebuild_cache(state, width);
         }
-        first = false;
-        render_entry(entry, &mut lines, width);
+        // If throttled, cache_dirty stays true and we'll rebuild next time
     }
 
+    let total = state.cache.wrapped_height;
+    let max_scroll = total.saturating_sub(visible_height);
+    state.scroll = state.scroll.min(max_scroll);
+    let scroll_from_top = max_scroll.saturating_sub(state.scroll);
+
+    // ── Window rendering ────────────────────────────────────────────
+    // Instead of cloning ALL lines and using .scroll() (which makes
+    // ratatui wrap ALL lines), we only render the visible window.
+    // We use row_offsets to binary-search which logical lines are visible.
+    let visible_lines = get_visible_lines(
+        &state.cache.lines,
+        &state.cache.row_offsets,
+        scroll_from_top,
+        visible_height,
+    );
+
+    let para = Paragraph::new(Text::from(visible_lines))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(para, area);
+
+    // ── Scrollbar ───────────────────────────────────────────────────
+    if max_scroll > 0 {
+        let scrollbar_area = area.inner(Margin {
+            vertical: 0,
+            horizontal: 0,
+        });
+        let mut scrollbar_state = ScrollbarState::new(max_scroll)
+            .position(scroll_from_top);
+        frame.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("▲"))
+                .track_symbol(Some("│"))
+                .end_symbol(Some("▼"))
+                .thumb_style(Style::default().fg(Color::Rgb(92, 99, 112)))
+                .track_style(Style::default().fg(Color::Rgb(40, 44, 52))),
+            scrollbar_area,
+            &mut scrollbar_state,
+        );
+    }
+}
+
+/// Given the full line list, row_offsets, scroll position, and visible height,
+/// return only the lines that are visible on screen. This avoids cloning
+/// the entire line array and avoids ratatui processing off-screen lines.
+fn get_visible_lines(
+    lines: &[Line<'static>],
+    row_offsets: &[usize],
+    scroll_from_top: usize,
+    visible_height: usize,
+) -> Vec<Line<'static>> {
+    if lines.is_empty() || row_offsets.is_empty() {
+        return Vec::new();
+    }
+
+    // Find the first logical line that contains the scroll row
+    // row_offsets[i] = total wrapped rows for lines[0..i]
+    let start_line_idx = row_offsets.partition_point(|&r| r <= scroll_from_top)
+        .saturating_sub(1) // include the line that starts before scroll_from_top
+        .min(lines.len() - 1);
+
+    // Find the last visible logical line
+    let end_row = scroll_from_top + visible_height;
+    let end_line_idx = row_offsets.partition_point(|&r| r < end_row)
+        .min(lines.len());
+
+    // Add a small buffer for safety (wrapping might need context)
+    let start = start_line_idx.saturating_sub(1);
+    let end = (end_line_idx + 1).min(lines.len());
+
+    let window = &lines[start..end];
+
+    // Clone only the visible window — much cheaper than cloning all lines.
+    // The key win: we're NOT processing all 1000+ lines — just ~50 visible ones.
+    window.to_vec()
+}
+
+/// Rebuild the cached lines from entries + streaming data.
+///
+/// Key optimization: Split into `entry_lines` (completed entries, cached
+/// across streaming updates) and `streaming_lines` (rebuilt every time
+/// but usually small). Only re-render entries when their count changes.
+fn rebuild_cache(state: &mut AppState, width: u16) {
+    let w = width as usize;
+    let entry_count = state.entries.len();
+
+    // ── Only rebuild entry_lines if entries changed ────────────────
+    if state.cache.rendered_entry_count != entry_count || state.cache.width != width {
+        let mut entry_lines: Vec<Line<'static>> = Vec::new();
+        let mut first = true;
+        for entry in &state.entries {
+            if !first {
+                entry_lines.push(Line::raw(""));
+            }
+            first = false;
+            render_entry_cloned(entry, &mut entry_lines, w);
+        }
+        state.cache.entry_lines = entry_lines;
+        state.cache.rendered_entry_count = entry_count;
+    }
+
+    // ── Always rebuild streaming lines ─────────────────────────────
+    let mut streaming_lines: Vec<Line<'static>> = Vec::new();
     if let Some(ref streaming) = state.streaming {
         if !streaming.blocks.is_empty() {
-            if !first {
-                lines.push(Line::raw(""));
-            }
             for (i, block) in streaming.blocks.iter().enumerate() {
                 if i > 0 {
-                    lines.push(Line::raw(""));
+                    streaming_lines.push(Line::raw(""));
                 }
-                render_turn_block(block, &mut lines, width, 0);
+                render_turn_block_cloned(block, &mut streaming_lines, w, 0);
             }
         }
     }
+    state.cache.streaming_lines = streaming_lines;
 
+    // ── Combine into final lines ──────────────────────────────────
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Entry lines (cached)
+    lines.extend(state.cache.entry_lines.iter().cloned());
+
+    // Streaming lines
+    if !state.cache.streaming_lines.is_empty() {
+        if !lines.is_empty() {
+            lines.push(Line::raw(""));
+        }
+        lines.extend(state.cache.streaming_lines.iter().cloned());
+    }
+
+    // "Thinking..." indicator
     let streaming_empty = state.streaming.as_ref().map_or(true, |s| s.blocks.is_empty());
     if state.agent_running && streaming_empty {
-        if !first {
+        if !lines.is_empty() {
             lines.push(Line::raw(""));
         }
         let load_style = Style::default()
@@ -241,34 +378,43 @@ fn render_conversation(frame: &mut Frame, state: &mut AppState, area: Rect) {
     }
     lines.push(Line::raw(""));
 
-    let text = Text::from(lines);
-    let max_scroll = wrapped_line_count(&text, area.width).saturating_sub(area.height as usize);
-    state.scroll = state.scroll.min(max_scroll);
-    let scroll = max_scroll.saturating_sub(state.scroll);
+    // ── Compute wrapped height and row offsets ─────────────────────
+    let row_offsets = compute_row_offsets(&lines, width);
+    let wrapped_height = row_offsets.last().copied().unwrap_or(0);
 
-    let para = Paragraph::new(text)
-        .wrap(Wrap { trim: false })
-        .scroll((scroll.min(u16::MAX as usize) as u16, 0));
-    frame.render_widget(para, area);
+    state.cache.lines = lines;
+    state.cache.width = width;
+    state.cache.wrapped_height = wrapped_height;
+    state.cache.row_offsets = row_offsets;
+    state.cache.version = state.content_version;
+    state.cache.last_rebuild = Some(Instant::now());
+    state.cache_dirty = false;
 }
 
-fn wrapped_line_count(text: &Text<'_>, width: u16) -> usize {
+/// Compute cumulative wrapped row count for each line.
+/// row_offsets[i] = total wrapped rows for lines[0..i].
+/// This enables binary-search-based window rendering.
+fn compute_row_offsets(lines: &[Line<'_>], width: u16) -> Vec<usize> {
     let width = usize::from(width).max(1);
-    text.lines
-        .iter()
-        .map(|line| {
-            let lw = line.width();
-            if lw == 0 { 1 } else { lw.div_ceil(width) }
-        })
-        .sum()
+    let mut offsets = Vec::with_capacity(lines.len() + 1);
+    offsets.push(0);
+    let mut cumulative = 0usize;
+    for line in lines {
+        let lw = line.width();
+        let rows = if lw == 0 { 1 } else { lw.div_ceil(width) };
+        cumulative += rows;
+        offsets.push(cumulative);
+    }
+    offsets
 }
 
-fn render_entry<'a>(entry: &'a Entry, lines: &mut Vec<Line<'a>>, width: usize) {
+/// Same as render_entry but outputs Line<'static> by cloning string data.
+fn render_entry_cloned(entry: &Entry, lines: &mut Vec<Line<'static>>, width: usize) {
     match entry {
         Entry::System { text } => {
             let style = Style::default().fg(Color::Cyan);
             for line in text.lines() {
-                lines.push(Line::from(vec![Span::styled(line, style)]));
+                lines.push(Line::from(vec![Span::styled(line.to_string(), style)]));
             }
         }
         Entry::User { text } => {
@@ -279,15 +425,16 @@ fn render_entry<'a>(entry: &'a Entry, lines: &mut Vec<Line<'a>>, width: usize) {
                 if i > 0 {
                     lines.push(Line::raw(""));
                 }
-                render_turn_block(block, lines, width, 0);
+                render_turn_block_cloned(block, lines, width, 0);
             }
         }
     }
 }
 
-fn render_turn_block<'a>(
-    block: &'a TurnBlock,
-    lines: &mut Vec<Line<'a>>,
+/// Same as render_turn_block but outputs Line<'static> by cloning string data.
+fn render_turn_block_cloned(
+    block: &TurnBlock,
+    lines: &mut Vec<Line<'static>>,
     width: usize,
     indent: usize,
 ) {
@@ -308,15 +455,15 @@ fn render_turn_block<'a>(
                 }
                 if first {
                     lines.push(Line::from(vec![
-                        Span::raw(pad.to_string()),
-                        Span::styled("💭 Thought: ", style.add_modifier(Modifier::BOLD)),
-                        Span::styled(line, style),
+                        Span::raw(pad.clone()),
+                        Span::styled("💭 Thought: ".to_string(), style.add_modifier(Modifier::BOLD)),
+                        Span::styled(line.to_string(), style),
                     ]));
                     first = false;
                 } else {
                     lines.push(Line::from(vec![
-                        Span::raw(pad.to_string()),
-                        Span::styled(line, style),
+                        Span::raw(pad.clone()),
+                        Span::styled(line.to_string(), style),
                     ]));
                 }
             }
@@ -338,7 +485,7 @@ fn render_turn_block<'a>(
         }
         TurnBlock::Error(e) => {
             lines.push(Line::from(vec![
-                Span::raw(pad.to_string()),
+                Span::raw(pad.clone()),
                 Span::styled(
                     format!("✗  {e}"),
                     Style::default()
@@ -348,7 +495,6 @@ fn render_turn_block<'a>(
             ]));
         }
         TurnBlock::Notice(msg) => {
-            // Pick icon & style based on message content
             let (icon, style) = if msg.contains("Failed") || msg.contains("Error") || msg.contains("nknown command") {
                 ("✗", Style::default().fg(ERROR_COLOR).add_modifier(Modifier::BOLD))
             } else if msg.contains("registered") || msg.contains("Switched") || msg.contains("cleared") {
@@ -360,10 +506,10 @@ fn render_turn_block<'a>(
             };
             for (i, line_text) in msg.lines().enumerate() {
                 if i > 0 {
-                    lines.push(Line::from(vec![Span::raw(pad.to_string())]));
+                    lines.push(Line::from(vec![Span::raw(pad.clone())]));
                 }
                 lines.push(Line::from(vec![
-                    Span::raw(pad.to_string()),
+                    Span::raw(pad.clone()),
                     Span::styled(
                         format!("{icon}  {line_text}"),
                         style,
@@ -376,7 +522,7 @@ fn render_turn_block<'a>(
 
 // ── User block ──────────────────────────────────────────────────────
 
-fn render_user_block<'a>(text: &str, lines: &mut Vec<Line<'a>>, width: usize) {
+fn render_user_block(text: &str, lines: &mut Vec<Line<'static>>, width: usize) {
     let inner_width = width.saturating_sub(4);
     let bg_style = Style::default().bg(USER_BG);
 
@@ -402,11 +548,11 @@ fn render_user_block<'a>(text: &str, lines: &mut Vec<Line<'a>>, width: usize) {
 
 // ── Tool block ──────────────────────────────────────────────────────
 
-fn render_tool_block<'a>(
-    name: &'a str,
-    args: &'a str,
-    result: &'a Option<ToolResult>,
-    lines: &mut Vec<Line<'a>>,
+fn render_tool_block(
+    name: &str,
+    args: &str,
+    result: &Option<ToolResult>,
+    lines: &mut Vec<Line<'static>>,
     width: usize,
     pad: &str,
 ) {
@@ -482,7 +628,7 @@ fn render_tool_block<'a>(
             lines.push(Line::from(vec![
                 Span::raw(pad.to_string()),
                 Span::styled("  ", bg),
-                Span::styled(prefix, out_style.add_modifier(Modifier::BOLD)),
+                Span::styled(prefix.to_string(), out_style.add_modifier(Modifier::BOLD)),
                 Span::styled(trunc_line, out_style),
                 Span::styled(fill, bg),
                 Span::styled("  ", bg),
@@ -508,7 +654,7 @@ fn render_tool_block<'a>(
         lines.push(Line::from(vec![
             Span::raw(pad.to_string()),
             Span::styled("  ", bg),
-            Span::styled(msg, Style::default().fg(Color::DarkGray).bg(CODE_BG)),
+            Span::styled(msg.to_string(), Style::default().fg(Color::DarkGray).bg(CODE_BG)),
             Span::styled(fill, bg),
             Span::styled("  ", bg),
         ]));
@@ -524,9 +670,9 @@ fn render_tool_block<'a>(
 
 // ── Subagent block ──────────────────────────────────────────────────
 
-fn render_subagent_block<'a>(
-    sa: &'a SubagentState,
-    lines: &mut Vec<Line<'a>>,
+fn render_subagent_block(
+    sa: &SubagentState,
+    lines: &mut Vec<Line<'static>>,
     width: usize,
     pad: &str,
 ) {
@@ -585,14 +731,14 @@ fn render_subagent_block<'a>(
         Span::styled(task_str, Style::default().fg(Color::DarkGray).bg(CODE_BG)),
         Span::styled(fill, bg),
         Span::raw(" "),
-        Span::styled(toggle_hint, Style::default().fg(SUBAGENT_COLOR).bg(CODE_BG)),
+        Span::styled(toggle_hint.to_string(), Style::default().fg(SUBAGENT_COLOR).bg(CODE_BG)),
         Span::styled("  ", bg),
     ]));
 
     if !sa.collapsed {
         let mut child_lines = Vec::new();
         for child in &sa.children {
-            render_turn_block(child, &mut child_lines, inner_width, 0);
+            render_turn_block_cloned(child, &mut child_lines, inner_width, 0);
         }
 
         for child_line in child_lines {

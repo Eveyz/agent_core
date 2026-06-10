@@ -1,7 +1,58 @@
 use agent_core::{AgentEvent, ApprovalChoice, MessageDelta};
+use ratatui::text::Line;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tokio::sync::mpsc;
+
+// ── Conversation line cache ──────────────────────────────────────────
+
+/// Caches the rendered conversation lines so that scrolling doesn't
+/// require re-parsing markdown / re-running syntect on every frame.
+///
+/// The cache is split into two parts:
+/// - `entry_lines`: Pre-rendered lines for COMPLETED entries.
+///   Only rebuilt when the number of entries changes (not during streaming).
+/// - `streaming_lines`: Pre-rendered lines for the currently streaming blocks.
+///   Rebuilt on every cache rebuild, but usually much smaller.
+/// - `lines`: Combined view of entry_lines + streaming_lines + decorations.
+pub struct CachedConversation {
+    /// Pre-rendered lines for completed entries (cached across streaming updates).
+    pub entry_lines: Vec<Line<'static>>,
+    /// How many entries were used to build `entry_lines`.
+    pub rendered_entry_count: usize,
+    /// Pre-rendered lines for streaming blocks.
+    pub streaming_lines: Vec<Line<'static>>,
+    /// Combined lines (entry_lines + separator + streaming_lines + decorations).
+    pub lines: Vec<Line<'static>>,
+    /// The content version that produced this cache (incremented on mutation).
+    pub version: u64,
+    /// Terminal width used to produce this cache (invalidated on resize).
+    pub width: u16,
+    /// Total wrapped line height (computed once per rebuild).
+    pub wrapped_height: usize,
+    /// Cumulative wrapped row count: row_offsets[i] = total wrapped rows for lines[0..i].
+    /// Used for binary-searching the visible line range during window rendering.
+    pub row_offsets: Vec<usize>,
+    /// Timestamp of the last cache rebuild — used for streaming throttle.
+    pub last_rebuild: Option<Instant>,
+}
+
+impl CachedConversation {
+    pub fn new() -> Self {
+        Self {
+            entry_lines: Vec::new(),
+            rendered_entry_count: 0,
+            streaming_lines: Vec::new(),
+            lines: Vec::new(),
+            version: 0,
+            width: 0,
+            wrapped_height: 0,
+            row_offsets: Vec::new(),
+            last_rebuild: None,
+        }
+    }
+}
 
 // ── Command mode (multi-step input) ─────────────────────────────────
 
@@ -157,6 +208,13 @@ pub struct AppState {
     pub modal: ModalState,
     /// Simple frame counter for UI animation (increments each render)
     pub frame_count: u64,
+    // ── Rendering cache ──────────────────────────────────────────
+    /// Cached rendered lines — rebuilt only when content or width changes.
+    pub cache: CachedConversation,
+    /// Monotonically increasing content version — bumped on any entry/streaming mutation.
+    pub content_version: u64,
+    /// Whether the cache is stale and needs rebuilding before next draw.
+    pub cache_dirty: bool,
 }
 
 impl AppState {
@@ -182,6 +240,9 @@ impl AppState {
             autocomplete: AutocompleteState::new(),
             modal: ModalState::None,
             frame_count: 0,
+            cache: CachedConversation::new(),
+            content_version: 0,
+            cache_dirty: true,
         }
     }
 
@@ -208,6 +269,12 @@ impl AppState {
         }
     }
 
+    /// Mark the conversation cache as needing a rebuild.
+    pub fn mark_dirty(&mut self) {
+        self.content_version = self.content_version.wrapping_add(1);
+        self.cache_dirty = true;
+    }
+
     pub fn take_pending_request(&mut self) -> Option<String> {
         self.pending_request.take()
     }
@@ -221,6 +288,7 @@ impl AppState {
         self.pending_request = Some(text);
         self.agent_running = true;
         self.agent_state = "streaming".into();
+        self.mark_dirty();
     }
 
     // ── Command handling ───────────────────────────────────────────
@@ -357,6 +425,7 @@ impl AppState {
                 self.agent_running = false;
                 self.agent_state = "idle".into();
                 self.pending_tools.clear();
+                self.mark_dirty();
             }
 
             AgentEvent::TurnStart { turn_index } => {
@@ -365,30 +434,36 @@ impl AppState {
                     turn: turn_index,
                     blocks: Vec::new(),
                 });
+                self.mark_dirty();
             }
             AgentEvent::TurnEnd { .. } => {
                 self.flush_streaming();
+                self.mark_dirty();
             }
 
             AgentEvent::MessageStart { .. } => {}
-            AgentEvent::MessageUpdate { delta } => match delta {
-                MessageDelta::Thinking(t) => {
-                    self.push_stream_block(TurnBlock::Thought(String::new()));
-                    if let Some(s) = &mut self.streaming {
-                        if let Some(TurnBlock::Thought(text)) = s.blocks.last_mut() {
-                            text.push_str(&t);
+            AgentEvent::MessageUpdate { delta } => {
+                match delta {
+                    MessageDelta::Thinking(t) => {
+                        self.push_stream_block(TurnBlock::Thought(String::new()));
+                        if let Some(s) = &mut self.streaming {
+                            if let Some(TurnBlock::Thought(text)) = s.blocks.last_mut() {
+                                text.push_str(&t);
+                            }
                         }
+                        self.mark_dirty();
+                    }
+                    MessageDelta::Text(t) => {
+                        self.push_stream_block(TurnBlock::Response(String::new()));
+                        if let Some(s) = &mut self.streaming {
+                            if let Some(TurnBlock::Response(text)) = s.blocks.last_mut() {
+                                text.push_str(&t);
+                            }
+                        }
+                        self.mark_dirty();
                     }
                 }
-                MessageDelta::Text(t) => {
-                    self.push_stream_block(TurnBlock::Response(String::new()));
-                    if let Some(s) = &mut self.streaming {
-                        if let Some(TurnBlock::Response(text)) = s.blocks.last_mut() {
-                            text.push_str(&t);
-                        }
-                    }
-                }
-            },
+            }
             AgentEvent::MessageEnd { message } => {
                 if let Some(ref tool_calls) = message.tool_calls {
                     for tc in tool_calls {
@@ -435,10 +510,12 @@ impl AppState {
                         is_error,
                     }),
                 });
+                self.mark_dirty();
             }
 
             AgentEvent::Error(e) => {
                 self.push_stream_block(TurnBlock::Error(e));
+                self.mark_dirty();
             }
 
             AgentEvent::ApprovalRequired {
@@ -460,6 +537,7 @@ impl AppState {
                     "[APPROVAL] {} — {} (auto-approved)",
                     tool_name, explanation
                 )));
+                self.mark_dirty();
             }
 
             // ── Subagent events ──────────────────────────────────
@@ -482,11 +560,13 @@ impl AppState {
                         blocks: vec![block],
                     });
                 }
+                self.mark_dirty();
             }
             AgentEvent::SubagentTurnStart { .. } => {}
             AgentEvent::SubagentMessageUpdate { subagent_id, delta } => {
                 // Find the subagent block and append to its children
                 self.append_subagent_child(&subagent_id, &delta);
+                self.mark_dirty();
             }
             AgentEvent::SubagentToolStart {
                 subagent_id,
@@ -502,6 +582,7 @@ impl AppState {
                         result: None,
                     },
                 );
+                self.mark_dirty();
             }
             AgentEvent::SubagentToolEnd {
                 subagent_id,
@@ -511,6 +592,7 @@ impl AppState {
                 ..
             } => {
                 self.update_subagent_tool_result(&subagent_id, &tool_name, result, is_error);
+                self.mark_dirty();
             }
             AgentEvent::SubagentEnd {
                 subagent_id,
@@ -518,6 +600,7 @@ impl AppState {
                 iterations_used,
             } => {
                 self.finalize_subagent(&subagent_id, success, iterations_used);
+                self.mark_dirty();
             }
         }
     }
@@ -539,6 +622,8 @@ impl AppState {
                 blocks: vec![block],
             });
         }
+        // Note: mark_dirty is called by the callers that trigger mutations,
+        // not here, because some callers (like MessageUpdate) already call it.
     }
 
     fn flush_streaming(&mut self) {

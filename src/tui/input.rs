@@ -259,6 +259,7 @@ fn toggle_focus(state: &mut AppState, idx: usize) {
             if let TurnBlock::Subagent(sa) = block {
                 if count == idx {
                     sa.collapsed = !sa.collapsed;
+                    state.mark_dirty();
                     return;
                 }
                 count += 1;
@@ -272,6 +273,7 @@ fn toggle_focus(state: &mut AppState, idx: usize) {
                 if let TurnBlock::Subagent(sa) = block {
                     if count == idx {
                         sa.collapsed = !sa.collapsed;
+                        state.mark_dirty();
                         return;
                     }
                     count += 1;
