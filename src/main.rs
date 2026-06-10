@@ -1423,7 +1423,6 @@ async fn run_agent(
                     ..
                 } => {
                     pending_tool.set(None);
-                    println!();
                     println!(
                         "  {}⚠ APPROVAL{} {} ({})",
                         yellow(use_styles),

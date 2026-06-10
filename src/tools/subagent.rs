@@ -207,7 +207,7 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                         .collect()
                 })
                 .unwrap_or_default();
-            let max_iterations = task_spec["max_iterations"].as_u64().unwrap_or(5) as usize;
+            let max_iterations = task_spec["max_iterations"].as_u64().map(|v| v as usize).unwrap_or(usize::MAX);
 
             let model_config = self.model_config.clone();
             let available_tools = if tools.is_empty() {
