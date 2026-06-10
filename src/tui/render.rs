@@ -780,56 +780,58 @@ fn render_subagent_block(
 ) {
     // Account for pad + "  " left + "  " right = pad.width() + 4
     let inner_width = width.saturating_sub(4 + pad.width());
-    let bg = Style::default().bg(CODE_BG);
+    let text_bg = Style::default().bg(CODE_BG);
     let label_style = Style::default()
         .fg(SUBAGENT_COLOR)
         .bg(CODE_BG)
         .add_modifier(Modifier::BOLD);
+    let border_fg = Color::Rgb(92, 99, 112);
 
-    // Top padding — fill full width
-    let top_fill = width.saturating_sub(pad.width());
+    // Top separator (bg only on the dashes, fill is transparent)
+    let top_sep = "─".repeat(inner_width.min(40));
+    let top_fill = " ".repeat(inner_width.saturating_sub(top_sep.width()));
     lines.push(Line::from(vec![
         Span::raw(pad.to_string()),
-        Span::styled(" ".repeat(top_fill), bg),
+        Span::raw("  "),
+        Span::styled(top_sep, Style::default().fg(border_fg).bg(CODE_BG)),
+        Span::raw(top_fill),
+        Span::raw("  "),
     ]));
 
-    // Label line
+    // Label line (bg only on text, fill is transparent)
     let label = format!("⚡  subagent: {}  ", sa.id);
     let label_fill = " ".repeat(inner_width.saturating_sub(label.width()));
     lines.push(Line::from(vec![
         Span::raw(pad.to_string()),
-        Span::styled("  ", bg),
+        Span::raw("  "),
         Span::styled(label, label_style),
-        Span::styled(label_fill, bg),
-        Span::styled("  ", bg),
+        Span::raw(label_fill),
+        Span::raw("  "),
     ]));
 
-    // Separator
+    // Separator (bg only on dashes)
     let sep = "─".repeat(inner_width.min(40));
     let sep_fill = " ".repeat(inner_width.saturating_sub(sep.width()));
     lines.push(Line::from(vec![
         Span::raw(pad.to_string()),
-        Span::styled("  ", bg),
-        Span::styled(
-            sep,
-            Style::default().fg(Color::Rgb(92, 99, 112)).bg(CODE_BG),
-        ),
-        Span::styled(sep_fill, bg),
-        Span::styled("  ", bg),
+        Span::raw("  "),
+        Span::styled(sep, Style::default().fg(border_fg).bg(CODE_BG)),
+        Span::raw(sep_fill),
+        Span::raw("  "),
     ]));
 
-    // Task line
+    // Task line (bg only on text)
     let task_str = truncate_str_w(&sa.task, inner_width);
     let task_fill = " ".repeat(inner_width.saturating_sub(task_str.width()));
     lines.push(Line::from(vec![
         Span::raw(pad.to_string()),
-        Span::styled("  ", bg),
+        Span::raw("  "),
         Span::styled(task_str, Style::default().fg(Color::DarkGray).bg(CODE_BG)),
-        Span::styled(task_fill, bg),
-        Span::styled("  ", bg),
+        Span::raw(task_fill),
+        Span::raw("  "),
     ]));
 
-    // Status line (bottom of box) — shows state + [Enter] hint
+    // Status line (bg only on text)
     let (status_icon, status_text) = if sa.done {
         if sa.success {
             ("✓", format!("done ({} iters)", sa.iterations))
@@ -844,27 +846,37 @@ fn render_subagent_block(
     } else {
         Color::Rgb(229, 192, 123)
     };
-    let enter_hint = "[Click] details";
     let status_full = format!("{} {}", status_icon, status_text);
-    let hint_space = 1 + enter_hint.width();
-    let status_avail = inner_width.saturating_sub(hint_space);
-    let status_str = truncate_str_w(&status_full, status_avail);
-    let fill = " ".repeat(inner_width.saturating_sub(status_str.width() + hint_space));
+    let status_str = truncate_str_w(&status_full, inner_width);
+    let status_fill = " ".repeat(inner_width.saturating_sub(status_str.width()));
     lines.push(Line::from(vec![
         Span::raw(pad.to_string()),
-        Span::styled("  ", bg),
+        Span::raw("  "),
         Span::styled(status_str, Style::default().fg(status_color).bg(CODE_BG).add_modifier(Modifier::BOLD)),
-        Span::styled(fill, bg),
-        Span::raw(" "),
-        Span::styled(enter_hint.to_string(), Style::default().fg(SUBAGENT_COLOR).bg(CODE_BG)),
-        Span::styled("  ", bg),
+        Span::raw(status_fill),
+        Span::raw("  "),
     ]));
 
-    // Bottom padding — fill full width
-    let bot_fill = width.saturating_sub(pad.width());
+    // [Click] details — on its own line at the bottom (bg only on text)
+    let hint = "[Click] details";
+    let hint_fill = " ".repeat(inner_width.saturating_sub(hint.width()));
     lines.push(Line::from(vec![
         Span::raw(pad.to_string()),
-        Span::styled(" ".repeat(bot_fill), bg),
+        Span::raw("  "),
+        Span::styled(hint, Style::default().fg(SUBAGENT_COLOR).bg(CODE_BG)),
+        Span::raw(hint_fill),
+        Span::raw("  "),
+    ]));
+
+    // Bottom separator (bg only on dashes)
+    let bot_sep = "─".repeat(inner_width.min(40));
+    let bot_fill = " ".repeat(inner_width.saturating_sub(bot_sep.width()));
+    lines.push(Line::from(vec![
+        Span::raw(pad.to_string()),
+        Span::raw("  "),
+        Span::styled(bot_sep, Style::default().fg(border_fg).bg(CODE_BG)),
+        Span::raw(bot_fill),
+        Span::raw("  "),
     ]));
 }
 
