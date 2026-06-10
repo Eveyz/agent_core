@@ -79,6 +79,9 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
                 return Ok(());
             }
 
+            // Record in input history regardless of whether it's a command or message
+            state.push_input_history(text.clone());
+
             // Handle slash commands with optional modal popup
             if text == "/models" || text == "/model" {
                 state.pending_command = Some("show_model_picker".to_string());
@@ -124,7 +127,7 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
             }
         }
 
-        // ── Scroll ────────────────────────────────────────────────
+        // ── Scroll / History ────────────────────────────────────
         KeyCode::PageUp => {
             state.scroll = state.scroll.saturating_add(5);
         }
@@ -147,7 +150,8 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
                     state.focus_index = Some(idx - 1);
                 }
             } else {
-                state.scroll = state.scroll.saturating_add(1);
+                // Navigate command history (Up = older)
+                state.history_up();
             }
         }
         KeyCode::Down => {
@@ -164,7 +168,8 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
                 let idx = state.focus_index.unwrap();
                 state.focus_index = Some(idx + 1);
             } else {
-                state.scroll = state.scroll.saturating_sub(1);
+                // Navigate command history (Down = newer)
+                state.history_down();
             }
         }
 
@@ -192,6 +197,9 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
 
         // ── Deletion ──────────────────────────────────────────────
         KeyCode::Backspace => {
+            // Exit history navigation on editing
+            state.history_index = None;
+            state.input_snapshot.clear();
             if key.modifiers.contains(KeyModifiers::CONTROL) {
                 // Ctrl+Backspace: delete previous word
                 let start = prev_word_boundary(&state.input, state.cursor_pos);
@@ -205,6 +213,9 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
             state.update_autocomplete();
         }
         KeyCode::Delete => {
+            // Exit history navigation on editing
+            state.history_index = None;
+            state.input_snapshot.clear();
             if key.modifiers.contains(KeyModifiers::CONTROL) {
                 // Ctrl+Delete: delete next word
                 let end = next_word_boundary(&state.input, state.cursor_pos);
@@ -218,20 +229,26 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
 
         // ── Kill line / word ──────────────────────────────────────
         KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            // Kill to end of line
+            // Kill to end of line — exit history nav
+            state.history_index = None;
+            state.input_snapshot.clear();
             if state.cursor_pos < state.input.len() {
                 state.input.truncate(state.cursor_pos);
             }
         }
         KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            // Kill to start of line
+            // Kill to start of line — exit history nav
+            state.history_index = None;
+            state.input_snapshot.clear();
             if state.cursor_pos > 0 {
                 state.input.replace_range(0..state.cursor_pos, "");
                 state.cursor_pos = 0;
             }
         }
         KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            // Kill previous word
+            // Kill previous word — exit history nav
+            state.history_index = None;
+            state.input_snapshot.clear();
             let start = prev_word_boundary(&state.input, state.cursor_pos);
             state.input.replace_range(start..state.cursor_pos, "");
             state.cursor_pos = start;
@@ -239,6 +256,9 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
 
         // ── Character input ───────────────────────────────────────
         KeyCode::Char(c) => {
+            // Exit history navigation on any new typing
+            state.history_index = None;
+            state.input_snapshot.clear();
             state.input.insert(state.cursor_pos, c);
             state.cursor_pos += c.len_utf8();
             state.update_autocomplete();

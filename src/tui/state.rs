@@ -208,6 +208,16 @@ pub struct AppState {
     pub modal: ModalState,
     /// Simple frame counter for UI animation (increments each render)
     pub frame_count: u64,
+    // ── Command history ───────────────────────────────────────────
+    /// Submitted user inputs (commands & messages), oldest first.
+    pub input_history: Vec<String>,
+    /// Current navigation index into `input_history`.
+    /// `None` = not navigating (user is typing fresh input).
+    /// `Some(i)` = browsing history at index i.
+    pub history_index: Option<usize>,
+    /// Snapshot of the user's in-progress input before they started
+    /// pressing Up — restored when they press Down past the newest entry.
+    pub input_snapshot: String,
     // ── Rendering cache ──────────────────────────────────────────
     /// Cached rendered lines — rebuilt only when content or width changes.
     pub cache: CachedConversation,
@@ -240,6 +250,9 @@ impl AppState {
             autocomplete: AutocompleteState::new(),
             modal: ModalState::None,
             frame_count: 0,
+            input_history: Vec::new(),
+            history_index: None,
+            input_snapshot: String::new(),
             cache: CachedConversation::new(),
             content_version: 0,
             cache_dirty: true,
@@ -275,11 +288,80 @@ impl AppState {
         self.cache_dirty = true;
     }
 
+    /// Push the submitted text into input history (deduped, newest last).
+    pub fn push_input_history(&mut self, text: String) {
+        // Don't push duplicates of the very last entry
+        if self.input_history.last() == Some(&text) {
+            return;
+        }
+        self.input_history.push(text);
+        // Cap history at 500 entries
+        if self.input_history.len() > 500 {
+            self.input_history.remove(0);
+        }
+        // Reset navigation
+        self.history_index = None;
+        self.input_snapshot.clear();
+    }
+
+    /// Navigate one step back in command history (Up arrow).
+    /// Returns the text to show in the input box.
+    pub fn history_up(&mut self) -> &str {
+        if self.input_history.is_empty() {
+            return &self.input;
+        }
+        match self.history_index {
+            None => {
+                // Save current input before entering history
+                self.input_snapshot = self.input.clone();
+                let idx = self.input_history.len() - 1;
+                self.history_index = Some(idx);
+            }
+            Some(idx) if idx > 0 => {
+                self.history_index = Some(idx - 1);
+            }
+            Some(_) => {
+                // Already at oldest entry — stay
+            }
+        }
+        let idx = self.history_index.unwrap();
+        self.input = self.input_history[idx].clone();
+        self.cursor_pos = self.input.len();
+        &self.input
+    }
+
+    /// Navigate one step forward in command history (Down arrow).
+    /// Returns the text to show in the input box.
+    pub fn history_down(&mut self) -> &str {
+        match self.history_index {
+            None => {
+                // Not navigating — nothing to do
+                return &self.input;
+            }
+            Some(idx) if idx + 1 < self.input_history.len() => {
+                self.history_index = Some(idx + 1);
+            }
+            Some(_) => {
+                // Past the newest entry — restore snapshot
+                self.history_index = None;
+                self.input = self.input_snapshot.clone();
+                self.cursor_pos = self.input.len();
+                return &self.input;
+            }
+        }
+        let idx = self.history_index.unwrap();
+        self.input = self.input_history[idx].clone();
+        self.cursor_pos = self.input.len();
+        &self.input
+    }
+
     pub fn take_pending_request(&mut self) -> Option<String> {
         self.pending_request.take()
     }
 
     /// Submit a user message for the agent to process.
+    /// Note: input history is recorded in the Enter handler in input.rs,
+    /// so we don't double-push here.
     pub fn submit(&mut self, text: String) {
         if self.agent_running {
             return;
