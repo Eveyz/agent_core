@@ -10,9 +10,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub async fn run_tui(agent: Arc<tokio::sync::Mutex<Agent>>) -> Result<()> {
+    // Enable mouse capture so crossterm can receive scroll wheel events
+    crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
     let mut terminal = ratatui::init();
     let result = run_app(&mut terminal, agent).await;
     ratatui::restore();
+    // Disable mouse capture on cleanup
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
     result
 }
 

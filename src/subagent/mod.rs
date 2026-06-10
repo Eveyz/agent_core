@@ -120,7 +120,7 @@ impl Subagent {
                 });
             }
 
-            if !text.is_empty() {
+            if !text.is_empty() || !tool_calls.is_empty() {
                 self.context
                     .add(Message::assistant_with_tools(&text, tool_calls.clone()));
             }
