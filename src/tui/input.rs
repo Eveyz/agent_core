@@ -75,17 +75,6 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
                 state.autocomplete.active = false;
             }
 
-            // Check if a subagent block is focused — drill into detail view
-            if let Some(idx) = state.focus_index {
-                if let Some(sa_id) = find_subagent_id_at_index(state, idx) {
-                    state.subagent_view = Some(sa_id);
-                    state.subagent_scroll = 0;
-                    state.focus_index = None;
-                    state.mark_dirty();
-                }
-                return Ok(());
-            }
-
             let text = state.input.trim().to_string();
             if text.is_empty() {
                 return Ok(());
@@ -138,8 +127,6 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
                 state.cursor_pos = 0;
             }
         }
-
-        // ── Scroll / History ────────────────────────────────────
         KeyCode::PageUp => {
             if state.subagent_view.is_some() {
                 state.subagent_scroll = state.subagent_scroll.saturating_add(5);
@@ -164,15 +151,8 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
                 }
                 return Ok(());
             }
-            if state.focus_index.is_some() {
-                let idx = state.focus_index.unwrap();
-                if idx > 0 {
-                    state.focus_index = Some(idx - 1);
-                }
-            } else {
-                // Navigate command history (Up = older)
-                state.history_up();
-            }
+            // Navigate command history (Up = older)
+            state.history_up();
         }
         KeyCode::Down => {
             if state.autocomplete.active {
@@ -184,13 +164,8 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
                 }
                 return Ok(());
             }
-            if state.focus_index.is_some() {
-                let idx = state.focus_index.unwrap();
-                state.focus_index = Some(idx + 1);
-            } else {
-                // Navigate command history (Down = newer)
-                state.history_down();
-            }
+            // Navigate command history (Down = newer)
+            state.history_down();
         }
 
         // ── Cursor movement ───────────────────────────────────────
@@ -288,72 +263,6 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Find the subagent_id at the given focus index.
-fn find_subagent_id_at_index(state: &AppState, idx: usize) -> Option<String> {
-    let mut count = 0;
-
-    if let Some(ref streaming) = state.streaming {
-        for block in &streaming.blocks {
-            if let TurnBlock::Subagent(sa) = block {
-                if count == idx {
-                    return Some(sa.id.clone());
-                }
-                count += 1;
-            }
-        }
-    }
-
-    for entry in &state.entries {
-        if let Entry::Turn { blocks, .. } = entry {
-            for block in blocks {
-                if let TurnBlock::Subagent(sa) = block {
-                    if count == idx {
-                        return Some(sa.id.clone());
-                    }
-                    count += 1;
-                }
-            }
-        }
-    }
-
-    None
-}
-
-/// Toggle a subagent block at the given focus index (legacy — kept for
-/// potential future use, but subagent drill-in now uses detail view).
-#[allow(dead_code)]
-fn toggle_focus(state: &mut AppState, idx: usize) {
-    let mut count = 0;
-
-    if let Some(ref mut streaming) = state.streaming {
-        for block in &mut streaming.blocks {
-            if let TurnBlock::Subagent(sa) = block {
-                if count == idx {
-                    sa.collapsed = !sa.collapsed;
-                    state.mark_dirty();
-                    return;
-                }
-                count += 1;
-            }
-        }
-    }
-
-    for entry in &mut state.entries {
-        if let Entry::Turn { blocks, .. } = entry {
-            for block in blocks {
-                if let TurnBlock::Subagent(sa) = block {
-                    if count == idx {
-                        sa.collapsed = !sa.collapsed;
-                        state.mark_dirty();
-                        return;
-                    }
-                    count += 1;
-                }
-            }
-        }
-    }
 }
 
 // ── Character boundary helpers ──────────────────────────────────────

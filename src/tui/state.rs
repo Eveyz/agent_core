@@ -36,6 +36,11 @@ pub struct CachedConversation {
     pub row_offsets: Vec<usize>,
     /// Timestamp of the last cache rebuild — used for streaming throttle.
     pub last_rebuild: Option<Instant>,
+    /// Line ranges for subagent blocks: (start_line_idx, end_line_idx, subagent_id).
+    /// Used for mouse hover / click detection.
+    pub subagent_line_ranges: Vec<(usize, usize, String)>,
+    /// Subagent ranges within entry_lines only (cached across streaming rebuilds).
+    pub entry_subagent_ranges: Vec<(usize, usize, String)>,
 }
 
 impl CachedConversation {
@@ -50,6 +55,8 @@ impl CachedConversation {
             wrapped_height: 0,
             row_offsets: Vec::new(),
             last_rebuild: None,
+            subagent_line_ranges: Vec::new(),
+            entry_subagent_ranges: Vec::new(),
         }
     }
 }
@@ -191,7 +198,6 @@ pub struct AppState {
     pub tokens: usize,
     pub agent_state: String,
     pub tool_mode: String,
-    pub focus_index: Option<usize>,
     pub should_quit: bool,
     pub agent_running: bool,
     /// Multi-step command input state (e.g., /models new)
@@ -225,6 +231,13 @@ pub struct AppState {
     pub subagent_view: Option<String>, // subagent_id
     /// Scroll position within the subagent detail view.
     pub subagent_scroll: usize,
+    // ── Mouse hover ─────────────────────────────────────────────
+    /// ID of the subagent the mouse is currently hovering over.
+    pub hovered_subagent: Option<String>,
+    /// Y position and height of the main conversation area (stored during render,
+    /// used for mapping mouse coordinates to conversation lines).
+    pub main_area_y: u16,
+    pub main_area_height: u16,
     // ── Rendering cache ──────────────────────────────────────────
     /// Cached rendered lines — rebuilt only when content or width changes.
     pub cache: CachedConversation,
@@ -246,7 +259,6 @@ impl AppState {
             tokens: 0,
             agent_state: String::from("idle"),
             tool_mode: String::from("parallel"),
-            focus_index: None,
             should_quit: false,
             command_mode: CommandMode::None,
             pending_command: None,
@@ -262,6 +274,9 @@ impl AppState {
             input_snapshot: String::new(),
             subagent_view: None,
             subagent_scroll: 0,
+            hovered_subagent: None,
+            main_area_y: 0,
+            main_area_height: 0,
             cache: CachedConversation::new(),
             content_version: 0,
             cache_dirty: true,
@@ -673,11 +688,9 @@ impl AppState {
                 let block = TurnBlock::Subagent(SubagentState {
                     id: subagent_id,
                     task,
-                    collapsed: true,
-                    success: false,
-                    focused: false,
                     children: Vec::new(),
                     done: false,
+                    success: false,
                     iterations: 0,
                 });
                 if let Some(s) = &mut self.streaming {
@@ -774,27 +787,35 @@ impl AppState {
     }
 
     fn append_subagent_child_block(&mut self, id: &str, block: TurnBlock) {
-        // Search streaming first, then entries
-        if let Some(s) = &mut self.streaming {
-            for b in &mut s.blocks {
+        let updater = |blocks: &mut Vec<TurnBlock>, block: &TurnBlock| {
+            for b in blocks {
                 if let TurnBlock::Subagent(sa) = b {
                     if sa.id == id {
-                        sa.children.push(block);
+                        // Merge consecutive blocks of the same type so that
+                        // streaming deltas don't create a new block per token.
+                        match (block, sa.children.last_mut()) {
+                            (TurnBlock::Thought(new_text), Some(TurnBlock::Thought(existing))) => {
+                                existing.push_str(new_text);
+                                return;
+                            }
+                            (TurnBlock::Response(new_text), Some(TurnBlock::Response(existing))) => {
+                                existing.push_str(new_text);
+                                return;
+                            }
+                            _ => {}
+                        }
+                        sa.children.push(block.clone());
                         return;
                     }
                 }
             }
+        };
+        if let Some(s) = &mut self.streaming {
+            updater(&mut s.blocks, &block);
         }
         for entry in &mut self.entries {
             if let Entry::Turn { blocks, .. } = entry {
-                for b in blocks {
-                    if let TurnBlock::Subagent(sa) = b {
-                        if sa.id == id {
-                            sa.children.push(block);
-                            return;
-                        }
-                    }
-                }
+                updater(blocks, &block);
             }
         }
     }
@@ -897,8 +918,6 @@ pub struct ToolResult {
 pub struct SubagentState {
     pub id: String,
     pub task: String,
-    pub collapsed: bool,
-    pub focused: bool,
     pub children: Vec<TurnBlock>,
     pub done: bool,
     pub success: bool,

@@ -4,7 +4,7 @@ pub mod state;
 
 use agent_core::Agent;
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyEventKind, MouseEvent, MouseEventKind};
+use crossterm::event::{self, Event, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
 use state::{AppState, Entry, EventPump, TurnBlock};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -12,10 +12,24 @@ use std::time::{Duration, Instant};
 pub async fn run_tui(agent: Arc<tokio::sync::Mutex<Agent>>) -> Result<()> {
     // Enable mouse capture so crossterm can receive scroll wheel events
     crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
+    // Also enable mouse motion tracking (hover) — CSI 1003h
+    // This lets us detect when the mouse hovers over subagent boxes.
+    {
+        use std::io::Write;
+        let mut stdout = std::io::stdout();
+        write!(stdout, "\x1B[?1003h")?;
+        stdout.flush()?;
+    }
     let mut terminal = ratatui::init();
     let result = run_app(&mut terminal, agent).await;
     ratatui::restore();
-    // Disable mouse capture on cleanup
+    // Disable mouse motion tracking and capture on cleanup
+    {
+        use std::io::Write;
+        let mut stdout = std::io::stdout();
+        write!(stdout, "\x1B[?1003l")?;
+        stdout.flush()?;
+    }
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
     result
 }
@@ -141,7 +155,7 @@ async fn run_app(
     }
 }
 
-/// Handle mouse events — smooth scroll wheel support.
+/// Handle mouse events — scroll wheel, hover, and click support.
 fn handle_mouse(mouse: MouseEvent, state: &mut AppState) {
     match mouse.kind {
         MouseEventKind::ScrollUp => {
@@ -158,8 +172,67 @@ fn handle_mouse(mouse: MouseEvent, state: &mut AppState) {
                 state.scroll = state.scroll.saturating_sub(3);
             }
         }
+        MouseEventKind::Moved | MouseEventKind::Drag(_) => {
+            // Hover detection — only in main conversation view
+            if state.subagent_view.is_none() {
+                let new_hovered = find_hovered_subagent(mouse.column, mouse.row, state);
+                if new_hovered != state.hovered_subagent {
+                    state.hovered_subagent = new_hovered;
+                    // Mark dirty so the hover border is rendered
+                    state.cache_dirty = true;
+                }
+            }
+        }
+        MouseEventKind::Down(MouseButton::Left) => {
+            // Click on subagent box → enter detail view
+            if state.subagent_view.is_none() {
+                if let Some(sa_id) = find_hovered_subagent(mouse.column, mouse.row, state) {
+                    state.subagent_view = Some(sa_id);
+                    state.subagent_scroll = 0;
+                    state.hovered_subagent = None;
+                    state.mark_dirty();
+                }
+            }
+        }
         _ => {}
     }
+}
+
+/// Map a mouse position (col, row) to a subagent ID if the mouse is
+/// over a subagent block in the conversation. Returns None otherwise.
+fn find_hovered_subagent(col: u16, row: u16, state: &AppState) -> Option<String> {
+    let area_y = state.main_area_y;
+    let area_h = state.main_area_height;
+
+    // Check if mouse is within the conversation area
+    if row < area_y || row >= area_y + area_h || area_h == 0 {
+        return None;
+    }
+
+    let rel_row = (row - area_y) as usize;
+    let visible_height = area_h as usize;
+    let max_scroll = state.cache.wrapped_height.saturating_sub(visible_height);
+    let scroll_from_top = max_scroll.saturating_sub(state.scroll);
+    let abs_row = scroll_from_top + rel_row;
+
+    // Find which cache line this row corresponds to
+    let line_idx = state.cache.row_offsets
+        .partition_point(|&r| r <= abs_row)
+        .saturating_sub(1);
+
+    // Check if the column is within the terminal width (basic sanity check)
+    if col < 1 {
+        return None;
+    }
+
+    // Check if this line index falls within any subagent range
+    for &(start, end, ref id) in &state.cache.subagent_line_ranges {
+        if line_idx >= start && line_idx < end {
+            return Some(id.clone());
+        }
+    }
+
+    None
 }
 
 // ── Pending command processor (for commands from state.rs handle_command) ─

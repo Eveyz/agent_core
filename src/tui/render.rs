@@ -246,6 +246,10 @@ fn render_conversation(frame: &mut Frame, state: &mut AppState, area: Rect) {
     let width = area.width;
     let visible_height = area.height as usize;
 
+    // Store area info for mouse hover/click mapping
+    state.main_area_y = area.y;
+    state.main_area_height = area.height;
+
     // ── Streaming throttle ──────────────────────────────────────────
     // During streaming, only rebuild the cache at most every
     // STREAMING_REBUILD_THROTTLE ms. This prevents every single token
@@ -278,14 +282,36 @@ fn render_conversation(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // Instead of cloning ALL lines and using .scroll() (which makes
     // ratatui wrap ALL lines), we only render the visible window.
     // We use row_offsets to binary-search which logical lines are visible.
-    let visible_lines = get_visible_lines(
+    let (window_start, visible_lines) = get_visible_lines(
         &state.cache.lines,
         &state.cache.row_offsets,
         scroll_from_top,
         visible_height,
     );
 
-    let para = Paragraph::new(Text::from(visible_lines))
+    // ── Apply hover border ──────────────────────────────────────────
+    let mut final_lines = visible_lines;
+    if let Some(ref hovered_id) = state.hovered_subagent {
+        for &(start, end, ref id) in &state.cache.subagent_line_ranges {
+            if id == hovered_id {
+                let vis_start = start.saturating_sub(window_start);
+                let vis_end = end.saturating_sub(window_start).min(final_lines.len());
+                for i in vis_start..vis_end {
+                    if i < final_lines.len() {
+                        let mut line = std::mem::take(&mut final_lines[i]);
+                        let mut new_spans = vec![Span::styled(
+                            "▎",
+                            Style::default().fg(SUBAGENT_COLOR),
+                        )];
+                        new_spans.append(&mut line.spans);
+                        final_lines[i] = Line::from(new_spans);
+                    }
+                }
+            }
+        }
+    }
+
+    let para = Paragraph::new(Text::from(final_lines))
         .wrap(Wrap { trim: false });
     frame.render_widget(para, area);
 
@@ -311,16 +337,17 @@ fn render_conversation(frame: &mut Frame, state: &mut AppState, area: Rect) {
 }
 
 /// Given the full line list, row_offsets, scroll position, and visible height,
-/// return only the lines that are visible on screen. This avoids cloning
-/// the entire line array and avoids ratatui processing off-screen lines.
+/// return only the lines that are visible on screen along with the start index
+/// in the cache. This avoids cloning the entire line array and avoids ratatui
+/// processing off-screen lines.
 fn get_visible_lines(
     lines: &[Line<'static>],
     row_offsets: &[usize],
     scroll_from_top: usize,
     visible_height: usize,
-) -> Vec<Line<'static>> {
+) -> (usize, Vec<Line<'static>>) {
     if lines.is_empty() || row_offsets.is_empty() {
-        return Vec::new();
+        return (0, Vec::new());
     }
 
     // Find the first logical line that contains the scroll row
@@ -342,7 +369,7 @@ fn get_visible_lines(
 
     // Clone only the visible window — much cheaper than cloning all lines.
     // The key win: we're NOT processing all 1000+ lines — just ~50 visible ones.
-    window.to_vec()
+    (start, window.to_vec())
 }
 
 /// Rebuild the cached lines from entries + streaming data.
@@ -354,6 +381,10 @@ fn rebuild_cache(state: &mut AppState, width: u16) {
     let w = width as usize;
     let entry_count = state.entries.len();
 
+    // ── Track subagent line ranges ────────────────────────────────
+    let mut entry_sa_ranges: Vec<(usize, usize, String)> = Vec::new();
+    let mut streaming_sa_ranges: Vec<(usize, usize, String)> = Vec::new();
+
     // ── Only rebuild entry_lines if entries changed ────────────────
     if state.cache.rendered_entry_count != entry_count || state.cache.width != width {
         let mut entry_lines: Vec<Line<'static>> = Vec::new();
@@ -363,10 +394,15 @@ fn rebuild_cache(state: &mut AppState, width: u16) {
                 entry_lines.push(Line::raw(""));
             }
             first = false;
-            render_entry_cloned(entry, &mut entry_lines, w);
+            render_entry_cloned(entry, &mut entry_lines, w, &mut entry_sa_ranges);
         }
         state.cache.entry_lines = entry_lines;
         state.cache.rendered_entry_count = entry_count;
+        // Cache entry subagent ranges for reuse
+        state.cache.entry_subagent_ranges = entry_sa_ranges.clone();
+    } else {
+        // Reuse cached entry subagent ranges
+        entry_sa_ranges = state.cache.entry_subagent_ranges.clone();
     }
 
     // ── Always rebuild streaming lines ─────────────────────────────
@@ -377,7 +413,7 @@ fn rebuild_cache(state: &mut AppState, width: u16) {
                 if i > 0 {
                     streaming_lines.push(Line::raw(""));
                 }
-                render_turn_block_cloned(block, &mut streaming_lines, w, 0);
+                render_turn_block_cloned(block, &mut streaming_lines, w, 0, &mut streaming_sa_ranges);
             }
         }
     }
@@ -390,12 +426,14 @@ fn rebuild_cache(state: &mut AppState, width: u16) {
     lines.extend(state.cache.entry_lines.iter().cloned());
 
     // Streaming lines
-    if !state.cache.streaming_lines.is_empty() {
-        if !lines.is_empty() {
-            lines.push(Line::raw(""));
-        }
-        lines.extend(state.cache.streaming_lines.iter().cloned());
-    }
+    let streaming_offset = lines.len();
+    let _separator_count = if !state.cache.streaming_lines.is_empty() && !lines.is_empty() {
+        lines.push(Line::raw(""));
+        1
+    } else {
+        0
+    };
+    lines.extend(state.cache.streaming_lines.iter().cloned());
 
     // "Working..." indicator — shown between submit and first token.
     // Once we get a Thought or Response block, the state will be
@@ -430,6 +468,15 @@ fn rebuild_cache(state: &mut AppState, width: u16) {
     state.cache.version = state.content_version;
     state.cache.last_rebuild = Some(Instant::now());
     state.cache_dirty = false;
+
+    // ── Combine subagent ranges ────────────────────────────────────
+    // Entry ranges are already relative to the start of lines.
+    // Streaming ranges need to be offset by streaming_offset.
+    let mut combined_ranges = entry_sa_ranges;
+    for (start, end, id) in streaming_sa_ranges {
+        combined_ranges.push((start + streaming_offset, end + streaming_offset, id));
+    }
+    state.cache.subagent_line_ranges = combined_ranges;
 }
 
 /// Compute cumulative wrapped row count for each line.
@@ -450,7 +497,12 @@ fn compute_row_offsets(lines: &[Line<'_>], width: u16) -> Vec<usize> {
 }
 
 /// Same as render_entry but outputs Line<'static> by cloning string data.
-fn render_entry_cloned(entry: &Entry, lines: &mut Vec<Line<'static>>, width: usize) {
+fn render_entry_cloned(
+    entry: &Entry,
+    lines: &mut Vec<Line<'static>>,
+    width: usize,
+    sa_ranges: &mut Vec<(usize, usize, String)>,
+) {
     match entry {
         Entry::System { text } => {
             let style = Style::default().fg(Color::Cyan);
@@ -466,18 +518,20 @@ fn render_entry_cloned(entry: &Entry, lines: &mut Vec<Line<'static>>, width: usi
                 if i > 0 {
                     lines.push(Line::raw(""));
                 }
-                render_turn_block_cloned(block, lines, width, 0);
+                render_turn_block_cloned(block, lines, width, 0, sa_ranges);
             }
         }
     }
 }
 
 /// Same as render_turn_block but outputs Line<'static> by cloning string data.
+/// Also tracks subagent block line ranges for hover detection.
 fn render_turn_block_cloned(
     block: &TurnBlock,
     lines: &mut Vec<Line<'static>>,
     width: usize,
     indent: usize,
+    sa_ranges: &mut Vec<(usize, usize, String)>,
 ) {
     let pad = " ".repeat(indent * 2);
     let inner_width = width.saturating_sub(pad.width());
@@ -522,7 +576,10 @@ fn render_turn_block_cloned(
             render_tool_block(name, args, result, lines, inner_width, &pad);
         }
         TurnBlock::Subagent(sa) => {
+            let range_start = lines.len();
             render_subagent_block(sa, lines, inner_width, &pad);
+            let range_end = lines.len();
+            sa_ranges.push((range_start, range_end, sa.id.clone()));
         }
         TurnBlock::Error(e) => {
             lines.push(Line::from(vec![
@@ -787,7 +844,7 @@ fn render_subagent_block(
     } else {
         Color::Rgb(229, 192, 123)
     };
-    let enter_hint = "[Enter] details";
+    let enter_hint = "[Click] details";
     let status_full = format!("{} {}", status_icon, status_text);
     let hint_space = 1 + enter_hint.width();
     let status_avail = inner_width.saturating_sub(hint_space);
@@ -849,7 +906,7 @@ fn render_subagent_detail(frame: &mut Frame, state: &mut AppState, area: Rect) {
             if i > 0 {
                 lines.push(Line::raw(""));
             }
-            render_turn_block_cloned(child, &mut lines, width as usize, 0);
+            render_turn_block_cloned(child, &mut lines, width as usize, 0, &mut Vec::new());
         }
 
         // Status at the bottom
@@ -887,7 +944,7 @@ fn render_subagent_detail(frame: &mut Frame, state: &mut AppState, area: Rect) {
     state.subagent_scroll = state.subagent_scroll.min(max_scroll);
     let scroll_from_top = max_scroll.saturating_sub(state.subagent_scroll);
 
-    let visible_lines = get_visible_lines(&lines, &row_offsets, scroll_from_top, visible_height);
+    let (_, visible_lines) = get_visible_lines(&lines, &row_offsets, scroll_from_top, visible_height);
 
     let para = Paragraph::new(Text::from(visible_lines)).wrap(Wrap { trim: false });
     frame.render_widget(para, area);
