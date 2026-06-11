@@ -685,6 +685,10 @@ impl AppState {
 
             // ── Subagent events ──────────────────────────────────
             AgentEvent::SubagentStart { subagent_id, task } => {
+                let already_exists = self.find_subagent(&subagent_id).is_some();
+                if already_exists {
+                    return;
+                }
                 let block = TurnBlock::Subagent(SubagentState {
                     id: subagent_id,
                     task,
@@ -692,6 +696,9 @@ impl AppState {
                     done: false,
                     success: false,
                     iterations: 0,
+                    turn_index: 0,
+                    current_activity: "⏳ starting...".to_string(),
+                    activity_log: vec!["⏳ starting...".to_string()],
                 });
                 if let Some(s) = &mut self.streaming {
                     s.blocks.push(block);
@@ -703,9 +710,21 @@ impl AppState {
                 }
                 self.mark_dirty();
             }
-            AgentEvent::SubagentTurnStart { .. } => {}
+            AgentEvent::SubagentTurnStart { subagent_id, turn_index } => {
+                self.update_subagent_activity(&subagent_id, Some(turn_index), "💭 thinking...".to_string());
+                self.mark_dirty();
+            }
             AgentEvent::SubagentMessageUpdate { subagent_id, delta } => {
-                // Find the subagent block and append to its children
+                match &delta {
+                    MessageDelta::Thinking(t) => {
+                        let preview = truncate_activity(t, 60);
+                        self.update_subagent_activity(&subagent_id, None, format!("💭 {}", preview));
+                    }
+                    MessageDelta::Text(t) => {
+                        let preview = truncate_activity(t, 60);
+                        self.update_subagent_activity(&subagent_id, None, format!("📝 {}", preview));
+                    }
+                }
                 self.append_subagent_child(&subagent_id, &delta);
                 self.mark_dirty();
             }
@@ -715,6 +734,7 @@ impl AppState {
                 args,
                 ..
             } => {
+                self.update_subagent_activity(&subagent_id, None, format!("🔧 {}", tool_name));
                 self.append_subagent_child_block(
                     &subagent_id,
                     TurnBlock::Tool {
@@ -732,6 +752,8 @@ impl AppState {
                 is_error,
                 ..
             } => {
+                let status = if is_error { "✗" } else { "✓" };
+                self.update_subagent_activity(&subagent_id, None, format!("🔧 {} {}", status, tool_name));
                 self.update_subagent_tool_result(&subagent_id, &tool_name, result, is_error);
                 self.mark_dirty();
             }
@@ -860,6 +882,11 @@ impl AppState {
     }
 
     fn finalize_subagent(&mut self, id: &str, success: bool, iterations: usize) {
+        let activity = if success {
+            format!("✓ done ({} iters)", iterations)
+        } else {
+            format!("✗ incomplete ({} iters)", iterations)
+        };
         let finalizer = |blocks: &mut Vec<TurnBlock>| {
             for b in blocks {
                 if let TurnBlock::Subagent(sa) = b {
@@ -867,6 +894,12 @@ impl AppState {
                         sa.done = true;
                         sa.success = success;
                         sa.iterations = iterations;
+                        sa.current_activity = activity.clone();
+                        if sa.activity_log.len() >= 20 {
+                            let drain = sa.activity_log.len() - 19;
+                            sa.activity_log.drain(..drain);
+                        }
+                        sa.activity_log.push(activity.clone());
                         return;
                     }
                 }
@@ -878,6 +911,45 @@ impl AppState {
         for entry in &mut self.entries {
             if let Entry::Turn { blocks, .. } = entry {
                 finalizer(blocks);
+            }
+        }
+    }
+
+    fn update_subagent_activity(&mut self, id: &str, turn_index: Option<usize>, activity: String) {
+        const MAX_LOG: usize = 20;
+        let updater = |blocks: &mut Vec<TurnBlock>| {
+            for b in blocks {
+                if let TurnBlock::Subagent(sa) = b {
+                    if sa.id == id {
+                        sa.current_activity = activity.clone();
+                        let prefix = activity.chars().take_while(|c| !c.is_whitespace()).collect::<String>();
+                        if let Some(last) = sa.activity_log.last() {
+                            let last_prefix = last.chars().take_while(|c| !c.is_whitespace()).collect::<String>();
+                            if prefix == last_prefix && (prefix == "💭" || prefix == "📝") {
+                                *sa.activity_log.last_mut().unwrap() = activity.clone();
+                            } else {
+                                sa.activity_log.push(activity.clone());
+                            }
+                        } else {
+                            sa.activity_log.push(activity.clone());
+                        }
+                        while sa.activity_log.len() > MAX_LOG {
+                            sa.activity_log.remove(0);
+                        }
+                        if let Some(ti) = turn_index {
+                            sa.turn_index = ti;
+                        }
+                        return;
+                    }
+                }
+            }
+        };
+        if let Some(s) = &mut self.streaming {
+            updater(&mut s.blocks);
+        }
+        for entry in &mut self.entries {
+            if let Entry::Turn { blocks, .. } = entry {
+                updater(blocks);
             }
         }
     }
@@ -922,6 +994,9 @@ pub struct SubagentState {
     pub done: bool,
     pub success: bool,
     pub iterations: usize,
+    pub current_activity: String,
+    pub activity_log: Vec<String>,
+    pub turn_index: usize,
 }
 
 #[derive(Clone)]
@@ -933,6 +1008,16 @@ pub struct Streaming {
 struct PendingToolCall {
     name: String,
     args: String,
+}
+
+fn truncate_activity(s: &str, max_chars: usize) -> String {
+    let cleaned: String = s.chars().filter(|c| !c.is_control()).collect();
+    if cleaned.len() <= max_chars {
+        cleaned
+    } else {
+        let truncated: String = cleaned.chars().take(max_chars).collect();
+        format!("{}…", truncated)
+    }
 }
 
 // ── TUI Command definitions ─────────────────────────────────────────

@@ -194,8 +194,9 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
             return Ok("No tasks to execute.".to_string());
         }
 
-        // Spawn all subagents concurrently
-        let mut handles = Vec::new();
+        // Emit SubagentStart events immediately so TUI shows all boxes
+        // before any subagent actually begins work.
+        let mut task_infos: Vec<(String, String, Vec<String>, usize)> = Vec::new();
         for task_spec in tasks {
             let id = task_spec["id"].as_str().unwrap_or("unknown").to_string();
             let task = task_spec["task"].as_str().unwrap_or("").to_string();
@@ -209,6 +210,19 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                 .unwrap_or_default();
             let max_iterations = task_spec["max_iterations"].as_u64().map(|v| v as usize).unwrap_or(usize::MAX);
 
+            if let Some(ref tx) = event_sender {
+                let _ = tx.send(crate::types::AgentEvent::SubagentStart {
+                    subagent_id: id.clone(),
+                    task: task.clone(),
+                });
+            }
+
+            task_infos.push((id, task, tools, max_iterations));
+        }
+
+        // Now spawn all subagents concurrently
+        let mut handles = Vec::new();
+        for (id, task, tools, max_iterations) in task_infos {
             let model_config = self.model_config.clone();
             let available_tools = if tools.is_empty() {
                 self.available_tools.clone()
@@ -217,11 +231,9 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
             };
 
             let mgr_clone = self.session_mgr.clone();
-            // Clone event_sender for each concurrent subagent
             let sub_sender = event_sender.clone();
 
             handles.push(tokio::spawn(async move {
-                // Build args for spawn_single
                 let args = serde_json::json!({
                     "id": id.clone(),
                     "task": task,
@@ -229,9 +241,10 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                     "max_iterations": max_iterations,
                 });
 
+                // spawn_single will emit its own SubagentStart again;
+                // the TUI deduplicates by id so the second one is a no-op.
                 let result = spawn_single(&args, &model_config, &available_tools, sub_sender).await;
 
-                // Save subagent session
                 if let Some(ref mgr) = mgr_clone {
                     if let Ok(mgr) = mgr.lock() {
                         if let Ok((ref sub_result, _)) = result {

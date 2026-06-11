@@ -780,7 +780,6 @@ fn render_subagent_block(
     width: usize,
     pad: &str,
 ) {
-    // Account for pad + "  " left + "  " right = pad.width() + 4
     let inner_width = width.saturating_sub(4 + pad.width());
     let bg = Style::default().bg(CODE_BG);
     let label_style = Style::default()
@@ -789,14 +788,15 @@ fn render_subagent_block(
         .add_modifier(Modifier::BOLD);
     let border_fg = Color::Rgb(92, 99, 112);
 
-    // Top padding + separator
-    let top_sep = "─".repeat(inner_width.min(40));
+    // ── Top padding ──
     let top_fill = width.saturating_sub(pad.width());
     lines.push(Line::from(vec![
         Span::raw(pad.to_string()),
         Span::styled(" ".repeat(top_fill), bg),
     ]));
 
+    // ── Top separator ──
+    let top_sep = "─".repeat(inner_width.min(40));
     let top_fill2 = inner_width.saturating_sub(top_sep.width());
     lines.push(Line::from(vec![
         Span::raw(pad.to_string()),
@@ -806,66 +806,101 @@ fn render_subagent_block(
         Span::styled("  ", bg),
     ]));
 
-    // Label line
-    let label = format!("⚡  subagent: {}  ", sa.id);
-    let label_fill = " ".repeat(inner_width.saturating_sub(label.width()));
+    // ── Label + status badge (single line) ──
+    let label_text = format!("⚡ {}", sa.id);
+    let badge = if sa.done {
+        if sa.success {
+            ("✓", SUCCESS_COLOR)
+        } else {
+            ("✗", ERROR_COLOR)
+        }
+    } else if sa.turn_index > 0 {
+        ("⏳", Color::Rgb(229, 192, 123))
+    } else {
+        ("⏳", Color::DarkGray)
+    };
+    let badge_text = if sa.done {
+        if sa.success {
+            format!("{} done ({}i)", badge.0, sa.iterations)
+        } else {
+            format!("{} fail ({}i)", badge.0, sa.iterations)
+        }
+    } else if sa.turn_index > 0 {
+        format!("{} turn {}", badge.0, sa.turn_index + 1)
+    } else {
+        format!("{} starting", badge.0)
+    };
+    let badge_width_est = badge_text.width();
+    let gap = inner_width.saturating_sub(label_text.width()).saturating_sub(badge_width_est);
+    let label_line = format!("{}{}{}", label_text, " ".repeat(gap), badge_text);
+    let label_fill = " ".repeat(inner_width.saturating_sub(label_line.width()));
     lines.push(Line::from(vec![
         Span::raw(pad.to_string()),
         Span::styled("  ", bg),
-        Span::styled(label, label_style),
+        Span::styled(label_text, label_style),
+        Span::styled(" ".repeat(gap), bg),
+        Span::styled(badge_text, Style::default().fg(badge.1).bg(CODE_BG).add_modifier(Modifier::BOLD)),
         Span::styled(label_fill, bg),
         Span::styled("  ", bg),
     ]));
 
-    // Separator
-    let sep = "─".repeat(inner_width.min(40));
-    let sep_fill = " ".repeat(inner_width.saturating_sub(sep.width()));
+    // ── Task line ──
+    let task_label = "Task: ";
+    let task_trunc = truncate_str_w(&sa.task, inner_width.saturating_sub(task_label.width()));
+    let task_fill = " ".repeat(inner_width.saturating_sub(task_label.width() + task_trunc.width()));
     lines.push(Line::from(vec![
         Span::raw(pad.to_string()),
         Span::styled("  ", bg),
-        Span::styled(sep, Style::default().fg(border_fg).bg(CODE_BG)),
-        Span::styled(sep_fill, bg),
-        Span::styled("  ", bg),
-    ]));
-
-    // Task line
-    let task_str = truncate_str_w(&sa.task, inner_width);
-    let task_fill = " ".repeat(inner_width.saturating_sub(task_str.width()));
-    lines.push(Line::from(vec![
-        Span::raw(pad.to_string()),
-        Span::styled("  ", bg),
-        Span::styled(task_str, Style::default().fg(Color::DarkGray).bg(CODE_BG)),
+        Span::styled(task_label, Style::default().fg(Color::DarkGray).bg(CODE_BG)),
+        Span::styled(task_trunc, Style::default().fg(Color::DarkGray).bg(CODE_BG)),
         Span::styled(task_fill, bg),
         Span::styled("  ", bg),
     ]));
 
-    // Status line
-    let (status_icon, status_text) = if sa.done {
-        if sa.success {
-            ("✓", format!("done ({} iters)", sa.iterations))
+    // ── Activity lines (live, dynamically updated) ──
+    const MAX_ACTIVITY_LINES: usize = 5;
+    let log = &sa.activity_log;
+    let show_from = log.len().saturating_sub(MAX_ACTIVITY_LINES);
+    let visible = &log[show_from..];
+    let is_last = |idx: usize| idx + show_from + 1 == log.len();
+    for (i, entry) in visible.iter().enumerate() {
+        let act_str = truncate_str_w(entry, inner_width);
+        let base_color = if sa.done {
+            if sa.success { SUCCESS_COLOR } else { ERROR_COLOR }
+        } else if entry.starts_with("🔧") {
+            TOOL_COLOR
+        } else if entry.starts_with("💭") {
+            Color::Rgb(180, 180, 200)
+        } else if entry.starts_with("📝") {
+            Color::Rgb(160, 200, 160)
         } else {
-            ("✗", format!("incomplete ({} iters)", sa.iterations))
-        }
-    } else {
-        ("⏳", "running...".to_string())
-    };
-    let status_color = if sa.done {
-        if sa.success { SUCCESS_COLOR } else { ERROR_COLOR }
-    } else {
-        Color::Rgb(229, 192, 123)
-    };
-    let status_full = format!("{} {}", status_icon, status_text);
-    let status_str = truncate_str_w(&status_full, inner_width);
-    let status_fill = " ".repeat(inner_width.saturating_sub(status_str.width()));
-    lines.push(Line::from(vec![
-        Span::raw(pad.to_string()),
-        Span::styled("  ", bg),
-        Span::styled(status_str, Style::default().fg(status_color).bg(CODE_BG).add_modifier(Modifier::BOLD)),
-        Span::styled(status_fill, bg),
-        Span::styled("  ", bg),
-    ]));
+            Color::Rgb(229, 192, 123)
+        };
+        let fg = if !is_last(i) && !sa.done {
+            Color::DarkGray
+        } else {
+            base_color
+        };
+        let act_fill = " ".repeat(inner_width.saturating_sub(act_str.width()));
+        lines.push(Line::from(vec![
+            Span::raw(pad.to_string()),
+            Span::styled("  ", bg),
+            Span::styled(act_str, Style::default().fg(fg).bg(CODE_BG)),
+            Span::styled(act_fill, bg),
+            Span::styled("  ", bg),
+        ]));
+    }
+    for _ in visible.len()..MAX_ACTIVITY_LINES {
+        let empty_fill = " ".repeat(inner_width);
+        lines.push(Line::from(vec![
+            Span::raw(pad.to_string()),
+            Span::styled("  ", bg),
+            Span::styled(empty_fill, bg),
+            Span::styled("  ", bg),
+        ]));
+    }
 
-    // [Click] details — on its own line at the bottom
+    // ── [Click] details ──
     let hint = "[Click] details";
     let hint_fill = " ".repeat(inner_width.saturating_sub(hint.width()));
     lines.push(Line::from(vec![
@@ -876,7 +911,7 @@ fn render_subagent_block(
         Span::styled("  ", bg),
     ]));
 
-    // Bottom separator
+    // ── Bottom separator ──
     let bot_sep = "─".repeat(inner_width.min(40));
     let bot_fill = inner_width.saturating_sub(bot_sep.width());
     lines.push(Line::from(vec![
@@ -887,7 +922,7 @@ fn render_subagent_block(
         Span::styled("  ", bg),
     ]));
 
-    // Bottom padding
+    // ── Bottom padding ──
     let bot_fill2 = width.saturating_sub(pad.width());
     lines.push(Line::from(vec![
         Span::raw(pad.to_string()),

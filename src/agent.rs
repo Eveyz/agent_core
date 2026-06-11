@@ -803,11 +803,23 @@ impl Agent {
         // Create event channel for tools that emit structured events (e.g. subagent).
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
 
-        let result = tool
-            .execute_with_stream(args, Some(on_update), Some(event_tx))
-            .await;
+        // Forward tool-internal events to the main event stream in real
+        // time so the TUI can render them as they happen.  We run the
+        // tool execution and event forwarding concurrently so events
+        // arrive while the tool is still executing.
+        let tool_fut = tool.execute_with_stream(args, Some(on_update), Some(event_tx));
+        let drain_fut = async {
+            while let Some(event) = event_rx.recv().await {
+                on_event(event);
+            }
+        };
 
-        // Drain all events emitted by the tool via the channel
+        // Run both futures concurrently.  When the tool finishes, all
+        // senders are dropped, causing recv() to return None which
+        // ends the drain loop.
+        let (result, _) = tokio::join!(tool_fut, drain_fut);
+
+        // Drain any remaining events.
         while let Ok(event) = event_rx.try_recv() {
             on_event(event);
         }
