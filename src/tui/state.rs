@@ -245,6 +245,9 @@ pub struct AppState {
     pub content_version: u64,
     /// Whether the cache is stale and needs rebuilding before next draw.
     pub cache_dirty: bool,
+    pub force_cache_rebuild: bool,
+    /// Cloned from Agent — allows abort without locking the agent mutex.
+    pub abort_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl AppState {
@@ -280,6 +283,8 @@ impl AppState {
             cache: CachedConversation::new(),
             content_version: 0,
             cache_dirty: true,
+            force_cache_rebuild: false,
+            abort_flag: None,
         }
     }
 
@@ -310,6 +315,12 @@ impl AppState {
     pub fn mark_dirty(&mut self) {
         self.content_version = self.content_version.wrapping_add(1);
         self.cache_dirty = true;
+    }
+
+    pub fn mark_dirty_force(&mut self) {
+        self.content_version = self.content_version.wrapping_add(1);
+        self.cache_dirty = true;
+        self.force_cache_rebuild = true;
     }
 
     /// Push the submitted text into input history (deduped, newest last).
@@ -697,8 +708,9 @@ impl AppState {
                     success: false,
                     iterations: 0,
                     turn_index: 0,
-                    current_activity: "⏳ starting...".to_string(),
-                    activity_log: vec!["⏳ starting...".to_string()],
+                    current_activity: String::new(),
+                    started_at: Some(std::time::Instant::now()),
+                    elapsed_ms: 0,
                 });
                 if let Some(s) = &mut self.streaming {
                     s.blocks.push(block);
@@ -711,19 +723,16 @@ impl AppState {
                 self.mark_dirty();
             }
             AgentEvent::SubagentTurnStart { subagent_id, turn_index } => {
-                self.update_subagent_activity(&subagent_id, Some(turn_index), "💭 thinking...".to_string());
-                self.mark_dirty();
+                self.update_subagent_activity(&subagent_id, Some(turn_index), "💭 Thinking...".to_string());
+                self.mark_dirty_force();
             }
             AgentEvent::SubagentMessageUpdate { subagent_id, delta } => {
                 match &delta {
-                    MessageDelta::Thinking(t) => {
-                        let preview = truncate_activity(t, 60);
-                        self.update_subagent_activity(&subagent_id, None, format!("💭 {}", preview));
+                    MessageDelta::Thinking(_) => {
+                        self.update_subagent_activity(&subagent_id, None, "💭 Thinking...".to_string());
+                        self.mark_dirty_force();
                     }
-                    MessageDelta::Text(t) => {
-                        let preview = truncate_activity(t, 60);
-                        self.update_subagent_activity(&subagent_id, None, format!("📝 {}", preview));
-                    }
+                    MessageDelta::Text(_) => {}
                 }
                 self.append_subagent_child(&subagent_id, &delta);
                 self.mark_dirty();
@@ -734,7 +743,14 @@ impl AppState {
                 args,
                 ..
             } => {
-                self.update_subagent_activity(&subagent_id, None, format!("🔧 {}", tool_name));
+                let detail = tool_detail(&tool_name, &args);
+                let activity = if detail.is_empty() {
+                    format!("🔧 {}", tool_name)
+                } else {
+                    format!("🔧 {} → {}", tool_name, detail)
+                };
+                self.update_subagent_activity(&subagent_id, None, activity);
+                self.mark_dirty_force();
                 self.append_subagent_child_block(
                     &subagent_id,
                     TurnBlock::Tool {
@@ -752,8 +768,15 @@ impl AppState {
                 is_error,
                 ..
             } => {
-                let status = if is_error { "✗" } else { "✓" };
-                self.update_subagent_activity(&subagent_id, None, format!("🔧 {} {}", status, tool_name));
+                let detail = tool_detail(&tool_name, &serde_json::from_str(&result).unwrap_or_default());
+                let icon = if is_error { "✗" } else { "✓" };
+                let activity = if detail.is_empty() {
+                    format!("🔧 {} {}", icon, tool_name)
+                } else {
+                    format!("🔧 {} {} → {}", icon, tool_name, detail)
+                };
+                self.update_subagent_activity(&subagent_id, None, activity);
+                self.mark_dirty_force();
                 self.update_subagent_tool_result(&subagent_id, &tool_name, result, is_error);
                 self.mark_dirty();
             }
@@ -763,7 +786,7 @@ impl AppState {
                 iterations_used,
             } => {
                 self.finalize_subagent(&subagent_id, success, iterations_used);
-                self.mark_dirty();
+                self.mark_dirty_force();
             }
         }
     }
@@ -882,24 +905,19 @@ impl AppState {
     }
 
     fn finalize_subagent(&mut self, id: &str, success: bool, iterations: usize) {
-        let activity = if success {
-            format!("✓ done ({} iters)", iterations)
-        } else {
-            format!("✗ incomplete ({} iters)", iterations)
-        };
+        let label = if success { "complete" } else { "incomplete" };
         let finalizer = |blocks: &mut Vec<TurnBlock>| {
             for b in blocks {
                 if let TurnBlock::Subagent(sa) = b {
                     if sa.id == id {
+                        let elapsed = sa.started_at
+                            .map(|t| t.elapsed().as_millis() as u64)
+                            .unwrap_or(0);
                         sa.done = true;
                         sa.success = success;
                         sa.iterations = iterations;
-                        sa.current_activity = activity.clone();
-                        if sa.activity_log.len() >= 20 {
-                            let drain = sa.activity_log.len() - 19;
-                            sa.activity_log.drain(..drain);
-                        }
-                        sa.activity_log.push(activity.clone());
+                        sa.elapsed_ms = elapsed;
+                        sa.current_activity = format_elapsed_activity(label, iterations, elapsed);
                         return;
                     }
                 }
@@ -916,26 +934,11 @@ impl AppState {
     }
 
     fn update_subagent_activity(&mut self, id: &str, turn_index: Option<usize>, activity: String) {
-        const MAX_LOG: usize = 20;
         let updater = |blocks: &mut Vec<TurnBlock>| {
             for b in blocks {
                 if let TurnBlock::Subagent(sa) = b {
                     if sa.id == id {
                         sa.current_activity = activity.clone();
-                        let prefix = activity.chars().take_while(|c| !c.is_whitespace()).collect::<String>();
-                        if let Some(last) = sa.activity_log.last() {
-                            let last_prefix = last.chars().take_while(|c| !c.is_whitespace()).collect::<String>();
-                            if prefix == last_prefix && (prefix == "💭" || prefix == "📝") {
-                                *sa.activity_log.last_mut().unwrap() = activity.clone();
-                            } else {
-                                sa.activity_log.push(activity.clone());
-                            }
-                        } else {
-                            sa.activity_log.push(activity.clone());
-                        }
-                        while sa.activity_log.len() > MAX_LOG {
-                            sa.activity_log.remove(0);
-                        }
                         if let Some(ti) = turn_index {
                             sa.turn_index = ti;
                         }
@@ -987,6 +990,7 @@ pub struct ToolResult {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct SubagentState {
     pub id: String,
     pub task: String,
@@ -995,7 +999,8 @@ pub struct SubagentState {
     pub success: bool,
     pub iterations: usize,
     pub current_activity: String,
-    pub activity_log: Vec<String>,
+    pub started_at: Option<std::time::Instant>,
+    pub elapsed_ms: u64,
     pub turn_index: usize,
 }
 
@@ -1017,6 +1022,46 @@ fn truncate_activity(s: &str, max_chars: usize) -> String {
     } else {
         let truncated: String = cleaned.chars().take(max_chars).collect();
         format!("{}…", truncated)
+    }
+}
+
+fn tool_detail(tool_name: &str, args: &serde_json::Value) -> String {
+    let s = |v: &serde_json::Value| v.as_str().unwrap_or("").to_string();
+    let first_non_empty = |a: &str, b: &str| -> String {
+        if a.is_empty() { b.to_string() } else { a.to_string() }
+    };
+    match tool_name {
+        "webfetch" => s(&args["url"]),
+        "run_command" | "bash" => {
+            let cmd = first_non_empty(&s(&args["command"]), &s(&args["script"]));
+            truncate_activity(&cmd, 50)
+        }
+        "read_file" => first_non_empty(&s(&args["path"]), &s(&args["file_path"])),
+        "write_file" => first_non_empty(&s(&args["path"]), &s(&args["file_path"])),
+        "edit" => first_non_empty(&s(&args["file_path"]), &s(&args["path"])),
+        "glob" => s(&args["pattern"]),
+        "grep" => {
+            let pat = s(&args["pattern"]);
+            let path = s(&args["path"]);
+            if path.is_empty() { pat } else { format!("{} in {}", pat, path) }
+        }
+        "subagent_spawn" | "subagent_spawn_all" => String::new(),
+        _ => String::new(),
+    }
+}
+
+fn format_elapsed_activity(label: &str, iterations: usize, elapsed_ms: u64) -> String {
+    let time = if elapsed_ms >= 60_000 {
+        format!("{:.1}m", elapsed_ms as f64 / 60_000.0)
+    } else if elapsed_ms >= 1_000 {
+        format!("{:.1}s", elapsed_ms as f64 / 1_000.0)
+    } else {
+        format!("{}ms", elapsed_ms)
+    };
+    if label == "complete" {
+        format!("✓ complete ({} iter) {}", iterations, time)
+    } else {
+        format!("✗ incomplete ({} iter) {}", iterations, time)
     }
 }
 

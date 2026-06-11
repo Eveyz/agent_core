@@ -32,7 +32,7 @@ const WARN_COLOR: Color = Color::Rgb(229, 192, 123);
 
 /// Minimum time between cache rebuilds during streaming (milliseconds).
 /// Prevents every single token from triggering a full markdown+syntect reparse.
-const STREAMING_REBUILD_THROTTLE: Duration = Duration::from_millis(80);
+const STREAMING_REBUILD_THROTTLE: Duration = Duration::from_millis(50);
 
 // ── Syntect globals (loaded once) ────────────────────────────────────
 
@@ -257,14 +257,15 @@ fn render_conversation(frame: &mut Frame, state: &mut AppState, area: Rect) {
     // from triggering a full markdown+syntect reparse.
     let needs_rebuild = state.cache_dirty || state.cache.width != width;
     if needs_rebuild {
-        let should_rebuild_now = if state.agent_running {
-            // Throttle during streaming
+        let should_rebuild_now = if state.force_cache_rebuild {
+            state.force_cache_rebuild = false;
+            true
+        } else if state.agent_running {
             match state.cache.last_rebuild {
                 Some(last) => Instant::now().duration_since(last) >= STREAMING_REBUILD_THROTTLE,
                 None => true,
             }
         } else {
-            // No throttle when idle — always rebuild immediately
             true
         };
 
@@ -782,10 +783,6 @@ fn render_subagent_block(
 ) {
     let inner_width = width.saturating_sub(4 + pad.width());
     let bg = Style::default().bg(CODE_BG);
-    let label_style = Style::default()
-        .fg(SUBAGENT_COLOR)
-        .bg(CODE_BG)
-        .add_modifier(Modifier::BOLD);
     let border_fg = Color::Rgb(92, 99, 112);
 
     // ── Top padding ──
@@ -806,99 +803,59 @@ fn render_subagent_block(
         Span::styled("  ", bg),
     ]));
 
-    // ── Label + status badge (single line) ──
-    let label_text = format!("⚡ {}", sa.id);
-    let badge = if sa.done {
-        if sa.success {
-            ("✓", SUCCESS_COLOR)
-        } else {
-            ("✗", ERROR_COLOR)
-        }
-    } else if sa.turn_index > 0 {
-        ("⏳", Color::Rgb(229, 192, 123))
+    // ── Label line ──
+    let elapsed_str = if sa.done {
+        Some(format_duration(sa.elapsed_ms))
     } else {
-        ("⏳", Color::DarkGray)
+        sa.started_at.map(|t| format_duration(t.elapsed().as_millis() as u64))
     };
-    let badge_text = if sa.done {
-        if sa.success {
-            format!("{} done ({}i)", badge.0, sa.iterations)
-        } else {
-            format!("{} fail ({}i)", badge.0, sa.iterations)
+    let label_text = if sa.done {
+        let tag = if sa.success { "✓ complete" } else { "✗ incomplete" };
+        match &elapsed_str {
+            Some(e) => format!("⚡ Subagent: {} ({} {} iter {})", sa.id, tag, sa.iterations, e),
+            None => format!("⚡ Subagent: {} ({} {} iter)", sa.id, tag, sa.iterations),
         }
-    } else if sa.turn_index > 0 {
-        format!("{} turn {}", badge.0, sa.turn_index + 1)
     } else {
-        format!("{} starting", badge.0)
+        match &elapsed_str {
+            Some(e) => format!("⚡ Subagent: {} (Working... {})", sa.id, e),
+            None => format!("⚡ Subagent: {} (Starting...)", sa.id),
+        }
     };
-    let badge_width_est = badge_text.width();
-    let gap = inner_width.saturating_sub(label_text.width()).saturating_sub(badge_width_est);
-    let label_line = format!("{}{}{}", label_text, " ".repeat(gap), badge_text);
-    let label_fill = " ".repeat(inner_width.saturating_sub(label_line.width()));
+    let label_color = if sa.done {
+        if sa.success { SUCCESS_COLOR } else { ERROR_COLOR }
+    } else if sa.turn_index > 0 {
+        Color::Rgb(229, 192, 123)
+    } else {
+        Color::DarkGray
+    };
+    let label_fill = " ".repeat(inner_width.saturating_sub(label_text.width()));
     lines.push(Line::from(vec![
         Span::raw(pad.to_string()),
         Span::styled("  ", bg),
-        Span::styled(label_text, label_style),
-        Span::styled(" ".repeat(gap), bg),
-        Span::styled(badge_text, Style::default().fg(badge.1).bg(CODE_BG).add_modifier(Modifier::BOLD)),
+        Span::styled(label_text, Style::default().fg(label_color).bg(CODE_BG).add_modifier(Modifier::BOLD)),
         Span::styled(label_fill, bg),
         Span::styled("  ", bg),
     ]));
 
-    // ── Task line ──
-    let task_label = "Task: ";
-    let task_trunc = truncate_str_w(&sa.task, inner_width.saturating_sub(task_label.width()));
-    let task_fill = " ".repeat(inner_width.saturating_sub(task_label.width() + task_trunc.width()));
+    // ── Activity line ──
+    let act_str = truncate_str_w(&sa.current_activity, inner_width);
+    let act_color = if sa.done {
+        if sa.success { SUCCESS_COLOR } else { ERROR_COLOR }
+    } else if sa.current_activity.starts_with("🔧") {
+        TOOL_COLOR
+    } else if sa.current_activity.starts_with("💭") {
+        Color::Rgb(180, 180, 200)
+    } else {
+        Color::DarkGray
+    };
+    let act_fill = " ".repeat(inner_width.saturating_sub(act_str.width()));
     lines.push(Line::from(vec![
         Span::raw(pad.to_string()),
         Span::styled("  ", bg),
-        Span::styled(task_label, Style::default().fg(Color::DarkGray).bg(CODE_BG)),
-        Span::styled(task_trunc, Style::default().fg(Color::DarkGray).bg(CODE_BG)),
-        Span::styled(task_fill, bg),
+        Span::styled(act_str, Style::default().fg(act_color).bg(CODE_BG)),
+        Span::styled(act_fill, bg),
         Span::styled("  ", bg),
     ]));
-
-    // ── Activity lines (live, dynamically updated) ──
-    const MAX_ACTIVITY_LINES: usize = 5;
-    let log = &sa.activity_log;
-    let show_from = log.len().saturating_sub(MAX_ACTIVITY_LINES);
-    let visible = &log[show_from..];
-    let is_last = |idx: usize| idx + show_from + 1 == log.len();
-    for (i, entry) in visible.iter().enumerate() {
-        let act_str = truncate_str_w(entry, inner_width);
-        let base_color = if sa.done {
-            if sa.success { SUCCESS_COLOR } else { ERROR_COLOR }
-        } else if entry.starts_with("🔧") {
-            TOOL_COLOR
-        } else if entry.starts_with("💭") {
-            Color::Rgb(180, 180, 200)
-        } else if entry.starts_with("📝") {
-            Color::Rgb(160, 200, 160)
-        } else {
-            Color::Rgb(229, 192, 123)
-        };
-        let fg = if !is_last(i) && !sa.done {
-            Color::DarkGray
-        } else {
-            base_color
-        };
-        let act_fill = " ".repeat(inner_width.saturating_sub(act_str.width()));
-        lines.push(Line::from(vec![
-            Span::raw(pad.to_string()),
-            Span::styled("  ", bg),
-            Span::styled(act_str, Style::default().fg(fg).bg(CODE_BG)),
-            Span::styled(act_fill, bg),
-            Span::styled("  ", bg),
-        ]));
-    }
-    for _ in visible.len()..MAX_ACTIVITY_LINES {
-        let empty_fill = " ".repeat(inner_width);
-        lines.push(Line::from(vec![
-            Span::raw(pad.to_string()),
-            Span::styled("  ", bg),
-            Span::styled(empty_fill, bg),
-            Span::styled("  ", bg),
-        ]));
-    }
 
     // ── [Click] details ──
     let hint = "[Click] details";
@@ -928,6 +885,16 @@ fn render_subagent_block(
         Span::raw(pad.to_string()),
         Span::styled(" ".repeat(bot_fill2), bg),
     ]));
+}
+
+fn format_duration(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{}ms", ms)
+    } else if ms < 60_000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        format!("{}m{}s", ms / 60_000, (ms % 60_000) / 1000)
+    }
 }
 
 // ── Subagent detail view ────────────────────────────────────────────
@@ -973,10 +940,11 @@ fn render_subagent_detail(frame: &mut Frame, state: &mut AppState, area: Rect) {
 
         // Status at the bottom
         if sa.done {
+            let elapsed = format_duration(sa.elapsed_ms);
             let (icon, text, color) = if sa.success {
-                ("✓", format!("Completed ({} iterations)", sa.iterations), SUCCESS_COLOR)
+                ("✓", format!("Completed ({} iterations) {}", sa.iterations, elapsed), SUCCESS_COLOR)
             } else {
-                ("✗", format!("Incomplete ({} iterations)", sa.iterations), ERROR_COLOR)
+                ("✗", format!("Incomplete ({} iterations) {}", sa.iterations, elapsed), ERROR_COLOR)
             };
             lines.push(Line::raw(""));
             lines.push(Line::from(vec![

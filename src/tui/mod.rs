@@ -46,6 +46,7 @@ async fn run_app(
         state.model = a.current_model().to_string();
         state.tool_mode = format!("{:?}", a.tool_execution_mode());
         state.pending_approvals = Some(a.pending_approvals_clone());
+        state.abort_flag = Some(a.abort_flag.clone());
     }
     let mut pump = EventPump::new();
     let mut last_draw = Instant::now();
@@ -104,8 +105,9 @@ async fn run_app(
             } else if cmd == "show_model_form" {
                 state.open_model_form();
             } else if cmd == "abort" {
-                let a = agent.lock().await;
-                a.abort_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                if let Some(ref flag) = state.abort_flag {
+                    flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
             } else {
                 let notice = process_command(&mut state, &agent, &cmd).await;
                 if let Some(msg) = notice {
