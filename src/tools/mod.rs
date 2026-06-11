@@ -9,6 +9,7 @@ pub mod recall_memory;
 pub mod run_command;
 pub mod skill;
 pub mod subagent;
+pub mod tavily_search;
 pub mod todo;
 pub mod webfetch;
 pub mod write_file;
@@ -81,6 +82,9 @@ impl ToolRegistry {
         registry.register(Box::new(glob::GlobTool));
         registry.register(Box::new(run_command::RunCommandTool));
         registry.register(Box::new(webfetch::WebFetchTool));
+        if let Some(tool) = tavily_search::TavilySearchTool::from_env() {
+            registry.register(Box::new(tool));
+        }
         registry.register(Box::new(git::GitStatusTool));
         registry.register(Box::new(git::GitDiffTool));
         registry.register(Box::new(git::GitLogTool));
@@ -249,6 +253,8 @@ pub fn build_tool_by_name(name: &str) -> Option<Box<dyn Tool>> {
         "glob" => Some(Box::new(glob::GlobTool)),
         "run_command" => Some(Box::new(run_command::RunCommandTool)),
         "webfetch" => Some(Box::new(webfetch::WebFetchTool)),
+        "tavily_search" => tavily_search::TavilySearchTool::from_env()
+            .map(|t| Box::new(t) as Box<dyn Tool>),
         "git_status" => Some(Box::new(git::GitStatusTool)),
         "git_diff" => Some(Box::new(git::GitDiffTool)),
         "git_log" => Some(Box::new(git::GitLogTool)),

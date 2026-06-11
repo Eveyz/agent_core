@@ -47,18 +47,18 @@ agent_core/
 
 ## Key Features
 
-| Feature | Description |
-|---------|-------------|
-| **ReAct Loop** | Think → Act → Observe cycle with streaming |
-| **7-Segment Context** | Semantic context assembly with token budgets |
-| **5-Stage Compression** | Snip→Dedup→Chunk→LLM Summary→Gradient |
-| **6-Layer Permissions** | Blacklist→Whitelist→Config→Builtin→Yolo |
-| **Ebbinghaus Memory** | Forgetting curve + access reinforcement |
-| **MCP Client** | stdio + SSE transport, auto tool discovery |
-| **Skill Auto-Trigger** | Match user messages → load skill context |
-| **Subagent Routing** | Heuristic decision: inline vs spawn vs concurrent |
-| **Session Persistence** | Save/resume/list/search conversations |
-| **Task DAG** | Dependencies, parallel execution, auto-unblock |
+| Feature                 | Description                                       |
+| ----------------------- | ------------------------------------------------- |
+| **ReAct Loop**          | Think → Act → Observe cycle with streaming        |
+| **7-Segment Context**   | Semantic context assembly with token budgets      |
+| **5-Stage Compression** | Snip→Dedup→Chunk→LLM Summary→Gradient             |
+| **6-Layer Permissions** | Blacklist→Whitelist→Config→Builtin→Yolo           |
+| **Ebbinghaus Memory**   | Forgetting curve + access reinforcement           |
+| **MCP Client**          | stdio + SSE transport, auto tool discovery        |
+| **Skill Auto-Trigger**  | Match user messages → load skill context          |
+| **Subagent Routing**    | Heuristic decision: inline vs spawn vs concurrent |
+| **Session Persistence** | Save/resume/list/search conversations             |
+| **Task DAG**            | Dependencies, parallel execution, auto-unblock    |
 
 ## Configuration
 
@@ -99,6 +99,10 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
 ## Testing
 
 ```bash
+
+export TAVILY_API_KEY=tvly-xxxxxxxx
+cargo run
+
 # Unit tests (190+ tests)
 cargo test
 

@@ -4,6 +4,14 @@ use serde_json::{Value, json};
 
 use super::Tool;
 
+const USER_AGENTS: &[&str] = &[
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0",
+];
+
 pub struct WebFetchTool;
 
 #[async_trait]
@@ -13,8 +21,9 @@ impl Tool for WebFetchTool {
     }
 
     fn description(&self) -> &str {
-        "Fetch content from a URL on the web. Takes a URL and returns the page content. \
-         Use when you need to retrieve and analyze web content."
+        "Fetch and extract readable content from a web page. \
+Returns clean Markdown text with navigation, ads, and scripts removed. \
+Use when you need to retrieve and analyze web content."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -24,12 +33,6 @@ impl Tool for WebFetchTool {
                 "url": {
                     "type": "string",
                     "description": "The URL to fetch content from (must be fully-formed and valid)"
-                },
-                "format": {
-                    "type": "string",
-                    "enum": ["text", "markdown", "html"],
-                    "description": "The format to return the content in. Defaults to text.",
-                    "default": "text"
                 },
                 "timeout": {
                     "type": "number",
@@ -46,22 +49,25 @@ impl Tool for WebFetchTool {
             .as_str()
             .context("missing required parameter 'url'")?;
 
-        let format = args["format"].as_str().unwrap_or("text");
         let timeout_secs = args["timeout"].as_f64().unwrap_or(30.0).clamp(1.0, 120.0);
-
         let url_to_fetch = upgrade_to_https(url);
 
+        // Pick a random User-Agent
+        let ua = USER_AGENTS[
+            rand::random::<usize>() % USER_AGENTS.len()
+        ];
+
         let client = reqwest::Client::builder()
-            .user_agent("agent_core/0.1.0")
+            .user_agent(ua)
             .timeout(std::time::Duration::from_secs_f64(timeout_secs))
+            .gzip(true)
+            .brotli(true)
             .build()
             .context("failed to create HTTP client")?;
 
         let response = match client.get(&url_to_fetch).send().await {
             Ok(r) => r,
-            Err(e) => {
-                return Ok(format_http_error(&url_to_fetch, &e));
-            }
+            Err(e) => return Ok(format_http_error(&url_to_fetch, &e)),
         };
 
         let status_code = response.status().as_u16();
@@ -73,12 +79,7 @@ impl Tool for WebFetchTool {
             .to_string();
 
         if !response.status().is_success() {
-            return Ok(format_http_status(
-                url,
-                &url_to_fetch,
-                status_code,
-                &response,
-            ));
+            return Ok(format_http_status(url, &url_to_fetch, status_code, &response));
         }
 
         let body = match response.text().await {
@@ -93,19 +94,6 @@ impl Tool for WebFetchTool {
             }
         };
 
-        if is_garbled(&body) {
-            return Ok(format!(
-                "Fetched URL: {url_to_fetch}\nContent-Type: {content_type}\nStatus: {status_code}\n\n\
-                 The response body appears to be binary or compressed data rather than readable text. \
-                 This often happens when a site uses client-side rendering (JavaScript-only), \
-                 returns gzip-compressed content without proper headers, or serves encrypted/obfuscated responses.\n\n\
-                 Suggestions:\n\
-                 - This site likely requires a browser to render its content and cannot be fetched directly.\n\
-                 - Try an alternative source for this information (e.g., an API endpoint, RSS feed, or a simpler page).\n\
-                 - Provide the information you need directly rather than asking me to fetch it from this site."
-            ));
-        }
-
         if is_image_content_type(&content_type) {
             return Ok(format!(
                 "Fetched URL: {url_to_fetch}\nContent-Type: {content_type}\nStatus: {status_code}\n\n\
@@ -114,28 +102,143 @@ impl Tool for WebFetchTool {
             ));
         }
 
-        let processed = match format {
-            "html" => body,
-            _ => strip_html(&body),
-        };
+        // ── Content extraction pipeline ──────────────────────────────
+        // 1. Readability: extract main article content from noisy HTML
+        // 2. htmd: convert clean HTML to Markdown (token-efficient)
+        let extracted = extract_readable(&body, &url_to_fetch);
 
-        let max_len = 100_000;
-        let truncated = if processed.len() > max_len {
-            let safe_end = processed.floor_char_boundary(max_len);
-            let head = &processed[..safe_end];
+        let max_len = 80_000;
+        let truncated = if extracted.len() > max_len {
+            let safe_end = extracted.floor_char_boundary(max_len);
+            let head = &extracted[..safe_end];
             format!(
-                "{head}...\n\n[Content truncated at {max_len} bytes. Total: {} chars / {} bytes. Consider using a more specific URL.]",
-                processed.chars().count(),
-                processed.len()
+                "{head}...\n\n[Content truncated at {max_len} chars. Total: {} chars. Consider using a more specific URL.]",
+                extracted.chars().count()
             )
         } else {
-            processed
+            extracted
         };
 
         Ok(format!(
-            "Fetched URL: {url_to_fetch}\nContent-Type: {content_type}\nStatus: {status_code}\n\n{truncated}",
+            "Fetched: {url_to_fetch}\nStatus: {status_code}\n\n{truncated}",
         ))
     }
+}
+
+/// Run the extraction pipeline:
+///   raw HTML → Readability (article body) → htmd (Markdown)
+fn extract_readable(html: &str, url: &str) -> String {
+    // Step 1: Readability — extract the main article content
+    let article_html = match run_readability(html, url) {
+        Some(h) if !h.trim().is_empty() => h,
+        _ => {
+            // Fallback: if Readability yields nothing, use the full HTML
+            // but strip obvious noise
+            html.to_string()
+        }
+    };
+
+    // Step 2: Convert clean HTML to Markdown
+    match htmd::convert(&article_html) {
+        Ok(md) => {
+            let cleaned = md.trim().to_string();
+            if cleaned.len() > 200 {
+                cleaned
+            } else {
+                // Markdown is suspiciously short — likely a JS-only SPA.
+                // Return a helpful message instead of empty content.
+                format!(
+                    "[Extracted content is very short ({len} chars). \
+                     This page may require JavaScript to render its content. \
+                     Consider finding the information through an alternative source.]\n\n{cleaned}",
+                    len = cleaned.len()
+                )
+            }
+        }
+        Err(e) => {
+            // htmd failed — return the raw HTML stripped of tags as last resort
+            format!(
+                "[Warning: Markdown conversion failed ({e}). Falling back to plain text.]\n\n{}",
+                strip_html_tags(&article_html)
+            )
+        }
+    }
+}
+
+/// Run Mozilla Readability to extract the article body.
+fn run_readability(html: &str, url: &str) -> Option<String> {
+    let url_parsed = url::Url::parse(url).ok()?;
+    let mut cursor = std::io::Cursor::new(html.as_bytes());
+    let product = readability::extractor::extract(&mut cursor, &url_parsed).ok()?;
+
+    let title = product.title.trim();
+    let content = product.content.trim();
+
+    if content.is_empty() {
+        return None;
+    }
+
+    // Prepend title if available
+    let mut output = String::new();
+    if !title.is_empty() {
+        output.push_str(&format!("<h1>{}</h1>\n", title));
+    }
+    output.push_str(content);
+    Some(output)
+}
+
+/// Last-resort HTML tag stripper.
+fn strip_html_tags(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut in_tag = false;
+    let mut in_script_style = false;
+    let mut tag = String::new();
+
+    for ch in html.chars() {
+        if ch == '<' {
+            in_tag = true;
+            tag.clear();
+        } else if ch == '>' {
+            if in_tag {
+                in_tag = false;
+                let t = tag.to_lowercase();
+                if t == "script" || t == "style" {
+                    in_script_style = true;
+                } else if t == "/script" || t == "/style" {
+                    in_script_style = false;
+                } else if t == "br" || t == "hr" || t == "p"
+                    || t.starts_with("/h") || t == "/div" || t == "/li" || t == "/tr"
+                {
+                    out.push('\n');
+                }
+                tag.clear();
+            } else {
+                out.push(ch);
+            }
+        } else if in_tag {
+            tag.push(ch);
+        } else if !in_script_style {
+            out.push(ch);
+        }
+    }
+
+    // Collapse multiple blank lines
+    let mut cleaned = String::with_capacity(out.len());
+    let mut prev_blank = false;
+    for line in out.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            if !prev_blank {
+                cleaned.push('\n');
+                prev_blank = true;
+            }
+        } else {
+            cleaned.push_str(trimmed);
+            cleaned.push('\n');
+            prev_blank = false;
+        }
+    }
+    cleaned.trim().to_string()
 }
 
 fn upgrade_to_https(url: &str) -> String {
@@ -144,6 +247,10 @@ fn upgrade_to_https(url: &str) -> String {
     } else {
         url.to_string()
     }
+}
+
+fn is_image_content_type(ct: &str) -> bool {
+    ct.to_lowercase().starts_with("image/")
 }
 
 fn format_http_error(url: &str, error: &reqwest::Error) -> String {
@@ -257,113 +364,4 @@ fn format_http_status(
          Explanation: {explanation}\n\
          Suggestion: {suggestion}{redirect_note}"
     )
-}
-
-fn strip_html(html: &str) -> String {
-    let mut result = String::with_capacity(html.len());
-    let mut in_tag = false;
-    let mut in_style_script = false;
-    let mut tag_name = String::new();
-
-    for ch in html.chars() {
-        if ch == '<' {
-            in_tag = true;
-            tag_name.clear();
-        } else if ch == '>' {
-            if in_tag {
-                in_tag = false;
-                let tag_lower = tag_name.to_lowercase();
-                if tag_lower == "script" || tag_lower == "style" {
-                    in_style_script = true;
-                } else if tag_lower == "/script" || tag_lower == "/style" {
-                    in_style_script = false;
-                } else if tag_lower == "br"
-                    || tag_lower == "hr"
-                    || tag_lower == "p"
-                    || tag_lower.starts_with("/h")
-                    || tag_lower == "/div"
-                    || tag_lower == "/li"
-                    || tag_lower == "/tr"
-                {
-                    result.push('\n');
-                }
-                tag_name.clear();
-            } else {
-                result.push(ch);
-            }
-        } else if in_tag {
-            tag_name.push(ch);
-        } else if !in_style_script {
-            result.push(ch);
-        }
-    }
-
-    let mut cleaned = String::with_capacity(result.len());
-    let mut prev_blank = false;
-    for line in result.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            if !prev_blank {
-                cleaned.push('\n');
-                prev_blank = true;
-            }
-        } else {
-            cleaned.push_str(trimmed);
-            cleaned.push('\n');
-            prev_blank = false;
-        }
-    }
-
-    cleaned.trim().to_string()
-}
-
-fn is_garbled(text: &str) -> bool {
-    if text.is_empty() {
-        return false;
-    }
-
-    let sample = if text.len() > 2000 {
-        &text[..text.floor_char_boundary(2000)]
-    } else {
-        text
-    };
-
-    let total = sample.chars().count() as f64;
-    if total < 10.0 {
-        return false;
-    }
-
-    let printable = sample
-        .chars()
-        .filter(|&c| {
-            c.is_ascii_alphanumeric()
-                || c.is_ascii_punctuation()
-                || c.is_ascii_whitespace()
-                || c == '\n'
-                || c == '\r'
-                || c == '\t'
-                || c as u32 > 127
-        })
-        .count() as f64;
-
-    let good_chars = sample
-        .chars()
-        .filter(|&c| {
-            c.is_ascii_alphanumeric()
-                || c.is_ascii_whitespace()
-                || c == '\n'
-                || c == '\r'
-                || c == '\t'
-        })
-        .count() as f64;
-
-    let printable_ratio = printable / total;
-    let good_ratio = good_chars / total;
-
-    good_ratio < 0.3 && printable_ratio < 0.5
-}
-
-fn is_image_content_type(ct: &str) -> bool {
-    let ct_lower = ct.to_lowercase();
-    ct_lower.starts_with("image/")
 }
