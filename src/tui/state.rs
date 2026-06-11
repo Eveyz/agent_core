@@ -209,7 +209,6 @@ pub struct AppState {
     /// auto-approve without going through the tokio mutex lock on Agent.
     pub pending_approvals:
         Option<Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<ApprovalChoice>>>>>,
-    pending_tools: HashMap<String, PendingToolCall>,
     pub autocomplete: AutocompleteState,
     pub modal: ModalState,
     /// Simple frame counter for UI animation (increments each render)
@@ -268,7 +267,6 @@ impl AppState {
             agent_running: false,
             pending_request: None,
             pending_approvals: None,
-            pending_tools: HashMap::new(),
             autocomplete: AutocompleteState::new(),
             modal: ModalState::None,
             frame_count: 0,
@@ -566,7 +564,6 @@ impl AppState {
                 self.flush_streaming();
                 self.agent_running = false;
                 self.agent_state = "idle".into();
-                self.pending_tools.clear();
                 self.mark_dirty();
             }
 
@@ -614,19 +611,7 @@ impl AppState {
                     }
                 }
             }
-            AgentEvent::MessageEnd { message } => {
-                if let Some(ref tool_calls) = message.tool_calls {
-                    for tc in tool_calls {
-                        self.pending_tools.insert(
-                            tc.id.clone(),
-                            PendingToolCall {
-                                name: tc.function.name.clone(),
-                                args: tc.function.arguments.clone(),
-                            },
-                        );
-                    }
-                }
-            }
+            AgentEvent::MessageEnd { .. } => {}
 
             AgentEvent::ToolExecutionStart {
                 tool_call_id,
@@ -637,12 +622,14 @@ impl AppState {
                 if self.agent_running && !matches!(self.agent_state.as_str(), "idle") {
                     self.agent_state = "running tools".into();
                 }
-                self.pending_tools
-                    .entry(tool_call_id)
-                    .or_insert_with(|| PendingToolCall {
-                        name: tool_name,
-                        args: args.to_string(),
-                    });
+                // Push the tool block immediately so the user sees it running
+                self.push_stream_block(TurnBlock::Tool {
+                    tool_call_id,
+                    name: tool_name,
+                    args: args.to_string(),
+                    result: None,
+                });
+                self.mark_dirty_force();
             }
             AgentEvent::ToolExecutionUpdate { .. } => {
                 // Updates are intermediate — ToolExecutionEnd provides the final result
@@ -653,18 +640,50 @@ impl AppState {
                 result,
                 is_error,
             } => {
-                let pending = self.pending_tools.remove(&tool_call_id);
-                self.push_stream_block(TurnBlock::Tool {
-                    name: pending
-                        .as_ref()
-                        .map_or_else(|| tool_name.clone(), |tool| tool.name.clone()),
-                    args: pending.map_or_else(String::new, |tool| tool.args),
-                    result: Some(ToolResult {
-                        text: result,
-                        is_error,
-                    }),
-                });
-                self.mark_dirty();
+                // Find the existing Tool block and update its result in-place.
+                // Search streaming first, then entries — the block could have
+                // been flushed between Start and End.
+                let mut found = false;
+                let do_update = |blocks: &mut Vec<TurnBlock>| {
+                    for b in blocks.iter_mut().rev() {
+                        if let TurnBlock::Tool { tool_call_id: id, result: r, .. } = b {
+                            if *id == tool_call_id && r.is_none() {
+                                *r = Some(ToolResult {
+                                    text: result.clone(),
+                                    is_error,
+                                });
+                                return true;
+                            }
+                        }
+                    }
+                    false
+                };
+                if let Some(s) = &mut self.streaming {
+                    found = do_update(&mut s.blocks);
+                }
+                if !found {
+                    for entry in &mut self.entries {
+                        if let Entry::Turn { blocks, .. } = entry {
+                            if do_update(blocks) {
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if !found {
+                    // Fallback: no matching start block found — push a new one
+                    self.push_stream_block(TurnBlock::Tool {
+                        tool_call_id: tool_call_id.clone(),
+                        name: tool_name.clone(),
+                        args: String::new(),
+                        result: Some(ToolResult {
+                            text: result.clone(),
+                            is_error,
+                        }),
+                    });
+                }
+                self.mark_dirty_force();
             }
 
             AgentEvent::Error(e) => {
@@ -739,6 +758,7 @@ impl AppState {
             }
             AgentEvent::SubagentToolStart {
                 subagent_id,
+                tool_call_id,
                 tool_name,
                 args,
                 ..
@@ -754,6 +774,7 @@ impl AppState {
                 self.append_subagent_child_block(
                     &subagent_id,
                     TurnBlock::Tool {
+                        tool_call_id,
                         name: tool_name,
                         args: args.to_string(),
                         result: None,
@@ -763,6 +784,7 @@ impl AppState {
             }
             AgentEvent::SubagentToolEnd {
                 subagent_id,
+                tool_call_id,
                 tool_name,
                 result,
                 is_error,
@@ -777,7 +799,7 @@ impl AppState {
                 };
                 self.update_subagent_activity(&subagent_id, None, activity);
                 self.mark_dirty_force();
-                self.update_subagent_tool_result(&subagent_id, &tool_name, result, is_error);
+                self.update_subagent_tool_result(&subagent_id, &tool_call_id, result, is_error);
                 self.mark_dirty();
             }
             AgentEvent::SubagentEnd {
@@ -868,7 +890,7 @@ impl AppState {
     fn update_subagent_tool_result(
         &mut self,
         id: &str,
-        tool_name: &str,
+        tool_call_id: &str,
         result: String,
         is_error: bool,
     ) {
@@ -878,10 +900,10 @@ impl AppState {
                     if sa.id == id {
                         for child in sa.children.iter_mut().rev() {
                             if let TurnBlock::Tool {
-                                name, result: r, ..
+                                tool_call_id: cid, result: r, ..
                             } = child
                             {
-                                if *name == tool_name && r.is_none() {
+                                if *cid == tool_call_id && r.is_none() {
                                     *r = Some(ToolResult {
                                         text: result.clone(),
                                         is_error,
@@ -973,6 +995,7 @@ pub enum TurnBlock {
     Thought(String),
     Response(String),
     Tool {
+        tool_call_id: String,
         name: String,
         args: String,
         result: Option<ToolResult>,
@@ -1008,11 +1031,6 @@ pub struct SubagentState {
 pub struct Streaming {
     pub turn: usize,
     pub blocks: Vec<TurnBlock>,
-}
-
-struct PendingToolCall {
-    name: String,
-    args: String,
 }
 
 fn truncate_activity(s: &str, max_chars: usize) -> String {

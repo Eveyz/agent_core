@@ -37,7 +37,6 @@ glob = "0.3"
 rustyline = { version = "15", features = ["derive"] }
 pulldown-cmark = "0.13"
 syntect = { version = "5", features = ["default-syntaxes", "default-themes"] }
-tui-textarea = "0.7.0"
 
 [dev-dependencies]
 tempfile = "3"

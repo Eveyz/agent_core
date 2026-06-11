@@ -575,7 +575,7 @@ fn render_turn_block_cloned(
                 lines.push(line);
             }
         }
-        TurnBlock::Tool { name, args, result } => {
+        TurnBlock::Tool { name, args, result, .. } => {
             render_tool_block(name, args, result, lines, inner_width, &pad);
         }
         TurnBlock::Subagent(sa) => {
@@ -657,47 +657,47 @@ fn render_tool_block(
     width: usize,
     pad: &str,
 ) {
-    // Account for pad + "  " left + "  " right = pad.width() + 4
     let inner_width = width.saturating_sub(4 + pad.width());
     let bg = Style::default().bg(CODE_BG);
-    let label_style = Style::default()
-        .fg(TOOL_COLOR)
-        .bg(CODE_BG)
-        .add_modifier(Modifier::BOLD);
+    let border_fg = Color::Rgb(92, 99, 112);
 
-    // Top padding — fill full width so no terminal default background shows
+    // ── Top padding ──
     let top_fill = width.saturating_sub(pad.width());
     lines.push(Line::from(vec![
         Span::raw(pad.to_string()),
         Span::styled(" ".repeat(top_fill), bg),
     ]));
 
-    // Label line
-    let label = format!("⚙  {}  ", name);
+    // ── Top separator ──
+    let top_sep = "─".repeat(inner_width);
+    lines.push(Line::from(vec![
+        Span::raw(pad.to_string()),
+        Span::styled("  ", bg),
+        Span::styled(top_sep, Style::default().fg(border_fg).bg(CODE_BG)),
+        Span::styled("  ", bg),
+    ]));
+
+    // ── Label line ──
+    let label = format!("⚙  {}", name);
     let label_fill = " ".repeat(inner_width.saturating_sub(label.width()));
     lines.push(Line::from(vec![
         Span::raw(pad.to_string()),
         Span::styled("  ", bg),
-        Span::styled(label, label_style),
+        Span::styled(label, Style::default().fg(TOOL_COLOR).bg(CODE_BG).add_modifier(Modifier::BOLD)),
         Span::styled(label_fill, bg),
         Span::styled("  ", bg),
     ]));
 
-    // Separator
-    let sep = "─".repeat(inner_width.min(40));
-    let sep_fill = " ".repeat(inner_width.saturating_sub(sep.width()));
+    // ── Separator ──
+    let sep = "─".repeat(inner_width);
     lines.push(Line::from(vec![
         Span::raw(pad.to_string()),
         Span::styled("  ", bg),
-        Span::styled(
-            sep,
-            Style::default().fg(Color::Rgb(92, 99, 112)).bg(CODE_BG),
-        ),
-        Span::styled(sep_fill, bg),
+        Span::styled(sep, Style::default().fg(border_fg).bg(CODE_BG)),
         Span::styled("  ", bg),
     ]));
 
-    // Args
+    // ── Args ──
     if !args.trim().is_empty() {
         for line in args.lines() {
             let arg_str = truncate_str_w(line, inner_width);
@@ -712,24 +712,22 @@ fn render_tool_block(
         }
     }
 
-    // Output
+    // ── Output ──
     if let Some(r) = result {
-        let (prefix, style) = if r.is_error {
-            ("✗ ", Style::default().fg(ERROR_COLOR))
+        let style = if r.is_error {
+            Style::default().fg(ERROR_COLOR)
         } else {
-            ("→ ", Style::default().fg(SUCCESS_COLOR))
+            Style::default().fg(SUCCESS_COLOR)
         };
         let out_style = style.bg(CODE_BG);
 
         let mut shown = 0;
         for line in r.text.lines().take(8) {
-            let prefix_w = prefix.width();
-            let trunc_line = truncate_str_w(line, inner_width.saturating_sub(prefix_w));
-            let fill = " ".repeat(inner_width.saturating_sub(prefix_w + trunc_line.width()));
+            let trunc_line = truncate_str_w(line, inner_width);
+            let fill = " ".repeat(inner_width.saturating_sub(trunc_line.width()));
             lines.push(Line::from(vec![
                 Span::raw(pad.to_string()),
                 Span::styled("  ", bg),
-                Span::styled(prefix.to_string(), out_style.add_modifier(Modifier::BOLD)),
                 Span::styled(trunc_line, out_style),
                 Span::styled(fill, bg),
                 Span::styled("  ", bg),
@@ -750,18 +748,27 @@ fn render_tool_block(
             ]));
         }
     } else {
-        let msg = "Waiting for result…";
+        let msg = "⏳  Waiting for result…";
         let fill = " ".repeat(inner_width.saturating_sub(msg.width()));
         lines.push(Line::from(vec![
             Span::raw(pad.to_string()),
             Span::styled("  ", bg),
-            Span::styled(msg.to_string(), Style::default().fg(Color::DarkGray).bg(CODE_BG)),
+            Span::styled(msg.to_string(), Style::default().fg(Color::Rgb(229, 192, 123)).bg(CODE_BG)),
             Span::styled(fill, bg),
             Span::styled("  ", bg),
         ]));
     }
 
-    // Bottom padding — fill full width
+    // ── Bottom separator ──
+    let bot_sep = "─".repeat(inner_width);
+    lines.push(Line::from(vec![
+        Span::raw(pad.to_string()),
+        Span::styled("  ", bg),
+        Span::styled(bot_sep, Style::default().fg(border_fg).bg(CODE_BG)),
+        Span::styled("  ", bg),
+    ]));
+
+    // ── Bottom padding ──
     let bot_fill = width.saturating_sub(pad.width());
     lines.push(Line::from(vec![
         Span::raw(pad.to_string()),
