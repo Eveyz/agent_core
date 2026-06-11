@@ -13,7 +13,8 @@ impl Tool for ReadFileTool {
     }
 
     fn description(&self) -> &str {
-        "Read the contents of a file at the given path. Returns the file content as a string."
+        "Read the contents of a file at the given path. Returns the file content as a string. \
+Only works for text files (code, markdown, config, etc.). Cannot read binary files like images, PDFs, or executables."
     }
 
     fn parameters_schema(&self) -> Value {

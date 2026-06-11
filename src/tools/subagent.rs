@@ -57,7 +57,7 @@ impl Tool for SubagentSpawnTool {
         "Spawn a sub-agent with isolated context for a specific task. \
 Use for: multi-step research, tasks needing clean context, parallel work. \
 Do NOT use for: simple reads, single commands, quick searches — handle those yourself. \
-Args: id (string), task (string), system_prompt (optional), tools (optional array of tool names, default: read_file,glob,grep), max_iterations (optional, default: 5)"
+Args: id (string), task (string), system_prompt (optional), tools (optional array of tool names, default: all parent tools), max_iterations (optional, default: 5)"
     }
 
     fn parameters_schema(&self) -> Value {
@@ -145,7 +145,8 @@ impl Tool for SubagentSpawnAllTool {
     fn description(&self) -> &str {
         "Spawn multiple sub-agents CONCURRENTLY (runs in parallel). \
 Use when task_ready returns multiple unblocked tasks that are independent. \
-Each sub-agent gets isolated context. Returns all results. \
+Each sub-agent gets isolated context with access to: read_file, glob, grep, run_command, edit, webfetch, git tools. \
+Returns all results. \
 Args: tasks (array of {id, task, tools?, max_iterations?})"
     }
 
@@ -353,7 +354,10 @@ async fn spawn_single(
 
     let system_prompt = args["system_prompt"]
         .as_str()
-        .unwrap_or("You are a focused sub-agent. Complete the given task and return the result. Be concise.")
+        .unwrap_or("You are a focused sub-agent. Complete the given task and return the result. Be concise. \
+You have access to tools: read_file, glob, grep, run_command, edit, webfetch, and git tools. \
+CRITICAL: ALWAYS use the 'webfetch' tool to fetch web content. NEVER use run_command with 'curl' or 'wget'. \
+Do NOT attempt to read or process image files.")
         .to_string();
 
     let max_iterations = args["max_iterations"].as_u64().unwrap_or(5) as usize;
@@ -364,13 +368,13 @@ async fn spawn_single(
             .filter_map(|v| v.as_str().map(String::from))
             .collect()
     } else {
-        // Default: safe subset of tools
         vec![
             "read_file".to_string(),
             "glob".to_string(),
             "grep".to_string(),
             "run_command".to_string(),
             "edit".to_string(),
+            "webfetch".to_string(),
         ]
     };
 

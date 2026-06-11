@@ -106,6 +106,14 @@ impl Tool for WebFetchTool {
             ));
         }
 
+        if is_image_content_type(&content_type) {
+            return Ok(format!(
+                "Fetched URL: {url_to_fetch}\nContent-Type: {content_type}\nStatus: {status_code}\n\n\
+                 The URL points to an image file. I cannot process or display images. \
+                 Try fetching a web page (HTML) instead, or find the information in text form."
+            ));
+        }
+
         let processed = match format {
             "html" => body,
             _ => strip_html(&body),
@@ -353,4 +361,9 @@ fn is_garbled(text: &str) -> bool {
     let good_ratio = good_chars / total;
 
     good_ratio < 0.3 && printable_ratio < 0.5
+}
+
+fn is_image_content_type(ct: &str) -> bool {
+    let ct_lower = ct.to_lowercase();
+    ct_lower.starts_with("image/")
 }
