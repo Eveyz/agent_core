@@ -93,7 +93,7 @@ pub enum ToolExecutionMode {
 
 // ── Rich Agent Events ───────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AgentEvent {
     // ── Agent lifecycle ─────────────────────────────────────────────
     AgentStart,
@@ -173,9 +173,6 @@ pub enum AgentEvent {
     },
 
     // ── Permissions ─────────────────────────────────────────────────
-    /// Agent needs user approval before executing a tool.
-    /// The prompt contains all the info needed for the user to decide.
-    /// After the user responds, call `agent.approve(choice)` or `agent.deny(reason)`.
     ApprovalRequired {
         prompt_id: String,
         tool_name: String,
@@ -188,13 +185,13 @@ pub enum AgentEvent {
     Error(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MessageDelta {
     Thinking(String),
     Text(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResultRecord {
     pub tool_call_id: String,
     pub tool_name: String,

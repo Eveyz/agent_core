@@ -1,0 +1,18 @@
+[package]
+name = "agent-cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+agent_core = { path = "../core" }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+termimad = "0.34"
+ratatui = "0.30"
+crossterm = "0.29"
+argh = "0.1"
+unicode-width = "0.2"
+rustyline = { version = "15", features = ["derive"] }
+pulldown-cmark = "0.13"
+syntect = { version = "5", features = ["default-syntaxes", "default-themes"] }
+serde_json = "1.0.150"
