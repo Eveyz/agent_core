@@ -76,16 +76,18 @@ pub fn compute_block_height(lines: &[Line<'_>], width: u16) -> usize {
 
 pub fn system_block_lines(text: &str) -> Vec<Line<'static>> {
     let style = Style::default().fg(Color::Cyan);
-    text.lines().map(|l| Line::from(vec![Span::styled(l.to_string(), style)])).collect()
+    text.lines()
+        .map(|l| Line::from(vec![Span::styled(l.to_string(), style)]))
+        .collect()
 }
 
 pub fn user_block_lines(text: &str, _width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    lines.push(Line::raw("")); // top padding
+    lines.push(Line::raw(""));
     for line in text.lines() {
         lines.push(Line::raw(line.to_string()));
     }
-    lines.push(Line::raw("")); // bottom padding
+    lines.push(Line::raw(""));
     lines
 }
 
@@ -104,7 +106,10 @@ pub fn thought_block_lines(text: &str, _width: usize, pad: &str) -> Vec<Line<'st
         if first {
             lines.push(Line::from(vec![
                 Span::raw(pad.to_string()),
-                Span::styled("💭 Thought: ".to_string(), style.add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "💭 Thought: ".to_string(),
+                    style.add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(line.to_string(), style),
             ]));
             first = false;
@@ -142,7 +147,11 @@ fn tool_args_summary(args: &str) -> String {
         return String::new();
     }
     let first = args.lines().next().unwrap_or("").trim();
-    let stripped = first.strip_prefix("{").unwrap_or(first).strip_suffix("}").unwrap_or(first);
+    let stripped = first
+        .strip_prefix("{")
+        .unwrap_or(first)
+        .strip_suffix("}")
+        .unwrap_or(first);
     format!("  {}", stripped.trim())
 }
 
@@ -184,7 +193,12 @@ pub fn tool_block_lines(
         if name == "edit" && !r.is_error {
             let diff_text = r.text.lines().skip(1).collect::<Vec<_>>().join("\n");
             let mut diff_lines = Vec::new();
-            super::diff::render_diff_output(&diff_text, &mut diff_lines, width.saturating_sub(indent.width()), pad);
+            super::diff::render_diff_output(
+                &diff_text,
+                &mut diff_lines,
+                width.saturating_sub(indent.width()),
+                pad,
+            );
             for mut line in diff_lines {
                 line.spans.insert(0, Span::raw(indent.to_string()));
                 lines.push(line);
@@ -192,12 +206,20 @@ pub fn tool_block_lines(
         } else {
             let mut shown = 0;
             for line in r.text.lines().take(8) {
-                lines.push(Line::raw(format!("{}{}", indent, truncate_str(line, max_text_width))));
+                lines.push(Line::raw(format!(
+                    "{}{}",
+                    indent,
+                    truncate_str(line, max_text_width)
+                )));
                 shown += 1;
             }
             let total = r.text.lines().count();
             if total > shown {
-                lines.push(Line::raw(format!("{}… {} more lines", indent, total - shown)));
+                lines.push(Line::raw(format!(
+                    "{}… {} more lines",
+                    indent,
+                    total - shown
+                )));
             }
         }
     } else {
@@ -228,7 +250,8 @@ pub fn subagent_block_lines(sa: &SubagentState, _width: usize, pad: &str) -> Vec
     let elapsed_str = if sa.done {
         Some(format_duration(sa.elapsed_ms))
     } else {
-        sa.started_at.map(|t| format_duration(t.elapsed().as_millis() as u64))
+        sa.started_at
+            .map(|t| format_duration(t.elapsed().as_millis() as u64))
     };
 
     let status_text = if sa.done {
@@ -287,9 +310,13 @@ pub fn notice_block_lines(msg: &str, _width: usize, pad: &str) -> Vec<Line<'stat
             lines.push(Line::raw(format!("{}{}", pad, line_text)));
         }
     } else {
-        let icon = if msg.contains("Failed") || msg.contains("Error") || msg.contains("nknown command") {
+        let icon = if msg.contains("Failed")
+            || msg.contains("Error")
+            || msg.contains("nknown command")
+        {
             "✗"
-        } else if msg.contains("registered") || msg.contains("Switched") || msg.contains("cleared") {
+        } else if msg.contains("registered") || msg.contains("Switched") || msg.contains("cleared")
+        {
             "✓"
         } else if msg.contains("Registered") {
             "ℹ"
@@ -308,17 +335,26 @@ pub fn error_block_lines(e: &str, _width: usize, pad: &str) -> Vec<Line<'static>
         Span::raw(pad.to_string()),
         Span::styled(
             format!("✗  {e}"),
-            Style::default().fg(ERROR_COLOR).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(ERROR_COLOR)
+                .add_modifier(Modifier::BOLD),
         ),
     ])]
 }
 
 pub fn working_block_lines() -> Vec<Line<'static>> {
     vec![Line::from(vec![
-        Span::styled("  ⏳  ", Style::default().fg(Color::Rgb(229, 192, 123)).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "  ⏳  ",
+            Style::default()
+                .fg(Color::Rgb(229, 192, 123))
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(
             "Working...",
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
         ),
     ])]
 }
@@ -357,7 +393,10 @@ pub fn entry_to_blocks(entry: &Entry, blocks: &mut Vec<CachedBlock>, width: usiz
                 lines,
             });
         }
-        Entry::Turn { blocks: turn_blocks, .. } => {
+        Entry::Turn {
+            blocks: turn_blocks,
+            ..
+        } => {
             for (i, block) in turn_blocks.iter().enumerate() {
                 if i > 0 {
                     blocks.push(CachedBlock::spacing());
@@ -398,7 +437,9 @@ pub fn turn_block_to_blocks(
                 lines,
             });
         }
-        TurnBlock::Tool { name, args, result, .. } => {
+        TurnBlock::Tool {
+            name, args, result, ..
+        } => {
             let lines = tool_block_lines(name, args, result, inner_width, &pad);
             let content_height = compute_block_height(&lines, width as u16);
             blocks.push(CachedBlock {
@@ -456,8 +497,18 @@ pub fn subagent_detail_blocks(
     // Header breadcrumb
     let header_lines = vec![
         Line::from(vec![
-            Span::styled(" ← ", Style::default().fg(SUCCESS_COLOR).add_modifier(Modifier::BOLD)),
-            Span::styled(format!("subagent: {}", subagent_id), Style::default().fg(SUBAGENT_COLOR).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                " ← ",
+                Style::default()
+                    .fg(SUCCESS_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("subagent: {}", subagent_id),
+                Style::default()
+                    .fg(SUBAGENT_COLOR)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("  [Esc] back", Style::default().fg(Color::DarkGray)),
         ]),
         Line::from(Span::styled(
@@ -485,18 +536,37 @@ pub fn subagent_detail_blocks(
         let status_lines = if sa.done {
             let elapsed = format_duration(sa.elapsed_ms);
             let (icon, text, color) = if sa.success {
-                ("✓", format!("Completed ({} iterations) {}", sa.iterations, elapsed), SUCCESS_COLOR)
+                (
+                    "✓",
+                    format!("Completed ({} iterations) {}", sa.iterations, elapsed),
+                    SUCCESS_COLOR,
+                )
             } else {
-                ("✗", format!("Incomplete ({} iterations) {}", sa.iterations, elapsed), ERROR_COLOR)
+                (
+                    "✗",
+                    format!("Incomplete ({} iterations) {}", sa.iterations, elapsed),
+                    ERROR_COLOR,
+                )
             };
             vec![Line::from(vec![
-                Span::styled(format!(" {} ", icon), Style::default().fg(color).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!(" {} ", icon),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(text, Style::default().fg(color)),
             ])]
         } else {
             vec![Line::from(vec![
-                Span::styled(" ⏳ ", Style::default().fg(WARN_COLOR).add_modifier(Modifier::BOLD)),
-                Span::styled("Running...", Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)),
+                Span::styled(
+                    " ⏳ ",
+                    Style::default().fg(WARN_COLOR).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "Running...",
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::ITALIC),
+                ),
             ])]
         };
         let status_height = compute_block_height(&status_lines, width);
@@ -532,7 +602,10 @@ pub struct SystemBlock<'a> {
 
 impl<'a> SystemBlock<'a> {
     pub fn new(lines: &'a [Line<'static>], skip: usize) -> Self {
-        Self { lines, skip: skip as u16 }
+        Self {
+            lines,
+            skip: skip as u16,
+        }
     }
 }
 
@@ -546,13 +619,16 @@ impl<'a> Widget for SystemBlock<'a> {
 }
 
 pub struct UserBlock<'a> {
-    text: &'a str,
+    lines: &'a [Line<'static>],
     skip: u16,
 }
 
 impl<'a> UserBlock<'a> {
-    pub fn new(text: &'a str, skip: usize) -> Self {
-        Self { text, skip: skip as u16 }
+    pub fn new(lines: &'a [Line<'static>], skip: usize) -> Self {
+        Self {
+            lines,
+            skip: skip as u16,
+        }
     }
 }
 
@@ -560,8 +636,8 @@ impl<'a> Widget for UserBlock<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         buf.set_style(area, Style::default().bg(USER_BG).fg(Color::White));
 
-        // Left accent bar (2 columns)
-        let accent_area = Rect::new(area.x, area.y, 2, area.height);
+        // Left accent bar (1 columns)
+        let accent_area = Rect::new(area.x, area.y, 1, area.height);
         buf.set_style(accent_area, Style::default().bg(Color::Rgb(61, 65, 102)));
 
         // Content starts after accent + 1 column gap
@@ -571,8 +647,7 @@ impl<'a> Widget for UserBlock<'a> {
             area.width.saturating_sub(3),
             area.height,
         );
-        let lines: Vec<Line> = self.text.lines().map(|l| Line::raw(l.to_string())).collect();
-        Paragraph::new(Text::from(lines))
+        Paragraph::new(Text::from(self.lines.to_vec()))
             .wrap(Wrap { trim: false })
             .scroll((self.skip, 0))
             .render(content_area, buf);
@@ -586,7 +661,10 @@ pub struct ThoughtBlock<'a> {
 
 impl<'a> ThoughtBlock<'a> {
     pub fn new(lines: &'a [Line<'static>], skip: usize) -> Self {
-        Self { lines, skip: skip as u16 }
+        Self {
+            lines,
+            skip: skip as u16,
+        }
     }
 }
 
@@ -606,7 +684,10 @@ pub struct ResponseBlock<'a> {
 
 impl<'a> ResponseBlock<'a> {
     pub fn new(lines: &'a [Line<'static>], skip: usize) -> Self {
-        Self { lines, skip: skip as u16 }
+        Self {
+            lines,
+            skip: skip as u16,
+        }
     }
 }
 
@@ -677,11 +758,8 @@ impl<'a> Widget for ToolBlock<'a> {
             0
         };
 
-        let chunks = Layout::vertical([
-            Constraint::Length(title_visible_h),
-            Constraint::Min(0),
-        ])
-        .split(area);
+        let chunks =
+            Layout::vertical([Constraint::Length(title_visible_h), Constraint::Min(0)]).split(area);
 
         let title_area = chunks[0];
         let content_area = chunks[1];
@@ -690,7 +768,13 @@ impl<'a> Widget for ToolBlock<'a> {
         let truncated_args = truncate_str(&args_summary, available_width);
 
         // Title background
-        buf.set_style(title_area, Style::default().bg(title_bg).fg(title_fg).add_modifier(Modifier::BOLD));
+        buf.set_style(
+            title_area,
+            Style::default()
+                .bg(title_bg)
+                .fg(title_fg)
+                .add_modifier(Modifier::BOLD),
+        );
         // Content background
         buf.set_style(content_area, Style::default().bg(CODE_BG));
 
@@ -699,9 +783,15 @@ impl<'a> Widget for ToolBlock<'a> {
             Line::raw(""),
             Line::from(vec![
                 Span::raw("  "),
-                Span::styled(icon.to_string(), Style::default().fg(title_fg).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    icon.to_string(),
+                    Style::default().fg(title_fg).add_modifier(Modifier::BOLD),
+                ),
                 Span::raw(" "),
-                Span::styled(self.name, Style::default().fg(title_fg).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    self.name,
+                    Style::default().fg(title_fg).add_modifier(Modifier::BOLD),
+                ),
                 Span::raw("  "),
                 Span::styled(truncated_args, Style::default().fg(Color::Rgb(75, 82, 99))),
             ]),
@@ -776,7 +866,10 @@ pub struct NoticeBlock<'a> {
 
 impl<'a> NoticeBlock<'a> {
     pub fn new(lines: &'a [Line<'static>], skip: usize) -> Self {
-        Self { lines, skip: skip as u16 }
+        Self {
+            lines,
+            skip: skip as u16,
+        }
     }
 }
 
@@ -796,7 +889,10 @@ pub struct ErrorBlock<'a> {
 
 impl<'a> ErrorBlock<'a> {
     pub fn new(lines: &'a [Line<'static>], skip: usize) -> Self {
-        Self { lines, skip: skip as u16 }
+        Self {
+            lines,
+            skip: skip as u16,
+        }
     }
 }
 
@@ -823,16 +919,21 @@ impl Widget for WorkingBlock {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let spinner = SPINNER_FRAMES[self.frame_count as usize % SPINNER_FRAMES.len()];
         let line = Line::from(vec![
-            Span::styled(format!("  {}  ", spinner), Style::default().fg(Color::Rgb(229, 192, 123)).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("  {}  ", spinner),
+                Style::default()
+                    .fg(Color::Rgb(229, 192, 123))
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(
                 "Working...",
-                Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
             ),
         ]);
         Paragraph::new(line).render(area, buf);
     }
 }
 
-static SPINNER_FRAMES: &[&str] = &[
-    "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
-];
+static SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];

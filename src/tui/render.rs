@@ -19,8 +19,8 @@ pub struct LayoutAreas {
 }
 
 pub fn compute_layout(area: Rect, dropdown_h: u16) -> LayoutAreas {
-    let main_bottom = area.height.saturating_sub(5 + dropdown_h);
-    let input_top = area.height.saturating_sub(5);
+    let main_bottom = area.height.saturating_sub(3 + dropdown_h);
+    let input_top = area.height.saturating_sub(3);
 
     let status_area = Rect::new(area.x, area.y, area.width, 3);
     let main_area = Rect::new(area.x, area.y + 3, area.width, main_bottom.saturating_sub(3));
@@ -29,7 +29,7 @@ pub fn compute_layout(area: Rect, dropdown_h: u16) -> LayoutAreas {
     } else {
         Rect::default()
     };
-    let input_area = Rect::new(area.x, input_top, area.width, 5);
+    let input_area = Rect::new(area.x, input_top, area.width, 3);
 
     LayoutAreas {
         status: status_area,
@@ -171,8 +171,8 @@ fn render_blocks(
             BlockKind::System(_) => {
                 frame.render_widget(bw::SystemBlock::new(&block.lines, *skip), block_area);
             }
-            BlockKind::User(text) => {
-                frame.render_widget(bw::UserBlock::new(text, *skip), block_area);
+            BlockKind::User(_) => {
+                frame.render_widget(bw::UserBlock::new(&block.lines, *skip), block_area);
             }
             BlockKind::Thought(_) => {
                 frame.render_widget(bw::ThoughtBlock::new(&block.lines, *skip), block_area);

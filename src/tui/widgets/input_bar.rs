@@ -23,7 +23,7 @@ impl<'a> InputBar<'a> {
     /// Returns `(x, y)` in screen coordinates.
     pub fn cursor_position(&self, area: Rect) -> (u16, u16) {
         let state = self.state;
-        let y = area.y + (area.height.saturating_sub(1)) / 2;
+        let y = area.y + 1; // +1 for the top border
 
         if !matches!(state.command_mode, CommandMode::None) {
             let hint = state.command_mode.prompt();
@@ -67,15 +67,8 @@ impl<'a> Widget for InputBar<'a> {
                 .border_style(Style::default().fg(Color::Rgb(229, 192, 123)));
 
             let inner = block.inner(area);
-            let chunks = Layout::vertical([
-                Constraint::Length((inner.height.saturating_sub(1)) / 2),
-                Constraint::Length(1),
-                Constraint::Min(0),
-            ])
-            .split(inner);
-
             block.render(area, buf);
-            Paragraph::new(line).render(chunks[1], buf);
+            Paragraph::new(line).render(inner, buf);
             return;
         }
 
@@ -100,14 +93,7 @@ impl<'a> Widget for InputBar<'a> {
             .border_style(Style::default().fg(Color::Rgb(92, 99, 112)));
 
         let inner = block.inner(area);
-        let chunks = Layout::vertical([
-            Constraint::Length((inner.height.saturating_sub(1)) / 2),
-            Constraint::Length(1),
-            Constraint::Min(0),
-        ])
-        .split(inner);
-
         block.render(area, buf);
-        Paragraph::new(line).render(chunks[1], buf);
+        Paragraph::new(line).render(inner, buf);
     }
 }
