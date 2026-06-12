@@ -139,22 +139,20 @@ pub struct AutocompleteState {
 impl AutocompleteState {
     pub fn new() -> Self {
         let options = vec![
-            "/quit".into(), "/exit".into(),
-            "/help".into(), "/status".into(),
+            "/quit".into(),
+            "/help".into(),
             "/models".into(), "/models new".into(), "/model".into(),
-            "/clear".into(), "/new".into(), "/clear-queues".into(),
+            "/clear".into(), "/clear-queues".into(),
             "/memory".into(), "/memory search".into(), "/memory stats".into(),
             "/tokens".into(), "/temp".into(), "/max-tokens".into(),
-            "/permission".into(), "/perm".into(), "/perm test".into(), "/perm mode".into(),
+            "/perm".into(), "/perm test".into(), "/perm mode".into(),
             "/hooks".into(),
             "/todo".into(), "/todo add".into(), "/todo start".into(),
             "/todo done".into(), "/todo clear".into(),
-            "/tasks".into(), "/tasks add".into(), "/tasks start".into(),
-            "/tasks done".into(), "/tasks clear".into(),
             "/skills".into(), "/skill".into(), "/skill active".into(),
             "/skill deactivate".into(), "/skill reload".into(),
             "/tool-mode".into(), "/steer".into(), "/follow-up".into(),
-            "/abort".into(), "/state".into(), "/rewind".into(),
+            "/abort".into(), "/status".into(), "/rewind".into(),
             "/sessions".into(), "/session".into(), "/session save".into(),
             "/session resume".into(), "/session delete".into(),
             "/session rename".into(), "/session archive".into(), "/session search".into(),
@@ -470,14 +468,13 @@ impl AppState {
         }
         let known = matches!(input,
         "/quit" | "/exit" | "/help" | "/models" | "/model" | "/models new" |
-        "/clear" | "/new" | "/clear-queues" | "/abort" | "/state" |
+        "/clear" | "/new" | "/clear-queues" | "/abort" | "/status" |
         "/memory" | "/memory search" | "/memory stats" |
         "/tokens" | "/temp" | "/max-tokens" | "/tool-mode" |
-        "/permission" | "/perm" | "/perm test" | "/perm mode" | "/hooks" |
+        "/perm" | "/perm test" | "/perm mode" | "/hooks" |
         "/todo" | "/todo add" | "/todo start" | "/todo done" | "/todo clear" |
-        "/tasks" | "/tasks add" | "/tasks start" | "/tasks done" | "/tasks clear" |
         "/skills" | "/skill" | "/skill active" | "/skill deactivate" | "/skill reload" |
-        "/steer" | "/follow-up" | "/rewind" | "/status" |
+        "/steer" | "/follow-up" | "/rewind" |
         "/sessions" | "/session" | "/session save" | "/session resume" |
         "/session delete" | "/session rename" | "/session archive" | "/session search"
     );
@@ -1076,27 +1073,25 @@ fn format_elapsed_activity(label: &str, iterations: usize, elapsed_ms: u64) -> S
 // ── TUI Command definitions ─────────────────────────────────────────
 
 pub const COMMAND_HELP: &str = r#"Available commands:
-  /help              Show this help
-  /quit, /exit       Exit the TUI
-  /status            Show agent status
-  /models            List / switch models (modal)
-  /models new        Register a new model (form)
-  /model <name>      Switch to a model
-  /clear, /new       Clear conversation
-  /clear-queues      Clear steering queues
-  /abort             Abort current agent run
-  /state             Show agent state
-  /memory            Memory: list / search / stats
-  /tokens            Show token count
-  /temp <val>        Set temperature
-  /max-tokens <val>  Set max output tokens
-  /tool-mode <mode>  parallel / sequential
-  /permission, /perm Permission controls
-  /hooks             List registered hooks
-  /todo              Todo list management
-  /tasks             Task board management
-  /skills, /skill    Skill management
-  /steer <msg>       Steer agent direction
-  /follow-up <msg>   Queue follow-up message
-  /rewind <idx>      Rewind to earlier turn
-  /sessions, /session Session management"#;
+  /help          Show this help
+  /quit          Exit the TUI
+  /status        Show agent status
+  /models        List / switch models
+  /models new    Register a new model
+  /model <name>  Switch to a model
+  /clear         Clear conversation
+  /clear-queues  Clear steering queues
+  /abort         Abort current agent run
+  /memory        Memory: list/search/stats
+  /tokens        Show token count
+  /temp <val>    Set temperature
+  /max-tokens    Set max output tokens
+  /tool-mode     parallel / sequential
+  /perm          Permission controls
+  /hooks         List registered hooks
+  /todo          Todo list management
+  /skills        Skill management
+  /steer <msg>   Steer agent direction
+  /follow-up     Queue follow-up message
+  /rewind <idx>  Rewind to earlier turn
+  /sessions      Session management"#;

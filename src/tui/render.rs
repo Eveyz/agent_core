@@ -612,26 +612,36 @@ fn render_turn_block_cloned(
             ]));
         }
         TurnBlock::Notice(msg) => {
-            let (icon, style) = if msg.contains("Failed") || msg.contains("Error") || msg.contains("nknown command") {
-                ("✗", Style::default().fg(ERROR_COLOR).add_modifier(Modifier::BOLD))
-            } else if msg.contains("registered") || msg.contains("Switched") || msg.contains("cleared") {
-                ("✓", Style::default().fg(SUCCESS_COLOR).add_modifier(Modifier::BOLD))
-            } else if msg.contains("Available") || msg.contains("help") || msg.contains("Registered") {
-                ("ℹ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
-            } else {
-                ("⚠", Style::default().fg(WARN_COLOR).add_modifier(Modifier::BOLD))
-            };
-            for (i, line_text) in msg.lines().enumerate() {
-                if i > 0 {
-                    lines.push(Line::from(vec![Span::raw(pad.clone())]));
+            // Help text: plain style, no icon, no extra spacing
+            if msg.contains("Available commands:") {
+                for line_text in msg.lines() {
+                    lines.push(Line::from(vec![
+                        Span::raw(pad.clone()),
+                        Span::styled(line_text.to_string(), Style::default().fg(Color::White)),
+                    ]));
                 }
-                lines.push(Line::from(vec![
-                    Span::raw(pad.clone()),
-                    Span::styled(
-                        format!("{icon}  {line_text}"),
-                        style,
-                    ),
-                ]));
+            } else {
+                let (icon, style) = if msg.contains("Failed") || msg.contains("Error") || msg.contains("nknown command") {
+                    ("✗", Style::default().fg(ERROR_COLOR).add_modifier(Modifier::BOLD))
+                } else if msg.contains("registered") || msg.contains("Switched") || msg.contains("cleared") {
+                    ("✓", Style::default().fg(SUCCESS_COLOR).add_modifier(Modifier::BOLD))
+                } else if msg.contains("Registered") {
+                    ("ℹ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+                } else {
+                    ("⚠", Style::default().fg(WARN_COLOR).add_modifier(Modifier::BOLD))
+                };
+                for (i, line_text) in msg.lines().enumerate() {
+                    if i > 0 {
+                        lines.push(Line::from(vec![Span::raw(pad.clone())]));
+                    }
+                    lines.push(Line::from(vec![
+                        Span::raw(pad.clone()),
+                        Span::styled(
+                            format!("{icon}  {line_text}"),
+                            style,
+                        ),
+                    ]));
+                }
             }
         }
     }
@@ -1526,8 +1536,20 @@ fn render_dropdown(frame: &mut Frame, state: &AppState, area: Rect) {
     let max_h = (area.height as usize).saturating_sub(2); // border takes 2
     let max_w = (area.width as usize).saturating_sub(4);
 
+    // Compute viewport scroll offset so the selected item stays visible
+    let total = options.len();
+    let scroll_offset = if total <= max_h {
+        0
+    } else if sel < max_h / 2 {
+        0
+    } else if sel + max_h / 2 >= total {
+        total.saturating_sub(max_h)
+    } else {
+        sel.saturating_sub(max_h / 2)
+    };
+
     let mut lines: Vec<Line> = Vec::new();
-    for (i, opt) in options.iter().enumerate().take(max_h) {
+    for (i, opt) in options.iter().enumerate().skip(scroll_offset).take(max_h) {
         let truncated: String = opt.chars().take(max_w).collect();
         let fill = " ".repeat(max_w.saturating_sub(truncated.width()));
 

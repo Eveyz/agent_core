@@ -55,24 +55,14 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
             }
         }
         KeyCode::Enter => {
-            // If autocomplete dropdown is active
+            // If autocomplete dropdown is active, execute the selected option directly
             if state.autocomplete.active {
-                let exact = state.autocomplete.filtered_options
-                    .iter()
-                    .any(|opt| *opt == state.input.trim());
-                // If user already typed the exact command, skip selection and execute
-                if !exact || state.autocomplete.filtered_options.len() > 1 {
-                    if state.autocomplete.selected_index < state.autocomplete.filtered_options.len() {
-                        let selected = &state.autocomplete.filtered_options[state.autocomplete.selected_index];
-                        state.input = format!("{} ", selected);
-                        state.cursor_pos = state.input.len();
-                        state.autocomplete.active = false;
-                        state.update_autocomplete();
-                    }
-                    return Ok(());
+                if state.autocomplete.selected_index < state.autocomplete.filtered_options.len() {
+                    let selected = &state.autocomplete.filtered_options[state.autocomplete.selected_index];
+                    state.input = selected.clone();
+                    state.cursor_pos = state.input.len();
+                    state.autocomplete.active = false;
                 }
-                // Exact match with only one option — fall through to execute
-                state.autocomplete.active = false;
             }
 
             let text = state.input.trim().to_string();
@@ -120,6 +110,7 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
                             blocks: vec![notice_block],
                         });
                     }
+                    state.mark_dirty();
                 }
             } else {
                 state.submit(text);
