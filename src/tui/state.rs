@@ -691,14 +691,9 @@ impl AppState {
                 self.mark_dirty();
             }
 
-            AgentEvent::ApprovalRequired {
-                prompt_id,
-                tool_name,
-                explanation,
-                ..
-            } => {
-                // Respond directly via the approvals Arc — avoids deadlock
-                // with the tokio mutex on Agent (held by the spawned task).
+            AgentEvent::ApprovalRequired { prompt_id, .. } => {
+                // Auto-approve silently for now. In the future this will
+                // pause and ask the user via a modal.
                 if let Some(ref approvals) = self.pending_approvals {
                     if let Ok(mut map) = approvals.lock() {
                         if let Some(tx) = map.remove(&prompt_id) {
@@ -706,11 +701,6 @@ impl AppState {
                         }
                     }
                 }
-                self.push_stream_block(TurnBlock::Notice(format!(
-                    "[APPROVAL] {} — {} (auto-approved)",
-                    tool_name, explanation
-                )));
-                self.mark_dirty();
             }
 
             // ── Subagent events ──────────────────────────────────

@@ -570,7 +570,7 @@ impl Agent {
                     results[i] = format!("Permission denied: {}", reason);
                     continue;
                 }
-                PermissionDecision::Ask(reason, prompt) => {
+                PermissionDecision::Ask(_reason, prompt) => {
                     // Create oneshot channel for approval
                     let (tx, rx) = tokio::sync::oneshot::channel();
                     {
@@ -585,15 +585,6 @@ impl Agent {
                         tool_input: prompt.tool_input.clone(),
                         danger_level: format!("{:?}", prompt.danger_level),
                         explanation: prompt.explanation.clone(),
-                    });
-
-                    on_event(AgentEvent::ToolExecutionStart {
-                        tool_call_id: call.id.clone(),
-                        tool_name: format!(
-                            "[AWAITING APPROVAL] {} — {} (reason: {})",
-                            call.function.name, prompt.explanation, reason
-                        ),
-                        args: args.clone(),
                     });
 
                     // Wait for user response

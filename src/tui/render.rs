@@ -280,39 +280,31 @@ fn render_conversation(frame: &mut Frame, state: &mut AppState, area: Rect) {
     state.scroll = state.scroll.min(max_scroll);
     let scroll_from_top = max_scroll.saturating_sub(state.scroll);
 
-    // ── Window rendering ────────────────────────────────────────────
-    // Instead of cloning ALL lines and using .scroll() (which makes
-    // ratatui wrap ALL lines), we only render the visible window.
-    // We use row_offsets to binary-search which logical lines are visible.
-    let (window_start, visible_lines) = get_visible_lines(
-        &state.cache.lines,
-        &state.cache.row_offsets,
-        scroll_from_top,
-        visible_height,
-    );
+    // ── Render all lines with ratatui scroll ────────────────────────
+    // We let ratatui handle wrapping and scrolling natively instead of
+    // trying to pre-compute a visible window.  The old window-rendering
+    // approach broke when a single logical line wrapped into many rows:
+    // scroll would jump to the top of that logical line, hiding content.
+    let mut final_lines = state.cache.lines.clone();
 
     // ── Apply hover highlight ──────────────────────────────────────
-    let mut final_lines = visible_lines;
     if let Some(ref hovered_id) = state.hovered_subagent {
         for &(start, end, ref id) in &state.cache.subagent_line_ranges {
             if id == hovered_id {
-                let vis_start = start.saturating_sub(window_start);
-                let vis_end = end.saturating_sub(window_start).min(final_lines.len());
-                for i in vis_start..vis_end {
-                    if i < final_lines.len() {
-                        let mut line = std::mem::take(&mut final_lines[i]);
-                        for span in line.spans.iter_mut() {
-                            span.style.bg = Some(HOVER_BG);
-                        }
-                        final_lines[i] = line;
+                for i in start..end.min(final_lines.len()) {
+                    let mut line = std::mem::take(&mut final_lines[i]);
+                    for span in line.spans.iter_mut() {
+                        span.style.bg = Some(HOVER_BG);
                     }
+                    final_lines[i] = line;
                 }
             }
         }
     }
 
     let para = Paragraph::new(Text::from(final_lines))
-        .wrap(Wrap { trim: false });
+        .wrap(Wrap { trim: false })
+        .scroll((scroll_from_top as u16, 0));
     frame.render_widget(para, area);
 
     // ── Scrollbar ───────────────────────────────────────────────────
@@ -336,41 +328,6 @@ fn render_conversation(frame: &mut Frame, state: &mut AppState, area: Rect) {
     }
 }
 
-/// Given the full line list, row_offsets, scroll position, and visible height,
-/// return only the lines that are visible on screen along with the start index
-/// in the cache. This avoids cloning the entire line array and avoids ratatui
-/// processing off-screen lines.
-fn get_visible_lines(
-    lines: &[Line<'static>],
-    row_offsets: &[usize],
-    scroll_from_top: usize,
-    visible_height: usize,
-) -> (usize, Vec<Line<'static>>) {
-    if lines.is_empty() || row_offsets.is_empty() {
-        return (0, Vec::new());
-    }
-
-    // Find the first logical line that contains the scroll row
-    // row_offsets[i] = total wrapped rows for lines[0..i]
-    let start_line_idx = row_offsets.partition_point(|&r| r <= scroll_from_top)
-        .saturating_sub(1) // include the line that starts before scroll_from_top
-        .min(lines.len() - 1);
-
-    // Find the last visible logical line
-    let end_row = scroll_from_top + visible_height;
-    let end_line_idx = row_offsets.partition_point(|&r| r < end_row)
-        .min(lines.len());
-
-    // Add a small buffer for safety (wrapping might need context)
-    let start = start_line_idx.saturating_sub(1);
-    let end = (end_line_idx + 1).min(lines.len());
-
-    let window = &lines[start..end];
-
-    // Clone only the visible window — much cheaper than cloning all lines.
-    // The key win: we're NOT processing all 1000+ lines — just ~50 visible ones.
-    (start, window.to_vec())
-}
 
 /// Rebuild the cached lines from entries + streaming data.
 ///
@@ -491,12 +448,71 @@ fn compute_row_offsets(lines: &[Line<'_>], width: u16) -> Vec<usize> {
     offsets.push(0);
     let mut cumulative = 0usize;
     for line in lines {
-        let lw = line.width();
-        let rows = if lw == 0 { 1 } else { lw.div_ceil(width) };
+        let rows = estimate_wrapped_rows(line, width);
         cumulative += rows;
         offsets.push(cumulative);
     }
     offsets
+}
+
+/// Simulate ratatui's wrap logic to estimate how many rows a line will occupy.
+///
+/// Ratatui wraps at word boundaries (spaces) when possible, and falls back to
+/// character-level breaks for long words or CJK text.  Simple `div_ceil` based
+/// on total width severely underestimates rows for text with spaces, causing
+/// scroll position errors and truncated rendering.
+fn estimate_wrapped_rows(line: &Line<'_>, width: usize) -> usize {
+    if width == 0 {
+        return 1;
+    }
+
+    // Concatenate all spans — ratatui wraps across span boundaries.
+    let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    if text.is_empty() {
+        return 1;
+    }
+    if text.width() <= width {
+        return 1;
+    }
+
+    let mut rows = 0usize;
+    let mut remaining = text.as_str();
+
+    while !remaining.is_empty() {
+        let mut current_width = 0usize;
+        let mut last_space_end = 0usize; // byte index within remaining
+        let mut chars_processed = 0usize;
+
+        for (byte_idx, ch) in remaining.char_indices() {
+            let cw = ch.width().unwrap_or(0);
+
+            if current_width + cw > width {
+                // Break at the last space if possible, otherwise here.
+                if last_space_end > 0 {
+                    remaining = &remaining[last_space_end..];
+                } else {
+                    remaining = &remaining[byte_idx..];
+                }
+                rows += 1;
+                break;
+            }
+
+            if ch == ' ' || ch == '\t' {
+                last_space_end = byte_idx + ch.len_utf8();
+            }
+
+            current_width += cw;
+            chars_processed += 1;
+        }
+
+        // If the whole remaining fragment fit, we're done with this line.
+        if chars_processed >= remaining.chars().count() {
+            rows += 1;
+            break;
+        }
+    }
+
+    rows.max(1)
 }
 
 /// Same as render_entry but outputs Line<'static> by cloning string data.
@@ -981,9 +997,9 @@ fn render_subagent_detail(frame: &mut Frame, state: &mut AppState, area: Rect) {
     state.subagent_scroll = state.subagent_scroll.min(max_scroll);
     let scroll_from_top = max_scroll.saturating_sub(state.subagent_scroll);
 
-    let (_, visible_lines) = get_visible_lines(&lines, &row_offsets, scroll_from_top, visible_height);
-
-    let para = Paragraph::new(Text::from(visible_lines)).wrap(Wrap { trim: false });
+    let para = Paragraph::new(Text::from(lines))
+        .wrap(Wrap { trim: false })
+        .scroll((scroll_from_top as u16, 0));
     frame.render_widget(para, area);
 
     // Scrollbar
@@ -1021,6 +1037,13 @@ fn markdown_to_lines(text: &str, width: usize) -> Vec<Line<'static>> {
     let mut in_code_block = false;
     let mut ordered_num: u64 = 0;
     let mut is_ordered = false;
+
+    // ── Table state ─────────────────────────────────────────────────
+    let mut in_table_cell = false;
+    let mut table_rows: Vec<Vec<String>> = Vec::new();
+    let mut current_row: Vec<String> = Vec::new();
+    let mut current_cell = String::new();
+    let mut header_row_count = 0; // how many rows are in <thead>
 
     for event in parser {
         match event {
@@ -1068,6 +1091,20 @@ fn markdown_to_lines(text: &str, width: usize) -> Vec<Line<'static>> {
                     &mut style_stack,
                     Style::default().add_modifier(Modifier::CROSSED_OUT),
                 ),
+                // ── Table handling ──────────────────────────────────────
+                Tag::Table(_) => {
+                    flush_md_line(&mut cur_spans, &mut lines, false);
+                    table_rows.clear();
+                    header_row_count = 0;
+                }
+                Tag::TableHead => {}
+                Tag::TableRow => {
+                    current_row.clear();
+                }
+                Tag::TableCell => {
+                    in_table_cell = true;
+                    current_cell.clear();
+                }
                 _ => {}
             },
             Event::End(tag) => match tag {
@@ -1101,11 +1138,30 @@ fn markdown_to_lines(text: &str, width: usize) -> Vec<Line<'static>> {
                 TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough => {
                     style_stack.pop();
                 }
+                // ── Table handling ──────────────────────────────────────
+                TagEnd::TableCell => {
+                    in_table_cell = false;
+                    current_row.push(current_cell.trim().to_string());
+                }
+                TagEnd::TableRow => {
+                    if !current_row.is_empty() {
+                        table_rows.push(current_row.clone());
+                    }
+                }
+                TagEnd::TableHead => {
+                    header_row_count = table_rows.len();
+                }
+                TagEnd::Table => {
+                    lines.extend(render_md_table(&table_rows, header_row_count, width));
+                    lines.push(Line::raw(""));
+                }
                 _ => {}
             },
             Event::Text(text) => {
                 if in_code_block {
                     code_content.push_str(&text);
+                } else if in_table_cell {
+                    current_cell.push_str(&text);
                 } else {
                     let style = *style_stack.last().unwrap();
                     let mut final_style = style;
@@ -1121,7 +1177,11 @@ fn markdown_to_lines(text: &str, width: usize) -> Vec<Line<'static>> {
                 }
             }
             Event::Code(text) => {
-                if !in_code_block {
+                if in_table_cell {
+                    current_cell.push('`');
+                    current_cell.push_str(&text);
+                    current_cell.push('`');
+                } else if !in_code_block {
                     cur_spans.push(Span::styled(
                         text.to_string(),
                         Style::default().fg(Color::Yellow).bg(INLINE_CODE_BG),
@@ -1129,12 +1189,14 @@ fn markdown_to_lines(text: &str, width: usize) -> Vec<Line<'static>> {
                 }
             }
             Event::SoftBreak => {
-                if !in_code_block {
+                if in_table_cell {
+                    current_cell.push(' ');
+                } else if !in_code_block {
                     cur_spans.push(Span::raw(" "));
                 }
             }
             Event::HardBreak => {
-                if !in_code_block {
+                if !in_code_block && !in_table_cell {
                     flush_md_line(&mut cur_spans, &mut lines, in_blockquote);
                 }
             }
@@ -1150,6 +1212,134 @@ fn markdown_to_lines(text: &str, width: usize) -> Vec<Line<'static>> {
     }
     flush_md_line(&mut cur_spans, &mut lines, false);
     lines
+}
+
+/// Render a markdown table as aligned terminal text.
+fn render_md_table(
+    rows: &[Vec<String>],
+    header_row_count: usize,
+    width: usize,
+) -> Vec<Line<'static>> {
+    if rows.is_empty() {
+        return Vec::new();
+    }
+
+    let col_count = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    if col_count == 0 {
+        return Vec::new();
+    }
+
+    // Compute max width per column (using display width)
+    let mut col_widths = vec![0usize; col_count];
+    for row in rows {
+        for (i, cell) in row.iter().enumerate() {
+            let w = cell.width();
+            if w > col_widths[i] {
+                col_widths[i] = w;
+            }
+        }
+    }
+
+    // Row format: "│ " + cell1 + " │ " + cell2 + " │ " + ... + "│"
+    // Total width = 2 (left "│ ") + sum(col_widths) + col_count * 3 (" │ ")
+    let mut actual_total = 2 + col_widths.iter().sum::<usize>() + col_count * 3;
+
+    // Shrink column widths proportionally if the table is too wide.
+    if actual_total > width && col_count > 0 {
+        let min_per_col = 4usize;
+        let available_for_cells = width.saturating_sub(2 + col_count * 3);
+        let total_needed: usize = col_widths.iter().sum();
+
+        if total_needed > available_for_cells && available_for_cells > 0 {
+            let scale = available_for_cells as f64 / total_needed as f64;
+            for w in &mut col_widths {
+                let scaled = ((*w as f64 * scale) as usize).max(min_per_col);
+                *w = scaled.min(*w);
+            }
+        }
+
+        // Iteratively shrink the widest columns until we fit.
+        loop {
+            actual_total = 2 + col_widths.iter().sum::<usize>() + col_count * 3;
+            if actual_total <= width {
+                break;
+            }
+            let max_idx = col_widths
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, w)| *w)
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            if col_widths[max_idx] <= min_per_col {
+                break;
+            }
+            col_widths[max_idx] -= 1;
+        }
+    }
+
+    let border_fg = Color::Rgb(92, 99, 112);
+    let mut out = Vec::new();
+
+    // Separator line — must exactly match the rendered row width so that
+    // ratatui doesn't wrap it on a different boundary than the row text.
+    let sep = "─".repeat(actual_total);
+
+    for (row_idx, row) in rows.iter().enumerate() {
+        let is_header = row_idx < header_row_count;
+
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        spans.push(Span::styled("│ ", Style::default().fg(border_fg)));
+
+        for (col_idx, cell) in row.iter().enumerate() {
+            let max_w = col_widths.get(col_idx).copied().unwrap_or(10);
+            let padded = pad_cell(cell, max_w);
+            let cell_style = if is_header {
+                Style::default().add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            spans.push(Span::styled(padded, cell_style));
+            spans.push(Span::styled(" │ ", Style::default().fg(border_fg)));
+        }
+        out.push(Line::from(spans));
+
+        // Separator after header rows
+        if is_header && row_idx + 1 == header_row_count {
+            out.push(Line::from(Span::styled(
+                sep.clone(),
+                Style::default().fg(border_fg),
+            )));
+        }
+    }
+
+    out
+}
+
+/// Pad or truncate a cell to fit within max_width characters (display width).
+fn pad_cell(text: &str, max_width: usize) -> String {
+    let text_width = text.width();
+    if text_width > max_width {
+        // Truncate, leaving room for the ellipsis if possible.
+        let mut w = 0usize;
+        let mut chars = 0usize;
+        for c in text.chars() {
+            let cw = c.width().unwrap_or(0);
+            if w + cw > max_width.saturating_sub(1) {
+                break;
+            }
+            w += cw;
+            chars += 1;
+        }
+        let mut s: String = text.chars().take(chars).collect();
+        if w + 1 <= max_width {
+            s.push('…');
+        }
+        s
+    } else {
+        // Pad with spaces on the right
+        let pad = max_width - text_width;
+        format!("{}{}", text, " ".repeat(pad))
+    }
 }
 
 /// Push a style onto the stack, merging with the current top.
@@ -1200,7 +1390,7 @@ fn render_syntect_block(language: &str, code: &str, width: usize) -> Vec<Line<'s
     let syntax = find_syntax(language);
     let theme = &SYNTAX_THEME;
     let mut highlighter = HighlightLines::new(syntax, theme);
-    let fill_width = width.max(40);
+    let fill_width = width;
 
     let mut lines = Vec::new();
     for line in LinesWithEndings::from(code) {
