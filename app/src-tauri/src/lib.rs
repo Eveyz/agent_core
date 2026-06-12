@@ -6,6 +6,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 struct AppState {
     agent: Arc<AsyncMutex<Agent>>,
+    pending_approvals: Arc<std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<agent_core::ApprovalChoice>>>>,
 }
 
 #[tauri::command]
@@ -13,20 +14,7 @@ async fn send_message(state: State<'_, AppState>, app_handle: AppHandle, message
     let mut agent = state.agent.lock().await;
     
     let app_handle_clone = app_handle.clone();
-    let pending_approvals = agent.pending_approvals.clone();
-    
     let result = agent.run_with_events(&message, move |event| {
-        // Auto-approve tools for now
-        if let agent_core::AgentEvent::ApprovalRequired { prompt_id, .. } = &event {
-            if let Some(ref approvals) = pending_approvals {
-                if let Ok(mut map) = approvals.lock() {
-                    if let Some(tx) = map.remove(prompt_id) {
-                        let _ = tx.send(agent_core::ApprovalChoice::AllowSession);
-                    }
-                }
-            }
-        }
-        
         if let Err(e) = app_handle_clone.emit("agent-event", event) {
             eprintln!("Failed to emit agent event: {}", e);
         }
@@ -35,6 +23,20 @@ async fn send_message(state: State<'_, AppState>, app_handle: AppHandle, message
     match result {
         Ok(res) => Ok(res),
         Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+fn approve_tool(state: State<'_, AppState>, prompt_id: String, choice: String) {
+    if let Ok(mut map) = state.pending_approvals.lock() {
+        if let Some(tx) = map.remove(&prompt_id) {
+            let choice_enum = match choice.as_str() {
+                "allow_session" => agent_core::ApprovalChoice::AllowSession,
+                "allow_persistent" => agent_core::ApprovalChoice::AllowPersistent,
+                _ => agent_core::ApprovalChoice::Deny,
+            };
+            let _ = tx.send(choice_enum);
+        }
     }
 }
 
@@ -59,15 +61,18 @@ pub fn run() {
                 .or_else(|_| agent_core::AgentBuilder::from_config("../../config.toml"))
                 .or_else(|_| agent_core::AgentBuilder::from_env())
                 .unwrap_or_else(|_| agent_core::AgentBuilder::with_config(config));
-            let agent = builder.with_tool_execution_mode(ToolExecutionMode::Parallel).build().expect("Failed to build agent");
+            
+            let mut agent = builder.with_tool_execution_mode(ToolExecutionMode::Parallel).build().expect("Failed to build agent");
+            let pending_approvals = agent.pending_approvals_clone();
             
             app.manage(AppState {
                 agent: Arc::new(AsyncMutex::new(agent)),
+                pending_approvals,
             });
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![send_message])
+        .invoke_handler(tauri::generate_handler![send_message, approve_tool])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

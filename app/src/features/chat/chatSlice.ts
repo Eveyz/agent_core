@@ -2,8 +2,9 @@ import { createSlice, PayloadAction } from '@reduxjs/toolkit';
 
 export type TurnBlock =
   | { type: 'assistant'; text: string; isStreaming: boolean }
-  | { type: 'thinking'; text: string; isStreaming: boolean }
+  | { type: 'thinking'; text: string; isStreaming: boolean; startTime?: number; endTime?: number }
   | { type: 'tool'; call_id: string; name: string; result: string; active: boolean; is_error: boolean }
+  | { type: 'approval'; prompt_id: string; tool_name: string; tool_input: any; danger_level: string; explanation: string; status: 'pending' | 'approved' | 'denied' }
   | { type: 'error'; text: string };
 
 export interface ChatEntry {
@@ -50,18 +51,22 @@ export const chatSlice = createSlice({
       }
 
       if (event.TurnStart) {
-        state.entries.push({
-          id: `turn-${event.TurnStart.turn_index}-${Date.now()}`,
-          type: 'turn',
-          turnIndex: event.TurnStart.turn_index,
-          blocks: [],
-          startTime: Date.now(),
-        });
-      } else if (event.TurnEnd) {
         const last = state.entries[state.entries.length - 1];
-        if (last && last.type === 'turn') {
-          last.endTime = Date.now();
+        // If the last entry is already an active turn, we merge it!
+        if (last && last.type === 'turn' && !last.endTime) {
+          last.turnIndex = event.TurnStart.turn_index; // Update index, but keep blocks
+        } else {
+          state.entries.push({
+            id: `turn-${event.TurnStart.turn_index}-${Date.now()}`,
+            type: 'turn',
+            turnIndex: event.TurnStart.turn_index,
+            blocks: [],
+            startTime: Date.now(),
+          });
         }
+      } else if (event.TurnEnd) {
+        // We no longer close the turn here, because another turn might follow.
+        // We wait for AgentEnd to close it.
       } else if (event.MessageUpdate) {
         const delta = event.MessageUpdate.delta;
         const lastEntry = state.entries[state.entries.length - 1];
@@ -71,6 +76,12 @@ export const chatSlice = createSlice({
             // Find or create active 'assistant' block
             let block = lastEntry.blocks[lastEntry.blocks.length - 1];
             if (!block || block.type !== 'assistant' || !block.isStreaming) {
+               if (block && ('isStreaming' in block) && block.isStreaming) {
+                 block.isStreaming = false;
+                 if (block.type === 'thinking') {
+                   block.endTime = Date.now();
+                 }
+               }
                lastEntry.blocks.push({ type: 'assistant', text: '', isStreaming: true });
                block = lastEntry.blocks[lastEntry.blocks.length - 1];
             }
@@ -81,7 +92,11 @@ export const chatSlice = createSlice({
             // Find or create active 'thinking' block
             let block = lastEntry.blocks[lastEntry.blocks.length - 1];
             if (!block || block.type !== 'thinking' || !block.isStreaming) {
-               lastEntry.blocks.push({ type: 'thinking', text: '', isStreaming: true });
+               if (block && ('isStreaming' in block) && block.isStreaming) {
+                 block.isStreaming = false;
+                 // Should never happen that thinking follows thinking, but just in case
+               }
+               lastEntry.blocks.push({ type: 'thinking', text: '', isStreaming: true, startTime: Date.now() });
                block = lastEntry.blocks[lastEntry.blocks.length - 1];
             }
             if (block.type === 'thinking') {
@@ -95,12 +110,22 @@ export const chatSlice = createSlice({
            const block = lastEntry.blocks[lastEntry.blocks.length - 1];
            if (block && (block.type === 'assistant' || block.type === 'thinking')) {
               block.isStreaming = false;
+              if (block.type === 'thinking') {
+                block.endTime = Date.now();
+              }
            }
         }
       } else if (event.ToolExecutionStart) {
         const { tool_call_id, tool_name, args } = event.ToolExecutionStart;
         const lastEntry = state.entries[state.entries.length - 1];
         if (lastEntry && lastEntry.type === 'turn' && lastEntry.blocks) {
+           const lastBlock = lastEntry.blocks[lastEntry.blocks.length - 1];
+           if (lastBlock && 'isStreaming' in lastBlock && lastBlock.isStreaming) {
+              lastBlock.isStreaming = false;
+              if (lastBlock.type === 'thinking') {
+                lastBlock.endTime = Date.now();
+              }
+           }
            lastEntry.blocks.push({
              type: 'tool',
              call_id: tool_call_id,
@@ -122,16 +147,41 @@ export const chatSlice = createSlice({
       } else if (event.ToolExecutionEnd) {
         const { tool_call_id, result, is_error } = event.ToolExecutionEnd;
         const lastEntry = state.entries[state.entries.length - 1];
+         if (lastEntry && lastEntry.type === 'turn' && lastEntry.blocks) {
+            const block = lastEntry.blocks.find(b => b.type === 'tool' && b.call_id === tool_call_id);
+            if (block && block.type === 'tool') {
+              block.result = result;
+              block.active = false;
+              block.is_error = is_error;
+            }
+         }
+      } else if (event.ApprovalRequired) {
+        const { prompt_id, tool_name, tool_input, danger_level, explanation } = event.ApprovalRequired;
+        const lastEntry = state.entries[state.entries.length - 1];
         if (lastEntry && lastEntry.type === 'turn' && lastEntry.blocks) {
-           const block = lastEntry.blocks.find(b => b.type === 'tool' && b.call_id === tool_call_id);
-           if (block && block.type === 'tool') {
-             block.result = result;
-             block.active = false;
-             block.is_error = is_error;
+           const lastBlock = lastEntry.blocks[lastEntry.blocks.length - 1];
+           if (lastBlock && 'isStreaming' in lastBlock && lastBlock.isStreaming) {
+              lastBlock.isStreaming = false;
+              if (lastBlock.type === 'thinking') {
+                lastBlock.endTime = Date.now();
+              }
            }
+           lastEntry.blocks.push({
+             type: 'approval',
+             prompt_id,
+             tool_name,
+             tool_input,
+             danger_level,
+             explanation,
+             status: 'pending'
+           });
         }
       } else if (event.AgentEnd) {
         state.isProcessing = false;
+        const last = state.entries[state.entries.length - 1];
+        if (last && last.type === 'turn' && !last.endTime) {
+          last.endTime = Date.now();
+        }
       } else if (event.Error) {
         state.isProcessing = false;
         const lastEntry = state.entries[state.entries.length - 1];
@@ -150,6 +200,15 @@ export const chatSlice = createSlice({
         }
       }
     },
+    toolApprovalResponded: (state, action: PayloadAction<{ promptId: string; approved: boolean }>) => {
+      const lastEntry = state.entries[state.entries.length - 1];
+      if (lastEntry && lastEntry.type === 'turn' && lastEntry.blocks) {
+         const block = lastEntry.blocks.find(b => b.type === 'approval' && b.prompt_id === action.payload.promptId);
+         if (block && block.type === 'approval') {
+           block.status = action.payload.approved ? 'approved' : 'denied';
+         }
+      }
+    },
     clearChat: (state) => {
       state.entries = [];
       state.isProcessing = false;
@@ -157,5 +216,5 @@ export const chatSlice = createSlice({
   },
 });
 
-export const { userMessageSent, agentEventReceived, clearChat } = chatSlice.actions;
+export const { userMessageSent, agentEventReceived, toolApprovalResponded, clearChat } = chatSlice.actions;
 export default chatSlice.reducer;

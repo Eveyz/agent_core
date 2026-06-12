@@ -316,7 +316,7 @@ body {
   color: var(--accent);
   font-size: 13px;
   animation: pulse 2s infinite;
-  padding: 12px 18px;
+  margin-top: 8px;
 }
 
 .working-spinner {
@@ -335,10 +335,113 @@ body {
   margin-top: 4px;
 }
 
+.tool-result-block {
+  margin-top: 4px;
+  background-color: var(--bg-hover);
+  padding: 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow-x: auto;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.tool-result-block pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+/* Approval UI */
+.approval-block {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  margin: 8px 0;
+  background-color: var(--bg-hover);
+}
+
+.approval-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.approval-title {
+  font-weight: 500;
+  font-size: 13px;
+  color: var(--text-main);
+}
+
+.danger-badge {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+}
+.danger-badge.danger-network { background: rgba(56, 189, 248, 0.2); color: #38bdf8; }
+.danger-badge.danger-readwrite { background: rgba(250, 204, 21, 0.2); color: #facc15; }
+.danger-badge.danger-system { background: rgba(249, 115, 22, 0.2); color: #f97316; }
+.danger-badge.danger-destructive { background: rgba(239, 68, 68, 0.2); color: #ef4444; }
+
+.approval-explanation {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.approval-args pre {
+  background: var(--bg-main);
+  padding: 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow-x: auto;
+  margin-bottom: 12px;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.approval-actions button {
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+}
+
+.btn-deny {
+  background: transparent;
+  color: var(--text-main);
+  border: 1px solid var(--border) !important;
+}
+.btn-deny:hover { background: rgba(255, 255, 255, 0.05); }
+
+.btn-allow {
+  background: var(--accent);
+  color: white;
+}
+.btn-allow:hover { opacity: 0.9; }
+
+.approval-status {
+  font-size: 12px;
+  text-align: right;
+  color: var(--text-muted);
+}
+.status-approved { color: #22c55e; }
+.status-denied { color: #ef4444; }
+
 .tool-block {
   border-left: 2px solid var(--text-dim);
   padding-left: 12px;
-  margin-left: 4px;
+  margin-bottom: 12px;
   color: #909090;
   font-size: 13px;
   font-family: 'Fira Code', 'Menlo', monospace;
@@ -352,32 +455,75 @@ body {
 .assistant-msg {
   color: var(--text-main);
   line-height: 1.6;
-  font-size: 14.5px;
 }
 
-.assistant-msg p { margin-bottom: 12px; }
-.assistant-msg p:last-child { margin-bottom: 0; }
+.assistant-msg p {
+  margin: 0 0 12px 0;
+}
+.assistant-msg p:last-child {
+  margin-bottom: 0;
+}
+
+.assistant-msg ul,
+.assistant-msg ol {
+  padding-left: 24px;
+  margin: 0 0 12px 0;
+}
+
+.assistant-msg li {
+  margin-bottom: 4px;
+}
+
 .assistant-msg pre {
-  background: #090909;
+  background-color: var(--bg-hover);
   padding: 12px;
-  border-radius: 8px;
-  border: 1px solid var(--border-color);
+  border-radius: 6px;
   overflow-x: auto;
   margin: 12px 0;
 }
+
 .assistant-msg code {
-  font-family: 'Fira Code', 'Menlo', monospace;
-  background: rgba(255,255,255,0.08);
+  font-family: monospace;
+  font-size: 13px;
+  background-color: var(--bg-hover);
   padding: 2px 4px;
   border-radius: 4px;
-  font-size: 0.9em;
 }
 .assistant-msg pre code {
-  background: transparent;
+  background-color: transparent;
   padding: 0;
 }
 
-/* Error Block */
+/* Markdown Table Styles */
+.assistant-msg table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+  font-size: 13px;
+}
+
+.assistant-msg th,
+.assistant-msg td {
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  text-align: left;
+}
+
+.assistant-msg th {
+  background-color: var(--bg-hover);
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.assistant-msg tr:nth-child(even) {
+  background-color: rgba(255, 255, 255, 0.02);
+}
+
+.assistant-msg tr:hover {
+  background-color: var(--bg-hover);
+}
+
+/* Tool Execution */
 .error-msg {
   color: #FF5F56;
   font-size: 13px;

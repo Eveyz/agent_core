@@ -10,41 +10,191 @@ import {
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { RootState } from './store';
-import { agentEventReceived, userMessageSent } from './features/chat/chatSlice';
+import { agentEventReceived, userMessageSent, toolApprovalResponded } from './features/chat/chatSlice';
 import './App.css';
+
+marked.setOptions({
+  breaks: true,
+  gfm: true
+});
 
 const parseMarkdown = (raw: string) => {
   const html = marked.parse(raw) as string;
   return { __html: DOMPurify.sanitize(html) };
 };
 
-const ThinkingBlockUI = ({ text, isStreaming }: { text: string; isStreaming: boolean }) => {
+const formatTime = (ms: number) => {
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  const m = Math.floor(ms / 60000);
+  const s = Math.floor((ms % 60000) / 1000);
+  return `${m}m ${s}s`;
+};
+
+const ProcessingTimer = ({ startTime, endTime }: { startTime?: number, endTime?: number }) => {
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    if (endTime) return;
+    const interval = setInterval(() => setNow(Date.now()), 100);
+    return () => clearInterval(interval);
+  }, [endTime]);
+
+  if (!startTime) return null;
+  const diff = (endTime || now) - startTime;
+  return <span>Processed {formatTime(diff)}</span>;
+};
+
+const ThinkingBlockUI = ({ text, isStreaming, startTime, endTime }: { text: string; isStreaming: boolean; startTime?: number; endTime?: number }) => {
   const [collapsed, setCollapsed] = useState(false);
   
+  const getDurationString = () => {
+    if (isStreaming) return 'Thinking...';
+    if (startTime && endTime) {
+      const diff = endTime - startTime;
+      return `Thought for ${formatTime(diff)}`;
+    }
+    return 'Thought';
+  };
+
   return (
     <div className="block-wrapper">
-      <div className="thinking-toggle" onClick={() => setCollapsed(!collapsed)}>
-        Thinking {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+      <div 
+        className={`thinking-toggle ${isStreaming ? 'thinking-pulse' : ''}`} 
+        onClick={() => setCollapsed(!collapsed)}
+        style={{ cursor: 'pointer' }}
+      >
+        {getDurationString()} {collapsed ? <ChevronRight size={12} style={{ marginLeft: '4px' }} /> : <ChevronDown size={12} style={{ marginLeft: '4px' }} />}
       </div>
       {!collapsed && (
         <div className="thinking-block">
           {text}
-          {isStreaming && <span className="typing-dot" style={{ display: 'inline-block', marginLeft: '4px' }}></span>}
+          {isStreaming && <span className="typing-dot" style={{ display: 'inline-block', marginLeft: '4px' }}>...</span>}
         </div>
       )}
     </div>
   );
 };
 
-const ToolBlockUI = ({ name, active }: { name: string; active: boolean }) => {
+const ToolBlockUI = ({ name, result }: { name: string; result?: string }) => {
+  const [collapsed, setCollapsed] = useState(true);
+  
   return (
     <div className="block-wrapper">
-      <div className="tool-summary">
-        Used 1 tool
+      <div 
+        className="thinking-toggle" 
+        style={{ cursor: 'pointer' }} 
+        onClick={() => setCollapsed(!collapsed)}
+      >
+        Used tool: {name} {collapsed ? <ChevronRight size={12} style={{ marginLeft: '4px' }} /> : <ChevronDown size={12} style={{ marginLeft: '4px' }} />}
       </div>
-      <div className="thinking-toggle" style={{ cursor: 'default' }}>
-        {name} {active ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+      {!collapsed && result && (
+        <div 
+          className="tool-result-block assistant-msg" 
+          dangerouslySetInnerHTML={parseMarkdown(result)} 
+        />
+      )}
+    </div>
+  );
+};
+
+const ApprovalBlockUI = ({ block }: { block: any }) => {
+  const dispatch = useDispatch();
+
+  const handleApprove = async (choice: string) => {
+    dispatch(toolApprovalResponded({ promptId: block.prompt_id, approved: choice !== 'deny' }));
+    try {
+      await invoke('approve_tool', { promptId: block.prompt_id, choice });
+    } catch (e) {
+      console.error('Failed to approve tool', e);
+    }
+  };
+
+  return (
+    <div className="approval-block">
+      <div className="approval-header">
+        <span className="approval-title">Approval Required: {block.tool_name}</span>
+        <span className={`danger-badge danger-${block.danger_level.toLowerCase()}`}>{block.danger_level}</span>
       </div>
+      <div className="approval-explanation">{block.explanation}</div>
+      <div className="approval-args">
+        <pre>{JSON.stringify(block.tool_input, null, 2)}</pre>
+      </div>
+      {block.status === 'pending' ? (
+        <div className="approval-actions">
+          <button className="btn-deny" onClick={() => handleApprove('deny')}>Deny</button>
+          <button className="btn-allow" onClick={() => handleApprove('allow_session')}>Allow</button>
+        </div>
+      ) : (
+        <div className="approval-status">
+          Status: <span className={`status-${block.status}`}>{block.status.toUpperCase()}</span>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const AgentTurnUI = ({ entry }: { entry: any }) => {
+  const [collapsed, setCollapsed] = useState(false);
+  
+  const getThoughtDuration = () => {
+    let totalMs = 0;
+    entry.blocks?.forEach((b: any) => {
+      if (b.type === 'thinking' && b.startTime && b.endTime) {
+        totalMs += (b.endTime - b.startTime);
+      }
+    });
+    if (totalMs === 0) return null;
+    return `Thought for ${formatTime(totalMs)}`;
+  };
+
+  const totalTime = entry.endTime ? `Processed ${formatTime(entry.endTime - entry.startTime)}` : null;
+
+  return (
+    <div className="agent-turn">
+      <div 
+        className={`turn-header ${!entry.endTime ? 'processing-pulse' : ''}`}
+        style={{ cursor: entry.endTime ? 'pointer' : 'default' }}
+        onClick={() => { if (entry.endTime) setCollapsed(!collapsed); }}
+      >
+        {!entry.endTime ? (
+          <>
+            <ProcessingTimer startTime={entry.startTime} endTime={entry.endTime} />
+            <ChevronDown size={12} style={{ marginLeft: '4px' }}/>
+          </>
+        ) : (
+          <>
+            {collapsed ? (getThoughtDuration() ? `${totalTime} · ${getThoughtDuration()}` : totalTime) : totalTime}
+            {collapsed ? <ChevronRight size={12} style={{ marginLeft: '4px' }}/> : <ChevronDown size={12} style={{ marginLeft: '4px' }}/>}
+          </>
+        )}
+      </div>
+      
+      {entry.blocks?.map((b: any, idx: number) => {
+        if (collapsed && b.type !== 'assistant' && b.type !== 'error') {
+          return null;
+        }
+
+        if (b.type === 'thinking') {
+          return <ThinkingBlockUI key={idx} text={b.text} isStreaming={b.isStreaming} startTime={b.startTime} endTime={b.endTime} />;
+        } else if (b.type === 'tool') {
+          return <ToolBlockUI key={idx} name={b.name} result={b.result} />;
+        } else if (b.type === 'approval') {
+          return <ApprovalBlockUI key={idx} block={b} />;
+        } else if (b.type === 'assistant') {
+          return (
+            <div key={idx} className="assistant-msg" dangerouslySetInnerHTML={parseMarkdown(b.text)} />
+          );
+        } else if (b.type === 'error') {
+          return <div key={idx} className="error-msg">{b.text}</div>;
+        }
+        return null;
+      })}
+      
+      {!entry.endTime && (
+        <div className="working-indicator">
+          <span className="working-spinner">⚙️</span> Working...
+        </div>
+      )}
     </div>
   );
 };
@@ -92,12 +242,6 @@ function App() {
       console.error('Invoke error:', e);
       dispatch(agentEventReceived({ Error: String(e) }));
     }
-  };
-
-  const getProcessingTime = (start?: number, end?: number) => {
-    if (!start) return '';
-    const diff = (end || Date.now()) - start;
-    return `Processed ${(diff / 1000).toFixed(1)}s`;
   };
 
   return (
@@ -212,28 +356,7 @@ function App() {
               } else if (entry.type === 'turn') {
                 return (
                   <div key={entry.id} className="message-row agent-row">
-                    <div className="agent-turn">
-                      <div className="turn-header">
-                        {getProcessingTime(entry.startTime, entry.endTime)}
-                        <ChevronDown size={12} style={{ marginLeft: '4px', cursor: 'pointer' }}/>
-                      </div>
-                      
-                      {entry.blocks?.map((b, idx) => {
-                        if (b.type === 'thinking') {
-                          return <ThinkingBlockUI key={idx} text={b.text} isStreaming={b.isStreaming} />;
-                        } else if (b.type === 'tool') {
-                          return <ToolBlockUI key={idx} name={b.name} active={b.active} />;
-                        } else if (b.type === 'assistant') {
-                          return (
-                            <div key={idx} className="assistant-msg" dangerouslySetInnerHTML={parseMarkdown(b.text)} />
-                          );
-                        } else if (b.type === 'error') {
-                          return <div key={idx} className="error-msg">{b.text}</div>;
-                        }
-                        return null;
-                      })}
-                      
-                    </div>
+                    <AgentTurnUI entry={entry} />
                   </div>
                 );
               }
