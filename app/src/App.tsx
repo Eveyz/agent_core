@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, memo, useCallback } from 'react';
+import { useState, useEffect, useRef, memo, useCallback, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useDispatch, useSelector } from 'react-redux';
@@ -18,6 +18,11 @@ import SmartphoneIcon from 'lucide-react/dist/esm/icons/smartphone.mjs';
 import Maximize2Icon from 'lucide-react/dist/esm/icons/maximize-2.mjs';
 import CopyIcon from 'lucide-react/dist/esm/icons/copy.mjs';
 import Edit2Icon from 'lucide-react/dist/esm/icons/edit-2.mjs';
+import FileIcon from 'lucide-react/dist/esm/icons/file.mjs';
+import SparklesIcon from 'lucide-react/dist/esm/icons/sparkles.mjs';
+import Code2Icon from 'lucide-react/dist/esm/icons/code-2.mjs';
+import RefreshCwIcon from 'lucide-react/dist/esm/icons/refresh-cw.mjs';
+import CompassIcon from 'lucide-react/dist/esm/icons/compass.mjs';
 import { RootState } from './store';
 import { agentEventReceived, userMessageSent, ChatEntry } from './features/chat/chatSlice';
 import { AgentTurnUI } from './components/chat/AgentTurn';
@@ -27,6 +32,82 @@ const flexGap8 = { display: 'flex', gap: '8px' } as const;
 const flexColumnEnd = { display: 'flex', flexDirection: 'column' as const, alignItems: 'flex-end', gap: '6px' };
 const flexRowMeta = { display: 'flex', gap: '12px', color: '#555', fontSize: '11px', paddingRight: '4px' };
 const cursorPointer = { cursor: 'pointer' as const };
+
+const PROMPT_SUGGESTIONS = [
+  {
+    icon: 'search',
+    label: 'Search for TODO comments and FIXME notes across the codebase',
+  },
+  {
+    icon: 'refactor',
+    label: 'Refactor error handling to use thiserror and anyhow consistently',
+  },
+  {
+    icon: 'explore',
+    label: 'Explain how subagents are spawned and how they share the tool registry',
+  },
+  {
+    icon: 'create',
+    label: 'Write comprehensive unit tests for the permission module',
+  },
+];
+
+const CosmicBackground = memo(function CosmicBackground() {
+  return (
+    <>
+      <div className="cosmic-glow cosmic-glow-1" />
+      <div className="cosmic-glow cosmic-glow-2" />
+      <div className="cosmic-glow cosmic-glow-3" />
+      <div className="cosmic-glow cosmic-glow-4" />
+      <div className="star-field" />
+    </>
+  );
+});
+
+const EmptyState = memo(function EmptyState({ onSend }: { onSend: (msg: string) => void }) {
+  return (
+    <div className="empty-state">
+      <div className="empty-state-content">
+        {/* Sun + orbiting planets */}
+        <div className="solar-system">
+          <div className="sun" />
+          <div className="planet-orbit orbit-1">
+            <div className="planet planet-1" />
+          </div>
+          <div className="planet-orbit orbit-2">
+            <div className="planet planet-2" />
+          </div>
+          <div className="planet-orbit orbit-3">
+            <div className="planet planet-3" />
+          </div>
+        </div>
+
+        <h1 className="empty-state-title">What can I help you build?</h1>
+        <p className="empty-state-subtitle">
+          Spawn subagents, analyze code, and orchestrate complex tasks.
+        </p>
+
+        <div className="prompt-suggestions">
+          {PROMPT_SUGGESTIONS.map((s, i) => (
+            <button
+              key={i}
+              className="prompt-card"
+              onClick={() => onSend(s.label)}
+            >
+              <div className="prompt-card-icon">
+                {s.icon === 'search' && <Code2Icon size={16} />}
+                {s.icon === 'refactor' && <RefreshCwIcon size={16} />}
+                {s.icon === 'explore' && <CompassIcon size={16} />}
+                {s.icon === 'create' && <SparklesIcon size={16} />}
+              </div>
+              <span className="prompt-card-text">{s.label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+});
 
 const Sidebar = memo(function Sidebar({
   activeTab,
@@ -130,6 +211,57 @@ const AgentRow = memo(function AgentRow({ entry }: { entry: ChatEntry }) {
   );
 });
 
+interface AutocompleteItem {
+  label: string;
+  value: string;
+  icon: 'folder' | 'file' | 'command';
+}
+
+const COMMANDS: AutocompleteItem[] = [
+  { label: 'subagents', value: '/subagents ', icon: 'command' },
+  { label: 'btw', value: '/btw ', icon: 'command' },
+  { label: 'clear', value: '/clear', icon: 'command' },
+  { label: 'help', value: '/help', icon: 'command' },
+];
+
+// Parse @mentions from text. Returns array of { type, value }.
+function parseMentions(text: string): Array<{ type: 'text' | 'mention'; value: string }> {
+  const tokens: Array<{ type: 'text' | 'mention'; value: string }> = [];
+  let lastIndex = 0;
+  const regex = /@[^\s]+/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      tokens.push({ type: 'text', value: text.slice(lastIndex, match.index) });
+    }
+    tokens.push({ type: 'mention', value: match[0] });
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < text.length) {
+    tokens.push({ type: 'text', value: text.slice(lastIndex) });
+  }
+  if (tokens.length === 0 && text) {
+    tokens.push({ type: 'text', value: text });
+  }
+  return tokens;
+}
+
+// Find the mention token that contains or is adjacent to position.
+// Returns [start, end] of the mention, or null.
+function findMentionBoundaries(text: string, pos: number): [number, number] | null {
+  const regex = /@[^\s]+/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    const start = match.index;
+    const end = start + match[0].length;
+    // If cursor is inside or immediately after the mention, treat it as part of the mention
+    if (pos > start && pos <= end) {
+      return [start, end];
+    }
+  }
+  return null;
+}
+
 const ChatInput = memo(function ChatInput({
   isProcessing,
   onSend,
@@ -140,30 +272,244 @@ const ChatInput = memo(function ChatInput({
   entriesLength: number;
 }) {
   const [input, setInput] = useState('');
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const overlayRef = useRef<HTMLPreElement>(null);
+
+  // Autocomplete state
+  const [showAutocomplete, setShowAutocomplete] = useState(false);
+  const [autocompleteItems, setAutocompleteItems] = useState<AutocompleteItem[]>([]);
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [triggerInfo, setTriggerInfo] = useState<{ start: number; end: number; type: '@' | '/' } | null>(null);
+
+  // Fetch directory entries for @ trigger
+  const fetchDirectoryEntries = useCallback(async (query: string) => {
+    try {
+      const entries = await invoke<Array<{ name: string; type: string }>>('list_directory', { path: null });
+      const filtered = entries
+        .filter((e) => e.name.toLowerCase().includes(query.toLowerCase()))
+        .map((e) => ({
+          label: e.name,
+          value: e.name,
+          icon: (e.type === 'directory' ? 'folder' : 'file') as 'folder' | 'file',
+        }));
+      setAutocompleteItems(filtered);
+      setSelectedIndex(0);
+    } catch (e) {
+      console.error('Failed to list directory:', e);
+      setAutocompleteItems([]);
+    }
+  }, []);
+
+  const closeAutocomplete = useCallback(() => {
+    setShowAutocomplete(false);
+    setAutocompleteItems([]);
+    setTriggerInfo(null);
+  }, []);
+
+  const insertAutocompleteItem = useCallback((item: AutocompleteItem) => {
+    if (!triggerInfo || !textareaRef.current) return;
+    const before = input.slice(0, triggerInfo.start);
+    const after = input.slice(triggerInfo.end);
+    let insertValue = item.value;
+    if (triggerInfo.type === '@') {
+      insertValue = `@${item.value} `;
+    }
+    const newValue = before + insertValue + after;
+    setInput(newValue);
+    closeAutocomplete();
+    // Restore cursor after insertion
+    setTimeout(() => {
+      const pos = before.length + insertValue.length;
+      textareaRef.current?.setSelectionRange(pos, pos);
+      textareaRef.current?.focus();
+    }, 0);
+  }, [input, triggerInfo, closeAutocomplete]);
 
   const handleSend = useCallback(() => {
     const trimmed = input.trim();
     if (!trimmed || isProcessing) return;
     setInput('');
     onSend(trimmed);
-  }, [input, isProcessing, onSend]);
+    closeAutocomplete();
+  }, [input, isProcessing, onSend, closeAutocomplete]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (showAutocomplete && autocompleteItems.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSelectedIndex((prev) => (prev + 1) % autocompleteItems.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSelectedIndex((prev) => (prev - 1 + autocompleteItems.length) % autocompleteItems.length);
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        insertAutocompleteItem(autocompleteItems[selectedIndex]);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeAutocomplete();
+        return;
+      }
+    }
+
+    const el = textareaRef.current;
+    if (!el) return;
+    const cursorPos = el.selectionStart;
+
+    // Backspace: if cursor is inside or right after a mention, delete the whole mention
+    if (e.key === 'Backspace' && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+      const boundaries = findMentionBoundaries(input, cursorPos);
+      if (boundaries) {
+        e.preventDefault();
+        const [start, end] = boundaries;
+        const newValue = input.slice(0, start) + input.slice(end);
+        setInput(newValue);
+        setTimeout(() => {
+          el.setSelectionRange(start, start);
+          el.focus();
+        }, 0);
+        return;
+      }
+    }
+
+    // Delete: if cursor is right before a mention, delete the whole mention
+    if (e.key === 'Delete' && !e.shiftKey && !e.metaKey && !e.ctrlKey) {
+      const boundaries = findMentionBoundaries(input, cursorPos + 1);
+      if (boundaries && boundaries[0] === cursorPos) {
+        e.preventDefault();
+        const [start, end] = boundaries;
+        const newValue = input.slice(0, start) + input.slice(end);
+        setInput(newValue);
+        setTimeout(() => {
+          el.setSelectionRange(start, start);
+          el.focus();
+        }, 0);
+        return;
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSend();
     }
-  }, [handleSend]);
+  }, [showAutocomplete, autocompleteItems, selectedIndex, insertAutocompleteItem, closeAutocomplete, handleSend, input]);
+
+  const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const value = e.target.value;
+    const cursorPos = e.target.selectionStart;
+    setInput(value);
+
+    // Find the nearest trigger (@ or /) before cursor
+    let triggerStart = -1;
+    let triggerType: '@' | '/' | null = null;
+
+    for (let i = cursorPos - 1; i >= 0; i--) {
+      const char = value[i];
+      if (char === '@' || char === '/') {
+        // Only trigger if it's at start or preceded by whitespace
+        if (i === 0 || /\s/.test(value[i - 1])) {
+          triggerStart = i;
+          triggerType = char;
+        }
+        break;
+      }
+      if (/\s/.test(char)) {
+        break;
+      }
+    }
+
+    if (triggerStart !== -1 && triggerType) {
+      const query = value.slice(triggerStart + 1, cursorPos);
+      setTriggerInfo({ start: triggerStart, end: cursorPos, type: triggerType });
+      setShowAutocomplete(true);
+
+      if (triggerType === '@') {
+        fetchDirectoryEntries(query);
+      } else if (triggerType === '/') {
+        const filtered = COMMANDS.filter((c) => c.label.toLowerCase().includes(query.toLowerCase()));
+        setAutocompleteItems(filtered);
+        setSelectedIndex(0);
+      }
+    } else {
+      closeAutocomplete();
+    }
+  }, [fetchDirectoryEntries, closeAutocomplete]);
+
+  // Auto-resize textarea & sync overlay scroll
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 200) + 'px';
+  }, [input]);
+
+  const handleScroll = useCallback(() => {
+    if (overlayRef.current && textareaRef.current) {
+      overlayRef.current.scrollTop = textareaRef.current.scrollTop;
+      overlayRef.current.scrollLeft = textareaRef.current.scrollLeft;
+    }
+  }, []);
+
+  // Build highlighted HTML for the overlay
+  const highlightedHTML = useMemo(() => {
+    const tokens = parseMentions(input);
+    return tokens
+      .map((t) => {
+        if (t.type === 'mention') {
+          const escaped = t.value
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+          return `<span class="mention-token">${escaped}</span>`;
+        }
+        return t.value
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+      })
+      .join('');
+  }, [input]);
 
   return (
     <div className="input-area">
-      <div className="input-container">
+      <div className="input-container" style={{ position: 'relative' }}>
+        {showAutocomplete && autocompleteItems.length > 0 && (
+          <div className="autocomplete-dropdown">
+            {autocompleteItems.map((item, idx) => (
+              <div
+                key={item.value + idx}
+                className={`autocomplete-item ${idx === selectedIndex ? 'selected' : ''}`}
+                onClick={() => insertAutocompleteItem(item)}
+                onMouseEnter={() => setSelectedIndex(idx)}
+              >
+                {item.icon === 'folder' && <FolderIcon size={14} color="#808080" />}
+                {item.icon === 'file' && <FileIcon size={14} color="#808080" />}
+                {item.icon === 'command' && <TerminalSquareIcon size={14} color="#52A8FF" />}
+                <span className="autocomplete-label">{item.label}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {/* Highlight overlay: shows colored @mentions behind the textarea */}
+        <pre
+          ref={overlayRef}
+          className="highlight-overlay"
+          aria-hidden="true"
+          dangerouslySetInnerHTML={{ __html: highlightedHTML + '<br />' }}
+        />
         <textarea
+          ref={textareaRef}
           className="chat-input"
           value={input}
-          onChange={(e) => setInput(e.target.value)}
+          onChange={handleChange}
           onKeyDown={handleKeyDown}
-          placeholder="Ask the agent..."
+          onScroll={handleScroll}
+          placeholder="Ask the agent...  Type @ for files, / for commands"
           rows={1}
         />
         <div className="input-actions">
@@ -193,7 +539,7 @@ const ChatInput = memo(function ChatInput({
           <span>cache 97%</span>
           <span>{Math.floor(entriesLength / 2)} turns</span>
         </div>
-        <div>Type / for commands</div>
+        <div>Type @ for files, / for commands</div>
       </div>
     </div>
   );
@@ -247,6 +593,7 @@ function App() {
       <Sidebar activeTab={activeTab} onTabChange={setActiveTab} />
 
       <main className="main-area">
+        <CosmicBackground />
         <header className="main-header">
           <div className="header-title">check the weather for Shenzhen<br/><span style={{ fontSize: '11px', color: '#555' }}>agent_core &middot; Agent &middot; now &middot; 10.3k tok / $0.0003 / cache 97%</span></div>
           <div className="header-actions">
@@ -259,11 +606,7 @@ function App() {
         </header>
 
         {entries.length === 0 ? (
-          <div className="empty-state">
-            <div className="hero-logo">
-              <BotIcon className="hero-icon" />
-            </div>
-          </div>
+          <EmptyState onSend={handleSend} />
         ) : (
           <div className="chat-history">
             {entries.map((entry) =>

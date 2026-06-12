@@ -7,6 +7,29 @@ export type TurnBlock =
   | { type: 'approval'; prompt_id: string; tool_name: string; tool_input: any; danger_level: string; explanation: string; status: 'pending' | 'approved' | 'denied' }
   | { type: 'error'; text: string };
 
+export interface SubagentBlock {
+  type: 'assistant' | 'thinking' | 'tool' | 'error';
+  text?: string;
+  isStreaming?: boolean;
+  startTime?: number;
+  endTime?: number;
+  call_id?: string;
+  name?: string;
+  result?: string;
+  active?: boolean;
+  is_error?: boolean;
+}
+
+export interface SubagentEntry {
+  id: string;
+  task: string;
+  status: 'working' | 'done' | 'error';
+  iterations_used?: number;
+  blocks: SubagentBlock[];
+  startTime: number;
+  endTime?: number;
+}
+
 export interface ChatEntry {
   id: string;
   type: 'user' | 'turn';
@@ -15,6 +38,7 @@ export interface ChatEntry {
   blocks?: TurnBlock[];// for turn
   startTime?: number;  // timestamp for TurnStart
   endTime?: number;    // timestamp for TurnEnd
+  subagents?: Record<string, SubagentEntry>;
 }
 
 interface ChatState {
@@ -26,6 +50,30 @@ const initialState: ChatState = {
   entries: [],
   isProcessing: false,
 };
+
+function getActiveTurn(state: ChatState): ChatEntry | undefined {
+  for (let i = state.entries.length - 1; i >= 0; i--) {
+    const entry = state.entries[i];
+    if (entry.type === 'turn' && !entry.endTime) {
+      return entry;
+    }
+  }
+  return undefined;
+}
+
+function getOrCreateSubagent(entry: ChatEntry, subagentId: string, task: string): SubagentEntry {
+  if (!entry.subagents) entry.subagents = {};
+  if (!entry.subagents[subagentId]) {
+    entry.subagents[subagentId] = {
+      id: subagentId,
+      task,
+      status: 'working',
+      blocks: [],
+      startTime: Date.now(),
+    };
+  }
+  return entry.subagents[subagentId];
+}
 
 export const chatSlice = createSlice({
   name: 'chat',
@@ -71,7 +119,7 @@ export const chatSlice = createSlice({
         const delta = event.MessageUpdate.delta;
         const lastEntry = state.entries[state.entries.length - 1];
         if (lastEntry && lastEntry.type === 'turn' && lastEntry.blocks) {
-          
+
           if (typeof delta.Text === 'string') {
             // Find or create active 'assistant' block
             let block = lastEntry.blocks[lastEntry.blocks.length - 1];
@@ -141,7 +189,7 @@ export const chatSlice = createSlice({
         if (lastEntry && lastEntry.type === 'turn' && lastEntry.blocks) {
            const block = lastEntry.blocks.find(b => b.type === 'tool' && b.call_id === tool_call_id);
            if (block && block.type === 'tool') {
-             block.result += partial_result;
+             block.result += typeof partial_result === 'string' ? partial_result : JSON.stringify(partial_result);
            }
         }
       } else if (event.ToolExecutionEnd) {
@@ -150,12 +198,12 @@ export const chatSlice = createSlice({
          if (lastEntry && lastEntry.type === 'turn' && lastEntry.blocks) {
             const block = lastEntry.blocks.find(b => b.type === 'tool' && b.call_id === tool_call_id);
             if (block && block.type === 'tool') {
-              block.result = result;
+              block.result = typeof result === 'string' ? result : JSON.stringify(result);
               block.active = false;
               block.is_error = is_error;
             }
          }
-      } else if (event.ApprovalRequired) {
+       } else if (event.ApprovalRequired) {
         const { prompt_id, tool_name, tool_input, danger_level, explanation } = event.ApprovalRequired;
         const lastEntry = state.entries[state.entries.length - 1];
         if (lastEntry && lastEntry.type === 'turn' && lastEntry.blocks) {
@@ -196,6 +244,92 @@ export const chatSlice = createSlice({
             blocks: [{ type: 'error', text: event.Error }],
             startTime: Date.now(),
             endTime: Date.now()
+          });
+        }
+      }
+
+      // ── Subagent events ──
+      else if (event.SubagentStart) {
+        const { subagent_id, task } = event.SubagentStart;
+        if (typeof task !== 'string') {
+          console.warn('[SubagentStart] task is not a string:', task, 'event:', event.SubagentStart);
+        }
+        const safeTask = typeof task === 'string' ? task : JSON.stringify(task);
+        const turn = getActiveTurn(state);
+        if (turn) {
+          getOrCreateSubagent(turn, subagent_id, safeTask);
+        }
+      } else if (event.SubagentMessageUpdate) {
+        const { subagent_id, delta } = event.SubagentMessageUpdate;
+        const turn = getActiveTurn(state);
+        if (turn && turn.subagents && turn.subagents[subagent_id]) {
+          const sa = turn.subagents[subagent_id];
+          if (typeof delta.Text === 'string') {
+            let block = sa.blocks[sa.blocks.length - 1];
+            if (!block || block.type !== 'assistant' || !block.isStreaming) {
+              if (block && block.isStreaming) {
+                block.isStreaming = false;
+                if (block.type === 'thinking') block.endTime = Date.now();
+              }
+              sa.blocks.push({ type: 'assistant', text: '', isStreaming: true });
+              block = sa.blocks[sa.blocks.length - 1];
+            }
+            if (block.type === 'assistant') block.text += delta.Text;
+          } else if (typeof delta.Thinking === 'string') {
+            let block = sa.blocks[sa.blocks.length - 1];
+            if (!block || block.type !== 'thinking' || !block.isStreaming) {
+              if (block && block.isStreaming) block.isStreaming = false;
+              sa.blocks.push({ type: 'thinking', text: '', isStreaming: true, startTime: Date.now() });
+              block = sa.blocks[sa.blocks.length - 1];
+            }
+            if (block.type === 'thinking') block.text += delta.Thinking;
+          }
+        }
+      } else if (event.SubagentToolStart) {
+        const { subagent_id, tool_call_id, tool_name, args } = event.SubagentToolStart;
+        const turn = getActiveTurn(state);
+        if (turn && turn.subagents && turn.subagents[subagent_id]) {
+          const sa = turn.subagents[subagent_id];
+          const lastBlock = sa.blocks[sa.blocks.length - 1];
+          if (lastBlock && lastBlock.isStreaming) {
+            lastBlock.isStreaming = false;
+            if (lastBlock.type === 'thinking') lastBlock.endTime = Date.now();
+          }
+          sa.blocks.push({
+            type: 'tool',
+            call_id: tool_call_id,
+            name: tool_name,
+            result: `Executing ${tool_name} with ${JSON.stringify(args)}...\n`,
+            active: true,
+            is_error: false,
+          });
+        }
+      } else if (event.SubagentToolEnd) {
+        const { subagent_id, tool_call_id, result, is_error } = event.SubagentToolEnd;
+        const turn = getActiveTurn(state);
+        if (turn && turn.subagents && turn.subagents[subagent_id]) {
+          const sa = turn.subagents[subagent_id];
+          const block = sa.blocks.find(b => b.type === 'tool' && b.call_id === tool_call_id);
+          if (block && block.type === 'tool') {
+            block.result = typeof result === 'string' ? result : JSON.stringify(result);
+            block.active = false;
+            block.is_error = is_error;
+          }
+        }
+      } else if (event.SubagentEnd) {
+        const { subagent_id, success, iterations_used } = event.SubagentEnd;
+        const turn = getActiveTurn(state);
+        if (turn && turn.subagents && turn.subagents[subagent_id]) {
+          const sa = turn.subagents[subagent_id];
+          sa.status = success ? 'done' : 'error';
+          sa.iterations_used = iterations_used;
+          sa.endTime = Date.now();
+          // Close any still-streaming blocks
+          sa.blocks.forEach(b => {
+            if (b.isStreaming) {
+              b.isStreaming = false;
+              if (b.type === 'thinking') b.endTime = Date.now();
+            }
           });
         }
       }

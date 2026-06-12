@@ -2,6 +2,9 @@ import { useState, useEffect, memo, useMemo } from 'react';
 import { useDispatch } from 'react-redux';
 import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
 import ChevronRightIcon from 'lucide-react/dist/esm/icons/chevron-right.mjs';
+import ZapIcon from 'lucide-react/dist/esm/icons/zap.mjs';
+import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
+import XIcon from 'lucide-react/dist/esm/icons/x.mjs';
 import { invoke } from '@tauri-apps/api/core';
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
@@ -138,18 +141,101 @@ const ApprovalBlockUI = memo(function ApprovalBlockUI({ block }: { block: any })
       </div>
       <div className="approval-explanation">{block.explanation}</div>
       <div className="approval-args">
-        <pre>{block.tool_input}</pre>
+        <pre>{typeof block.tool_input === 'string' ? block.tool_input : JSON.stringify(block.tool_input, null, 2)}</pre>
       </div>
       {block.status === 'pending' ? (
         <div className="approval-actions">
           <button className="btn-deny" onClick={() => handleApprove('deny')}>Deny</button>
-          <button className="btn-allow" onClick={() => handleApprove('allow')}>Allow Once</button>
+          <button className="btn-allow" onClick={() => handleApprove('allow_session')}>Allow Once</button>
         </div>
       ) : (
         <div className="approval-status">
           <span className={block.status === 'approved' ? 'status-approved' : 'status-denied'}>
             {block.status === 'approved' ? 'Approved' : 'Denied'}
           </span>
+        </div>
+      )}
+    </div>
+  );
+});
+
+const SubagentBlockUI = memo(function SubagentBlockUI({ block }: { block: any }) {
+  if (block.type === 'thinking') {
+    const text = typeof block.text === 'string' ? block.text : JSON.stringify(block.text);
+    return (
+      <ThinkingBlockUI
+        text={text}
+        isStreaming={!!block.isStreaming}
+        startTime={block.startTime}
+        endTime={block.endTime}
+      />
+    );
+  }
+  if (block.type === 'assistant') {
+    const text = typeof block.text === 'string' ? block.text : JSON.stringify(block.text);
+    return (
+      <div className="assistant-msg" dangerouslySetInnerHTML={parseMarkdown(text)} />
+    );
+  }
+  if (block.type === 'tool') {
+    const name = typeof block.name === 'string' ? block.name : JSON.stringify(block.name);
+    const result = typeof block.result === 'string' ? block.result : JSON.stringify(block.result);
+    return (
+      <ToolBlockUI
+        name={name || ''}
+        result={result}
+        active={!!block.active}
+      />
+    );
+  }
+  if (block.type === 'error') {
+    const text = typeof block.text === 'string' ? block.text : JSON.stringify(block.text);
+    return <div className="error-msg">{text}</div>;
+  }
+  return null;
+});
+
+const SubagentCard = memo(function SubagentCard({ subagent }: { subagent: any }) {
+  const [collapsed, setCollapsed] = useState(false);
+
+  const statusIcon = useMemo(() => {
+    if (subagent.status === 'working') return <ZapIcon size={12} color="#facc15" />;
+    if (subagent.status === 'done') return <CheckIcon size={12} color="#4ade80" />;
+    return <XIcon size={12} color="#f87171" />;
+  }, [subagent.status]);
+
+  const statusText = useMemo(() => {
+    if (subagent.status === 'working') {
+      const elapsed = subagent.endTime
+        ? formatTime(subagent.endTime - subagent.startTime)
+        : formatTime(Date.now() - subagent.startTime);
+      return `Working · ${elapsed}`;
+    }
+    const iterText = subagent.iterations_used ? `${subagent.iterations_used} iter` : '';
+    const timeText = subagent.endTime && subagent.startTime
+      ? formatTime(subagent.endTime - subagent.startTime)
+      : '';
+    return `${subagent.status === 'done' ? 'Done' : 'Failed'}${iterText ? ` · ${iterText}` : ''}${timeText ? ` · ${timeText}` : ''}`;
+  }, [subagent]);
+
+  const idText = typeof subagent.id === 'string' ? subagent.id : JSON.stringify(subagent.id);
+
+  return (
+    <div className={`subagent-card ${subagent.status === 'working' ? 'subagent-working' : ''}`}>
+      <div className="subagent-header" onClick={() => setCollapsed(!collapsed)}>
+        <span className="subagent-icon">{statusIcon}</span>
+        <span className="subagent-id">{idText}</span>
+        <span className="subagent-status">{statusText}</span>
+        {collapsed ? <ChevronRightIcon size={12} /> : <ChevronDownIcon size={12} />}
+      </div>
+      {!collapsed && (
+        <div className="subagent-body">
+          <div className="subagent-task">
+            {typeof subagent.task === 'string' ? subagent.task : JSON.stringify(subagent.task)}
+          </div>
+          {subagent.blocks?.map((b: any, idx: number) => (
+            <SubagentBlockUI key={idx} block={b} />
+          ))}
         </div>
       )}
     </div>
@@ -198,7 +284,8 @@ const DynamicWorkingIndicator = memo(function DynamicWorkingIndicator({ entry }:
 
   return (
     <div className="working-indicator">
-      <span className="working-spinner">⚙️</span> {statusText}
+      <div className="black-hole-spinner" />
+      <span className="light-wave-text">{statusText}</span>
     </div>
   );
 });
@@ -218,6 +305,11 @@ export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: any }) 
   }, [entry.blocks]);
 
   const totalTime = entry.endTime ? `Processed ${formatTime(entry.endTime - entry.startTime)}` : null;
+
+  const subagentList = useMemo(() => {
+    if (!entry.subagents) return [];
+    return Object.values(entry.subagents);
+  }, [entry.subagents]);
 
   return (
     <div className="agent-turn">
@@ -245,20 +337,33 @@ export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: any }) 
         }
 
         if (b.type === 'thinking') {
-          return <ThinkingBlockUI key={idx} text={b.text} isStreaming={b.isStreaming} startTime={b.startTime} endTime={b.endTime} />;
+          const text = typeof b.text === 'string' ? b.text : JSON.stringify(b.text);
+          return <ThinkingBlockUI key={idx} text={text} isStreaming={b.isStreaming} startTime={b.startTime} endTime={b.endTime} />;
         } else if (b.type === 'tool') {
-          return <ToolBlockUI key={idx} name={b.name} result={b.result} active={b.active} />;
+          const name = typeof b.name === 'string' ? b.name : JSON.stringify(b.name);
+          const result = typeof b.result === 'string' ? b.result : JSON.stringify(b.result);
+          return <ToolBlockUI key={idx} name={name} result={result} active={b.active} />;
         } else if (b.type === 'approval') {
           return <ApprovalBlockUI key={idx} block={b} />;
         } else if (b.type === 'assistant') {
+          const text = typeof b.text === 'string' ? b.text : JSON.stringify(b.text);
           return (
-            <div key={idx} className="assistant-msg" dangerouslySetInnerHTML={parseMarkdown(b.text)} />
+            <div key={idx} className="assistant-msg" dangerouslySetInnerHTML={parseMarkdown(text)} />
           );
         } else if (b.type === 'error') {
-          return <div key={idx} className="error-msg">{b.text}</div>;
+          const text = typeof b.text === 'string' ? b.text : JSON.stringify(b.text);
+          return <div key={idx} className="error-msg">{text}</div>;
         }
         return null;
       })}
+
+      {subagentList.length > 0 && (
+        <div className="subagents-section">
+          {subagentList.map((sa: any) => (
+            <SubagentCard key={sa.id} subagent={sa} />
+          ))}
+        </div>
+      )}
 
       {!entry.endTime ? <DynamicWorkingIndicator entry={entry} /> : null}
     </div>
