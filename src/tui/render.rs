@@ -679,73 +679,61 @@ fn render_tool_block(
 ) {
     let inner_width = width.saturating_sub(4 + pad.width());
     let bg = Style::default().bg(CODE_BG);
-    let border_fg = Color::Rgb(92, 99, 112);
 
-    // ── Top separator ──
-    let top_sep = "─".repeat(inner_width);
+    // ── Title bar colours ──
+    let icon = match result {
+        None => "⚙",
+        Some(r) if r.is_error => "✗",
+        Some(_) => "✓",
+    };
+    let title_bg = match result {
+        Some(r) if r.is_error => Color::Rgb(80, 40, 40),
+        Some(_) => Color::Rgb(40, 70, 50),
+        None => TOOL_COLOR,
+    };
+    let title_fg = match result {
+        None => Color::Black,
+        Some(r) if r.is_error => Color::Rgb(255, 150, 150),
+        Some(_) => Color::Rgb(150, 255, 150),
+    };
+
+    // Summary of args shown in the title bar next to the name.
+    let args_summary = if args.trim().is_empty() {
+        String::new()
+    } else {
+        let first = args.lines().next().unwrap_or("").trim();
+        let stripped = first.strip_prefix("{").unwrap_or(first).strip_suffix("}").unwrap_or(first);
+        let raw = stripped.trim();
+        format!("  {}", raw)
+    };
+
+    let title_label = format!("  {} {}{}", icon, name, args_summary);
+    let title_trunc = truncate_str_w(&title_label, inner_width);
+    let title_fill = inner_width.saturating_sub(title_trunc.width());
+
+    // Title bar: top padding + text line + bottom padding (compact 1-line padding)
+    let top_pad = inner_width + 2; // "  " + inner
     lines.push(Line::from(vec![
         Span::raw(pad.to_string()),
-        Span::styled("  ", bg),
-        Span::styled(top_sep, Style::default().fg(border_fg).bg(CODE_BG)),
-        Span::styled("  ", bg),
+        Span::styled(" ".repeat(top_pad), Style::default().bg(title_bg)),
     ]));
-
-    // ── Label line ──
-    let label = format!("⚙  {}", name);
-    let label_fill = " ".repeat(inner_width.saturating_sub(label.width()));
     lines.push(Line::from(vec![
         Span::raw(pad.to_string()),
-        Span::styled("  ", bg),
-        Span::styled(label, Style::default().fg(TOOL_COLOR).bg(CODE_BG).add_modifier(Modifier::BOLD)),
-        Span::styled(label_fill, bg),
-        Span::styled("  ", bg),
+        Span::styled(
+            title_trunc,
+            Style::default().fg(title_fg).bg(title_bg).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" ".repeat(title_fill), Style::default().bg(title_bg)),
+        Span::styled("  ", Style::default().bg(title_bg)),
     ]));
-
-    // ── Separator ──
-    let sep = "─".repeat(inner_width);
     lines.push(Line::from(vec![
         Span::raw(pad.to_string()),
-        Span::styled("  ", bg),
-        Span::styled(sep, Style::default().fg(border_fg).bg(CODE_BG)),
-        Span::styled("  ", bg),
+        Span::styled(" ".repeat(top_pad), Style::default().bg(title_bg)),
     ]));
-
-    let is_edit = name == "edit";
-
-    // ── Args ──
-    if is_edit {
-        // For edit tool, show only the file path instead of the full JSON args
-        let file_path = serde_json::from_str::<serde_json::Value>(args)
-            .ok()
-            .and_then(|v| v["file_path"].as_str().map(|s| s.to_string()))
-            .unwrap_or_else(|| "?".to_string());
-        let arg_str = truncate_str_w(&file_path, inner_width);
-        let fill = " ".repeat(inner_width.saturating_sub(arg_str.width()));
-        lines.push(Line::from(vec![
-            Span::raw(pad.to_string()),
-            Span::styled("  ", bg),
-            Span::styled(arg_str, Style::default().fg(Color::White).bg(CODE_BG)),
-            Span::styled(fill, bg),
-            Span::styled("  ", bg),
-        ]));
-    } else if !args.trim().is_empty() {
-        for line in args.lines() {
-            let arg_str = truncate_str_w(line, inner_width);
-            let fill = " ".repeat(inner_width.saturating_sub(arg_str.width()));
-            lines.push(Line::from(vec![
-                Span::raw(pad.to_string()),
-                Span::styled("  ", bg),
-                Span::styled(arg_str, Style::default().fg(Color::DarkGray).bg(CODE_BG)),
-                Span::styled(fill, bg),
-                Span::styled("  ", bg),
-            ]));
-        }
-    }
 
     // ── Output ──
     if let Some(r) = result {
-        if is_edit && !r.is_error {
-            // Skip the summary line and render the unified diff
+        if name == "edit" && !r.is_error {
             let diff_text = r.text.lines().skip(1).collect::<Vec<_>>().join("\n");
             render_diff_output(&diff_text, lines, width, pad);
         } else {
@@ -794,15 +782,6 @@ fn render_tool_block(
             Span::styled("  ", bg),
         ]));
     }
-
-    // ── Bottom separator ──
-    let bot_sep = "─".repeat(inner_width);
-    lines.push(Line::from(vec![
-        Span::raw(pad.to_string()),
-        Span::styled("  ", bg),
-        Span::styled(bot_sep, Style::default().fg(border_fg).bg(CODE_BG)),
-        Span::styled("  ", bg),
-    ]));
 }
 
 // ── Spinner / gear animation ──────────────────────────────────────
@@ -824,11 +803,9 @@ fn animate_indicators(lines: &mut [Line<'static>], frame_count: u64) {
             if span.content.contains('⏳') {
                 span.content = span.content.replace('⏳', spinner).into();
             }
-            // Tool label: "⚙  edit" → "◐  edit"
-            if span.content.starts_with('⚙') {
-                let mut chars = span.content.chars();
-                chars.next(); // drop ⚙
-                span.content = format!("{}{}", gear, chars.as_str()).into();
+            // Tool title bar: "  ⚙ name" → "  ◐ name"
+            if span.content.starts_with("  ⚙") {
+                span.content = span.content.replacen("  ⚙", &format!("  {}", gear), 1).into();
             }
         }
     }
