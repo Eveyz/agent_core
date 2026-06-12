@@ -13,7 +13,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const USER_BG: Color = Color::Rgb(28, 30, 42);
 const CODE_BG: Color = Color::Rgb(22, 24, 29);
-const HOVER_BG: Color = Color::Rgb(38, 42, 55);
+
 const TOOL_COLOR: Color = Color::Rgb(86, 182, 194);
 const SUBAGENT_COLOR: Color = Color::Rgb(198, 120, 221);
 const SUCCESS_COLOR: Color = Color::Rgb(152, 195, 121);
@@ -134,7 +134,7 @@ pub fn response_block_lines(text: &str, width: usize, pad: &str) -> Vec<Line<'st
     }
 }
 
-const TOOL_TITLE_HEIGHT: usize = 1;
+const TOOL_TITLE_HEIGHT: usize = 3;
 
 /// Build the args summary string for the tool title.
 fn tool_args_summary(args: &str) -> String {
@@ -203,6 +203,8 @@ pub fn tool_block_lines(
     } else {
         lines.push(Line::raw(format!("{}⏳  Waiting for result…", indent)));
     }
+    lines.insert(0, Line::raw(""));
+    lines.push(Line::raw(""));
     lines
 }
 
@@ -212,37 +214,68 @@ pub fn subagent_block_lines(sa: &SubagentState, _width: usize, pad: &str) -> Vec
     // Top padding
     lines.push(Line::raw(""));
 
-    // Top separator
-    lines.push(Line::raw(format!("{}  ────────────────────────────────────────", pad)));
+    // Status colours
+    let (icon, id_color, status_color) = if sa.done {
+        if sa.success {
+            ("✓", Color::Rgb(152, 195, 121), Color::Rgb(100, 140, 80))
+        } else {
+            ("✗", Color::Rgb(224, 108, 117), Color::Rgb(160, 80, 85))
+        }
+    } else {
+        ("⚡", Color::Rgb(198, 120, 221), Color::Rgb(229, 192, 123))
+    };
 
-    // Label
     let elapsed_str = if sa.done {
         Some(format_duration(sa.elapsed_ms))
     } else {
         sa.started_at.map(|t| format_duration(t.elapsed().as_millis() as u64))
     };
-    let label_text = if sa.done {
-        let tag = if sa.success { "✓ complete" } else { "✗ incomplete" };
-        match &elapsed_str {
-            Some(e) => format!("⚡ Subagent: {} ({} {} iter {})", sa.id, tag, sa.iterations, e),
-            None => format!("⚡ Subagent: {} ({} {} iter)", sa.id, tag, sa.iterations),
-        }
+
+    let status_text = if sa.done {
+        let tag = if sa.success { "Done" } else { "Failed" };
+        format!(
+            "{}  ·  {} iter  ·  {}",
+            tag,
+            sa.iterations,
+            elapsed_str.unwrap_or_default()
+        )
     } else {
-        match &elapsed_str {
-            Some(e) => format!("⚡ Subagent: {} (Working... {})", sa.id, e),
-            None => format!("⚡ Subagent: {} (Starting...)", sa.id),
-        }
+        format!("Working…  {}", elapsed_str.unwrap_or_default())
     };
-    lines.push(Line::raw(format!("{}  {}", pad, label_text)));
 
-    // Activity
-    lines.push(Line::raw(format!("{}  {}", pad, sa.current_activity)));
+    // Header line
+    lines.push(Line::from(vec![
+        Span::raw(format!("{}  ", pad)),
+        Span::styled(icon.to_string(), Style::default().fg(id_color)),
+        Span::raw("  "),
+        Span::styled(
+            sa.id.clone(),
+            Style::default().fg(id_color).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(status_text, Style::default().fg(status_color)),
+    ]));
 
-    // Click hint
-    lines.push(Line::raw(format!("{}  [Click] details", pad)));
+    // Activity line
+    let activity = if sa.current_activity.is_empty() {
+        "—"
+    } else {
+        &sa.current_activity
+    };
+    lines.push(Line::from(vec![
+        Span::raw(format!("{}  ", pad)),
+        Span::styled("  ● ", Style::default().fg(Color::Rgb(65, 70, 100))),
+        Span::styled(
+            truncate_str(activity, 60),
+            Style::default()
+                .fg(Color::Rgb(86, 95, 130))
+                .add_modifier(Modifier::ITALIC),
+        ),
+        Span::styled("  ↗ details", Style::default().fg(Color::Rgb(55, 62, 90))),
+    ]));
 
-    // Bottom separator
-    lines.push(Line::raw(format!("{}  ────────────────────────────────────────", pad)));
+    // Bottom padding
+    lines.push(Line::raw(""));
 
     lines
 }
@@ -526,11 +559,23 @@ impl<'a> UserBlock<'a> {
 impl<'a> Widget for UserBlock<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         buf.set_style(area, Style::default().bg(USER_BG).fg(Color::White));
+
+        // Left accent bar (2 columns)
+        let accent_area = Rect::new(area.x, area.y, 2, area.height);
+        buf.set_style(accent_area, Style::default().bg(Color::Rgb(61, 65, 102)));
+
+        // Content starts after accent + 1 column gap
+        let content_area = Rect::new(
+            area.x + 3,
+            area.y,
+            area.width.saturating_sub(3),
+            area.height,
+        );
         let lines: Vec<Line> = self.text.lines().map(|l| Line::raw(l.to_string())).collect();
         Paragraph::new(Text::from(lines))
             .wrap(Wrap { trim: false })
             .scroll((self.skip, 0))
-            .render(area, buf);
+            .render(content_area, buf);
     }
 }
 
@@ -641,13 +686,27 @@ impl<'a> Widget for ToolBlock<'a> {
         let title_area = chunks[0];
         let content_area = chunks[1];
 
+        let available_width = (title_area.width as usize).saturating_sub(self.name.len() + 8);
+        let truncated_args = truncate_str(&args_summary, available_width);
+
         // Title background
         buf.set_style(title_area, Style::default().bg(title_bg).fg(title_fg).add_modifier(Modifier::BOLD));
         // Content background
         buf.set_style(content_area, Style::default().bg(CODE_BG));
 
-        // Render dynamic title independently
-        let title_lines = vec![Line::raw(format!("  {} {}{}", icon, self.name, args_summary))];
+        // Render dynamic title independently (3 lines with vertical padding)
+        let title_lines = vec![
+            Line::raw(""),
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled(icon.to_string(), Style::default().fg(title_fg).add_modifier(Modifier::BOLD)),
+                Span::raw(" "),
+                Span::styled(self.name, Style::default().fg(title_fg).add_modifier(Modifier::BOLD)),
+                Span::raw("  "),
+                Span::styled(truncated_args, Style::default().fg(Color::Rgb(75, 82, 99))),
+            ]),
+            Line::raw(""),
+        ];
         Paragraph::new(Text::from(title_lines))
             .wrap(Wrap { trim: false })
             .scroll((self.skip, 0))
@@ -667,17 +726,41 @@ pub struct SubagentBlock<'a> {
     lines: &'a [Line<'static>],
     skip: u16,
     hovered: bool,
+    done: bool,
+    success: bool,
 }
 
 impl<'a> SubagentBlock<'a> {
-    pub fn new(lines: &'a [Line<'static>], skip: usize, hovered: bool) -> Self {
-        Self { lines, skip: skip as u16, hovered }
+    pub fn new(
+        lines: &'a [Line<'static>],
+        skip: usize,
+        hovered: bool,
+        done: bool,
+        success: bool,
+    ) -> Self {
+        Self {
+            lines,
+            skip: skip as u16,
+            hovered,
+            done,
+            success,
+        }
     }
 }
 
 impl<'a> Widget for SubagentBlock<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let bg = if self.hovered { HOVER_BG } else { CODE_BG };
+        let bg = if self.hovered {
+            Color::Rgb(30, 34, 50)
+        } else if self.done {
+            if self.success {
+                Color::Rgb(22, 30, 24)
+            } else {
+                Color::Rgb(30, 22, 22)
+            }
+        } else {
+            CODE_BG
+        };
         buf.set_style(area, Style::default().bg(bg));
         Paragraph::new(Text::from(self.lines.to_vec()))
             .wrap(Wrap { trim: false })

@@ -1,10 +1,10 @@
 use crate::tui::state::{AppState, CommandMode};
 use ratatui::{
     buffer::Buffer,
-    layout::Rect,
+    layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Padding, Paragraph, Widget},
+    widgets::{Block, BorderType, Borders, Paragraph, Widget},
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -23,7 +23,7 @@ impl<'a> InputBar<'a> {
     /// Returns `(x, y)` in screen coordinates.
     pub fn cursor_position(&self, area: Rect) -> (u16, u16) {
         let state = self.state;
-        let y = area.y + 2;
+        let y = area.y + (area.height.saturating_sub(1)) / 2;
 
         if !matches!(state.command_mode, CommandMode::None) {
             let hint = state.command_mode.prompt();
@@ -64,10 +64,18 @@ impl<'a> Widget for InputBar<'a> {
             let block = Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(Color::Rgb(229, 192, 123)))
-                .padding(Padding::vertical(1));
+                .border_style(Style::default().fg(Color::Rgb(229, 192, 123)));
 
-            Paragraph::new(line).block(block).render(area, buf);
+            let inner = block.inner(area);
+            let chunks = Layout::vertical([
+                Constraint::Length((inner.height.saturating_sub(1)) / 2),
+                Constraint::Length(1),
+                Constraint::Min(0),
+            ])
+            .split(inner);
+
+            block.render(area, buf);
+            Paragraph::new(line).render(chunks[1], buf);
             return;
         }
 
@@ -89,9 +97,17 @@ impl<'a> Widget for InputBar<'a> {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(Color::Rgb(92, 99, 112)))
-            .padding(Padding::vertical(1));
+            .border_style(Style::default().fg(Color::Rgb(92, 99, 112)));
 
-        Paragraph::new(line).block(block).render(area, buf);
+        let inner = block.inner(area);
+        let chunks = Layout::vertical([
+            Constraint::Length((inner.height.saturating_sub(1)) / 2),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(inner);
+
+        block.render(area, buf);
+        Paragraph::new(line).render(chunks[1], buf);
     }
 }

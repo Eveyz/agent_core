@@ -59,18 +59,20 @@ impl<'a> Widget for StatusBar<'a> {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" │ "),
+            Span::styled("Model: ", Style::default().fg(Color::Rgb(55, 62, 80))),
             Span::styled(
-                format!("Model: {} ", state.model),
-                Style::default().fg(Color::DarkGray),
+                format!("{} ", state.model),
+                Style::default().fg(Color::Rgb(140, 148, 168)),
+            ),
+            Span::raw(" │ "),
+            Span::styled("Tokens: ", Style::default().fg(Color::Rgb(55, 62, 80))),
+            Span::styled(
+                format!("{} ", state.tokens),
+                Style::default().fg(Color::Rgb(140, 148, 168)),
             ),
             Span::raw(" │ "),
             Span::styled(
-                format!("Tokens: {} ", state.tokens),
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::raw(" │ "),
-            Span::styled(
-                format!("State: {} ", state_text),
+                format!("{} ", state_text),
                 state_style,
             ),
         ];

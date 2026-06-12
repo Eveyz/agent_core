@@ -188,9 +188,9 @@ fn render_blocks(
                     block_area,
                 );
             }
-            BlockKind::Subagent(_) => {
+            BlockKind::Subagent(sa) => {
                 frame.render_widget(
-                    bw::SubagentBlock::new(&block.lines, *skip, is_hovered),
+                    bw::SubagentBlock::new(&block.lines, *skip, is_hovered, sa.done, sa.success),
                     block_area,
                 );
             }
