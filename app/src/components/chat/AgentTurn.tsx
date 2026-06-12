@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, memo, useMemo } from 'react';
 import { useDispatch } from 'react-redux';
-import { ChevronDown, ChevronRight } from 'lucide-react';
+import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
+import ChevronRightIcon from 'lucide-react/dist/esm/icons/chevron-right.mjs';
 import { invoke } from '@tauri-apps/api/core';
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
@@ -18,7 +19,9 @@ export const formatTime = (ms: number) => {
   return `${m}m ${s}s`;
 };
 
-const ProcessingTimer = ({ startTime, endTime }: { startTime?: number, endTime?: number }) => {
+const ml4 = { marginLeft: '4px' };
+
+const ProcessingTimer = memo(function ProcessingTimer({ startTime, endTime }: { startTime?: number; endTime?: number }) {
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
@@ -30,78 +33,88 @@ const ProcessingTimer = ({ startTime, endTime }: { startTime?: number, endTime?:
   if (!startTime) return null;
   const diff = (endTime || now) - startTime;
   return <span>Processed {formatTime(diff)}</span>;
-};
+});
 
-const ThinkingBlockUI = ({ text, isStreaming, startTime, endTime }: { text: string; isStreaming: boolean; startTime?: number; endTime?: number }) => {
+const ThinkingBlockUI = memo(function ThinkingBlockUI({
+  text,
+  isStreaming,
+  startTime,
+  endTime,
+}: {
+  text: string;
+  isStreaming: boolean;
+  startTime?: number;
+  endTime?: number;
+}) {
   const [collapsed, setCollapsed] = useState(false);
-  
+
   useEffect(() => {
-    if (!isStreaming) {
-      setCollapsed(true);
-    } else {
-      setCollapsed(false);
-    }
+    setCollapsed(!isStreaming);
   }, [isStreaming]);
 
-  const getDurationString = () => {
+  const durationText = useMemo(() => {
     if (isStreaming) return 'Thinking...';
     if (startTime && endTime) {
-      const diff = endTime - startTime;
-      return `Thought for ${formatTime(diff)}`;
+      return `Thought for ${formatTime(endTime - startTime)}`;
     }
     return 'Thought';
-  };
+  }, [isStreaming, startTime, endTime]);
 
   return (
     <div className="block-wrapper">
-      <div 
-        className={`thinking-toggle ${isStreaming ? 'thinking-pulse' : ''}`} 
+      <div
+        className={`thinking-toggle ${isStreaming ? 'thinking-pulse' : ''}`}
         onClick={() => setCollapsed(!collapsed)}
         style={{ cursor: 'pointer' }}
       >
-        {getDurationString()} {collapsed ? <ChevronRight size={12} style={{ marginLeft: '4px' }} /> : <ChevronDown size={12} style={{ marginLeft: '4px' }} />}
+        {durationText} {collapsed ? <ChevronRightIcon size={12} style={ml4} /> : <ChevronDownIcon size={12} style={ml4} />}
       </div>
-      {!collapsed && (
+      {!collapsed ? (
         <div className="thinking-block">
           {text}
-          {isStreaming && <span className="typing-dot" style={{ display: 'inline-block', marginLeft: '4px' }}>...</span>}
+          {isStreaming ? <span className="typing-dot" style={{ display: 'inline-block', marginLeft: '4px' }}>...</span> : null}
         </div>
-      )}
+      ) : null}
     </div>
   );
-};
+});
 
-const ToolBlockUI = ({ name, result, active }: { name: string; result?: string; active?: boolean }) => {
+const ToolBlockUI = memo(function ToolBlockUI({
+  name,
+  result,
+  active,
+}: {
+  name: string;
+  result?: string;
+  active?: boolean;
+}) {
   const [collapsed, setCollapsed] = useState(!active);
-  
+
   useEffect(() => {
-    if (active === false) {
-      setCollapsed(true);
-    } else if (active === true) {
-      setCollapsed(false);
-    }
+    if (active === false) setCollapsed(true);
+    else if (active === true) setCollapsed(false);
   }, [active]);
 
   return (
     <div className="block-wrapper">
-      <div 
-        className={`thinking-toggle ${!collapsed ? 'expanded' : ''}`} 
-        style={{ cursor: 'pointer' }} 
+      <div
+        className={`thinking-toggle ${!collapsed ? 'expanded' : ''}`}
+        style={{ cursor: 'pointer' }}
         onClick={() => setCollapsed(!collapsed)}
       >
-        Used tool: {name} {collapsed ? <ChevronRight size={12} style={{ marginLeft: '4px' }} /> : <ChevronDown size={12} style={{ marginLeft: '4px' }} />}
+        Used tool: {name} {collapsed ? <ChevronRightIcon size={12} style={ml4} /> : <ChevronDownIcon size={12} style={ml4} />}
       </div>
-      {!collapsed && result && (
-        <div 
-          className="tool-result-block assistant-msg" 
-          dangerouslySetInnerHTML={parseMarkdown(result)} 
+      {!collapsed && result ? (
+        <div
+          className="tool-result-block assistant-msg"
+          dangerouslySetInnerHTML={parseMarkdown(result)}
         />
-      )}
+      ) : null}
     </div>
   );
-};
+});
 
-const ApprovalBlockUI = ({ block }: { block: any }) => {
+const ApprovalBlockUI = memo(function ApprovalBlockUI({ block }: { block: any }) {
   const dispatch = useDispatch();
 
   const handleApprove = async (choice: string) => {
@@ -117,11 +130,11 @@ const ApprovalBlockUI = ({ block }: { block: any }) => {
     <div className="approval-block">
       <div className="approval-header">
         <span className="approval-title">Approval Required: {block.tool_name}</span>
-        {block.danger_level && (
+        {block.danger_level ? (
           <span className={`danger-badge danger-${block.danger_level}`}>
             {block.danger_level}
           </span>
-        )}
+        ) : null}
       </div>
       <div className="approval-explanation">{block.explanation}</div>
       <div className="approval-args">
@@ -141,7 +154,7 @@ const ApprovalBlockUI = ({ block }: { block: any }) => {
       )}
     </div>
   );
-};
+});
 
 const THINKING_PHRASES = [
   "Analyzing context...",
@@ -152,7 +165,7 @@ const THINKING_PHRASES = [
   "Formulating strategy..."
 ];
 
-const DynamicWorkingIndicator = ({ entry }: { entry: any }) => {
+const DynamicWorkingIndicator = memo(function DynamicWorkingIndicator({ entry }: { entry: any }) {
   const [phraseIndex, setPhraseIndex] = useState(0);
 
   useEffect(() => {
@@ -164,12 +177,12 @@ const DynamicWorkingIndicator = ({ entry }: { entry: any }) => {
 
   if (entry.endTime) return null;
 
-  const getStatusText = () => {
+  const statusText = useMemo(() => {
     if (!entry.blocks || entry.blocks.length === 0) {
       return "Waking up the agent...";
     }
     const lastBlock = entry.blocks[entry.blocks.length - 1];
-    
+
     if (lastBlock.type === 'thinking' && lastBlock.isStreaming) {
       return THINKING_PHRASES[phraseIndex];
     } else if (lastBlock.type === 'tool' && lastBlock.active) {
@@ -179,21 +192,21 @@ const DynamicWorkingIndicator = ({ entry }: { entry: any }) => {
     } else if (lastBlock.type === 'assistant' && lastBlock.isStreaming) {
       return "Transmitting response...";
     }
-    
+
     return "Processing data...";
-  };
+  }, [entry.blocks, phraseIndex]);
 
   return (
     <div className="working-indicator">
-      <span className="working-spinner">⚙️</span> {getStatusText()}
+      <span className="working-spinner">⚙️</span> {statusText}
     </div>
   );
-};
+});
 
-export const AgentTurnUI = ({ entry }: { entry: any }) => {
+export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: any }) {
   const [collapsed, setCollapsed] = useState(false);
-  
-  const getThoughtDuration = () => {
+
+  const thoughtDuration = useMemo(() => {
     let totalMs = 0;
     entry.blocks?.forEach((b: any) => {
       if (b.type === 'thinking' && b.startTime && b.endTime) {
@@ -202,13 +215,13 @@ export const AgentTurnUI = ({ entry }: { entry: any }) => {
     });
     if (totalMs === 0) return null;
     return `Thought for ${formatTime(totalMs)}`;
-  };
+  }, [entry.blocks]);
 
   const totalTime = entry.endTime ? `Processed ${formatTime(entry.endTime - entry.startTime)}` : null;
 
   return (
     <div className="agent-turn">
-      <div 
+      <div
         className={`turn-header ${!entry.endTime ? 'processing-pulse' : ''}`}
         style={{ cursor: entry.endTime ? 'pointer' : 'default' }}
         onClick={() => { if (entry.endTime) setCollapsed(!collapsed); }}
@@ -216,16 +229,16 @@ export const AgentTurnUI = ({ entry }: { entry: any }) => {
         {!entry.endTime ? (
           <>
             <ProcessingTimer startTime={entry.startTime} endTime={entry.endTime} />
-            <ChevronDown size={12} style={{ marginLeft: '4px' }}/>
+            <ChevronDownIcon size={12} style={ml4}/>
           </>
         ) : (
           <>
-            {collapsed ? (getThoughtDuration() ? `${totalTime} · ${getThoughtDuration()}` : totalTime) : totalTime}
-            {collapsed ? <ChevronRight size={12} style={{ marginLeft: '4px' }}/> : <ChevronDown size={12} style={{ marginLeft: '4px' }}/>}
+            {collapsed ? (thoughtDuration ? `${totalTime} · ${thoughtDuration}` : totalTime) : totalTime}
+            {collapsed ? <ChevronRightIcon size={12} style={ml4}/> : <ChevronDownIcon size={12} style={ml4}/>}
           </>
         )}
       </div>
-      
+
       {entry.blocks?.map((b: any, idx: number) => {
         if (collapsed && b.type !== 'assistant' && b.type !== 'error') {
           return null;
@@ -246,8 +259,8 @@ export const AgentTurnUI = ({ entry }: { entry: any }) => {
         }
         return null;
       })}
-      
-      {!entry.endTime && <DynamicWorkingIndicator entry={entry} />}
+
+      {!entry.endTime ? <DynamicWorkingIndicator entry={entry} /> : null}
     </div>
   );
-};
+});
