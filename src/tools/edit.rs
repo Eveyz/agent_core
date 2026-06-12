@@ -1,6 +1,7 @@
 use crate::tools::Tool;
 use anyhow::Result;
 use serde_json::Value;
+use similar::TextDiff;
 
 pub struct EditTool;
 
@@ -11,7 +12,7 @@ impl Tool for EditTool {
     }
 
     fn description(&self) -> &str {
-        "Replace exact string in a file. Args: file_path (string), old_string (string), new_string (string)"
+        "Modify an existing file by replacing an exact string. Read the file first to get the exact old_string, then provide old_string and new_string. Use this for ALL edits to existing files — never use write_file for small changes."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -37,10 +38,10 @@ impl Tool for EditTool {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("missing 'new_string'"))?;
 
-        let content = std::fs::read_to_string(file_path)
+        let old_content = std::fs::read_to_string(file_path)
             .map_err(|e| anyhow::anyhow!("failed to read '{}': {}", file_path, e))?;
 
-        let count = content.matches(old_string).count();
+        let count = old_content.matches(old_string).count();
         if count == 0 {
             anyhow::bail!("old_string not found in '{}'", file_path);
         }
@@ -52,8 +53,31 @@ impl Tool for EditTool {
             );
         }
 
-        let new_content = content.replacen(old_string, new_string, 1);
+        let new_content = old_content.replacen(old_string, new_string, 1);
         std::fs::write(file_path, &new_content)?;
-        Ok(format!("Edited '{}': replaced 1 occurrence", file_path))
+
+        // Generate unified diff for the change
+        let diff = TextDiff::from_lines(&old_content, &new_content);
+        let mut diff_bytes = Vec::new();
+        diff.unified_diff()
+            .header(file_path, file_path)
+            .context_radius(3)
+            .to_writer(&mut diff_bytes)?;
+        let diff_str = String::from_utf8(diff_bytes)?;
+
+        // Count additions / deletions (exclude header lines)
+        let additions = diff_str
+            .lines()
+            .filter(|l| l.starts_with('+') && !l.starts_with("+++"))
+            .count();
+        let deletions = diff_str
+            .lines()
+            .filter(|l| l.starts_with('-') && !l.starts_with("---"))
+            .count();
+
+        Ok(format!(
+            "Successfully edited '{}': +{} additions, -{} deletions\n{}",
+            file_path, additions, deletions, diff_str
+        ))
     }
 }

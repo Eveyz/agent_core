@@ -20,6 +20,11 @@ pub const DEFAULT_PRINCIPLES: &str = r#"Rules:
 - If a tool call fails, reason about why and try an alternative approach.
 - When you have the answer, output it as Final Answer without using any tools.
 
+File operations:
+- Use `write_file` ONLY when creating a brand-new file or completely overwriting an existing file with all-new content.
+- Use `edit` for ANY modification to an existing file. Read the file first, then provide the exact `old_string` to replace and the `new_string`.
+- Never use `write_file` to make a small change to an existing file — always use `edit`.
+
 ## Task Decomposition Protocol
 
 For EVERY user request, follow this decision tree:

@@ -13,7 +13,7 @@ impl Tool for WriteFileTool {
     }
 
     fn description(&self) -> &str {
-        "Write content to a file at the given path. Creates the file if it doesn't exist, overwrites if it does."
+        "Create a new file or completely overwrite an existing file. ONLY use this when writing a file from scratch or replacing its entire contents. Do NOT use this for small edits to existing files — use `edit` instead."
     }
 
     fn parameters_schema(&self) -> Value {

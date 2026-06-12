@@ -302,6 +302,9 @@ fn render_conversation(frame: &mut Frame, state: &mut AppState, area: Rect) {
         }
     }
 
+    // ── Apply spinner / gear animation ─────────────────────────────
+    animate_indicators(&mut final_lines, state.frame_count);
+
     let para = Paragraph::new(Text::from(final_lines))
         .wrap(Wrap { trim: false })
         .scroll((scroll_from_top as u16, 0));
@@ -368,10 +371,7 @@ fn rebuild_cache(state: &mut AppState, width: u16) {
         if !streaming.blocks.is_empty() {
             for (i, block) in streaming.blocks.iter().enumerate() {
                 if i > 0 {
-                    let is_approval_notice = matches!(block, TurnBlock::Notice(msg) if msg.contains("[APPROVAL]"));
-                    if !is_approval_notice {
-                        streaming_lines.push(Line::raw(""));
-                    }
+                    streaming_lines.push(Line::raw(""));
                 }
                 render_turn_block_cloned(block, &mut streaming_lines, w, 0, &mut streaming_sa_ranges);
             }
@@ -387,18 +387,12 @@ fn rebuild_cache(state: &mut AppState, width: u16) {
 
     // Streaming lines
     let streaming_offset = lines.len();
-    let _separator_count = if !state.cache.streaming_lines.is_empty() && !lines.is_empty() {
+    if !state.cache.streaming_lines.is_empty() && !lines.is_empty() {
         lines.push(Line::raw(""));
-        1
-    } else {
-        0
-    };
+    }
     lines.extend(state.cache.streaming_lines.iter().cloned());
 
     // "Working..." indicator — shown between submit and first token.
-    // Once we get a Thought or Response block, the state will be
-    // set to "thinking" or "streaming" by handle_agent_event,
-    // and this indicator disappears because streaming.blocks is no longer empty.
     let streaming_empty = state.streaming.as_ref().map_or(true, |s| s.blocks.is_empty());
     if state.agent_running && streaming_empty {
         if !lines.is_empty() {
@@ -415,7 +409,6 @@ fn rebuild_cache(state: &mut AppState, width: u16) {
             ),
         ]));
     }
-    lines.push(Line::raw(""));
 
     // ── Compute wrapped height and row offsets ─────────────────────
     let row_offsets = compute_row_offsets(&lines, width);
@@ -670,6 +663,7 @@ fn render_user_block(text: &str, lines: &mut Vec<Line<'static>>, width: usize) {
         ]));
     }
 
+    // Bottom padding
     lines.push(Line::from(Span::styled(" ".repeat(width), bg_style)));
 }
 
@@ -686,13 +680,6 @@ fn render_tool_block(
     let inner_width = width.saturating_sub(4 + pad.width());
     let bg = Style::default().bg(CODE_BG);
     let border_fg = Color::Rgb(92, 99, 112);
-
-    // ── Top padding ──
-    let top_fill = width.saturating_sub(pad.width());
-    lines.push(Line::from(vec![
-        Span::raw(pad.to_string()),
-        Span::styled(" ".repeat(top_fill), bg),
-    ]));
 
     // ── Top separator ──
     let top_sep = "─".repeat(inner_width);
@@ -723,8 +710,25 @@ fn render_tool_block(
         Span::styled("  ", bg),
     ]));
 
+    let is_edit = name == "edit";
+
     // ── Args ──
-    if !args.trim().is_empty() {
+    if is_edit {
+        // For edit tool, show only the file path instead of the full JSON args
+        let file_path = serde_json::from_str::<serde_json::Value>(args)
+            .ok()
+            .and_then(|v| v["file_path"].as_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| "?".to_string());
+        let arg_str = truncate_str_w(&file_path, inner_width);
+        let fill = " ".repeat(inner_width.saturating_sub(arg_str.width()));
+        lines.push(Line::from(vec![
+            Span::raw(pad.to_string()),
+            Span::styled("  ", bg),
+            Span::styled(arg_str, Style::default().fg(Color::White).bg(CODE_BG)),
+            Span::styled(fill, bg),
+            Span::styled("  ", bg),
+        ]));
+    } else if !args.trim().is_empty() {
         for line in args.lines() {
             let arg_str = truncate_str_w(line, inner_width);
             let fill = " ".repeat(inner_width.saturating_sub(arg_str.width()));
@@ -740,38 +744,44 @@ fn render_tool_block(
 
     // ── Output ──
     if let Some(r) = result {
-        let style = if r.is_error {
-            Style::default().fg(ERROR_COLOR)
+        if is_edit && !r.is_error {
+            // Skip the summary line and render the unified diff
+            let diff_text = r.text.lines().skip(1).collect::<Vec<_>>().join("\n");
+            render_diff_output(&diff_text, lines, width, pad);
         } else {
-            Style::default().fg(SUCCESS_COLOR)
-        };
-        let out_style = style.bg(CODE_BG);
+            let style = if r.is_error {
+                Style::default().fg(ERROR_COLOR)
+            } else {
+                Style::default().fg(SUCCESS_COLOR)
+            };
+            let out_style = style.bg(CODE_BG);
 
-        let mut shown = 0;
-        for line in r.text.lines().take(8) {
-            let trunc_line = truncate_str_w(line, inner_width);
-            let fill = " ".repeat(inner_width.saturating_sub(trunc_line.width()));
-            lines.push(Line::from(vec![
-                Span::raw(pad.to_string()),
-                Span::styled("  ", bg),
-                Span::styled(trunc_line, out_style),
-                Span::styled(fill, bg),
-                Span::styled("  ", bg),
-            ]));
-            shown += 1;
-        }
+            let mut shown = 0;
+            for line in r.text.lines().take(8) {
+                let trunc_line = truncate_str_w(line, inner_width);
+                let fill = " ".repeat(inner_width.saturating_sub(trunc_line.width()));
+                lines.push(Line::from(vec![
+                    Span::raw(pad.to_string()),
+                    Span::styled("  ", bg),
+                    Span::styled(trunc_line, out_style),
+                    Span::styled(fill, bg),
+                    Span::styled("  ", bg),
+                ]));
+                shown += 1;
+            }
 
-        let total = r.text.lines().count();
-        if total > shown {
-            let msg = format!("… {} more lines", total - shown);
-            let fill = " ".repeat(inner_width.saturating_sub(msg.width()));
-            lines.push(Line::from(vec![
-                Span::raw(pad.to_string()),
-                Span::styled("  ", bg),
-                Span::styled(msg, Style::default().fg(Color::DarkGray).bg(CODE_BG)),
-                Span::styled(fill, bg),
-                Span::styled("  ", bg),
-            ]));
+            let total = r.text.lines().count();
+            if total > shown {
+                let msg = format!("… {} more lines", total - shown);
+                let fill = " ".repeat(inner_width.saturating_sub(msg.width()));
+                lines.push(Line::from(vec![
+                    Span::raw(pad.to_string()),
+                    Span::styled("  ", bg),
+                    Span::styled(msg, Style::default().fg(Color::DarkGray).bg(CODE_BG)),
+                    Span::styled(fill, bg),
+                    Span::styled("  ", bg),
+                ]));
+            }
         }
     } else {
         let msg = "⏳  Waiting for result…";
@@ -793,13 +803,275 @@ fn render_tool_block(
         Span::styled(bot_sep, Style::default().fg(border_fg).bg(CODE_BG)),
         Span::styled("  ", bg),
     ]));
+}
 
-    // ── Bottom padding ──
-    let bot_fill = width.saturating_sub(pad.width());
-    lines.push(Line::from(vec![
+// ── Spinner / gear animation ──────────────────────────────────────
+
+static SPINNER_FRAMES: &[&str] = &[
+    "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
+];
+
+static GEAR_FRAMES: &[&str] = &["◐", "◓", "◑", "◒"];
+
+/// Replace static `⏳` / `⚙` indicators with frame-based spinners.
+fn animate_indicators(lines: &mut [Line<'static>], frame_count: u64) {
+    let spinner = SPINNER_FRAMES[frame_count as usize % SPINNER_FRAMES.len()];
+    let gear = GEAR_FRAMES[frame_count as usize % GEAR_FRAMES.len()];
+
+    for line in lines.iter_mut() {
+        for span in line.spans.iter_mut() {
+            // Working indicator: "  ⏳  " → "  ⠋  "
+            if span.content.contains('⏳') {
+                span.content = span.content.replace('⏳', spinner).into();
+            }
+            // Tool label: "⚙  edit" → "◐  edit"
+            if span.content.starts_with('⚙') {
+                let mut chars = span.content.chars();
+                chars.next(); // drop ⚙
+                span.content = format!("{}{}", gear, chars.as_str()).into();
+            }
+        }
+    }
+}
+
+// ── Diff output renderer (for edit tool) ────────────────────────────
+
+/// Render a unified diff string with side-by-side line numbers, colour-coded
+/// backgrounds, and an additions/deletions footer.
+fn render_diff_output(
+    diff_text: &str,
+    lines: &mut Vec<Line<'static>>,
+    width: usize,
+    pad: &str,
+) {
+    let inner = width.saturating_sub(4 + pad.width());
+    let prefix_w = 6; // "    5 │"
+    let sign_w = 1;
+    let content_width = inner.saturating_sub(prefix_w + sign_w).max(1);
+    let empty_prefix = "     │"; // same width as "    5 │"
+
+    let mut old_line = 0usize;
+    let mut new_line = 0usize;
+    let mut additions = 0usize;
+    let mut deletions = 0usize;
+    let mut pending_context: Vec<(String, String)> = Vec::new();
+
+    for raw in diff_text.lines() {
+        // --- / +++ file headers
+        if raw.starts_with("--- ") {
+            flush_context(&mut pending_context, lines, pad, inner, empty_prefix, content_width);
+            let path = raw.strip_prefix("--- ").unwrap_or(raw);
+            lines.push(diff_line(pad, &format!("--- {}", path), inner,
+                Style::default().fg(Color::Red).bg(CODE_BG)));
+            continue;
+        }
+        if raw.starts_with("+++ ") {
+            flush_context(&mut pending_context, lines, pad, inner, empty_prefix, content_width);
+            let path = raw.strip_prefix("+++ ").unwrap_or(raw);
+            lines.push(diff_line(pad, &format!("+++ {}", path), inner,
+                Style::default().fg(Color::Green).bg(CODE_BG)));
+            continue;
+        }
+        // @@ hunk header
+        if raw.starts_with("@@") {
+            flush_context(&mut pending_context, lines, pad, inner, empty_prefix, content_width);
+            if let Some((o, n)) = parse_hunk_header(raw) {
+                old_line = o;
+                new_line = n;
+            }
+            lines.push(diff_line(pad, raw, inner, Style::default().fg(Color::DarkGray).bg(CODE_BG)));
+            continue;
+        }
+
+        if raw.is_empty() {
+            continue;
+        }
+
+        let sign = &raw[..1];
+        let content = &raw[1..];
+
+        match sign {
+            "-" => {
+                flush_context(&mut pending_context, lines, pad, inner, empty_prefix, content_width);
+                deletions += 1;
+                let num = format!("{:>4}", old_line);
+                let style = Style::default().fg(Color::White).bg(Color::Rgb(60, 30, 30));
+                push_wrapped_diff_line(lines, pad, inner, empty_prefix, content_width, &num, sign, content, style);
+                old_line += 1;
+            }
+            "+" => {
+                flush_context(&mut pending_context, lines, pad, inner, empty_prefix, content_width);
+                additions += 1;
+                let num = format!("{:>4}", new_line);
+                let style = Style::default().fg(Color::White).bg(Color::Rgb(30, 60, 30));
+                push_wrapped_diff_line(lines, pad, inner, empty_prefix, content_width, &num, sign, content, style);
+                new_line += 1;
+            }
+            " " => {
+                let num = format!("{:>4}", old_line);
+                pending_context.push((num, content.to_string()));
+                old_line += 1;
+                new_line += 1;
+            }
+            _ => {
+                flush_context(&mut pending_context, lines, pad, inner, empty_prefix, content_width);
+                lines.push(diff_line(pad, raw, inner, Style::default().fg(Color::White).bg(CODE_BG)));
+            }
+        }
+    }
+
+    flush_context(&mut pending_context, lines, pad, inner, empty_prefix, content_width);
+
+    // Stats footer
+    if additions > 0 || deletions > 0 {
+        let stats = format!("  +{} additions, -{} deletions", additions, deletions);
+        let fill = inner.saturating_sub(stats.width());
+        lines.push(Line::from(vec![
+            Span::raw(pad.to_string()),
+            Span::styled("  ", Style::default().bg(CODE_BG)),
+            Span::styled(stats, Style::default().fg(Color::DarkGray).bg(CODE_BG)),
+            Span::styled(" ".repeat(fill), Style::default().bg(CODE_BG)),
+            Span::styled("  ", Style::default().bg(CODE_BG)),
+        ]));
+    }
+}
+
+/// Flush accumulated context lines, folding large runs into "... N lines ...".
+fn flush_context(
+    pending: &mut Vec<(String, String)>,
+    lines: &mut Vec<Line<'static>>,
+    pad: &str,
+    inner: usize,
+    empty_prefix: &str,
+    content_width: usize,
+) {
+    if pending.is_empty() {
+        return;
+    }
+    const MAX_CTX: usize = 3;
+    let total = pending.len();
+    let style = Style::default().fg(Color::White).bg(CODE_BG);
+    let sign = " ";
+
+    if total <= MAX_CTX * 2 {
+        for (num, content) in pending.drain(..) {
+            push_wrapped_diff_line(lines, pad, inner, empty_prefix, content_width, &num, sign, &content, style);
+        }
+    } else {
+        for (idx, (num, content)) in pending.drain(..).enumerate() {
+            if idx < MAX_CTX || idx >= total - MAX_CTX {
+                push_wrapped_diff_line(lines, pad, inner, empty_prefix, content_width, &num, sign, &content, style);
+            } else if idx == MAX_CTX {
+                let folded = format!("  ... {} unchanged lines ...", total - MAX_CTX * 2);
+                lines.push(diff_line(pad, &folded, inner, Style::default().fg(Color::DarkGray).bg(CODE_BG)));
+            }
+        }
+    }
+}
+
+/// Push a diff line (possibly wrapped) into the output buffer.
+fn push_wrapped_diff_line(
+    lines: &mut Vec<Line<'static>>,
+    pad: &str,
+    inner: usize,
+    empty_prefix: &str,
+    content_width: usize,
+    num_prefix: &str,
+    sign: &str,
+    content: &str,
+    style: Style,
+) {
+    let wrapped = wrap_diff_content(content, content_width);
+    for (i, part) in wrapped.iter().enumerate() {
+        let prefix = if i == 0 {
+            format!("{} │", num_prefix)
+        } else {
+            empty_prefix.to_string()
+        };
+        let text = format!("{}{}{}", prefix, sign, part);
+        lines.push(diff_line(pad, &text, inner, style));
+    }
+}
+
+/// Wrap diff content text into chunks that fit within max_width.
+/// Tries to break at word boundaries first, falls back to character boundary.
+fn wrap_diff_content(text: &str, max_width: usize) -> Vec<String> {
+    if text.is_empty() {
+        return vec![String::new()];
+    }
+    if max_width == 0 {
+        return text.chars().map(|c| c.to_string()).collect();
+    }
+
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut cur_w = 0usize;
+
+    for word in text.split_inclusive(' ') {
+        let word_w = word.width();
+        if word_w > max_width {
+            // Word itself is too long — flush current first, then break the word
+            if !cur.is_empty() {
+                out.push(cur);
+                cur = String::new();
+                cur_w = 0;
+            }
+            let mut chunk = String::new();
+            let mut chunk_w = 0usize;
+            for ch in word.chars() {
+                let cw = ch.width().unwrap_or(0);
+                if chunk_w + cw > max_width && !chunk.is_empty() {
+                    out.push(chunk);
+                    chunk = String::new();
+                    chunk_w = 0;
+                }
+                chunk.push(ch);
+                chunk_w += cw;
+            }
+            if !chunk.is_empty() {
+                cur = chunk;
+                cur_w = chunk_w;
+            }
+        } else if cur_w + word_w > max_width && !cur.is_empty() {
+            out.push(cur);
+            cur = word.to_string();
+            cur_w = word_w;
+        } else {
+            cur.push_str(word);
+            cur_w += word_w;
+        }
+    }
+
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// Build a single diff line with consistent padding and fill.
+fn diff_line(pad: &str, text: &str, inner: usize, style: Style) -> Line<'static> {
+    let tw = text.width();
+    let fill = inner.saturating_sub(tw);
+    let bg = style.bg.unwrap_or(CODE_BG);
+    Line::from(vec![
         Span::raw(pad.to_string()),
-        Span::styled(" ".repeat(bot_fill), bg),
-    ]));
+        Span::styled("  ", Style::default().bg(bg)),
+        Span::styled(text.to_string(), style),
+        Span::styled(" ".repeat(fill), Style::default().bg(bg)),
+        Span::styled("  ", Style::default().bg(bg)),
+    ])
+}
+
+/// Parse a unified-diff hunk header like `@@ -12,5 +13,5 @@`.
+fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
+    let inner = line.trim_start_matches("@@").trim_end_matches("@@").trim();
+    let parts: Vec<&str> = inner.split_whitespace().collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let old_start: usize = parts[0].trim_start_matches('-').split(',').next()?.parse().ok()?;
+    let new_start: usize = parts[1].trim_start_matches('+').split(',').next()?.parse().ok()?;
+    Some((old_start, new_start))
 }
 
 // ── Subagent block (summary in main conversation) ───────────────────
@@ -910,13 +1182,6 @@ fn render_subagent_block(
         Span::styled(bot_sep, Style::default().fg(border_fg).bg(CODE_BG)),
         Span::styled(" ".repeat(bot_fill), bg),
         Span::styled("  ", bg),
-    ]));
-
-    // ── Bottom padding ──
-    let bot_fill2 = width.saturating_sub(pad.width());
-    lines.push(Line::from(vec![
-        Span::raw(pad.to_string()),
-        Span::styled(" ".repeat(bot_fill2), bg),
     ]));
 }
 
