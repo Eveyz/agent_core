@@ -10,20 +10,20 @@ A Rust-based LLM Agent system implementing the ReAct pattern, with harness engin
 
 ## Tech Stack
 
-| Dimension | Choice |
-|-----------|--------|
-| LLM API | OpenAI compatible (multi-provider, model switching) |
-| Streaming | SSE streaming with thinking/reasoning content support |
-| Tool framework | Extensible `Tool` trait + JSON Schema validation |
-| Token management | tiktoken-rs, context trimming with token limits |
-| API retry | Exponential backoff, 429/5xx, max 3 retries |
-| Model management | `config.toml` multi-model config + runtime switching |
-| Agent mode | ReAct (Thought → Action → Observation) |
+| Dimension           | Choice                                                    |
+| ------------------- | --------------------------------------------------------- |
+| LLM API             | OpenAI compatible (multi-provider, model switching)       |
+| Streaming           | SSE streaming with thinking/reasoning content support     |
+| Tool framework      | Extensible `Tool` trait + JSON Schema validation          |
+| Token management    | tiktoken-rs, context trimming with token limits           |
+| API retry           | Exponential backoff, 429/5xx, max 3 retries               |
+| Model management    | `config.toml` multi-model config + runtime switching      |
+| Agent mode          | ReAct (Thought → Action → Observation)                    |
 | Memory architecture | 4-layer: Message Buffer + Core Memory + Recall + Archival |
-| Embedding model | fastembed (bge-small-en-v1.5, 384-dim) |
-| Storage | rusqlite (bundled), WAL mode |
-| Vector search | Brute-force cosine similarity |
-| Output forms | lib crate + CLI binary |
+| Embedding model     | fastembed (bge-small-en-v1.5, 384-dim)                    |
+| Storage             | rusqlite (bundled), WAL mode                              |
+| Vector search       | Brute-force cosine similarity                             |
+| Output forms        | lib crate + CLI binary                                    |
 
 ## Project Structure
 
@@ -68,20 +68,20 @@ agent_core/
 
 ## Completed Phases (Original 12-Phase Plan)
 
-| Phase | Content | Status |
-|-------|---------|--------|
-| 1 | Data structures + config + non-streaming client | ✅ Done |
-| 2 | SSE streaming parsing + tool call accumulation | ✅ Done |
-| 3 | Tool trait + Registry + Schema validation | ✅ Done |
-| 4 | Agent ReAct loop + retry + parallel tool execution | ✅ Done |
-| 5 | Context manager + token trimming | ✅ Done |
-| 6 | ReAct prompt + AgentEvent | ✅ Done |
-| 7 | Memory: SQLite + embedding | ✅ Done |
-| 8 | Memory: Core Memory (L2) | ✅ Done |
-| 9 | Memory: Recall Memory (L3) | ✅ Done |
-| 10 | Memory: Archival Memory (L4) | ✅ Done |
-| 11 | Memory: Consolidation + sleep-time | ✅ Done |
-| 12 | lib.rs public API + AgentBuilder + CLI | ✅ Done |
+| Phase | Content                                            | Status  |
+| ----- | -------------------------------------------------- | ------- |
+| 1     | Data structures + config + non-streaming client    | ✅ Done |
+| 2     | SSE streaming parsing + tool call accumulation     | ✅ Done |
+| 3     | Tool trait + Registry + Schema validation          | ✅ Done |
+| 4     | Agent ReAct loop + retry + parallel tool execution | ✅ Done |
+| 5     | Context manager + token trimming                   | ✅ Done |
+| 6     | ReAct prompt + AgentEvent                          | ✅ Done |
+| 7     | Memory: SQLite + embedding                         | ✅ Done |
+| 8     | Memory: Core Memory (L2)                           | ✅ Done |
+| 9     | Memory: Recall Memory (L3)                         | ✅ Done |
+| 10    | Memory: Archival Memory (L4)                       | ✅ Done |
+| 11    | Memory: Consolidation + sleep-time                 | ✅ Done |
+| 12    | lib.rs public API + AgentBuilder + CLI             | ✅ Done |
 
 ---
 
@@ -91,34 +91,34 @@ Reference: [learn-claude-code](https://github.com/shareAI-lab/learn-claude-code)
 
 ### Gap Analysis
 
-| # | Lesson | Status | Notes |
-|---|--------|--------|-------|
-| s01 | Agent Loop | ✅ Done | ReAct loop in `agent.rs` |
-| s02 | Tool Use | ✅ Done | `Tool` trait + `ToolRegistry` + dispatch |
-| s03 | Permission System | ✅ Done | `PermissionRule`, `PermissionPolicy`, approval pipeline in `src/permission/` |
-| s04 | Hook System | ✅ Done | `HookRegistry`, `PreToolUse`/`PostToolUse` in `src/hooks/` |
-| s05 | TodoWrite | ✅ Done | `TodoList`, `TodoItem`, tools in `src/todo/` + `src/tools/todo.rs` |
-| s06 | Subagent | ✅ Done | `Subagent`, `SubagentConfig` in `src/subagent/` |
-| s07 | Skill Loading | ✅ Done | `SkillManifest`, `SkillLoader` in `src/skills/` + `src/tools/skill.rs` |
-| s08 | Context Compaction | ✅ Done | snipCompact + autoCompact + microCompact in `context.rs` |
-| s09 | Memory System | ✅ Done | 4-layer memory with SQLite + embeddings |
-| s10 | System Prompt | ✅ Done | `PromptAssembler` with section-based assembly in `prompt.rs` |
-| s11 | Error Recovery | ✅ Done | `RecoveryEngine` with retry, token escalation, fallback model, compact in `src/error_recovery/` |
-| s12 | Task System | ✅ Done | `TaskBoard`, `TaskRecord`, dependency graph in `src/tasks/` |
-| s13 | Background Tasks | ✅ Done | `BackgroundPool`, `Notification` in `src/background/` |
-| s14 | Cron Scheduler | ✅ Done | `CronScheduler`, `CronJob` in `src/cron/` |
-| s15 | Agent Teams | ✅ Done | `AgentTeam`, `MessageBus` in `src/teams/` |
-| s16 | Team Protocols | ✅ Done | `TeamMessage`, request/reply format in `src/teams/` |
-| s17 | Autonomous Agents | ✅ Done | Foundation via task board + team bus (self-claim ready) |
-| s18 | Worktree Isolation | ✅ Done | `WorktreeManager`, git worktree creation/removal in `src/worktree/` |
-| s19 | MCP Plugin | ✅ Done | `McpClient`, `McpChannel` in `src/mcp/` |
-| s20 | Comprehensive Agent | ✅ Done | `ComprehensiveAgent`, `ComprehensiveAgentBuilder` in `src/comprehensive/` |
+| #   | Lesson              | Status  | Notes                                                                                           |
+| --- | ------------------- | ------- | ----------------------------------------------------------------------------------------------- |
+| s01 | Agent Loop          | ✅ Done | ReAct loop in `agent.rs`                                                                        |
+| s02 | Tool Use            | ✅ Done | `Tool` trait + `ToolRegistry` + dispatch                                                        |
+| s03 | Permission System   | ✅ Done | `PermissionRule`, `PermissionPolicy`, approval pipeline in `src/permission/`                    |
+| s04 | Hook System         | ✅ Done | `HookRegistry`, `PreToolUse`/`PostToolUse` in `src/hooks/`                                      |
+| s05 | TodoWrite           | ✅ Done | `TodoList`, `TodoItem`, tools in `src/todo/` + `src/tools/todo.rs`                              |
+| s06 | Subagent            | ✅ Done | `Subagent`, `SubagentConfig` in `src/subagent/`                                                 |
+| s07 | Skill Loading       | ✅ Done | `SkillManifest`, `SkillLoader` in `src/skills/` + `src/tools/skill.rs`                          |
+| s08 | Context Compaction  | ✅ Done | snipCompact + autoCompact + microCompact in `context.rs`                                        |
+| s09 | Memory System       | ✅ Done | 4-layer memory with SQLite + embeddings                                                         |
+| s10 | System Prompt       | ✅ Done | `PromptAssembler` with section-based assembly in `prompt.rs`                                    |
+| s11 | Error Recovery      | ✅ Done | `RecoveryEngine` with retry, token escalation, fallback model, compact in `src/error_recovery/` |
+| s12 | Task System         | ✅ Done | `TaskBoard`, `TaskRecord`, dependency graph in `src/tasks/`                                     |
+| s13 | Background Tasks    | ✅ Done | `BackgroundPool`, `Notification` in `src/background/`                                           |
+| s14 | Cron Scheduler      | ✅ Done | `CronScheduler`, `CronJob` in `src/cron/`                                                       |
+| s15 | Agent Teams         | ✅ Done | `AgentTeam`, `MessageBus` in `src/teams/`                                                       |
+| s16 | Team Protocols      | ✅ Done | `TeamMessage`, request/reply format in `src/teams/`                                             |
+| s17 | Autonomous Agents   | ✅ Done | Foundation via task board + team bus (self-claim ready)                                         |
+| s18 | Worktree Isolation  | ✅ Done | `WorktreeManager`, git worktree creation/removal in `src/worktree/`                             |
+| s19 | MCP Plugin          | ✅ Done | `McpClient`, `McpChannel` in `src/mcp/`                                                         |
+| s20 | Comprehensive Agent | ✅ Done | `ComprehensiveAgent`, `ComprehensiveAgentBuilder` in `src/comprehensive/`                       |
 
 ---
 
 ## Phase 13: Permission System (s03)
 
-> *"Set boundaries first, then grant freedom"*
+> _"Set boundaries first, then grant freedom"_
 
 **Goal:** Control what tools can run, what needs approval, and what is blocked.
 
@@ -159,7 +159,7 @@ struct PermissionPolicy {
 
 ## Phase 14: Hook System (s04)
 
-> *"Hook around the loop, never rewrite the loop"*
+> _"Hook around the loop, never rewrite the loop"_
 
 **Goal:** Add extension points around tool execution without modifying the core loop.
 
@@ -201,7 +201,7 @@ enum HookAction {
 
 ## Phase 15: TodoWrite / Planning (s05)
 
-> *"An agent without a plan drifts"*
+> _"An agent without a plan drifts"_
 
 **Goal:** Agent lists steps before executing; track progress visibly.
 
@@ -233,7 +233,7 @@ struct TodoList {
 
 ## Phase 16: Subagent (s06)
 
-> *"Big tasks split small, each subtask gets clean context"*
+> _"Big tasks split small, each subtask gets clean context"_
 
 **Goal:** Spawn child agents with fresh context for side tasks.
 
@@ -263,7 +263,7 @@ struct SubagentHandle {
 
 ## Phase 17: Skill Loading (s07)
 
-> *"Load knowledge on demand, not upfront"*
+> _"Load knowledge on demand, not upfront"_
 
 **Goal:** Inject domain knowledge into the agent's context only when needed.
 
@@ -294,7 +294,7 @@ struct SkillLoader {
 
 ## Phase 18: Context Compaction Upgrade (s08)
 
-> *"Context always fills up — have a way to make room"*
+> _"Context always fills up — have a way to make room"_
 
 **Goal:** Multi-layer compaction strategies instead of just dropping oldest messages.
 
@@ -318,7 +318,7 @@ struct SkillLoader {
 
 ## Phase 19: System Prompt Assembly (s10)
 
-> *"Prompts are assembled at runtime, not hardcoded"*
+> _"Prompts are assembled at runtime, not hardcoded"_
 
 **Goal:** Dynamic, section-based system prompt construction.
 
@@ -351,7 +351,7 @@ impl PromptAssembler {
 
 ## Phase 20: Error Recovery Upgrade (s11)
 
-> *"Errors aren't the end, they're the start of a retry"*
+> _"Errors aren't the end, they're the start of a retry"_
 
 **Goal:** Smarter recovery strategies beyond simple retry.
 
@@ -377,7 +377,7 @@ impl PromptAssembler {
 
 ## Phase 21: Task System (s12)
 
-> *"Big goals break into small tasks, ordered, persisted to disk"*
+> _"Big goals break into small tasks, ordered, persisted to disk"_
 
 **Goal:** File-backed task graph with dependencies, foundation for multi-agent work.
 
@@ -410,7 +410,7 @@ struct TaskBoard {
 
 ## Phase 22: Background Tasks (s13)
 
-> *"Slow ops go background, agent keeps thinking"*
+> _"Slow ops go background, agent keeps thinking"_
 
 **Goal:** Run long operations in background threads; inject results via notifications.
 
@@ -424,7 +424,7 @@ struct TaskBoard {
 
 ## Phase 23: Cron Scheduler (s14)
 
-> *"Fire on schedule, no human kick needed"*
+> _"Fire on schedule, no human kick needed"_
 
 **Goal:** Time-based task triggers, agent can schedule its own future work.
 
@@ -438,7 +438,7 @@ struct TaskBoard {
 
 ## Phase 24: Agent Teams (s15)
 
-> *"Too big for one agent — delegate to teammates"*
+> _"Too big for one agent — delegate to teammates"_
 
 **Goal:** Persistent teammate agents with async mailboxes.
 
@@ -452,7 +452,7 @@ struct TaskBoard {
 
 ## Phase 25: Team Protocols (s16)
 
-> *"Teammates need shared communication rules"*
+> _"Teammates need shared communication rules"_
 
 **Goal:** Fixed request-reply format, shutdown handshake, plan approval.
 
@@ -465,7 +465,7 @@ struct TaskBoard {
 
 ## Phase 26: Autonomous Agents (s17)
 
-> *"Teammates check the board, claim work themselves"*
+> _"Teammates check the board, claim work themselves"_
 
 **Goal:** Self-organizing agents that claim tasks from a shared board.
 
@@ -478,7 +478,7 @@ struct TaskBoard {
 
 ## Phase 27: Worktree Isolation (s18)
 
-> *"Each works in its own directory, no interference"*
+> _"Each works in its own directory, no interference"_
 
 **Goal:** Each agent/task works in an isolated git worktree.
 
@@ -492,7 +492,7 @@ struct TaskBoard {
 
 ## Phase 28: MCP Plugin (s19)
 
-> *"Not enough capability? Plug in more via MCP"*
+> _"Not enough capability? Plug in more via MCP"_
 
 **Goal:** Connect external tool servers via Model Context Protocol.
 
@@ -506,7 +506,7 @@ struct TaskBoard {
 
 ## Phase 29: Comprehensive Agent (s20)
 
-> *"Many mechanisms, one loop"*
+> _"Many mechanisms, one loop"_
 
 **Goal:** All 19 mechanisms integrated into one complete agent loop.
 

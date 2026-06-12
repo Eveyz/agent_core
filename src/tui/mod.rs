@@ -1,13 +1,17 @@
 pub mod input;
+pub mod markdown;
 pub mod render;
 pub mod state;
+pub mod widgets;
 
 use agent_core::Agent;
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyEventKind, MouseButton, MouseEvent, MouseEventKind};
-use state::{AppState, Entry, EventPump, TurnBlock};
+use crossterm::event::{self, Event, KeyEventKind};
+use state::{AppEvent, AppState, Entry, TurnBlock};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+const STREAMING_REBUILD_THROTTLE: Duration = Duration::from_millis(50);
 
 pub async fn run_tui(agent: Arc<tokio::sync::Mutex<Agent>>) -> Result<()> {
     // Enable mouse capture so crossterm can receive scroll wheel events
@@ -48,54 +52,62 @@ async fn run_app(
         state.pending_approvals = Some(a.pending_approvals_clone());
         state.abort_flag = Some(a.abort_flag.clone());
     }
-    let mut pump = EventPump::new();
-    let mut last_draw = Instant::now();
-    let min_frame = Duration::from_millis(16); // ~60 fps cap while streaming/input is active
-    let mut needs_draw = true;
-    loop {
-        // ── 1. Drain agent events (non-blocking) ────────────────────
-        let had_events = pump.drain(&mut state);
 
-        // Refresh token count from agent (non-blocking)
-        if had_events {
-            if let Ok(a) = agent.try_lock() {
-                state.tokens = a.context_token_count();
+    // ── MPSC channel ──────────────────────────────────────────────
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AppEvent>();
+
+    // Tick task — drives animation via AppEvent::Tick
+    let tick_tx = tx.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_millis(16));
+        loop {
+            interval.tick().await;
+            if tick_tx.send(AppEvent::Tick).is_err() {
+                break;
             }
         }
+    });
 
-        // ── 2. Handle ALL pending input events before rendering ─────
-        // This is critical: we must drain all queued key/mouse events
-        // before any render call, otherwise input appears unresponsive
-        // when rendering is slow (during streaming rebuilds).
-        let mut had_input = false;
+    let mut last_draw = Instant::now();
+    let min_frame = Duration::from_millis(16);
+    let mut needs_draw = true;
+
+    loop {
+        // ── 1. Poll crossterm → channel ─────────────────────────────
         loop {
             if event::poll(Duration::from_millis(0))? {
                 match event::read()? {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        input::handle_key(key, &mut state)?;
-                        had_input = true;
+                        let _ = tx.send(AppEvent::Key(key));
                     }
                     Event::Mouse(mouse) => {
-                        handle_mouse(mouse, &mut state);
-                        had_input = true;
+                        if let Ok(size) = terminal.size() {
+                            let layout = render::compute_layout(size.into(), render::dropdown_height(&state));
+                            let _ = tx.send(AppEvent::Mouse(mouse, layout.main));
+                        }
                     }
                     Event::Resize(_, _) => {
-                        state.cache_dirty = true;
-                        had_input = true;
+                        let _ = tx.send(AppEvent::Resize);
                     }
                     _ => {}
                 }
             } else {
-                break; // No more pending input
+                break;
             }
         }
 
-        needs_draw |= had_events || had_input || state.cache_dirty;
+        // ── 2. Process ALL pending AppEvents ────────────────────────
+        while let Ok(event) = rx.try_recv() {
+            needs_draw |= state.apply(event);
+            if state.should_quit {
+                break;
+            }
+        }
         if state.should_quit {
             break Ok(());
         }
 
-        // ── 3. Process pending slash commands ───────────────────────
+        // ── 4. Process pending slash commands / requests ────────────
         if let Some(cmd) = state.take_pending_command() {
             needs_draw = true;
             if cmd == "show_model_picker" {
@@ -124,117 +136,61 @@ async fn run_app(
             }
         }
         if let Some(req) = state.take_pending_request() {
-            let tx = pump.sender();
+            let req_tx = tx.clone();
             let agent_clone = agent.clone();
             tokio::spawn(async move {
                 let mut a = agent_clone.lock().await;
                 let _ = a
                     .run_with_events(&req, |event| {
-                        let _ = tx.send(event);
+                        let _ = req_tx.send(AppEvent::Agent(event));
                     })
                     .await;
             });
         }
 
-        // ── 4. Frame rate limited redraw ────────────────────────────
+        // ── 5. Cache rebuild (still in loop, but render stays read-only) ──
+        if let Ok(term_size) = terminal.size() {
+            let width = term_size.width;
+            let content_width = width.saturating_sub(2);
+            let needs_rebuild = state.cache_dirty || state.cache.width != content_width;
+            if needs_rebuild {
+                let should_rebuild_now = if state.force_cache_rebuild {
+                    state.force_cache_rebuild = false;
+                    true
+                } else if state.agent_running {
+                    match state.cache.last_rebuild {
+                        Some(last) => Instant::now().duration_since(last) >= STREAMING_REBUILD_THROTTLE,
+                        None => true,
+                    }
+                } else {
+                    true
+                };
+                if should_rebuild_now {
+                    render::rebuild_cache(&mut state, content_width);
+                }
+            }
+            // Clamp scroll after cache rebuild
+            let layout = render::compute_layout(term_size.into(), render::dropdown_height(&state));
+            let visible_height = layout.main.height as usize;
+            let max_scroll = state.cache.wrapped_height.saturating_sub(visible_height);
+            state.scroll = state.scroll.min(max_scroll);
+        }
+
+        // ── 6. Frame rate limited redraw ────────────────────────────
         let now = Instant::now();
         let since_last = now.duration_since(last_draw);
         if needs_draw && since_last >= min_frame {
-            terminal.draw(|frame| render::render(frame, &mut state))?;
+            terminal.draw(|frame| render::render(frame, &state))?;
             last_draw = now;
             needs_draw = false;
         } else if since_last >= Duration::from_millis(500) {
-            // Periodic refresh even if idle
-            terminal.draw(|frame| render::render(frame, &mut state))?;
+            terminal.draw(|frame| render::render(frame, &state))?;
             last_draw = now;
             needs_draw = false;
         } else if needs_draw {
-            // We have something to draw but haven't hit the frame interval.
-            // Sleep briefly to avoid busy-looping, but keep it short
-            // so we stay responsive to input.
             std::thread::sleep(Duration::from_millis(4));
         }
     }
-}
-
-/// Handle mouse events — scroll wheel, hover, and click support.
-fn handle_mouse(mouse: MouseEvent, state: &mut AppState) {
-    match mouse.kind {
-        MouseEventKind::ScrollUp => {
-            if state.subagent_view.is_some() {
-                state.subagent_scroll = state.subagent_scroll.saturating_add(3);
-            } else {
-                state.scroll = state.scroll.saturating_add(3);
-            }
-        }
-        MouseEventKind::ScrollDown => {
-            if state.subagent_view.is_some() {
-                state.subagent_scroll = state.subagent_scroll.saturating_sub(3);
-            } else {
-                state.scroll = state.scroll.saturating_sub(3);
-            }
-        }
-        MouseEventKind::Moved | MouseEventKind::Drag(_) => {
-            // Hover detection — only in main conversation view
-            if state.subagent_view.is_none() {
-                let new_hovered = find_hovered_subagent(mouse.column, mouse.row, state);
-                if new_hovered != state.hovered_subagent {
-                    state.hovered_subagent = new_hovered;
-                    // Mark dirty so the hover border is rendered
-                    state.cache_dirty = true;
-                }
-            }
-        }
-        MouseEventKind::Down(MouseButton::Left) => {
-            // Click on subagent box → enter detail view
-            if state.subagent_view.is_none() {
-                if let Some(sa_id) = find_hovered_subagent(mouse.column, mouse.row, state) {
-                    state.subagent_view = Some(sa_id);
-                    state.subagent_scroll = 0;
-                    state.hovered_subagent = None;
-                    state.mark_dirty();
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Map a mouse position (col, row) to a subagent ID if the mouse is
-/// over a subagent block in the conversation. Returns None otherwise.
-fn find_hovered_subagent(col: u16, row: u16, state: &AppState) -> Option<String> {
-    let area_y = state.main_area_y;
-    let area_h = state.main_area_height;
-
-    // Check if mouse is within the conversation area
-    if row < area_y || row >= area_y + area_h || area_h == 0 {
-        return None;
-    }
-
-    let rel_row = (row - area_y) as usize;
-    let visible_height = area_h as usize;
-    let max_scroll = state.cache.wrapped_height.saturating_sub(visible_height);
-    let scroll_from_top = max_scroll.saturating_sub(state.scroll);
-    let abs_row = scroll_from_top + rel_row;
-
-    // Find which cache line this row corresponds to
-    let line_idx = state.cache.row_offsets
-        .partition_point(|&r| r <= abs_row)
-        .saturating_sub(1);
-
-    // Check if the column is within the terminal width (basic sanity check)
-    if col < 1 {
-        return None;
-    }
-
-    // Check if this line index falls within any subagent range
-    for &(start, end, ref id) in &state.cache.subagent_line_ranges {
-        if line_idx >= start && line_idx < end {
-            return Some(id.clone());
-        }
-    }
-
-    None
 }
 
 // ── Pending command processor (for commands from state.rs handle_command) ─

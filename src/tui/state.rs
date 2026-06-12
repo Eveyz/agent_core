@@ -1,62 +1,86 @@
 use agent_core::{AgentEvent, ApprovalChoice, MessageDelta};
+use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
 use ratatui::text::Line;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tokio::sync::mpsc;
 
-// ── Conversation line cache ──────────────────────────────────────────
+// ── Conversation block cache ─────────────────────────────────────────
 
-/// Caches the rendered conversation lines so that scrolling doesn't
-/// require re-parsing markdown / re-running syntect on every frame.
-///
-/// The cache is split into two parts:
-/// - `entry_lines`: Pre-rendered lines for COMPLETED entries.
-///   Only rebuilt when the number of entries changes (not during streaming).
-/// - `streaming_lines`: Pre-rendered lines for the currently streaming blocks.
-///   Rebuilt on every cache rebuild, but usually much smaller.
-/// - `lines`: Combined view of entry_lines + streaming_lines + decorations.
-pub struct CachedConversation {
-    /// Pre-rendered lines for completed entries (cached across streaming updates).
-    pub entry_lines: Vec<Line<'static>>,
-    /// How many entries were used to build `entry_lines`.
-    pub rendered_entry_count: usize,
-    /// Pre-rendered lines for streaming blocks.
-    pub streaming_lines: Vec<Line<'static>>,
-    /// Combined lines (entry_lines + separator + streaming_lines + decorations).
+/// A single renderable block in the conversation.
+/// Each block knows its own wrapped height and how to render itself.
+#[derive(Clone)]
+pub struct CachedBlock {
+    pub kind: BlockKind,
+    pub wrapped_height: usize,
+    pub subagent_id: Option<String>,
     pub lines: Vec<Line<'static>>,
+}
+
+impl CachedBlock {
+    pub fn spacing() -> Self {
+        Self {
+            kind: BlockKind::Spacing,
+            wrapped_height: 1,
+            subagent_id: None,
+            lines: vec![Line::raw("")],
+        }
+    }
+}
+
+#[derive(Clone)]
+#[allow(dead_code)]
+pub enum BlockKind {
+    Spacing,
+    User(String),
+    Thought(String),
+    Response(String),
+    Tool {
+        name: String,
+        args: String,
+        result: Option<ToolResult>,
+    },
+    Subagent(SubagentState),
+    Notice(String),
+    Error(String),
+    System(String),
+    Working,
+}
+
+/// Caches the conversation as a list of blocks so that scrolling can
+/// be done at block granularity. Each block is rendered independently,
+/// allowing different background colours without manual space padding.
+pub struct CachedConversation {
+    /// Pre-rendered blocks for completed entries (cached across streaming updates).
+    pub entry_blocks: Vec<CachedBlock>,
+    /// How many entries were used to build `entry_blocks`.
+    pub rendered_entry_count: usize,
+    /// Pre-rendered blocks for the currently streaming turn.
+    pub streaming_blocks: Vec<CachedBlock>,
+    /// Combined blocks (entry_blocks + separator + streaming_blocks + decorations).
+    pub blocks: Vec<CachedBlock>,
     /// The content version that produced this cache (incremented on mutation).
     pub version: u64,
     /// Terminal width used to produce this cache (invalidated on resize).
     pub width: u16,
-    /// Total wrapped line height (computed once per rebuild).
+    /// Total wrapped line height (sum of all block wrapped_height).
     pub wrapped_height: usize,
-    /// Cumulative wrapped row count: row_offsets[i] = total wrapped rows for lines[0..i].
-    /// Used for binary-searching the visible line range during window rendering.
-    pub row_offsets: Vec<usize>,
     /// Timestamp of the last cache rebuild — used for streaming throttle.
     pub last_rebuild: Option<Instant>,
-    /// Line ranges for subagent blocks: (start_line_idx, end_line_idx, subagent_id).
-    /// Used for mouse hover / click detection.
-    pub subagent_line_ranges: Vec<(usize, usize, String)>,
-    /// Subagent ranges within entry_lines only (cached across streaming rebuilds).
-    pub entry_subagent_ranges: Vec<(usize, usize, String)>,
 }
 
 impl CachedConversation {
     pub fn new() -> Self {
         Self {
-            entry_lines: Vec::new(),
+            entry_blocks: Vec::new(),
             rendered_entry_count: 0,
-            streaming_lines: Vec::new(),
-            lines: Vec::new(),
+            streaming_blocks: Vec::new(),
+            blocks: Vec::new(),
             version: 0,
             width: 0,
             wrapped_height: 0,
-            row_offsets: Vec::new(),
             last_rebuild: None,
-            subagent_line_ranges: Vec::new(),
-            entry_subagent_ranges: Vec::new(),
         }
     }
 }
@@ -94,36 +118,6 @@ impl CommandMode {
             CommandMode::ModelNewApiKey { .. } => "API Key:",
             CommandMode::ModelNewModelName { .. } => "Model name (e.g. qwen2.5:7b):",
         }
-    }
-}
-
-// ── Event pump ──────────────────────────────────────────────────────
-
-/// Bridges the async agent (tokio) to the synchronous TUI event loop.
-pub struct EventPump {
-    rx: mpsc::UnboundedReceiver<AgentEvent>,
-    tx: mpsc::UnboundedSender<AgentEvent>,
-}
-
-impl EventPump {
-    pub fn new() -> Self {
-        let (tx, rx) = mpsc::unbounded_channel();
-        Self { rx, tx }
-    }
-
-    pub fn sender(&self) -> mpsc::UnboundedSender<AgentEvent> {
-        self.tx.clone()
-    }
-
-    /// Drain all pending agent events into state (non-blocking).
-    /// Returns true if any events were processed.
-    pub fn drain(&mut self, state: &mut AppState) -> bool {
-        let mut any = false;
-        while let Ok(event) = self.rx.try_recv() {
-            state.handle_agent_event(event);
-            any = true;
-        }
-        any
     }
 }
 
@@ -231,10 +225,6 @@ pub struct AppState {
     // ── Mouse hover ─────────────────────────────────────────────
     /// ID of the subagent the mouse is currently hovering over.
     pub hovered_subagent: Option<String>,
-    /// Y position and height of the main conversation area (stored during render,
-    /// used for mapping mouse coordinates to conversation lines).
-    pub main_area_y: u16,
-    pub main_area_height: u16,
     // ── Rendering cache ──────────────────────────────────────────
     /// Cached rendered lines — rebuilt only when content or width changes.
     pub cache: CachedConversation,
@@ -274,8 +264,6 @@ impl AppState {
             subagent_view: None,
             subagent_scroll: 0,
             hovered_subagent: None,
-            main_area_y: 0,
-            main_area_height: 0,
             cache: CachedConversation::new(),
             content_version: 0,
             cache_dirty: true,
@@ -965,6 +953,96 @@ impl AppState {
             }
         }
     }
+
+    // ── MPSC Reducer ────────────────────────────────────────────────────
+
+    /// Apply a single event to the state. Returns `true` if the UI needs a redraw.
+    pub fn apply(&mut self, event: AppEvent) -> bool {
+        match event {
+            AppEvent::Key(key) => {
+                let _ = crate::tui::input::handle_key(key, self);
+                true
+            }
+            AppEvent::Mouse(mouse, main_area) => self.apply_mouse(mouse, main_area),
+            AppEvent::Resize => {
+                self.cache_dirty = true;
+                true
+            }
+            AppEvent::Agent(ev) => {
+                self.handle_agent_event(ev);
+                true
+            }
+            AppEvent::Tick => {
+                self.frame_count = self.frame_count.wrapping_add(1);
+                true
+            }
+        }
+    }
+
+    fn apply_mouse(&mut self, mouse: MouseEvent, main_area: Rect) -> bool {
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                if self.subagent_view.is_some() {
+                    self.subagent_scroll = self.subagent_scroll.saturating_add(3);
+                } else {
+                    self.scroll = self.scroll.saturating_add(3);
+                }
+                true
+            }
+            MouseEventKind::ScrollDown => {
+                if self.subagent_view.is_some() {
+                    self.subagent_scroll = self.subagent_scroll.saturating_sub(3);
+                } else {
+                    self.scroll = self.scroll.saturating_sub(3);
+                }
+                true
+            }
+            MouseEventKind::Moved | MouseEventKind::Drag(_) => {
+                if self.subagent_view.is_none() {
+                    let new_hovered = self.find_hovered_subagent(mouse.row, main_area);
+                    if new_hovered != self.hovered_subagent {
+                        self.hovered_subagent = new_hovered;
+                        self.cache_dirty = true;
+                    }
+                }
+                true
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                if self.subagent_view.is_none() {
+                    if let Some(sa_id) = self.find_hovered_subagent(mouse.row, main_area) {
+                        self.subagent_view = Some(sa_id);
+                        self.subagent_scroll = 0;
+                        self.hovered_subagent = None;
+                        self.mark_dirty();
+                    }
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Map a mouse row to a subagent ID if over a subagent block.
+    fn find_hovered_subagent(&self, row: u16, main_area: Rect) -> Option<String> {
+        if row < main_area.y || row >= main_area.y + main_area.height || main_area.height == 0 {
+            return None;
+        }
+        let rel_y = (row - main_area.y) as usize;
+        let visible_height = main_area.height as usize;
+        let max_scroll = self.cache.wrapped_height.saturating_sub(visible_height);
+        let scroll_from_top = max_scroll.saturating_sub(self.scroll);
+        let abs_y = scroll_from_top + rel_y;
+
+        let mut cumulative = 0;
+        for block in &self.cache.blocks {
+            let bottom = cumulative + block.wrapped_height;
+            if abs_y >= cumulative && abs_y < bottom {
+                return block.subagent_id.clone();
+            }
+            cumulative = bottom;
+        }
+        None
+    }
 }
 
 // ── Conversation types ──────────────────────────────────────────────
@@ -1095,3 +1173,15 @@ pub const COMMAND_HELP: &str = r#"Available commands:
   /follow-up     Queue follow-up message
   /rewind <idx>  Rewind to earlier turn
   /sessions      Session management"#;
+
+// ── MPSC Event Loop ─────────────────────────────────────────────────
+
+/// Unified event type for the TUI event loop.
+/// All state mutations are driven by sending these through a channel.
+pub enum AppEvent {
+    Key(KeyEvent),
+    Mouse(MouseEvent, Rect),
+    Resize,
+    Agent(AgentEvent),
+    Tick,
+}
