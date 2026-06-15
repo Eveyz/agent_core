@@ -63,12 +63,6 @@ impl CacheHint {
         )
     }
 }
-use tiktoken_rs::cl100k_base;
-use std::sync::LazyLock;
-
-static BPE: LazyLock<tiktoken_rs::CoreBPE> = LazyLock::new(|| {
-    cl100k_base().expect("failed to init cl100k_base tokenizer")
-});
 
 // ── Segment types ────────────────────────────────────────────────────
 
@@ -767,11 +761,6 @@ pub type Context = ContextEngine;
 
 // ── Token utilities ──────────────────────────────────────────────────
 
-fn count_tokens(text: &str) -> anyhow::Result<usize> {
-    let tokens = BPE.encode_with_special_tokens(text);
-    Ok(tokens.len())
-}
-
 /// Fast approximate token count (chars / 4). Used for budget enforcement.
 pub fn rough_token_count(text: &str) -> usize {
     // 1 token ≈ 4 chars for English, ~1.5 chars for Chinese
@@ -786,31 +775,19 @@ fn message_token_count(msg: &Message) -> usize {
     let mut count = 4;
 
     if let Some(ref content) = msg.content {
-        match count_tokens(content) {
-            Ok(n) => count += n,
-            Err(_) => count += rough_token_count(content),
-        }
+        count += rough_token_count(content);
     }
 
     if let Some(ref tool_calls) = msg.tool_calls {
         for tc in tool_calls {
-            match count_tokens(&tc.function.name) {
-                Ok(n) => count += n,
-                Err(_) => count += tc.function.name.len() / 4,
-            }
-            match count_tokens(&tc.function.arguments) {
-                Ok(n) => count += n,
-                Err(_) => count += tc.function.arguments.len() / 4,
-            }
+            count += rough_token_count(&tc.function.name);
+            count += rough_token_count(&tc.function.arguments);
             count += 10;
         }
     }
 
     if let Some(ref name) = msg.name {
-        match count_tokens(name) {
-            Ok(n) => count += n,
-            Err(_) => count += name.len() / 4,
-        }
+        count += rough_token_count(name);
     }
 
     count
