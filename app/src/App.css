@@ -147,25 +147,183 @@ body {
   justify-content: space-between;
 }
 
-.project-item {
+/* ── Projects & Sessions (Cursor-style) ─────────────────────────── */
+
+.projects-section {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.projects-section .projects-header {
+  padding: 8px 16px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.projects-list {
+  overflow-y: auto;
+  flex: 1;
+  padding-bottom: 8px;
+}
+
+.project-group {
+  /* container for a project + its sessions */
+}
+
+/* Project row: [chevron] [folder icon] name                    [menu] */
+.sidebar-project-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 16px;
+  padding: 4px 12px;
+  cursor: pointer;
+  user-select: none;
+  border-radius: 4px;
+  margin: 1px 6px;
+}
+.sidebar-project-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.sidebar-row-content {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-chevron {
+  color: #666;
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+}
+
+.sidebar-row-text {
   font-size: 13px;
   color: var(--text-main);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-row-actions {
+  display: flex;
+  align-items: center;
+  opacity: 0;
+  transition: opacity 0.15s;
+  flex-shrink: 0;
+  margin-left: 4px;
+}
+.sidebar-project-row:hover .sidebar-row-actions {
+  opacity: 1;
+}
+
+.sidebar-context-trigger {
+  background: none;
+  border: none;
+  padding: 2px 3px;
+  border-radius: 4px;
   cursor: pointer;
+  color: #666;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-.project-item:hover {
-  background: var(--bg-hover);
+.sidebar-context-trigger:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #bbb;
 }
-.project-item-active {
-  background: var(--bg-hover);
-  border-left: 2px solid var(--accent);
+
+/* Session list (inside expanded project) */
+.session-list {
+  /* minimal indent to show hierarchy */
 }
-.project-item .meta {
-  color: var(--text-muted);
-  font-size: 11px;
+
+/* New session row */
+.session-row {
+  display: flex;
+  align-items: center;
+  padding: 3px 12px 3px 16px;
+  cursor: pointer;
+  user-select: none;
+  border-radius: 4px;
+  margin: 1px 6px;
+  font-size: 13px;
+  color: #aaa;
+  transition: background 0.1s;
+}
+.session-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-main);
+}
+
+.session-new-icon {
+  font-size: 16px;
+  font-weight: 300;
+  margin-right: 4px;
+  line-height: 1;
+  color: #777;
+}
+
+.session-row-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Active session — gray background, no left border, full width */
+.session-row-active {
+  background: rgba(255, 255, 255, 0.09) !important;
+  color: var(--text-main) !important;
+}
+
+/* ── Context Menu ───────────────────────────────────────────────── */
+
+.context-menu {
+  position: fixed;
+  z-index: 10000;
+  background: #2a2a2a;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 4px;
+  min-width: 160px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  font-size: 12px;
+  color: #d4d4d4;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.context-menu-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.context-menu-separator {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.06);
+  margin: 3px 6px;
+}
+
+.context-menu-danger {
+  color: #f87171;
+}
+.context-menu-danger:hover {
+  background: rgba(248, 113, 113, 0.1);
 }
 
 .sidebar-bottom {
@@ -194,8 +352,31 @@ body {
 }
 
 .header-title {
-  color: var(--text-muted);
-  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-main);
+  font-size: 14px;
+}
+
+.header-session-name {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 300px;
+}
+
+.header-edit-btn {
+  opacity: 0.4;
+  transition: opacity 0.15s;
+  padding: 2px;
+}
+.header-title:hover .header-edit-btn {
+  opacity: 0.8;
+}
+.header-edit-btn:hover {
+  opacity: 1 !important;
 }
 
 .header-actions {

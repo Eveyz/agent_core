@@ -16,9 +16,15 @@ pub struct OpenAIClient {
 impl OpenAIClient {
     pub fn new(model: ModelConfig) -> Self {
         let timeout = Duration::from_secs(model.request_timeout_secs);
+        // Disable automatic gzip/deflate decompression — some providers (e.g. volces)
+        // return malformed Content-Encoding headers that cause "error decoding response body"
+        // in reqwest's chunk decoder.
         let http = reqwest::Client::builder()
             .timeout(timeout)
             .connect_timeout(Duration::from_secs(15))
+            .no_gzip()
+            .no_deflate()
+            .no_brotli()
             .build()
             .expect("failed to build http client");
 

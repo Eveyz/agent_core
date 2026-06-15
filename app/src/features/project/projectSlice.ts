@@ -26,25 +26,43 @@ export interface SessionMeta {
   updated_at: string;
 }
 
+export interface FrontendMessage {
+  role: string;
+  content: string;
+}
+
+export interface ResumeSessionResult {
+  meta: SessionMeta;
+  messages: FrontendMessage[];
+}
+
 interface ProjectState {
   projects: Project[];
   sessions: Record<string, SessionMeta[]>; // project_id -> sessions
   activeProjectId: string | null;
+  activeSessionId: string | null;
+  sessionMessages: FrontendMessage[];  // messages of current session
   loading: boolean;
   error: string | null;
 }
 
 const STORAGE_KEY = 'agent_core_active_project';
+const SESSION_KEY = 'agent_core_active_session';
 
 const savedActiveId = localStorage.getItem(STORAGE_KEY);
+const savedActiveSessionId = localStorage.getItem(SESSION_KEY);
 
 const initialState: ProjectState = {
   projects: [],
   sessions: {},
   activeProjectId: savedActiveId,
+  activeSessionId: savedActiveSessionId,
+  sessionMessages: [],
   loading: false,
   error: null,
 };
+
+// ── Project thunks ───────────────────────────────────────────────────
 
 export const fetchProjects = createAsyncThunk('project/fetchProjects', async (_, { rejectWithValue }) => {
   try {
@@ -94,6 +112,80 @@ export const fetchProjectSessions = createAsyncThunk('project/fetchProjectSessio
   }
 });
 
+// ── Session thunks ───────────────────────────────────────────────────
+
+export const createSession = createAsyncThunk(
+  'project/createSession',
+  async (projectId: string, { rejectWithValue }) => {
+    try {
+      const raw = await invoke<any>('create_session', { projectId });
+      return { projectId, session: normalizeSession(raw) };
+    } catch (e) {
+      return rejectWithValue(String(e));
+    }
+  }
+);
+
+export const deleteSession = createAsyncThunk(
+  'project/deleteSession',
+  async ({ sessionId, projectId }: { sessionId: string; projectId: string }, { rejectWithValue }) => {
+    try {
+      await invoke('delete_session', { sessionId });
+      return { sessionId, projectId };
+    } catch (e) {
+      return rejectWithValue(String(e));
+    }
+  }
+);
+
+export const renameSession = createAsyncThunk(
+  'project/renameSession',
+  async ({ sessionId, projectId, newTitle }: { sessionId: string; projectId: string; newTitle: string }, { rejectWithValue }) => {
+    try {
+      await invoke('rename_session', { sessionId, newTitle });
+      return { sessionId, projectId, newTitle };
+    } catch (e) {
+      return rejectWithValue(String(e));
+    }
+  }
+);
+
+export const saveSessionMessages = createAsyncThunk(
+  'project/saveSessionMessages',
+  async ({ sessionId, messages, cwd, modelUsed }: {
+    sessionId: string;
+    messages: FrontendMessage[];
+    cwd: string;
+    modelUsed: string;
+  }, { rejectWithValue }) => {
+    try {
+      await invoke('save_session_messages', {
+        sessionId,
+        messagesJson: JSON.stringify(messages),
+        cwd,
+        modelUsed,
+      });
+      return { sessionId };
+    } catch (e) {
+      return rejectWithValue(String(e));
+    }
+  }
+);
+
+export const resumeSession = createAsyncThunk(
+  'project/resumeSession',
+  async (sessionId: string, { rejectWithValue }) => {
+    try {
+      const result = await invoke<ResumeSessionResult>('resume_session', { sessionId });
+      return result;
+    } catch (e) {
+      return rejectWithValue(String(e));
+    }
+  }
+);
+
+// ── Normalizers ──────────────────────────────────────────────────────
+
 function normalizeProject(raw: any): Project {
   return {
     id: raw?.id ?? '',
@@ -123,21 +215,43 @@ function normalizeSession(raw: any): SessionMeta {
   };
 }
 
+// ── Slice ────────────────────────────────────────────────────────────
+
 export const projectSlice = createSlice({
   name: 'project',
   initialState,
   reducers: {
     setActiveProject: (state, action: PayloadAction<string | null>) => {
       state.activeProjectId = action.payload;
+      // Clear session when switching projects
+      state.activeSessionId = null;
+      state.sessionMessages = [];
       if (action.payload) {
         localStorage.setItem(STORAGE_KEY, action.payload);
+        localStorage.removeItem(SESSION_KEY);
       } else {
         localStorage.removeItem(STORAGE_KEY);
+        localStorage.removeItem(SESSION_KEY);
       }
+    },
+    setActiveSession: (state, action: PayloadAction<string | null>) => {
+      state.activeSessionId = action.payload;
+      if (action.payload) {
+        localStorage.setItem(SESSION_KEY, action.payload);
+      } else {
+        localStorage.removeItem(SESSION_KEY);
+      }
+    },
+    clearSessionMessages: (state) => {
+      state.sessionMessages = [];
+    },
+    setSessionMessages: (state, action: PayloadAction<FrontendMessage[]>) => {
+      state.sessionMessages = action.payload;
     },
   },
   extraReducers: (builder) => {
     builder
+      // ── Projects ──
       .addCase(fetchProjects.pending, (state) => {
         state.loading = true;
         state.error = null;
@@ -149,10 +263,13 @@ export const projectSlice = createSlice({
           const stillExists = state.projects.some((p) => p.id === state.activeProjectId);
           if (!stillExists) {
             state.activeProjectId = state.projects[0]?.id ?? null;
+            state.activeSessionId = null;
+            state.sessionMessages = [];
             if (state.activeProjectId) {
               localStorage.setItem(STORAGE_KEY, state.activeProjectId);
             } else {
               localStorage.removeItem(STORAGE_KEY);
+              localStorage.removeItem(SESSION_KEY);
             }
           }
         } else if (state.projects.length > 0) {
@@ -167,17 +284,23 @@ export const projectSlice = createSlice({
       .addCase(createProject.fulfilled, (state, action) => {
         state.projects.unshift(action.payload);
         state.activeProjectId = action.payload.id;
+        state.activeSessionId = null;
+        state.sessionMessages = [];
         localStorage.setItem(STORAGE_KEY, action.payload.id);
+        localStorage.removeItem(SESSION_KEY);
       })
       .addCase(deleteProject.fulfilled, (state, action) => {
         state.projects = state.projects.filter((p) => p.id !== action.payload);
         delete state.sessions[action.payload];
         if (state.activeProjectId === action.payload) {
           state.activeProjectId = state.projects[0]?.id ?? null;
+          state.activeSessionId = null;
+          state.sessionMessages = [];
           if (state.activeProjectId) {
             localStorage.setItem(STORAGE_KEY, state.activeProjectId);
           } else {
             localStorage.removeItem(STORAGE_KEY);
+            localStorage.removeItem(SESSION_KEY);
           }
         }
       })
@@ -186,11 +309,64 @@ export const projectSlice = createSlice({
         const p = state.projects.find((p) => p.id === projectId);
         if (p) p.name = newName;
       })
+      // ── Sessions listing ──
       .addCase(fetchProjectSessions.fulfilled, (state, action) => {
         state.sessions[action.payload.projectId] = action.payload.sessions;
+      })
+      // ── Session CRUD ──
+      .addCase(createSession.fulfilled, (state, action) => {
+        const { projectId, session } = action.payload;
+        if (!state.sessions[projectId]) {
+          state.sessions[projectId] = [];
+        }
+        state.sessions[projectId].unshift(session);
+        state.activeSessionId = session.id;
+        state.sessionMessages = [];
+        localStorage.setItem(SESSION_KEY, session.id);
+      })
+      .addCase(deleteSession.fulfilled, (state, action) => {
+        const { sessionId, projectId } = action.payload;
+        if (state.sessions[projectId]) {
+          state.sessions[projectId] = state.sessions[projectId].filter((s) => s.id !== sessionId);
+        }
+        if (state.activeSessionId === sessionId) {
+          state.activeSessionId = state.sessions[projectId]?.[0]?.id ?? null;
+          state.sessionMessages = [];
+          if (state.activeSessionId) {
+            localStorage.setItem(SESSION_KEY, state.activeSessionId);
+          } else {
+            localStorage.removeItem(SESSION_KEY);
+          }
+        }
+      })
+      .addCase(renameSession.fulfilled, (state, action) => {
+        const { sessionId, projectId, newTitle } = action.payload;
+        if (state.sessions[projectId]) {
+          const s = state.sessions[projectId].find((s) => s.id === sessionId);
+          if (s) {
+            s.title = newTitle;
+            s.updated_at = new Date().toISOString();
+          }
+        }
+      })
+      .addCase(saveSessionMessages.fulfilled, (state, action) => {
+        // Update message count in session list
+        const sessionId = action.payload.sessionId;
+        // Find and update count in any project's session list
+        for (const [, list] of Object.entries(state.sessions)) {
+          const s = list.find((s) => s.id === sessionId);
+          if (s) {
+            s.message_count = state.sessionMessages.length;
+            s.updated_at = new Date().toISOString();
+            break;
+          }
+        }
+      })
+      .addCase(resumeSession.fulfilled, (state, action) => {
+        state.sessionMessages = action.payload.messages;
       });
   },
 });
 
-export const { setActiveProject } = projectSlice.actions;
+export const { setActiveProject, setActiveSession, clearSessionMessages, setSessionMessages } = projectSlice.actions;
 export default projectSlice.reducer;

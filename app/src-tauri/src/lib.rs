@@ -9,6 +9,39 @@ struct AppState {
     pending_approvals: Arc<std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<agent_core::ApprovalChoice>>>>,
     config_path: String,
     project_manager: Arc<std::sync::Mutex<agent_core::ProjectManager>>,
+    session_manager: Arc<agent_core::SessionManager>,
+}
+
+// ── Frontend message type for session save/load ──────────────────────
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct FrontendMessage {
+    role: String,
+    content: String,
+}
+
+impl FrontendMessage {
+    fn to_agent_message(&self) -> agent_core::types::Message {
+        let role = match self.role.as_str() {
+            "system" => agent_core::types::Role::System,
+            "assistant" => agent_core::types::Role::Assistant,
+            "tool" => agent_core::types::Role::Tool,
+            _ => agent_core::types::Role::User,
+        };
+        agent_core::types::Message {
+            role,
+            content: Some(self.content.clone()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+struct FrontendSession {
+    meta: agent_core::SessionMeta,
+    messages: Vec<FrontendMessage>,
 }
 
 #[tauri::command]
@@ -103,6 +136,72 @@ async fn switch_model(state: State<'_, AppState>, name: String) -> Result<(), St
     agent.switch_model(&name).map_err(|e| e.to_string())
 }
 
+// ── Session Commands ─────────────────────────────────────────────────
+
+#[tauri::command]
+fn create_session(state: State<'_, AppState>, project_id: String) -> Result<agent_core::SessionMeta, String> {
+    let messages: Vec<agent_core::types::Message> = vec![
+        agent_core::types::Message::user("New Session"),
+    ];
+    let pm = state.project_manager.lock().map_err(|e| e.to_string())?;
+    let project = pm.get(&project_id).map_err(|e| e.to_string())?
+        .ok_or_else(|| "Project not found".to_string())?;
+    let cwd = project.path.clone();
+    let model = "default";
+    let session_id = state.session_manager.save_with_project(None, &messages, &cwd, model, Some(&project_id))
+        .map_err(|e| e.to_string())?;
+    // Now rename to "New Session" since auto-title will pick up the dummy message
+    let _ = state.session_manager.rename(&session_id, "New Session");
+    let meta = state.session_manager.get_meta(&session_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Session not found after creation".to_string())?;
+    Ok(meta)
+}
+
+#[tauri::command]
+fn delete_session(state: State<'_, AppState>, session_id: String) -> Result<bool, String> {
+    state.session_manager.delete(&session_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn rename_session(state: State<'_, AppState>, session_id: String, new_title: String) -> Result<bool, String> {
+    state.session_manager.rename(&session_id, &new_title).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_session_messages(
+    state: State<'_, AppState>,
+    session_id: String,
+    messages_json: String,
+    cwd: String,
+    model_used: String,
+) -> Result<(), String> {
+    let frontend_msgs: Vec<FrontendMessage> = serde_json::from_str(&messages_json)
+        .map_err(|e| format!("Invalid messages JSON: {}", e))?;
+    let messages: Vec<agent_core::types::Message> = frontend_msgs
+        .iter()
+        .map(|m| m.to_agent_message())
+        .collect();
+    state.session_manager.save(Some(&session_id), &messages, &cwd, &model_used)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn resume_session(state: State<'_, AppState>, session_id: String) -> Result<FrontendSession, String> {
+    let session = state.session_manager.resume(&session_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Session not found".to_string())?;
+    let messages: Vec<FrontendMessage> = session.messages.iter().map(|m| FrontendMessage {
+        role: m.role.to_string(),
+        content: m.content.clone().unwrap_or_default(),
+    }).collect();
+    Ok(FrontendSession {
+        meta: session.meta,
+        messages,
+    })
+}
+
 // ── Project Commands ─────────────────────────────────────────────────
 
 #[tauri::command]
@@ -176,58 +275,63 @@ fn get_project_sessions(state: State<'_, AppState>, project_id: String) -> Resul
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            // Try multiple paths to find config.toml depending on where the app is launched from
-            let config_paths = ["config.toml", "../config.toml", "../../config.toml"];
-            let mut loaded_config: Option<(String, agent_core::config::Config)> = None;
-            for path in &config_paths {
-                if let Ok(config) = agent_core::config::Config::load(path) {
-                    loaded_config = Some((path.to_string(), config));
-                    break;
-                }
-            }
+            // Resolve home directory (handles both Unix HOME and Windows USERPROFILE)
+            let home = std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .unwrap_or_else(|_| ".".to_string());
+            let agverse_dir = std::path::PathBuf::from(&home).join(".agverse");
+            let config_path = agverse_dir.join("config.toml");
+            let config_path_str = config_path.to_string_lossy().to_string();
 
-            let (config_path, config) = loaded_config
-                .or_else(|| {
-                    agent_core::config::Config::from_env()
-                        .ok()
-                        .map(|c| ("env".to_string(), c))
-                })
-                .unwrap_or_else(|| {
-                    let mut default_config = agent_core::config::Config {
-                        default_model: "default/default".to_string(),
-                        providers: {
-                            let mut p = std::collections::HashMap::new();
-                            let mut m = std::collections::HashMap::new();
-                            m.insert("default".to_string(), agent_core::config::ProviderModelEntry {
-                                model_id: "gpt-4o-mini".to_string(),
-                                temperature: None,
-                                max_tokens: None,
-                                system_prompt: None,
-                            });
-                            p.insert("default".to_string(), agent_core::config::ProviderConfig {
-                                name: "default".to_string(),
-                                base_url: "https://api.openai.com/v1".to_string(),
-                                api_key: "".to_string(),
-                                max_context_tokens: 128000,
-                                temperature: None,
-                                max_tokens: None,
-                                react_enabled: true,
-                                system_prompt: None,
-                                max_iterations: 100,
-                                request_timeout_secs: 60,
-                                models: m,
-                            });
-                            p
-                        },
-                        legacy_models: std::collections::HashMap::new(),
-                        models: std::collections::HashMap::new(),
-                        memory: None,
-                        permissions: Default::default(),
-                        mcp: Default::default(),
-                    };
-                    default_config.rebuild_models();
-                    ("default".to_string(), default_config)
-                });
+            // Ensure .agverse directory exists
+            std::fs::create_dir_all(&agverse_dir)
+                .unwrap_or_else(|e| eprintln!("warning: could not create ~/.agverse: {e}"));
+
+            // Try to load config from ~/.agverse/config.toml first, then fallbacks
+            let config = if let Ok(cfg) = agent_core::config::Config::load(&config_path_str) {
+                cfg
+            } else if let Ok(cfg) = agent_core::config::Config::from_env() {
+                // Save the env-based config so it persists for next launch
+                let _ = cfg.save(&config_path_str);
+                cfg
+            } else {
+                let mut default_config = agent_core::config::Config {
+                    default_model: "default/default".to_string(),
+                    providers: {
+                        let mut p = std::collections::HashMap::new();
+                        let mut m = std::collections::HashMap::new();
+                        m.insert("default".to_string(), agent_core::config::ProviderModelEntry {
+                            model_id: "gpt-4o-mini".to_string(),
+                            temperature: None,
+                            max_tokens: None,
+                            system_prompt: None,
+                        });
+                        p.insert("default".to_string(), agent_core::config::ProviderConfig {
+                            name: "default".to_string(),
+                            base_url: "https://api.openai.com/v1".to_string(),
+                            api_key: "".to_string(),
+                            max_context_tokens: 128000,
+                            temperature: None,
+                            max_tokens: None,
+                            react_enabled: true,
+                            system_prompt: None,
+                            max_iterations: 100,
+                            request_timeout_secs: 60,
+                            models: m,
+                        });
+                        p
+                    },
+                    legacy_models: std::collections::HashMap::new(),
+                    models: std::collections::HashMap::new(),
+                    memory: None,
+                    permissions: Default::default(),
+                    mcp: Default::default(),
+                };
+                default_config.rebuild_models();
+                // Save default config so next launch finds it
+                let _ = default_config.save(&config_path_str);
+                default_config
+            };
 
             let builder = agent_core::AgentBuilder::with_config(config);
             let mut agent = builder.with_tool_execution_mode(ToolExecutionMode::Parallel).build().expect("Failed to build agent");
@@ -256,19 +360,23 @@ pub fn run() {
             let db_path = if let Some(mem_config) = agent.config().memory.as_ref() {
                 mem_config.db_path.clone()
             } else {
-                "~/.agent_core/memory.db".to_string()
+                "~/.agverse/memory.db".to_string()
             };
             let storage = agent_core::memory::storage::Storage::new(&db_path)
                 .expect("Failed to open storage database");
             let project_manager = Arc::new(std::sync::Mutex::new(
-                agent_core::ProjectManager::new(storage)
+                agent_core::ProjectManager::new(storage.clone())
             ));
+            let session_manager = Arc::new(
+                agent_core::SessionManager::new(storage)
+            );
 
             app.manage(AppState {
                 agent: Arc::new(AsyncMutex::new(agent)),
                 pending_approvals,
-                config_path,
+                config_path: config_path_str,
                 project_manager,
+                session_manager,
             });
             Ok(())
         })
@@ -277,6 +385,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             send_message, approve_tool, list_directory,
             get_config, save_config, switch_model,
+            create_session, delete_session, rename_session,
+            save_session_messages, resume_session,
             list_projects, create_project, delete_project, rename_project, open_in_explorer,
             list_git_branches, switch_git_branch, get_project_sessions
         ])

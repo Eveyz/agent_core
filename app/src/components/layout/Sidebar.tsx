@@ -3,13 +3,15 @@ import { useDispatch, useSelector } from 'react-redux';
 import { open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { RootState } from '../../store';
-import { createProject, fetchProjectSessions, deleteProject, renameProject, setActiveProject } from '../../features/project/projectSlice';
+import {
+  createProject, fetchProjectSessions, deleteProject, renameProject,
+  setActiveProject, setActiveSession,
+  createSession, deleteSession, renameSession, resumeSession,
+} from '../../features/project/projectSlice';
+import { clearChat } from '../../features/chat/chatSlice';
 import PlusIcon from 'lucide-react/dist/esm/icons/plus.mjs';
-import MoreHorizontalIcon from 'lucide-react/dist/esm/icons/more-horizontal.mjs';
-import BoxIcon from 'lucide-react/dist/esm/icons/box.mjs';
 import LayoutGridIcon from 'lucide-react/dist/esm/icons/layout-grid.mjs';
 import MessageSquareIcon from 'lucide-react/dist/esm/icons/message-square.mjs';
-import ClockIcon from 'lucide-react/dist/esm/icons/clock.mjs';
 import FolderIcon from 'lucide-react/dist/esm/icons/folder.mjs';
 import SettingsIcon from 'lucide-react/dist/esm/icons/settings.mjs';
 import SmartphoneIcon from 'lucide-react/dist/esm/icons/smartphone.mjs';
@@ -19,35 +21,13 @@ import PencilIcon from 'lucide-react/dist/esm/icons/pencil.mjs';
 import ExternalLinkIcon from 'lucide-react/dist/esm/icons/external-link.mjs';
 import ChevronRightIcon from 'lucide-react/dist/esm/icons/chevron-right.mjs';
 import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
+import MoreHorizontalIcon from 'lucide-react/dist/esm/icons/more-horizontal.mjs';
 
-const flexGap8 = { display: 'flex', gap: '8px' } as const;
+// ── Context menu hook ────────────────────────────────────────────────
 
-function timeAgo(dateStr: string): string {
-  if (!dateStr) return '';
-  const then = new Date(dateStr).getTime();
-  const now = Date.now();
-  const diff = now - then;
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'now';
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
-
-interface ProjectMenuProps {
-  projectId: string;
-  projectName: string;
-  projectPath: string;
-  onDelete: (projectId: string) => void;
-  onRename: (projectId: string, newName: string) => void;
-}
-
-function ProjectMenu({ projectId, projectName, projectPath, onDelete, onRename }: ProjectMenuProps) {
+function useContextMenu() {
   const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState(false);
-  const [editName, setEditName] = useState(projectName);
+  const [pos, setPos] = useState({ x: 0, y: 0 });
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -62,72 +42,50 @@ function ProjectMenu({ projectId, projectName, projectPath, onDelete, onRename }
     }
   }, [open]);
 
-  const handleRename = () => {
-    const name = editName.trim();
-    if (name && name !== projectName) {
-      onRename(projectId, name);
-    }
-    setEditing(false);
-    setOpen(false);
-  };
+  return { open, setOpen, pos, setPos, menuRef };
+}
+
+// ── Project context menu ─────────────────────────────────────────────
+
+function ProjectContextMenu({ projectId, projectName, projectPath, onDelete, onRename }: {
+  projectId: string; projectName: string; projectPath: string;
+  onDelete: (id: string) => void;
+  onRename: (id: string, name: string) => void;
+}) {
+  const { open, setOpen, pos, setPos, menuRef } = useContextMenu();
 
   const handleOpenExplorer = async () => {
-    try {
-      await invoke('open_in_explorer', { path: projectPath });
-    } catch (e) {
-      console.error('Failed to open explorer:', e);
-    }
+    try { await invoke('open_in_explorer', { path: projectPath }); } catch {}
     setOpen(false);
   };
 
   return (
-    <div ref={menuRef} style={{ position: 'relative' }}>
+    <>
       <button
-        className="icon-btn"
-        style={{ padding: 0, opacity: 0.5 }}
-        onClick={(e) => { e.stopPropagation(); setOpen((s) => !s); }}
-        title="More options"
+        className="sidebar-context-trigger"
+        onClick={(e) => { e.stopPropagation(); setPos({ x: e.clientX, y: e.clientY }); setOpen(true); }}
       >
-        <MoreHorizontalIcon size={12} />
+        <MoreHorizontalIcon size={14} />
       </button>
       {open && (
-        <div className="dropdown-menu" style={{ right: 0, top: '24px', minWidth: '140px' }}>
-          <div className="dropdown-item" onClick={() => { handleOpenExplorer(); }}>
-            <ExternalLinkIcon size={12} /> Open in Explorer
+        <div ref={menuRef} className="context-menu" style={{ left: pos.x, top: pos.y }}>
+          <div className="context-menu-item" onClick={() => { onRename(projectId, projectName); setOpen(false); }}>
+            <PencilIcon size={13} /> Rename
           </div>
-          <div
-            className="dropdown-item"
-            onClick={() => {
-              setEditing(true);
-              setEditName(projectName);
-            }}
-          >
-            <PencilIcon size={12} /> Rename
+          <div className="context-menu-item" onClick={handleOpenExplorer}>
+            <ExternalLinkIcon size={13} /> Open in Explorer
           </div>
-          <div className="dropdown-item dropdown-item-danger" onClick={() => { setOpen(false); onDelete(projectId); }}>
-            <TrashIcon size={12} /> Delete
+          <div className="context-menu-separator" />
+          <div className="context-menu-item context-menu-danger" onClick={() => { setOpen(false); onDelete(projectId); }}>
+            <TrashIcon size={13} /> Delete
           </div>
         </div>
       )}
-      {editing && (
-        <div className="dropdown-menu" style={{ right: 0, top: '24px', minWidth: '180px', padding: '8px' }}>
-          <input
-            className="settings-input"
-            style={{ fontSize: '12px', marginBottom: '6px' }}
-            value={editName}
-            onChange={(e) => setEditName(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') handleRename(); if (e.key === 'Escape') setEditing(false); }}
-            autoFocus
-          />
-          <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end' }}>
-            <button className="btn-secondary" style={{ fontSize: '11px', padding: '2px 8px' }} onClick={() => setEditing(false)}>Cancel</button>
-            <button className="btn-primary" style={{ fontSize: '11px', padding: '2px 8px' }} onClick={handleRename}>Save</button>
-          </div>
-        </div>
-      )}
-    </div>
+    </>
   );
 }
+
+// ── Sidebar ──────────────────────────────────────────────────────────
 
 export const Sidebar = memo(function Sidebar({
   activeTab,
@@ -142,7 +100,22 @@ export const Sidebar = memo(function Sidebar({
   const projects = useSelector((state: RootState) => state.project.projects);
   const sessions = useSelector((state: RootState) => state.project.sessions);
   const activeProjectId = useSelector((state: RootState) => state.project.activeProjectId);
+  const activeSessionId = useSelector((state: RootState) => state.project.activeSessionId);
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
+  const [creatingSession, setCreatingSession] = useState(false);
+
+  // Auto-expand active project
+  useEffect(() => {
+    if (activeProjectId) {
+      setExpandedProjects((prev) => {
+        if (prev.has(activeProjectId)) return prev;
+        const next = new Set(prev);
+        next.add(activeProjectId);
+        dispatch(fetchProjectSessions(activeProjectId) as any);
+        return next;
+      });
+    }
+  }, [activeProjectId, dispatch]);
 
   const toggleProject = useCallback((projectId: string) => {
     setExpandedProjects((prev) => {
@@ -171,19 +144,56 @@ export const Sidebar = memo(function Sidebar({
   }, [dispatch]);
 
   const handleRenameProject = useCallback((projectId: string, newName: string) => {
-    dispatch(renameProject({ projectId, newName }) as any);
+    const name = prompt('New name:', newName);
+    if (name?.trim()) dispatch(renameProject({ projectId, newName: name.trim() }) as any);
   }, [dispatch]);
 
   const handleSelectProject = useCallback((projectId: string) => {
     dispatch(setActiveProject(projectId));
   }, [dispatch]);
 
+  const handleNewSession = useCallback(async (projectId: string) => {
+    if (creatingSession) return;
+    setCreatingSession(true);
+    try {
+      await dispatch(createSession(projectId) as any);
+      dispatch(clearChat());
+    } finally {
+      setCreatingSession(false);
+    }
+  }, [dispatch, creatingSession]);
+
+  const handleSelectSession = useCallback((sessionId: string, projectId: string) => {
+    dispatch(setActiveProject(projectId));
+    dispatch(setActiveSession(sessionId));
+    dispatch(clearChat());
+    dispatch(resumeSession(sessionId) as any);
+  }, [dispatch]);
+
+  const handleDeleteSession = useCallback((sessionId: string, projectId: string) => {
+    if (confirm('Delete this session?')) {
+      dispatch(deleteSession({ sessionId, projectId }) as any);
+    }
+  }, [dispatch]);
+
+  const handleRenameSession = useCallback((sessionId: string, _projectId: string, currentTitle: string) => {
+    const name = prompt('New title:', currentTitle);
+    if (name?.trim()) dispatch(renameSession({ sessionId, projectId: _projectId, newTitle: name.trim() }) as any);
+  }, [dispatch]);
+
   return (
     <aside className="sidebar">
-      <div className="sidebar-header-actions">
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px 6px' }}>
         <button className="icon-btn"><LayoutGridIcon size={16} /></button>
+        <div style={{ display: 'flex', gap: '4px' }}>
+          <button className="icon-btn" onClick={handleOpenFolder} title="Open folder">
+            <FolderIcon size={15} />
+          </button>
+        </div>
       </div>
 
+      {/* Toggle group */}
       <div className="toggle-group">
         <button
           className={`toggle-btn ${activeTab === 'code' ? 'active' : ''}`}
@@ -199,94 +209,96 @@ export const Sidebar = memo(function Sidebar({
         </button>
       </div>
 
-      <div className="sidebar-nav">
+      {/* Quick actions */}
+      <div className="sidebar-nav" style={{ marginBottom: '4px' }}>
         <div className="nav-item"><PlusIcon size={14} /> New Agent</div>
         <div className="nav-item"><MessageSquareIcon size={14} /> New requirement</div>
-        <div className="nav-item"><BoxIcon size={14} /> Plugins</div>
-        <div className="nav-item"><ClockIcon size={14} /> Scheduled tasks</div>
       </div>
 
-      <div className="projects-header">
-        <span>Projects</span>
-        <div style={flexGap8}>
-          <BoxIcon size={12} />
-          <button className="icon-btn" style={{ padding: 0 }} onClick={handleOpenFolder} title="Open project folder">
-            <FolderIcon size={12} />
-          </button>
+      {/* Projects list */}
+      <div className="projects-section">
+        <div className="projects-header">
+          <span>Projects</span>
+        </div>
+
+        <div className="projects-list">
+          {projects.length === 0 && (
+            <div style={{ padding: '16px 20px', color: '#666', fontSize: '12px' }}>
+              No projects yet. Click the folder icon above to add one.
+            </div>
+          )}
+          {projects.map((project) => {
+            const isExpanded = expandedProjects.has(project.id);
+            const projectSessions = sessions[project.id] ?? [];
+
+            return (
+              <div key={project.id} className="project-group">
+                {/* Project row: folder icon + name + chevron + context menu */}
+                <div
+                  className="sidebar-project-row"
+                  onClick={() => { handleSelectProject(project.id); toggleProject(project.id); }}
+                >
+                  <span className="sidebar-row-content">
+                    {isExpanded
+                      ? <ChevronDownIcon size={14} className="sidebar-chevron" />
+                      : <ChevronRightIcon size={14} className="sidebar-chevron" />
+                    }
+                    <FolderOpenIcon isOpen={isExpanded} size={15} />
+                    <span className="sidebar-row-text">{project.name}</span>
+                  </span>
+                  <span className="sidebar-row-actions">
+                    <button
+                      className="sidebar-context-trigger"
+                      onClick={(e) => { e.stopPropagation(); handleNewSession(project.id); }}
+                      title="New session"
+                    >
+                      <PlusIcon size={13} />
+                    </button>
+                    <ProjectContextMenu
+                      projectId={project.id}
+                      projectName={project.name}
+                      projectPath={project.path}
+                      onDelete={handleDeleteProject}
+                      onRename={handleRenameProject}
+                    />
+                  </span>
+                </div>
+
+                {/* Sessions under this project */}
+                {isExpanded && (
+                  <div className="session-list">
+                    {projectSessions.map((session) => {
+                      const isSessionActive = activeSessionId === session.id && activeProjectId === project.id;
+                      return (
+                        <div
+                          key={session.id}
+                          className={`session-row ${isSessionActive ? 'session-row-active' : ''}`}
+                          onClick={() => handleSelectSession(session.id, project.id)}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            const action = window.confirm(
+                              `Session: "${session.title}"\n\nOK to Rename\nCancel to Delete`
+                            );
+                            if (action) {
+                              handleRenameSession(session.id, project.id, session.title);
+                            } else {
+                              handleDeleteSession(session.id, project.id);
+                            }
+                          }}
+                        >
+                          <span className="session-row-text">{session.title || 'Untitled'}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
 
-      <div className="sidebar-nav" style={{ marginTop: '8px', overflowY: 'auto', flex: 1 }}>
-        {projects.length === 0 && (
-          <div style={{ padding: '12px', color: '#808080', fontSize: '12px' }}>
-            No projects yet. Click the folder icon to add one.
-          </div>
-        )}
-        {projects.map((project) => {
-          const isExpanded = expandedProjects.has(project.id);
-          const isActive = activeProjectId === project.id;
-          const projectSessions = sessions[project.id] ?? [];
-
-          return (
-            <div key={project.id}>
-              <div
-                className={`project-item ${isActive ? 'project-item-active' : ''}`}
-                onClick={() => { handleSelectProject(project.id); toggleProject(project.id); }}
-                style={{ cursor: 'pointer' }}
-              >
-                <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  {isExpanded ? <ChevronDownIcon size={12} /> : <ChevronRightIcon size={12} />}
-                  <FolderIcon size={14} color="#808080" />
-                  {project.name}
-                </span>
-                <span style={flexGap8}>
-                  <ProjectMenu
-                    projectId={project.id}
-                    projectName={project.name}
-                    projectPath={project.path}
-                    onDelete={handleDeleteProject}
-                    onRename={handleRenameProject}
-                  />
-                  <button
-                    className="icon-btn"
-                    style={{ padding: 0, opacity: 0.5 }}
-                    onClick={(e) => { e.stopPropagation(); /* new session */ }}
-                    title="New session"
-                  >
-                    <MessageSquareIcon size={10} />
-                  </button>
-                </span>
-              </div>
-
-              {isExpanded && (
-                <div style={{ marginLeft: '8px' }}>
-                  {projectSessions.length === 0 && (
-                    <div style={{ padding: '6px 12px', color: '#555', fontSize: '11px' }}>
-                      No sessions yet
-                    </div>
-                  )}
-                  {projectSessions.map((session) => (
-                    <div
-                      key={session.id}
-                      className="project-item"
-                      style={{ paddingLeft: '32px', fontSize: '12px' }}
-                    >
-                      <span style={{ display: 'flex', alignItems: 'center', gap: '8px', overflow: 'hidden' }}>
-                        <MessageSquareIcon size={10} color="#555" />
-                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {session.title}
-                        </span>
-                      </span>
-                      <span className="meta">{timeAgo(session.updated_at)}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
+      {/* Bottom */}
       <div className="sidebar-bottom">
         <div className="nav-item"><SmartphoneIcon size={14} /> Connect phone</div>
         <div className="nav-item" onClick={onOpenSettings}><SettingsIcon size={14} /> Settings</div>
@@ -294,3 +306,13 @@ export const Sidebar = memo(function Sidebar({
     </aside>
   );
 });
+
+// ── Folder icon that changes when open/closed ─────────────────────────
+
+function FolderOpenIcon({ isOpen, size }: { isOpen: boolean; size: number }) {
+  if (!isOpen) {
+    return <FolderIcon size={size} color="#9ca3af" />;
+  }
+  // Open folder: use a different color or style
+  return <FolderIcon size={size} color="#fbbf24" />;
+}

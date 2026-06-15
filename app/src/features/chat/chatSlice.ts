@@ -1,4 +1,5 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit';
+import { resumeSession } from '../project/projectSlice';
 
 export type TurnBlock =
   | { type: 'assistant'; text: string; isStreaming: boolean }
@@ -347,6 +348,31 @@ export const chatSlice = createSlice({
       state.entries = [];
       state.isProcessing = false;
     }
+  },
+  extraReducers: (builder) => {
+    builder.addCase(resumeSession.fulfilled, (state, action) => {
+      const { messages } = action.payload;
+      state.entries = [];
+      state.isProcessing = false;
+      for (const msg of messages) {
+        if (msg.role === 'user') {
+          state.entries.push({
+            id: `user-${Date.now()}-${Math.random()}`,
+            type: 'user',
+            text: msg.content,
+          });
+        } else if (msg.role === 'assistant') {
+          state.entries.push({
+            id: `turn-${Date.now()}-${Math.random()}`,
+            type: 'turn',
+            turnIndex: state.entries.length,
+            blocks: [{ type: 'assistant', text: msg.content, isStreaming: false }],
+            startTime: Date.now(),
+            endTime: Date.now(),
+          });
+        }
+      }
+    });
   },
 });
 
