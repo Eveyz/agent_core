@@ -9,7 +9,7 @@ import FolderIcon from 'lucide-react/dist/esm/icons/folder.mjs';
 import Maximize2Icon from 'lucide-react/dist/esm/icons/maximize-2.mjs';
 import { RootState } from './store';
 import { agentEventReceived, userMessageSent } from './features/chat/chatSlice';
-import { openSettings } from './features/settings/settingsSlice';
+import { openSettings, fetchConfig } from './features/settings/settingsSlice';
 import { Sidebar } from './components/layout/Sidebar';
 import { CosmicBackground } from './components/layout/CosmicBackground';
 import { EmptyState } from './components/chat/EmptyState';
@@ -34,6 +34,10 @@ function App() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [entries.length, isProcessing]);
+
+  useEffect(() => {
+    dispatch(fetchConfig() as any);
+  }, [dispatch]);
 
   useEffect(() => {
     let isMounted = true;

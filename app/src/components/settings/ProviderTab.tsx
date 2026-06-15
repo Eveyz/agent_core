@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { RootState } from '../../store';
-import { upsertProvider, deleteProvider, setDefaultModel, saveConfig } from '../../features/settings/settingsSlice';
+import { upsertProvider, deleteProvider, setDefaultModel } from '../../features/settings/settingsSlice';
 import type { ProviderModelEntry } from '../../features/settings/settingsSlice';
 import ServerIcon from 'lucide-react/dist/esm/icons/server.mjs';
 import PlusIcon from 'lucide-react/dist/esm/icons/plus.mjs';
@@ -10,7 +10,6 @@ import TrashIcon from 'lucide-react/dist/esm/icons/trash.mjs';
 import StarIcon from 'lucide-react/dist/esm/icons/star.mjs';
 import SaveIcon from 'lucide-react/dist/esm/icons/save.mjs';
 import XIcon from 'lucide-react/dist/esm/icons/x.mjs';
-import LoaderIcon from 'lucide-react/dist/esm/icons/loader.mjs';
 
 interface ModelRow {
   key: string;
@@ -164,7 +163,7 @@ function ProviderForm({
         max_tokens: undefined,
         react_enabled: true,
         system_prompt: undefined,
-        max_iterations: 10,
+        max_iterations: 100,
         request_timeout_secs: 60,
         models,
       },
@@ -300,7 +299,6 @@ function ProviderForm({
 export default function ProviderTab() {
   const dispatch = useDispatch();
   const config = useSelector((state: RootState) => state.settings.config);
-  const saving = useSelector((state: RootState) => state.settings.saving);
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
 
@@ -315,11 +313,6 @@ export default function ProviderTab() {
 
   const handleSetDefault = (providerKey: string, modelKey: string) => {
     dispatch(setDefaultModel(`${providerKey}/${modelKey}`));
-  };
-
-  const handleSaveConfig = () => {
-    if (!config) return;
-    dispatch(saveConfig(config) as any);
   };
 
   if (!config) {
@@ -349,14 +342,6 @@ export default function ProviderTab() {
         <div className="settings-section-actions">
           <button className="btn-primary" onClick={() => setIsCreating(true)}>
             <PlusIcon size={14} /> Add Provider
-          </button>
-          <button
-            className="btn-primary"
-            onClick={handleSaveConfig}
-            disabled={saving}
-          >
-            {saving ? <LoaderIcon size={14} className="settings-spinner" /> : <SaveIcon size={14} />}
-            {saving ? ' Saving...' : ' Save'}
           </button>
         </div>
       </div>

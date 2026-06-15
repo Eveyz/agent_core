@@ -143,7 +143,7 @@ pub fn run() {
                                 max_tokens: None,
                                 react_enabled: true,
                                 system_prompt: None,
-                                max_iterations: 10,
+                                max_iterations: 100,
                                 request_timeout_secs: 60,
                                 models: m,
                             });

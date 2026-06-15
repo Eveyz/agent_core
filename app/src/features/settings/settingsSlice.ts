@@ -117,7 +117,7 @@ function normalizeProvider(raw: any): ProviderConfig {
     max_tokens: raw?.max_tokens ?? undefined,
     react_enabled: raw?.react_enabled ?? true,
     system_prompt: raw?.system_prompt ?? undefined,
-    max_iterations: raw?.max_iterations ?? 10,
+    max_iterations: raw?.max_iterations ?? 100,
     request_timeout_secs: raw?.request_timeout_secs ?? 60,
     models,
   };
