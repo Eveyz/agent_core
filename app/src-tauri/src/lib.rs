@@ -7,6 +7,7 @@ use tokio::sync::Mutex as AsyncMutex;
 struct AppState {
     agent: Arc<AsyncMutex<Agent>>,
     pending_approvals: Arc<std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<agent_core::ApprovalChoice>>>>,
+    config_path: String,
 }
 
 #[tauri::command]
@@ -79,28 +80,86 @@ fn approve_tool(state: State<'_, AppState>, prompt_id: String, choice: String) {
     }
 }
 
+#[tauri::command]
+fn get_config(state: State<'_, AppState>) -> Result<agent_core::config::Config, String> {
+    agent_core::config::Config::load(&state.config_path)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_config(state: State<'_, AppState>, config: agent_core::config::Config) -> Result<(), String> {
+    config.save(&state.config_path)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn switch_model(state: State<'_, AppState>, name: String) -> Result<(), String> {
+    let mut agent = state.agent.lock().await;
+    // Reload config so newly added models are available
+    if let Ok(fresh_config) = agent_core::config::Config::load(&state.config_path) {
+        agent.config = fresh_config;
+    }
+    agent.switch_model(&name).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            let config = agent_core::config::Config {
-                default_model: "default".to_string(),
-                models: {
-                    let mut m = std::collections::HashMap::new();
-                    m.insert("default".to_string(), agent_core::config::ModelConfig::default());
-                    m
-                },
-                memory: None,
-                permissions: Default::default(),
-                mcp: Default::default(),
-            };
             // Try multiple paths to find config.toml depending on where the app is launched from
-            let builder = agent_core::AgentBuilder::from_config("config.toml")
-                .or_else(|_| agent_core::AgentBuilder::from_config("../config.toml"))
-                .or_else(|_| agent_core::AgentBuilder::from_config("../../config.toml"))
-                .or_else(|_| agent_core::AgentBuilder::from_env())
-                .unwrap_or_else(|_| agent_core::AgentBuilder::with_config(config));
-            
+            let config_paths = ["config.toml", "../config.toml", "../../config.toml"];
+            let mut loaded_config: Option<(String, agent_core::config::Config)> = None;
+            for path in &config_paths {
+                if let Ok(config) = agent_core::config::Config::load(path) {
+                    loaded_config = Some((path.to_string(), config));
+                    break;
+                }
+            }
+
+            let (config_path, config) = loaded_config
+                .or_else(|| {
+                    agent_core::config::Config::from_env()
+                        .ok()
+                        .map(|c| ("env".to_string(), c))
+                })
+                .unwrap_or_else(|| {
+                    let mut default_config = agent_core::config::Config {
+                        default_model: "default/default".to_string(),
+                        providers: {
+                            let mut p = std::collections::HashMap::new();
+                            let mut m = std::collections::HashMap::new();
+                            m.insert("default".to_string(), agent_core::config::ProviderModelEntry {
+                                model_id: "gpt-4o-mini".to_string(),
+                                temperature: None,
+                                max_tokens: None,
+                                system_prompt: None,
+                            });
+                            p.insert("default".to_string(), agent_core::config::ProviderConfig {
+                                name: "default".to_string(),
+                                base_url: "https://api.openai.com/v1".to_string(),
+                                api_key: "".to_string(),
+                                max_context_tokens: 128000,
+                                temperature: None,
+                                max_tokens: None,
+                                react_enabled: true,
+                                system_prompt: None,
+                                max_iterations: 10,
+                                request_timeout_secs: 60,
+                                models: m,
+                            });
+                            p
+                        },
+                        legacy_models: std::collections::HashMap::new(),
+                        models: std::collections::HashMap::new(),
+                        memory: None,
+                        permissions: Default::default(),
+                        mcp: Default::default(),
+                    };
+                    default_config.rebuild_models();
+                    ("default".to_string(), default_config)
+                });
+
+            let builder = agent_core::AgentBuilder::with_config(config);
             let mut agent = builder.with_tool_execution_mode(ToolExecutionMode::Parallel).build().expect("Failed to build agent");
 
             // Register subagent tools so the LLM can spawn child agents
@@ -126,11 +185,12 @@ pub fn run() {
             app.manage(AppState {
                 agent: Arc::new(AsyncMutex::new(agent)),
                 pending_approvals,
+                config_path,
             });
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![send_message, approve_tool, list_directory])
+        .invoke_handler(tauri::generate_handler![send_message, approve_tool, list_directory, get_config, save_config, switch_model])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

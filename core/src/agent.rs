@@ -286,7 +286,7 @@ impl AgentBuilder {
 }
 
 pub struct Agent {
-    config: Config,
+    pub config: Config,
     current_model_name: String,
     client: OpenAIClient,
     registry: ToolRegistry,

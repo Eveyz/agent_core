@@ -257,18 +257,23 @@ async fn process_command(
             ..Default::default()
         };
 
-        let model_name = format!("{}-{}", provider, model_id);
+        let model_name = format!("{}/{}", provider, model_id);
         let mut a = agent.lock().await;
         match a.register_model(&model_name, model_cfg) {
             Ok(()) => {
-                let toml_key = if model_name.contains(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-') {
-                    format!("\"{}\"", model_name)
+                let provider_toml_key = if provider.contains(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-') {
+                    format!("\"{}\"", provider)
                 } else {
-                    model_name.clone()
+                    provider.to_string()
+                };
+                let model_toml_key = if model_id.contains(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != ':' && c != '.') {
+                    format!("\"{}\"", model_id)
+                } else {
+                    model_id.to_string()
                 };
                 let entry = format!(
-                    "\n[models.{}]\nbase_url = \"{}\"\napi_key = \"{}\"\nmodel_id = \"{}\"\nmax_context_tokens = 32768\n",
-                    toml_key, base_url, api_key, model_id
+                    "\n[providers.{}]\nname = \"{}\"\nbase_url = \"{}\"\napi_key = \"{}\"\n\n[providers.{}.models.{}]\nmodel_id = \"{}\"\n",
+                    provider_toml_key, provider, base_url, api_key, provider_toml_key, model_toml_key, model_id
                 );
                 if let Err(e) = std::fs::write(
                     "config.toml",

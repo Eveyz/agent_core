@@ -9,14 +9,19 @@ use agent_core::{AgentBuilder, Config, PermissionPolicy, ToolExecutionMode};
 
 fn build_test_config() -> Config {
     let toml = r#"
-default_model = "test"
-[models.test]
+default_model = "test/default"
+
+[providers.test]
 name = "test"
 base_url = "http://127.0.0.1:1"
 api_key = "sk-test"
-model_id = "mock"
+
+[providers.test.models]
+default = { model_id = "mock" }
 "#;
-    toml::from_str(toml).unwrap()
+    let mut config: Config = toml::from_str(toml).unwrap();
+    config.rebuild_models();
+    config
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
