@@ -8,10 +8,12 @@ import TerminalSquareIcon from 'lucide-react/dist/esm/icons/terminal-square.mjs'
 import FolderIcon from 'lucide-react/dist/esm/icons/folder.mjs';
 import Maximize2Icon from 'lucide-react/dist/esm/icons/maximize-2.mjs';
 import PencilIcon from 'lucide-react/dist/esm/icons/pencil.mjs';
+import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
+import XIcon from 'lucide-react/dist/esm/icons/x.mjs';
 import { RootState } from './store';
 import { agentEventReceived, userMessageSent, entriesToMessages } from './features/chat/chatSlice';
 import { openSettings, fetchConfig } from './features/settings/settingsSlice';
-import { fetchProjects, createSession, saveSessionMessages, renameSession } from './features/project/projectSlice';
+import { fetchProjects, fetchProjectSessions, createSession, saveSessionMessages, renameSession, resumeSession, setActiveSession } from './features/project/projectSlice';
 import { Sidebar } from './components/layout/Sidebar';
 import { CosmicBackground } from './components/layout/CosmicBackground';
 import { EmptyState } from './components/chat/EmptyState';
@@ -55,6 +57,19 @@ function App() {
     dispatch(fetchConfig() as any);
     dispatch(fetchProjects() as any);
   }, [dispatch]);
+
+  // Restore last active session after projects are loaded
+  const projectsLoaded = projects.length > 0;
+  useEffect(() => {
+    if (!projectsLoaded || !activeProjectId || !activeSessionId) return;
+    dispatch(fetchProjectSessions(activeProjectId) as any);
+    dispatch(resumeSession(activeSessionId) as any).then((result: any) => {
+      if (!resumeSession.fulfilled.match(result)) {
+        // Session no longer exists, clear it
+        dispatch(setActiveSession(null));
+      }
+    });
+  }, [projectsLoaded, dispatch]);
 
   // Listen for agent events
   useEffect(() => {
@@ -135,13 +150,25 @@ function App() {
     }
   }, [dispatch, activeProjectId, activeSessionId, sessionTitle]);
 
-  const handleRenameSessionClick = useCallback(() => {
-    if (!activeSessionId || !activeProjectId) return;
-    const name = prompt('Session title:', sessionTitle || 'New Session');
-    if (name?.trim()) {
-      dispatch(renameSession({ sessionId: activeSessionId, projectId: activeProjectId, newTitle: name.trim() }) as any);
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [titleEditValue, setTitleEditValue] = useState('');
+
+  const startEditingTitle = useCallback(() => {
+    setTitleEditValue(sessionTitle || 'New Session');
+    setIsEditingTitle(true);
+  }, [sessionTitle]);
+
+  const commitTitleEdit = useCallback(() => {
+    const trimmed = titleEditValue.trim();
+    if (trimmed && activeSessionId && activeProjectId) {
+      dispatch(renameSession({ sessionId: activeSessionId, projectId: activeProjectId, newTitle: trimmed }) as any);
     }
-  }, [dispatch, activeSessionId, activeProjectId, sessionTitle]);
+    setIsEditingTitle(false);
+  }, [dispatch, titleEditValue, activeSessionId, activeProjectId]);
+
+  const cancelTitleEdit = useCallback(() => {
+    setIsEditingTitle(false);
+  }, []);
 
   return (
     <div className="app-container">
@@ -152,16 +179,39 @@ function App() {
         <CosmicBackground />
         <header className="main-header">
           <div className="header-title">
-            <span className="header-session-name">
-              {sessionTitle || 'New Session'}
-            </span>
-            <button
-              className="icon-btn header-edit-btn"
-              onClick={handleRenameSessionClick}
-              title="Edit session title"
-            >
-              <PencilIcon size={12} />
-            </button>
+            {isEditingTitle ? (
+              <>
+                <input
+                  className="header-title-input"
+                  value={titleEditValue}
+                  onChange={(e) => setTitleEditValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitTitleEdit();
+                    if (e.key === 'Escape') cancelTitleEdit();
+                  }}
+                  autoFocus
+                />
+                <button className="icon-btn header-edit-btn" onClick={commitTitleEdit} title="Save" style={{ opacity: 1 }}>
+                  <CheckIcon size={12} />
+                </button>
+                <button className="icon-btn header-edit-btn" onClick={cancelTitleEdit} title="Cancel" style={{ opacity: 1 }}>
+                  <XIcon size={12} />
+                </button>
+              </>
+            ) : (
+              <>
+                <span className="header-session-name">
+                  {sessionTitle || 'New Session'}
+                </span>
+                <button
+                  className="icon-btn header-edit-btn"
+                  onClick={startEditingTitle}
+                  title="Edit session title"
+                >
+                  <PencilIcon size={12} />
+                </button>
+              </>
+            )}
           </div>
           <div className="header-actions">
             <button className="icon-btn"><BoxIcon size={14} /></button>

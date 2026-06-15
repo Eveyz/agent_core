@@ -285,6 +285,24 @@ body {
   min-width: 0;
 }
 
+.session-row .session-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  flex-shrink: 0;
+}
+.session-row:hover .session-row-actions {
+  opacity: 1;
+}
+.session-delete-btn {
+  color: #666;
+}
+.session-delete-btn:hover {
+  color: #ef4444;
+}
+
 /* Active session — gray background, no left border, full width */
 .session-row-active {
   background: rgba(255, 255, 255, 0.09) !important;
@@ -382,6 +400,21 @@ body {
 }
 .header-edit-btn:hover {
   opacity: 1 !important;
+}
+
+.header-title-input {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 4px;
+  color: var(--text-main);
+  font-size: 14px;
+  font-weight: 500;
+  padding: 2px 6px;
+  outline: none;
+  max-width: 260px;
+}
+.header-title-input:focus {
+  border-color: rgba(255, 255, 255, 0.5);
 }
 
 .header-actions {

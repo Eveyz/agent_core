@@ -6,7 +6,7 @@ import { RootState } from '../../store';
 import {
   createProject, fetchProjectSessions, deleteProject, renameProject,
   setActiveProject, setActiveSession,
-  createSession, deleteSession, renameSession, resumeSession,
+  createSession, deleteSession, resumeSession,
   saveSessionMessages,
 } from '../../features/project/projectSlice';
 import { clearChat, cacheCurrentSession, restoreOrClearSession, entriesToMessages } from '../../features/chat/chatSlice';
@@ -78,6 +78,33 @@ function ProjectContextMenu({ projectId, projectName, projectPath, onDelete, onR
           </div>
           <div className="context-menu-separator" />
           <div className="context-menu-item context-menu-danger" onClick={() => { setOpen(false); onDelete(projectId); }}>
+            <TrashIcon size={13} /> Delete
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ── Session context menu ─────────────────────────────────────────────
+
+function SessionContextMenu({ sessionId, projectId, onDelete }: {
+  sessionId: string; projectId: string;
+  onDelete: (sessionId: string, projectId: string) => void;
+}) {
+  const { open, setOpen, pos, setPos, menuRef } = useContextMenu();
+
+  return (
+    <>
+      <button
+        className="sidebar-context-trigger"
+        onClick={(e) => { e.stopPropagation(); setPos({ x: e.clientX, y: e.clientY }); setOpen(true); }}
+      >
+        <MoreHorizontalIcon size={12} />
+      </button>
+      {open && (
+        <div ref={menuRef} className="context-menu" style={{ left: pos.x, top: pos.y }}>
+          <div className="context-menu-item context-menu-danger" onClick={() => { setOpen(false); onDelete(sessionId, projectId); }}>
             <TrashIcon size={13} /> Delete
           </div>
         </div>
@@ -201,11 +228,6 @@ export const Sidebar = memo(function Sidebar({
     }
   }, [dispatch]);
 
-  const handleRenameSession = useCallback((sessionId: string, _projectId: string, currentTitle: string) => {
-    const name = prompt('New title:', currentTitle);
-    if (name?.trim()) dispatch(renameSession({ sessionId, projectId: _projectId, newTitle: name.trim() }) as any);
-  }, [dispatch]);
-
   return (
     <aside className="sidebar">
       {/* Header */}
@@ -302,19 +324,22 @@ export const Sidebar = memo(function Sidebar({
                           key={session.id}
                           className={`session-row ${isSessionActive ? 'session-row-active' : ''}`}
                           onClick={() => handleSelectSession(session.id, project.id)}
-                          onContextMenu={(e) => {
-                            e.preventDefault();
-                            const action = window.confirm(
-                              `Session: "${session.title}"\n\nOK to Rename\nCancel to Delete`
-                            );
-                            if (action) {
-                              handleRenameSession(session.id, project.id, session.title);
-                            } else {
-                              handleDeleteSession(session.id, project.id);
-                            }
-                          }}
                         >
                           <span className="session-row-text">{session.title || 'Untitled'}</span>
+                          <span className="session-row-actions">
+                            <SessionContextMenu
+                              sessionId={session.id}
+                              projectId={project.id}
+                              onDelete={handleDeleteSession}
+                            />
+                            <button
+                              className="sidebar-context-trigger session-delete-btn"
+                              onClick={(e) => { e.stopPropagation(); handleDeleteSession(session.id, project.id); }}
+                              title="Delete session"
+                            >
+                              <TrashIcon size={12} />
+                            </button>
+                          </span>
                         </div>
                       );
                     })}
