@@ -64,6 +64,11 @@ impl CacheHint {
     }
 }
 use tiktoken_rs::cl100k_base;
+use std::sync::LazyLock;
+
+static BPE: LazyLock<tiktoken_rs::CoreBPE> = LazyLock::new(|| {
+    cl100k_base().expect("failed to init cl100k_base tokenizer")
+});
 
 // ── Segment types ────────────────────────────────────────────────────
 
@@ -763,8 +768,7 @@ pub type Context = ContextEngine;
 // ── Token utilities ──────────────────────────────────────────────────
 
 fn count_tokens(text: &str) -> anyhow::Result<usize> {
-    let bpe = cl100k_base()?;
-    let tokens = bpe.encode_with_special_tokens(text);
+    let tokens = BPE.encode_with_special_tokens(text);
     Ok(tokens.len())
 }
 

@@ -45,11 +45,15 @@ export interface ChatEntry {
 interface ChatState {
   entries: ChatEntry[];
   isProcessing: boolean;
+  entriesBySession: Record<string, ChatEntry[]>;
+  processingBySession: Record<string, boolean>;
 }
 
 const initialState: ChatState = {
   entries: [],
   isProcessing: false,
+  entriesBySession: {},
+  processingBySession: {},
 };
 
 function getActiveTurn(state: ChatState): ChatEntry | undefined {
@@ -80,6 +84,22 @@ export const chatSlice = createSlice({
   name: 'chat',
   initialState,
   reducers: {
+    cacheCurrentSession: (state, action: PayloadAction<string>) => {
+      const sessionId = action.payload;
+      state.entriesBySession[sessionId] = state.entries;
+      state.processingBySession[sessionId] = state.isProcessing;
+    },
+    restoreOrClearSession: (state, action: PayloadAction<string>) => {
+      const sessionId = action.payload;
+      const cached = state.entriesBySession[sessionId];
+      if (cached) {
+        state.entries = cached;
+        state.isProcessing = state.processingBySession[sessionId] ?? false;
+      } else {
+        state.entries = [];
+        state.isProcessing = false;
+      }
+    },
     userMessageSent: (state, action: PayloadAction<string>) => {
       state.entries.push({
         id: `user-${Date.now()}`,
@@ -351,6 +371,8 @@ export const chatSlice = createSlice({
   },
   extraReducers: (builder) => {
     builder.addCase(resumeSession.fulfilled, (state, action) => {
+      // If we already restored from cache, don't overwrite
+      if (state.entries.length > 0) return;
       const { messages } = action.payload;
       state.entries = [];
       state.isProcessing = false;
@@ -376,5 +398,27 @@ export const chatSlice = createSlice({
   },
 });
 
-export const { userMessageSent, agentEventReceived, toolApprovalResponded, clearChat } = chatSlice.actions;
+export const { userMessageSent, agentEventReceived, toolApprovalResponded, clearChat, cacheCurrentSession, restoreOrClearSession } = chatSlice.actions;
 export default chatSlice.reducer;
+
+// ── Helpers ──────────────────────────────────────────────────────────
+
+export function entriesToMessages(entries: ChatEntry[]): import('../project/projectSlice').FrontendMessage[] {
+  const msgs: import('../project/projectSlice').FrontendMessage[] = [];
+  for (const entry of entries) {
+    if (entry.type === 'user' && entry.text) {
+      msgs.push({ role: 'user', content: entry.text });
+    } else if (entry.type === 'turn' && entry.blocks) {
+      let assistantText = '';
+      for (const block of entry.blocks) {
+        if (block.type === 'assistant') {
+          assistantText += block.text;
+        }
+      }
+      if (assistantText.trim()) {
+        msgs.push({ role: 'assistant', content: assistantText.trim() });
+      }
+    }
+  }
+  return msgs;
+}

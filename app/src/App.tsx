@@ -9,9 +9,9 @@ import FolderIcon from 'lucide-react/dist/esm/icons/folder.mjs';
 import Maximize2Icon from 'lucide-react/dist/esm/icons/maximize-2.mjs';
 import PencilIcon from 'lucide-react/dist/esm/icons/pencil.mjs';
 import { RootState } from './store';
-import { agentEventReceived, userMessageSent, ChatEntry } from './features/chat/chatSlice';
+import { agentEventReceived, userMessageSent, entriesToMessages } from './features/chat/chatSlice';
 import { openSettings, fetchConfig } from './features/settings/settingsSlice';
-import { fetchProjects, createSession, saveSessionMessages, renameSession, FrontendMessage } from './features/project/projectSlice';
+import { fetchProjects, createSession, saveSessionMessages, renameSession } from './features/project/projectSlice';
 import { Sidebar } from './components/layout/Sidebar';
 import { CosmicBackground } from './components/layout/CosmicBackground';
 import { EmptyState } from './components/chat/EmptyState';
@@ -22,27 +22,6 @@ import SettingsModal from './components/settings/SettingsModal';
 import './App.css';
 
 // ── Helpers ──────────────────────────────────────────────────────────
-
-function entriesToMessages(entries: ChatEntry[]): FrontendMessage[] {
-  const msgs: FrontendMessage[] = [];
-  for (const entry of entries) {
-    if (entry.type === 'user' && entry.text) {
-      msgs.push({ role: 'user', content: entry.text });
-    } else if (entry.type === 'turn' && entry.blocks) {
-      // Extract only the final assistant text (skip thinking/tool blocks)
-      let assistantText = '';
-      for (const block of entry.blocks) {
-        if (block.type === 'assistant') {
-          assistantText += block.text;
-        }
-      }
-      if (assistantText.trim()) {
-        msgs.push({ role: 'assistant', content: assistantText.trim() });
-      }
-    }
-  }
-  return msgs;
-}
 
 function getActiveSessionTitle(projectState: RootState['project']): string {
   if (!projectState.activeSessionId || !projectState.activeProjectId) return '';
@@ -118,7 +97,9 @@ function App() {
 
   const handleSend = useCallback(async (msg: string) => {
     // Auto-create session if none active
-    if (!activeSessionId) {
+    let sessionId = activeSessionId;
+    let isNewSession = false;
+    if (!sessionId) {
       if (!activeProjectId) {
         console.error('No active project to create session in');
         return;
@@ -129,6 +110,8 @@ function App() {
           console.error('Failed to create session');
           return;
         }
+        sessionId = result.payload.session.id;
+        isNewSession = true;
       } catch (e) {
         console.error('Failed to create session:', e);
         return;
@@ -138,9 +121,10 @@ function App() {
     dispatch(userMessageSent(msg));
 
     // Auto-rename "New Session" to first user message preview
-    if (sessionTitle === 'New Session' && activeSessionId && activeProjectId) {
-      const preview = msg.trim().slice(0, 20) + (msg.trim().length > 20 ? '...' : '');
-      dispatch(renameSession({ sessionId: activeSessionId, projectId: activeProjectId, newTitle: preview }) as any);
+    const shouldRename = isNewSession || sessionTitle === 'New Session' || sessionTitle === '';
+    if (shouldRename && sessionId && activeProjectId) {
+      const preview = msg.trim().slice(0, 30) + (msg.trim().length > 30 ? '...' : '');
+      dispatch(renameSession({ sessionId, projectId: activeProjectId, newTitle: preview }) as any);
     }
 
     try {

@@ -7,8 +7,9 @@ import {
   createProject, fetchProjectSessions, deleteProject, renameProject,
   setActiveProject, setActiveSession,
   createSession, deleteSession, renameSession, resumeSession,
+  saveSessionMessages,
 } from '../../features/project/projectSlice';
-import { clearChat } from '../../features/chat/chatSlice';
+import { clearChat, cacheCurrentSession, restoreOrClearSession, entriesToMessages } from '../../features/chat/chatSlice';
 import PlusIcon from 'lucide-react/dist/esm/icons/plus.mjs';
 import LayoutGridIcon from 'lucide-react/dist/esm/icons/layout-grid.mjs';
 import MessageSquareIcon from 'lucide-react/dist/esm/icons/message-square.mjs';
@@ -101,6 +102,8 @@ export const Sidebar = memo(function Sidebar({
   const sessions = useSelector((state: RootState) => state.project.sessions);
   const activeProjectId = useSelector((state: RootState) => state.project.activeProjectId);
   const activeSessionId = useSelector((state: RootState) => state.project.activeSessionId);
+  const chatEntries = useSelector((state: RootState) => state.chat.entries);
+  const defaultModel = useSelector((state: RootState) => state.settings.config?.default_model || '');
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [creatingSession, setCreatingSession] = useState(false);
 
@@ -152,23 +155,45 @@ export const Sidebar = memo(function Sidebar({
     dispatch(setActiveProject(projectId));
   }, [dispatch]);
 
+  // Save current session to backend + memory cache
+  const saveAndCacheCurrent = useCallback(() => {
+    if (!activeSessionId || !activeProjectId) return;
+    const msgs = entriesToMessages(chatEntries);
+    if (msgs.length > 0) {
+      const project = projects.find((p) => p.id === activeProjectId);
+      if (project) {
+        dispatch(saveSessionMessages({
+          sessionId: activeSessionId,
+          messages: msgs,
+          cwd: project.path,
+          modelUsed: defaultModel,
+        }) as any);
+      }
+    }
+    dispatch(cacheCurrentSession(activeSessionId));
+  }, [dispatch, activeSessionId, activeProjectId, chatEntries, projects, defaultModel]);
+
   const handleNewSession = useCallback(async (projectId: string) => {
     if (creatingSession) return;
     setCreatingSession(true);
     try {
+      saveAndCacheCurrent();
       await dispatch(createSession(projectId) as any);
       dispatch(clearChat());
     } finally {
       setCreatingSession(false);
     }
-  }, [dispatch, creatingSession]);
+  }, [dispatch, creatingSession, saveAndCacheCurrent]);
 
   const handleSelectSession = useCallback((sessionId: string, projectId: string) => {
+    if (activeSessionId && activeSessionId !== sessionId) {
+      saveAndCacheCurrent();
+    }
     dispatch(setActiveProject(projectId));
     dispatch(setActiveSession(sessionId));
-    dispatch(clearChat());
+    dispatch(restoreOrClearSession(sessionId));
     dispatch(resumeSession(sessionId) as any);
-  }, [dispatch]);
+  }, [dispatch, activeSessionId, saveAndCacheCurrent]);
 
   const handleDeleteSession = useCallback((sessionId: string, projectId: string) => {
     if (confirm('Delete this session?')) {
@@ -219,6 +244,9 @@ export const Sidebar = memo(function Sidebar({
       <div className="projects-section">
         <div className="projects-header">
           <span>Projects</span>
+          <button className="icon-btn" onClick={handleOpenFolder} title="Import project">
+            <PlusIcon size={13} />
+          </button>
         </div>
 
         <div className="projects-list">

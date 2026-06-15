@@ -15,19 +15,7 @@ pub struct OpenAIClient {
 
 impl OpenAIClient {
     pub fn new(model: ModelConfig) -> Self {
-        let timeout = Duration::from_secs(model.request_timeout_secs);
-        // Disable automatic gzip/deflate decompression — some providers (e.g. volces)
-        // return malformed Content-Encoding headers that cause "error decoding response body"
-        // in reqwest's chunk decoder.
-        let http = reqwest::Client::builder()
-            .timeout(timeout)
-            .connect_timeout(Duration::from_secs(15))
-            .no_gzip()
-            .no_deflate()
-            .no_brotli()
-            .build()
-            .expect("failed to build http client");
-
+        let http = Self::build_http_client(model.request_timeout_secs);
         Self {
             http,
             model,
@@ -36,6 +24,28 @@ impl OpenAIClient {
                 max_tokens: None,
             },
         }
+    }
+
+    /// Reconfigure model without destroying the HTTP connection pool.
+    pub fn switch_model(&mut self, model: ModelConfig) {
+        let new_timeout = Duration::from_secs(model.request_timeout_secs);
+        let old_timeout = Duration::from_secs(self.model.request_timeout_secs);
+        // Rebuild client only if timeout changed (affects connection pool settings)
+        if new_timeout != old_timeout {
+            self.http = Self::build_http_client(model.request_timeout_secs);
+        }
+        self.model = model;
+    }
+
+    fn build_http_client(timeout_secs: u64) -> reqwest::Client {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(timeout_secs))
+            .connect_timeout(Duration::from_secs(10))
+            .no_gzip()
+            .no_deflate()
+            .no_brotli()
+            .build()
+            .expect("failed to build http client")
     }
 
     pub fn set_temperature(&mut self, temp: f64) {

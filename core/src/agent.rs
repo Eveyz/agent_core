@@ -316,6 +316,7 @@ impl Agent {
         input: &str,
         on_event: impl Fn(AgentEvent),
     ) -> Result<String> {
+        let t0 = std::time::Instant::now();
         self.context.add(Message::user(input));
 
         if let Some(ref mem) = self.memory
@@ -323,6 +324,7 @@ impl Agent {
         {
             let _ = m.store_conversation("user", input);
         }
+        eprintln!("[perf] memory store: {:.1}ms", t0.elapsed().as_millis());
 
         // ── Skill auto-trigger ──────────────────────────────────────────
         // Check user message against skill triggers, auto-load matching skills
@@ -361,6 +363,7 @@ impl Agent {
         on_event(AgentEvent::AgentStart);
         self.state = AgentState::Streaming;
         self.abort_flag.store(false, Ordering::Relaxed);
+        eprintln!("[perf] pre-run-loop: {:.1}ms", t0.elapsed().as_millis());
 
         let result = self.run_loop(&on_event).await;
 
@@ -385,6 +388,8 @@ impl Agent {
 
             on_event(AgentEvent::TurnStart { turn_index });
 
+            let turn_start = std::time::Instant::now();
+
             // Refresh per-turn context segments
             self.refresh_context_segments();
 
@@ -392,6 +397,8 @@ impl Agent {
 
             // Stage 4 LLM compaction: if still near limit, summarize old turns
             self.maybe_llm_compact().await;
+
+            eprintln!("[perf] turn {turn_index} pre-request: {:.1}ms", turn_start.elapsed().as_millis());
 
             // Build messages with optional transform
             let raw_messages = self.context.messages();
@@ -402,6 +409,7 @@ impl Agent {
             };
             let tools = self.registry.tool_definitions();
 
+            let request_start = std::time::Instant::now();
             let stream = match self.client.chat_completion_stream(&messages, &tools).await {
                 Ok(s) => s,
                 Err(e) => {
@@ -412,6 +420,7 @@ impl Agent {
                     ));
                 }
             };
+            eprintln!("[perf] turn {turn_index} http connect: {:.1}ms", request_start.elapsed().as_millis());
 
             let (text, tool_calls) = match self.collect_stream(stream, &on_event).await {
                 Ok(r) => r,
@@ -1054,7 +1063,7 @@ impl Agent {
 
         self.current_model_name = name.to_string();
         self.context.set_max_tokens(model.max_context_tokens);
-        self.client = OpenAIClient::new(model);
+        self.client.switch_model(model);
 
         Ok(())
     }

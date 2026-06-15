@@ -140,9 +140,7 @@ async fn switch_model(state: State<'_, AppState>, name: String) -> Result<(), St
 
 #[tauri::command]
 fn create_session(state: State<'_, AppState>, project_id: String) -> Result<agent_core::SessionMeta, String> {
-    let messages: Vec<agent_core::types::Message> = vec![
-        agent_core::types::Message::user("New Session"),
-    ];
+    let messages: Vec<agent_core::types::Message> = vec![];
     let pm = state.project_manager.lock().map_err(|e| e.to_string())?;
     let project = pm.get(&project_id).map_err(|e| e.to_string())?
         .ok_or_else(|| "Project not found".to_string())?;
@@ -150,7 +148,6 @@ fn create_session(state: State<'_, AppState>, project_id: String) -> Result<agen
     let model = "default";
     let session_id = state.session_manager.save_with_project(None, &messages, &cwd, model, Some(&project_id))
         .map_err(|e| e.to_string())?;
-    // Now rename to "New Session" since auto-title will pick up the dummy message
     let _ = state.session_manager.rename(&session_id, "New Session");
     let meta = state.session_manager.get_meta(&session_id)
         .map_err(|e| e.to_string())?
