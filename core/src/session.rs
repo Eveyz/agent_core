@@ -31,6 +31,8 @@ pub struct SessionMeta {
     pub archived: bool,
     pub parent_session_id: Option<String>,
     pub session_type: String,
+    pub process_time_ms: u64,
+    pub thought_time_ms: u64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -58,14 +60,45 @@ impl SessionMeta {
     }
 }
 
-/// A full session with all messages loaded.
+/// A full session with all messages and event log loaded.
 #[derive(Debug, Clone)]
 pub struct Session {
     pub meta: SessionMeta,
     pub messages: Vec<Message>,
+    pub event_log: Vec<EventLogEntry>,
 }
 
 // ── Session Manager ──────────────────────────────────────────────────
+
+pub const META_SELECT: &str = "SELECT id, title, summary, start_time, end_time, message_count, cwd, model_used, tags, archived, \
+    COALESCE(parent_session_id, ''), COALESCE(session_type, 'main'), \
+    COALESCE(process_time_ms, 0), COALESCE(thought_time_ms, 0), \
+    created_at, updated_at FROM sessions";
+
+pub fn row_to_meta(row: &rusqlite::Row) -> rusqlite::Result<SessionMeta> {
+    let tags_str: String = row.get(8)?;
+    let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
+    let parent: String = row.get(10)?;
+    let stype: String = row.get(11)?;
+    Ok(SessionMeta {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        summary: row.get(2)?,
+        start_time: row.get(3)?,
+        end_time: row.get(4)?,
+        message_count: row.get(5)?,
+        cwd: row.get(6)?,
+        model_used: row.get(7)?,
+        tags,
+        archived: row.get::<_, i32>(9)? != 0,
+        parent_session_id: if parent.is_empty() { None } else { Some(parent) },
+        session_type: stype,
+        process_time_ms: row.get::<_, i64>(12)? as u64,
+        thought_time_ms: row.get::<_, i64>(13)? as u64,
+        created_at: row.get(14)?,
+        updated_at: row.get(15)?,
+    })
+}
 
 /// Manages session persistence in SQLite.
 /// Uses the same Storage backend as the memory system.
@@ -194,38 +227,13 @@ impl SessionManager {
     pub fn list(&self, include_archived: bool) -> Result<Vec<SessionMeta>> {
         let db = self.storage.conn();
         let sql = if include_archived {
-            "SELECT id, title, summary, start_time, end_time, message_count, cwd, model_used, tags, archived, \
-             COALESCE(parent_session_id, ''), COALESCE(session_type, 'main'), created_at, updated_at \
-             FROM sessions ORDER BY updated_at DESC LIMIT 100"
+            format!("{META_SELECT} ORDER BY updated_at DESC LIMIT 100")
         } else {
-            "SELECT id, title, summary, start_time, end_time, message_count, cwd, model_used, tags, archived, \
-             COALESCE(parent_session_id, ''), COALESCE(session_type, 'main'), created_at, updated_at \
-             FROM sessions WHERE archived = 0 ORDER BY updated_at DESC LIMIT 100"
+            format!("{META_SELECT} WHERE archived = 0 ORDER BY updated_at DESC LIMIT 100")
         };
 
-        let mut stmt = db.prepare(sql)?;
-        let rows = stmt.query_map([], |row| {
-            let tags_str: String = row.get(8)?;
-            let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-            let parent: String = row.get(10)?;
-            let stype: String = row.get(11)?;
-            Ok(SessionMeta {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                summary: row.get(2)?,
-                start_time: row.get(3)?,
-                end_time: row.get(4)?,
-                message_count: row.get(5)?,
-                cwd: row.get(6)?,
-                model_used: row.get(7)?,
-                tags,
-                archived: row.get::<_, i32>(9)? != 0,
-                parent_session_id: if parent.is_empty() { None } else { Some(parent) },
-                session_type: stype,
-                created_at: row.get(12)?,
-                updated_at: row.get(13)?,
-            })
-        })?;
+        let mut stmt = db.prepare(&sql)?;
+        let rows = stmt.query_map([], |row| row_to_meta(row))?;
 
         let mut sessions = Vec::new();
         for row in rows {
@@ -238,34 +246,10 @@ impl SessionManager {
     pub fn search(&self, keyword: &str, limit: usize) -> Result<Vec<SessionMeta>> {
         let db = self.storage.conn();
         let pattern = format!("%{}%", keyword);
-        let mut stmt = db.prepare(
-            "SELECT id, title, summary, start_time, end_time, message_count, cwd, model_used, tags, archived, \
-             COALESCE(parent_session_id, ''), COALESCE(session_type, 'main'), created_at, updated_at \
-             FROM sessions WHERE (title LIKE ?1 OR summary LIKE ?1) ORDER BY updated_at DESC LIMIT ?2",
-        )?;
+        let sql = format!("{META_SELECT} WHERE (title LIKE ?1 OR summary LIKE ?1) ORDER BY updated_at DESC LIMIT ?2");
+        let mut stmt = db.prepare(&sql)?;
 
-        let rows = stmt.query_map(rusqlite::params![pattern, limit as i64], |row| {
-            let tags_str: String = row.get(8)?;
-            let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-            let parent: String = row.get(10)?;
-            let stype: String = row.get(11)?;
-            Ok(SessionMeta {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                summary: row.get(2)?,
-                start_time: row.get(3)?,
-                end_time: row.get(4)?,
-                message_count: row.get(5)?,
-                cwd: row.get(6)?,
-                model_used: row.get(7)?,
-                tags,
-                archived: row.get::<_, i32>(9)? != 0,
-                parent_session_id: if parent.is_empty() { None } else { Some(parent) },
-                session_type: stype,
-                created_at: row.get(12)?,
-                updated_at: row.get(13)?,
-            })
-        })?;
+        let rows = stmt.query_map(rusqlite::params![pattern, limit as i64], |row| row_to_meta(row))?;
 
         let mut sessions = Vec::new();
         for row in rows {
@@ -277,34 +261,10 @@ impl SessionManager {
     /// Get a single session's metadata (without messages).
     pub fn get_meta(&self, session_id: &str) -> Result<Option<SessionMeta>> {
         let db = self.storage.conn();
-        let mut stmt = db.prepare(
-            "SELECT id, title, summary, start_time, end_time, message_count, cwd, model_used, tags, archived, \
-             COALESCE(parent_session_id, ''), COALESCE(session_type, 'main'), created_at, updated_at \
-             FROM sessions WHERE id = ?1",
-        )?;
+        let sql = format!("{META_SELECT} WHERE id = ?1");
+        let mut stmt = db.prepare(&sql)?;
 
-        let mut rows = stmt.query_map(rusqlite::params![session_id], |row| {
-            let tags_str: String = row.get(8)?;
-            let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-            let parent: String = row.get(10)?;
-            let stype: String = row.get(11)?;
-            Ok(SessionMeta {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                summary: row.get(2)?,
-                start_time: row.get(3)?,
-                end_time: row.get(4)?,
-                message_count: row.get(5)?,
-                cwd: row.get(6)?,
-                model_used: row.get(7)?,
-                tags,
-                archived: row.get::<_, i32>(9)? != 0,
-                parent_session_id: if parent.is_empty() { None } else { Some(parent) },
-                session_type: stype,
-                created_at: row.get(12)?,
-                updated_at: row.get(13)?,
-            })
-        })?;
+        let mut rows = stmt.query_map(rusqlite::params![session_id], |row| row_to_meta(row))?;
 
         match rows.next() {
             Some(Ok(meta)) => Ok(Some(meta)),
@@ -322,49 +282,148 @@ impl SessionManager {
             None => return Ok(None),
         };
 
-        let db = self.storage.conn();
-        let mut stmt = db.prepare(
-            "SELECT role, content, tool_calls, tool_call_id, name, msg_index \
-             FROM session_messages WHERE session_id = ?1 ORDER BY msg_index ASC",
-        )?;
+        // Scope the db lock so it's released before get_event_log tries to acquire it.
+        // std::sync::Mutex is NOT reentrant — holding the lock and calling
+        // get_event_log (which also calls storage.conn()) would deadlock.
+        let messages = {
+            let db = self.storage.conn();
+            let mut stmt = db.prepare(
+                "SELECT role, content, tool_calls, tool_call_id, name, msg_index \
+                 FROM session_messages WHERE session_id = ?1 ORDER BY msg_index ASC",
+            )?;
 
-        let mut messages: Vec<(i64, Message)> = Vec::new();
-        let rows = stmt.query_map(rusqlite::params![session_id], |row| {
-            let role_str: String = row.get(0)?;
-            let content: String = row.get(1)?;
-            let tool_calls_json: String = row.get(2)?;
-            let tool_call_id: String = row.get(3)?;
-            let name: String = row.get(4)?;
-            let idx: i64 = row.get(5)?;
+            let mut messages: Vec<(i64, Message)> = Vec::new();
+            let rows = stmt.query_map(rusqlite::params![session_id], |row| {
+                let role_str: String = row.get(0)?;
+                let content: String = row.get(1)?;
+                let tool_calls_json: String = row.get(2)?;
+                let tool_call_id: String = row.get(3)?;
+                let name: String = row.get(4)?;
+                let idx: i64 = row.get(5)?;
 
-            let tool_calls: Option<Vec<crate::types::ToolCall>> =
-                serde_json::from_str(&tool_calls_json).ok().and_then(|v: serde_json::Value| {
-                    if v.is_array() && !v.as_array().unwrap().is_empty() {
-                        serde_json::from_value(v).ok()
-                    } else {
-                        None
-                    }
-                });
+                let tool_calls: Option<Vec<crate::types::ToolCall>> =
+                    serde_json::from_str(&tool_calls_json).ok().and_then(|v: serde_json::Value| {
+                        if v.is_array() && !v.as_array().unwrap().is_empty() {
+                            serde_json::from_value(v).ok()
+                        } else {
+                            None
+                        }
+                    });
 
-            Ok((idx, Message {
-                role: crate::types::Role::from_str(&role_str),
-                content: if content.is_empty() { None } else { Some(content) },
-                tool_calls,
-                tool_call_id: if tool_call_id.is_empty() { None } else { Some(tool_call_id) },
-                name: if name.is_empty() { None } else { Some(name) },
-            }))
-        })?;
+                Ok((idx, Message {
+                    role: crate::types::Role::from_str(&role_str),
+                    content: if content.is_empty() { None } else { Some(content) },
+                    tool_calls,
+                    tool_call_id: if tool_call_id.is_empty() { None } else { Some(tool_call_id) },
+                    name: if name.is_empty() { None } else { Some(name) },
+                }))
+            })?;
 
-        for row in rows {
-            messages.push(row?);
-        }
-        messages.sort_by_key(|(idx, _)| *idx);
-        let messages: Vec<Message> = messages.into_iter().map(|(_, m)| m).collect();
+            for row in rows {
+                messages.push(row?);
+            }
+            messages.sort_by_key(|(idx, _)| *idx);
+            messages.into_iter().map(|(_, m)| m).collect::<Vec<Message>>()
+        }; // db lock released here
 
-        Ok(Some(Session { meta, messages }))
+        let event_log = self.get_event_log(session_id).unwrap_or_default();
+
+        Ok(Some(Session { meta, messages, event_log }))
     }
 
     // ── Update metadata ─────────────────────────────────────────────
+
+    /// Save timing data for a session.
+    pub fn save_timing(&self, session_id: &str, process_time_ms: u64, thought_time_ms: u64) -> Result<()> {
+        let db = self.storage.conn();
+        let now = Utc::now().to_rfc3339();
+        db.execute(
+            "UPDATE sessions SET process_time_ms = ?1, thought_time_ms = ?2, updated_at = ?3 WHERE id = ?4",
+            rusqlite::params![process_time_ms as i64, thought_time_ms as i64, now, session_id],
+        )?;
+        Ok(())
+    }
+
+    /// Clear all event log entries for a session.
+    pub fn clear_event_log(&self, session_id: &str) -> Result<()> {
+        let db = self.storage.conn();
+        db.execute(
+            "DELETE FROM session_event_log WHERE session_id = ?1",
+            rusqlite::params![session_id],
+        )?;
+        Ok(())
+    }
+
+    /// Save a single event to the session event log.
+    pub fn log_event(
+        &self,
+        session_id: &str,
+        turn_index: usize,
+        event_type: &str,
+        payload: &serde_json::Value,
+        started_at: Option<&str>,
+        ended_at: Option<&str>,
+    ) -> Result<()> {
+        let db = self.storage.conn();
+        let now = Utc::now().to_rfc3339();
+        // Truncate payload values to keep storage small
+        let truncated = Self::truncate_payload(payload, 500);
+        let payload_str = serde_json::to_string(&truncated)?;
+        db.execute(
+            "INSERT INTO session_event_log (session_id, turn_index, event_type, payload, started_at, ended_at, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![session_id, turn_index as i64, event_type, payload_str, started_at, ended_at, now],
+        )?;
+        Ok(())
+    }
+
+    /// Get event log for a session.
+    pub fn get_event_log(&self, session_id: &str) -> Result<Vec<EventLogEntry>> {
+        let db = self.storage.conn();
+        let mut stmt = db.prepare(
+            "SELECT turn_index, event_type, payload, started_at, ended_at \
+             FROM session_event_log WHERE session_id = ?1 ORDER BY id ASC",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![session_id], |row| {
+            let payload_str: String = row.get(2)?;
+            Ok(EventLogEntry {
+                turn_index: row.get::<_, i64>(0)? as usize,
+                event_type: row.get(1)?,
+                payload: serde_json::from_str(&payload_str).unwrap_or(serde_json::json!({})),
+                started_at: row.get(3)?,
+                ended_at: row.get(4)?,
+            })
+        })?;
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row?);
+        }
+        Ok(entries)
+    }
+
+    /// Truncate string values in a JSON payload to max_len chars.
+    fn truncate_payload(val: &serde_json::Value, max_len: usize) -> serde_json::Value {
+        match val {
+            serde_json::Value::String(s) => {
+                if s.len() > max_len {
+                    serde_json::Value::String(format!("{}...(truncated)", &s[..s.char_indices().take(max_len).last().map(|(i, c)| i + c.len_utf8()).unwrap_or(s.len())]))
+                } else {
+                    val.clone()
+                }
+            }
+            serde_json::Value::Object(map) => {
+                let new_map: serde_json::Map<String, serde_json::Value> = map
+                    .iter()
+                    .map(|(k, v)| (k.clone(), Self::truncate_payload(v, max_len)))
+                    .collect();
+                serde_json::Value::Object(new_map)
+            }
+            serde_json::Value::Array(arr) => {
+                serde_json::Value::Array(arr.iter().map(|v| Self::truncate_payload(v, max_len)).collect())
+            }
+            _ => val.clone(),
+        }
+    }
 
     /// Rename a session.
     pub fn rename(&self, session_id: &str, new_title: &str) -> Result<bool> {
@@ -528,6 +587,16 @@ pub struct SessionCounts {
     pub total: usize,
     pub active: usize,
     pub archived: usize,
+}
+
+/// A single entry in the session event log.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventLogEntry {
+    pub turn_index: usize,
+    pub event_type: String,
+    pub payload: serde_json::Value,
+    pub started_at: Option<String>,
+    pub ended_at: Option<String>,
 }
 
 // ── Trait for subagent result compatibility ──────────────────────────
@@ -864,6 +933,8 @@ mod tests {
             archived: false,
             parent_session_id: None,
             session_type: "main".to_string(),
+            process_time_ms: 0,
+            thought_time_ms: 0,
             created_at: "2026-06-07T12:00:00Z".to_string(),
             updated_at: "2026-06-07T12:30:00Z".to_string(),
         };
@@ -889,6 +960,8 @@ mod tests {
             archived: true,
             parent_session_id: None,
             session_type: "main".to_string(),
+            process_time_ms: 0,
+            thought_time_ms: 0,
             created_at: "".to_string(),
             updated_at: "".to_string(),
         };
@@ -911,6 +984,8 @@ mod tests {
             archived: false,
             parent_session_id: Some("parent123".to_string()),
             session_type: "subagent".to_string(),
+            process_time_ms: 0,
+            thought_time_ms: 0,
             created_at: "".to_string(),
             updated_at: "".to_string(),
         };

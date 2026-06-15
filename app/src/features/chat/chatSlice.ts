@@ -47,6 +47,7 @@ interface ChatState {
   isProcessing: boolean;
   entriesBySession: Record<string, ChatEntry[]>;
   processingBySession: Record<string, boolean>;
+  _resumedFromBackend: boolean;
 }
 
 const initialState: ChatState = {
@@ -54,6 +55,7 @@ const initialState: ChatState = {
   isProcessing: false,
   entriesBySession: {},
   processingBySession: {},
+  _resumedFromBackend: false,
 };
 
 function getActiveTurn(state: ChatState): ChatEntry | undefined {
@@ -99,6 +101,7 @@ export const chatSlice = createSlice({
         state.entries = [];
         state.isProcessing = false;
       }
+      state._resumedFromBackend = false;
     },
     userMessageSent: (state, action: PayloadAction<string>) => {
       state.entries.push({
@@ -107,6 +110,7 @@ export const chatSlice = createSlice({
         text: action.payload,
       });
       state.isProcessing = true;
+      state._resumedFromBackend = false;
     },
     agentEventReceived: (state, action: PayloadAction<any>) => {
       let event = action.payload;
@@ -373,9 +377,12 @@ export const chatSlice = createSlice({
     builder.addCase(resumeSession.fulfilled, (state, action) => {
       // If we already restored from cache, don't overwrite
       if (state.entries.length > 0) return;
-      const { messages } = action.payload;
+      const { messages, event_log } = action.payload;
+      console.log('[resumeSession] messages:', messages.length, 'event_log:', event_log?.length ?? 0);
       state.entries = [];
       state.isProcessing = false;
+
+      let assistantIdx = 0;
       for (const msg of messages) {
         if (msg.role === 'user') {
           state.entries.push({
@@ -384,16 +391,41 @@ export const chatSlice = createSlice({
             text: msg.content,
           });
         } else if (msg.role === 'assistant') {
+          const turnIdx = assistantIdx;
+          assistantIdx++;
+          const blocks: TurnBlock[] = [];
+
+          // Add assistant block
+          blocks.push({ type: 'assistant', text: msg.content, isStreaming: false });
+
+          // Add tool call blocks from event log (defensive: skip if payload is not an object)
+          if (event_log && Array.isArray(event_log)) {
+            const turnEvents = event_log.filter((e: any) => e.turn_index === turnIdx && e.event_type === 'tool_call');
+            for (const ev of turnEvents) {
+              const payload = (ev.payload && typeof ev.payload === 'object' && !Array.isArray(ev.payload)) ? ev.payload : {};
+              blocks.push({
+                type: 'tool',
+                call_id: `restored-${Math.random()}`,
+                name: payload.name ?? 'unknown',
+                result: payload.args_summary ?? '',
+                active: false,
+                is_error: !!payload.is_error,
+              });
+            }
+          }
+
           state.entries.push({
-            id: `turn-${Date.now()}-${Math.random()}`,
+            id: `turn-${turnIdx}-${Date.now()}`,
             type: 'turn',
-            turnIndex: state.entries.length,
-            blocks: [{ type: 'assistant', text: msg.content, isStreaming: false }],
-            startTime: Date.now(),
-            endTime: Date.now(),
+            turnIndex: turnIdx,
+            blocks,
           });
         }
       }
+
+      console.log('[resumeSession] entries built:', state.entries.length);
+      // Mark as "already saved" so the AgentEnd save effect doesn't re-save
+      state._resumedFromBackend = true;
     });
   },
 });

@@ -141,33 +141,9 @@ impl ProjectManager {
     /// List sessions belonging to a project.
     pub fn list_sessions(&self, project_id: &str) -> Result<Vec<crate::session::SessionMeta>> {
         let db = self.storage.conn();
-        let mut stmt = db.prepare(
-            "SELECT id, title, summary, start_time, end_time, message_count, cwd, model_used, tags, archived, \
-             COALESCE(parent_session_id, ''), COALESCE(session_type, 'main'), created_at, updated_at \
-             FROM sessions WHERE project_id = ?1 AND archived = 0 ORDER BY updated_at DESC LIMIT 100",
-        )?;
-        let rows = stmt.query_map(rusqlite::params![project_id], |row| {
-            let tags_str: String = row.get(8)?;
-            let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-            let parent: String = row.get(10)?;
-            let stype: String = row.get(11)?;
-            Ok(crate::session::SessionMeta {
-                id: row.get(0)?,
-                title: row.get(1)?,
-                summary: row.get(2)?,
-                start_time: row.get(3)?,
-                end_time: row.get(4)?,
-                message_count: row.get(5)?,
-                cwd: row.get(6)?,
-                model_used: row.get(7)?,
-                tags,
-                archived: row.get::<_, i32>(9)? != 0,
-                parent_session_id: if parent.is_empty() { None } else { Some(parent) },
-                session_type: stype,
-                created_at: row.get(12)?,
-                updated_at: row.get(13)?,
-            })
-        })?;
+        let sql = format!("{} WHERE project_id = ?1 AND archived = 0 ORDER BY updated_at DESC LIMIT 100", crate::session::META_SELECT);
+        let mut stmt = db.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params![project_id], |row| crate::session::row_to_meta(row))?;
         let mut sessions = Vec::new();
         for row in rows {
             sessions.push(row?);

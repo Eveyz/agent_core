@@ -128,6 +128,19 @@ impl Storage {
             );
 
             CREATE INDEX IF NOT EXISTS idx_session_msgs ON session_messages(session_id);
+
+            CREATE TABLE IF NOT EXISTS session_event_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                turn_index INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                payload TEXT DEFAULT '{}',
+                started_at TEXT,
+                ended_at TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_session_events ON session_event_log(session_id);
             ",
         )?;
 
@@ -139,6 +152,8 @@ impl Storage {
             "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT DEFAULT ''",
             "ALTER TABLE sessions ADD COLUMN session_type TEXT DEFAULT 'main'",
             "ALTER TABLE sessions ADD COLUMN project_id TEXT DEFAULT ''",
+            "ALTER TABLE sessions ADD COLUMN process_time_ms INTEGER DEFAULT 0",
+            "ALTER TABLE sessions ADD COLUMN thought_time_ms INTEGER DEFAULT 0",
         ];
         for migration in migrations {
             let _ = db.execute_batch(migration);

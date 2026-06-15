@@ -54,7 +54,7 @@ pub enum DangerLevel {
     ReadWrite = 10,
     /// Network access: webfetch, API calls
     Network = 20,
-    /// System shell: run_command
+    /// System shell: bash
     System = 30,
     /// Destructive: rm, mkfs, dd, sudo, chmod 777
     Destructive = 40,
@@ -200,7 +200,7 @@ pub enum RuleSource {
 pub struct ToolPermissionPattern {
     /// Glob pattern for tool name: "read_file", "write_*", "*"
     pub tool_pattern: String,
-    /// For run_command: list of allowed command prefixes ["git", "cargo"]
+    /// For bash: list of allowed command prefixes ["git", "cargo"]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commands: Option<Vec<String>>,
     /// For file ops: allowed path patterns ["/workspace/**", "~/.config/*"]
@@ -245,7 +245,7 @@ impl ToolPermissionPattern {
         glob_match(&self.tool_pattern, tool_name)
     }
 
-    /// Match a command string (for run_command) against allowed commands.
+    /// Match a command string (for bash) against allowed commands.
     pub fn matches_command(&self, command: &str) -> bool {
         match &self.commands {
             Some(allowed) => {
@@ -493,7 +493,7 @@ mod tests {
 
     #[test]
     fn test_tool_pattern_matches_command() {
-        let pat = ToolPermissionPattern::simple("run_command")
+        let pat = ToolPermissionPattern::simple("bash")
             .with_commands(vec!["git".into(), "cargo".into()]);
         assert!(pat.matches_command("git status"));
         assert!(pat.matches_command("cargo build"));
@@ -512,7 +512,7 @@ mod tests {
     #[test]
     fn test_whitelist_entry_once_consumed() {
         let entry = WhitelistEntry::new(
-            ToolPermissionPattern::simple("run_command"),
+            ToolPermissionPattern::simple("bash"),
             ApprovalScope::Once,
         );
         // Once scope says is_valid = false (consumed), but we don't delete it.

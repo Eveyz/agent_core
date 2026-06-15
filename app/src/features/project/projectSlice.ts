@@ -22,6 +22,8 @@ export interface SessionMeta {
   archived: boolean;
   parent_session_id: string | null;
   session_type: string;
+  process_time_ms: number;
+  thought_time_ms: number;
   created_at: string;
   updated_at: string;
 }
@@ -31,9 +33,18 @@ export interface FrontendMessage {
   content: string;
 }
 
+export interface EventLogEntry {
+  turn_index: number;
+  event_type: string;
+  payload: any;
+  started_at: string | null;
+  ended_at: string | null;
+}
+
 export interface ResumeSessionResult {
   meta: SessionMeta;
   messages: FrontendMessage[];
+  event_log: EventLogEntry[];
 }
 
 interface ProjectState {
@@ -152,11 +163,14 @@ export const renameSession = createAsyncThunk(
 
 export const saveSessionMessages = createAsyncThunk(
   'project/saveSessionMessages',
-  async ({ sessionId, messages, cwd, modelUsed }: {
+  async ({ sessionId, messages, cwd, modelUsed, processTimeMs, thoughtTimeMs, eventLog }: {
     sessionId: string;
     messages: FrontendMessage[];
     cwd: string;
     modelUsed: string;
+    processTimeMs?: number;
+    thoughtTimeMs?: number;
+    eventLog?: any[];
   }, { rejectWithValue }) => {
     try {
       await invoke('save_session_messages', {
@@ -164,6 +178,9 @@ export const saveSessionMessages = createAsyncThunk(
         messagesJson: JSON.stringify(messages),
         cwd,
         modelUsed,
+        processTimeMs: processTimeMs ?? null,
+        thoughtTimeMs: thoughtTimeMs ?? null,
+        eventLogJson: eventLog ? JSON.stringify(eventLog) : null,
       });
       return { sessionId };
     } catch (e) {
@@ -210,6 +227,8 @@ function normalizeSession(raw: any): SessionMeta {
     archived: raw?.archived ?? false,
     parent_session_id: raw?.parent_session_id ?? null,
     session_type: raw?.session_type ?? 'main',
+    process_time_ms: raw?.process_time_ms ?? 0,
+    thought_time_ms: raw?.thought_time_ms ?? 0,
     created_at: raw?.created_at ?? '',
     updated_at: raw?.updated_at ?? '',
   };

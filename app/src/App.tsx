@@ -25,6 +25,12 @@ import './App.css';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
+function roughTokenCount(text: string): number {
+  const chars = [...text].length;
+  const ascii = [...text].filter(c => c.charCodeAt(0) < 128).length;
+  return Math.floor(ascii / 4) + Math.floor((chars - ascii) / 2);
+}
+
 function getActiveSessionTitle(projectState: RootState['project']): string {
   if (!projectState.activeSessionId || !projectState.activeProjectId) return '';
   const list = projectState.sessions[projectState.activeProjectId] ?? [];
@@ -36,9 +42,17 @@ function App() {
   const dispatch = useDispatch();
   const entries = useSelector((state: RootState) => state.chat.entries);
   const isProcessing = useSelector((state: RootState) => state.chat.isProcessing);
+  const resumedFromBackend = useSelector((state: RootState) => state.chat._resumedFromBackend);
   const defaultModel = useSelector((state: RootState) => state.settings.config?.default_model || '');
   const projectState = useSelector((state: RootState) => state.project);
   const { activeProjectId, activeSessionId, projects } = projectState;
+
+  // Debug: detect infinite re-render
+  const renderCount = useRef(0);
+  renderCount.current++;
+  if (renderCount.current > 100) {
+    console.error('[App] Too many re-renders!', renderCount.current);
+  }
   const activeProject = projects.find((p) => p.id === activeProjectId);
   const [activeTab, setActiveTab] = useState<'code' | 'write'>('code');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -85,23 +99,51 @@ function App() {
     return () => { isMounted = false; if (unlistenFn) unlistenFn(); };
   }, [dispatch]);
 
-  // Save session messages after AgentEnd
+  // Save session messages after AgentEnd (skip if just resumed from backend)
   useEffect(() => {
     if (isProcessing) {
       lastAgentEndRef.current = false;
       return;
     }
+    // Skip save if entries were just loaded from backend (not from an actual agent run)
+    if (resumedFromBackend) return;
     // Detect transition from processing → done (AgentEnd just happened)
     if (!lastAgentEndRef.current && entries.length > 0) {
       lastAgentEndRef.current = true;
       if (activeSessionId && activeProject) {
         const msgs = entriesToMessages(entries);
         if (msgs.length > 0) {
+          // Compute timing from entries
+          let processTimeMs = 0;
+          let thoughtTimeMs = 0;
+          const eventLog: any[] = [];
+          for (const entry of entries) {
+            if (entry.type === 'turn' && entry.startTime && entry.endTime) {
+              processTimeMs += entry.endTime - entry.startTime;
+            }
+            if (entry.type === 'turn' && entry.blocks) {
+              for (const b of entry.blocks) {
+                if (b.type === 'thinking' && b.startTime && b.endTime) {
+                  thoughtTimeMs += b.endTime - b.startTime;
+                }
+                if (b.type === 'tool') {
+                  eventLog.push({
+                    turn_index: entry.turnIndex ?? 0,
+                    event_type: 'tool_call',
+                    payload: { name: b.name, args_summary: b.result?.slice(0, 200), is_error: b.is_error },
+                  });
+                }
+              }
+            }
+          }
           dispatch(saveSessionMessages({
             sessionId: activeSessionId,
             messages: msgs,
             cwd: activeProject.path,
             modelUsed: defaultModel,
+            processTimeMs: processTimeMs || undefined,
+            thoughtTimeMs: thoughtTimeMs || undefined,
+            eventLog,
           }) as any);
         }
       }
@@ -240,8 +282,17 @@ function App() {
         <ChatInput
           isProcessing={isProcessing}
           onSend={handleSend}
-          entriesLength={entries.length}
           currentModel={defaultModel}
+          tokenCount={entries.reduce((sum, e) => {
+            if (e.type === 'user' && e.text) return sum + roughTokenCount(e.text);
+            if (e.type === 'turn' && e.blocks) return sum + e.blocks.reduce((s, b) => {
+              if (b.type === 'assistant' || b.type === 'thinking') return s + roughTokenCount(b.text);
+              if (b.type === 'tool') return s + roughTokenCount(b.result);
+              return s;
+            }, 0);
+            return sum;
+          }, 0)}
+          turnCount={entries.filter(e => e.type === 'turn').length}
         />
       </main>
     </div>

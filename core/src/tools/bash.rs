@@ -5,16 +5,16 @@ use serde_json::{Value, json};
 use super::{Tool, ToolUpdateFn};
 use crate::types::EventSender;
 
-pub struct RunCommandTool;
+pub struct BashTool;
 
 #[async_trait]
-impl Tool for RunCommandTool {
+impl Tool for BashTool {
     fn name(&self) -> &str {
-        "run_command"
+        "bash"
     }
 
     fn description(&self) -> &str {
-        "Execute a shell command and return stdout/stderr. Use with caution. Timeout: 60 seconds."
+        "Execute a bash shell command and return stdout/stderr. Use with caution. Timeout: 60 seconds."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -23,7 +23,7 @@ impl Tool for RunCommandTool {
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "The shell command to execute"
+                    "description": "The bash command to execute"
                 },
                 "working_dir": {
                     "type": "string",
@@ -56,14 +56,14 @@ impl Tool for RunCommandTool {
         // (e.g. streaming output from a never-ending process)
         tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs),
-            run_command_inner(&command, &working_dir, on_update),
+            run_bash_inner(&command, &working_dir, on_update),
         )
         .await
         .context("command timed out")?
     }
 }
 
-async fn run_command_inner(
+async fn run_bash_inner(
     command: &str,
     working_dir: &str,
     on_update: Option<ToolUpdateFn>,

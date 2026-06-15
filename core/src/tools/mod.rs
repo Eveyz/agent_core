@@ -6,7 +6,7 @@ pub mod glob;
 pub mod grep;
 pub mod read_file;
 pub mod recall_memory;
-pub mod run_command;
+pub mod bash;
 pub mod skill;
 pub mod subagent;
 pub mod tavily_search;
@@ -80,7 +80,7 @@ impl ToolRegistry {
         registry.register(Box::new(edit::EditTool));
         registry.register(Box::new(grep::GrepTool));
         registry.register(Box::new(glob::GlobTool));
-        registry.register(Box::new(run_command::RunCommandTool));
+        registry.register(Box::new(bash::BashTool));
         registry.register(Box::new(webfetch::WebFetchTool));
         if let Some(tool) = tavily_search::TavilySearchTool::from_env() {
             registry.register(Box::new(tool));
@@ -251,7 +251,7 @@ pub fn build_tool_by_name(name: &str) -> Option<Box<dyn Tool>> {
         "edit" => Some(Box::new(edit::EditTool)),
         "grep" => Some(Box::new(grep::GrepTool)),
         "glob" => Some(Box::new(glob::GlobTool)),
-        "run_command" => Some(Box::new(run_command::RunCommandTool)),
+        "bash" => Some(Box::new(bash::BashTool)),
         "webfetch" => Some(Box::new(webfetch::WebFetchTool)),
         "tavily_search" => tavily_search::TavilySearchTool::from_env()
             .map(|t| Box::new(t) as Box<dyn Tool>),

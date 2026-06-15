@@ -71,7 +71,7 @@ pub fn default_rules_with_danger() -> Vec<(ToolPermissionPattern, DangerLevel, A
         // ── Shell commands ───────────────────────────────────────────
         // Destructive patterns blocked first (highest priority)
         (
-            ToolPermissionPattern::simple("run_command")
+            ToolPermissionPattern::simple("bash")
                 .with_commands(vec![
                     "rm ".into(), "rmdir ".into(), "del ".into(),
                     "mkfs".into(), "dd ".into(), "fdisk".into(), "format ".into(),
@@ -85,7 +85,7 @@ pub fn default_rules_with_danger() -> Vec<(ToolPermissionPattern, DangerLevel, A
         ),
         // Catch-all shell commands: ask
         (
-            ToolPermissionPattern::simple("run_command"),
+            ToolPermissionPattern::simple("bash"),
             DangerLevel::System,
             ApprovalLevel::Ask,
         ),
@@ -204,27 +204,27 @@ pub fn default_rules() -> Vec<super::PermissionRule> {
             level: ApprovalLevel::Ask,
         },
         super::PermissionRule {
-            tool_pattern: "run_command".to_string(),
+            tool_pattern: "bash".to_string(),
             action_pattern: Some("rm ".to_string()),
             level: ApprovalLevel::Deny,
         },
         super::PermissionRule {
-            tool_pattern: "run_command".to_string(),
+            tool_pattern: "bash".to_string(),
             action_pattern: Some("sudo ".to_string()),
             level: ApprovalLevel::Deny,
         },
         super::PermissionRule {
-            tool_pattern: "run_command".to_string(),
+            tool_pattern: "bash".to_string(),
             action_pattern: Some("mkfs".to_string()),
             level: ApprovalLevel::Deny,
         },
         super::PermissionRule {
-            tool_pattern: "run_command".to_string(),
+            tool_pattern: "bash".to_string(),
             action_pattern: Some("dd ".to_string()),
             level: ApprovalLevel::Deny,
         },
         super::PermissionRule {
-            tool_pattern: "run_command".to_string(),
+            tool_pattern: "bash".to_string(),
             action_pattern: None,
             level: ApprovalLevel::Ask,
         },
@@ -317,7 +317,7 @@ mod tests {
         let rules = default_rules_with_danger();
         let destructive = rules
             .iter()
-            .find(|(p, d, _)| p.tool_pattern == "run_command" && *d == DangerLevel::Destructive)
+            .find(|(p, d, _)| p.tool_pattern == "bash" && *d == DangerLevel::Destructive)
             .unwrap();
         assert_eq!(destructive.2, ApprovalLevel::Deny);
     }

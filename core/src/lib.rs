@@ -52,7 +52,7 @@ pub use permission::{
 };
 pub use project::{Project, ProjectManager};
 pub use skills::{SkillLoader, SkillManager, SkillManifest};
-pub use session::{Session, SessionCounts, SessionManager, SessionMeta, SubagentResultLike};
+pub use session::{EventLogEntry, Session, SessionCounts, SessionManager, SessionMeta, SubagentResultLike};
 pub use subagent::{Subagent, SubagentConfig, SubagentManager, SubagentResult};
 pub use tasks::{TaskBoard, TaskRecord, TaskStatus};
 pub use teams::{AgentTeam, MessageBus, TeamMessage, TeamMessageType};

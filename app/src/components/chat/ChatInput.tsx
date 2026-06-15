@@ -29,13 +29,15 @@ const COMMANDS: AutocompleteItem[] = [
 export const ChatInput = memo(function ChatInput({
   isProcessing,
   onSend,
-  entriesLength,
   currentModel,
+  tokenCount,
+  turnCount,
 }: {
   isProcessing: boolean;
   onSend: (msg: string) => void;
-  entriesLength: number;
   currentModel: string;
+  tokenCount: number;
+  turnCount: number;
 }) {
   const [input, setInput] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -374,10 +376,8 @@ export const ChatInput = memo(function ChatInput({
               </div>
             )}
           </div>
-          <span>10.3k tokens</span>
-          <span>$0.0003</span>
-          <span>cache 97%</span>
-          <span>{Math.floor(entriesLength / 2)} turns</span>
+          <span>{tokenCount >= 1000 ? `${(tokenCount / 1000).toFixed(1)}k` : tokenCount} tokens</span>
+          <span>{turnCount} turns</span>
         </div>
         <div>Type @ for files, / for commands</div>
       </div>

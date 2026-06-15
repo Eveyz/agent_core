@@ -42,6 +42,7 @@ impl FrontendMessage {
 struct FrontendSession {
     meta: agent_core::SessionMeta,
     messages: Vec<FrontendMessage>,
+    event_log: Vec<agent_core::EventLogEntry>,
 }
 
 #[tauri::command]
@@ -172,6 +173,9 @@ fn save_session_messages(
     messages_json: String,
     cwd: String,
     model_used: String,
+    process_time_ms: Option<u64>,
+    thought_time_ms: Option<u64>,
+    event_log_json: Option<String>,
 ) -> Result<(), String> {
     let frontend_msgs: Vec<FrontendMessage> = serde_json::from_str(&messages_json)
         .map_err(|e| format!("Invalid messages JSON: {}", e))?;
@@ -181,6 +185,31 @@ fn save_session_messages(
         .collect();
     state.session_manager.save(Some(&session_id), &messages, &cwd, &model_used)
         .map_err(|e| e.to_string())?;
+
+    // Save timing data
+    if let (Some(pt), Some(tt)) = (process_time_ms, thought_time_ms) {
+        state.session_manager.save_timing(&session_id, pt, tt)
+            .map_err(|e| e.to_string())?;
+    }
+
+    // Save event log (replace all existing events for this session)
+    if let Some(log_json) = event_log_json {
+        state.session_manager.clear_event_log(&session_id)
+            .map_err(|e| e.to_string())?;
+        let events: Vec<serde_json::Value> = serde_json::from_str(&log_json)
+            .map_err(|e| format!("Invalid event log JSON: {}", e))?;
+        for event in &events {
+            let turn_index = event["turn_index"].as_u64().unwrap_or(0) as usize;
+            let event_type = event["event_type"].as_str().unwrap_or("unknown");
+            let payload = event.get("payload").cloned().unwrap_or(serde_json::json!({}));
+            let started_at = event["started_at"].as_str();
+            let ended_at = event["ended_at"].as_str();
+            state.session_manager.log_event(
+                &session_id, turn_index, event_type, &payload, started_at, ended_at,
+            ).map_err(|e| e.to_string())?;
+        }
+    }
+
     Ok(())
 }
 
@@ -196,6 +225,7 @@ fn resume_session(state: State<'_, AppState>, session_id: String) -> Result<Fron
     Ok(FrontendSession {
         meta: session.meta,
         messages,
+        event_log: session.event_log,
     })
 }
 

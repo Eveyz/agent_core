@@ -189,11 +189,37 @@ export const Sidebar = memo(function Sidebar({
     if (msgs.length > 0) {
       const project = projects.find((p) => p.id === activeProjectId);
       if (project) {
+        // Compute timing
+        let processTimeMs = 0;
+        let thoughtTimeMs = 0;
+        const eventLog: any[] = [];
+        for (const entry of chatEntries) {
+          if (entry.type === 'turn' && entry.startTime && entry.endTime) {
+            processTimeMs += entry.endTime - entry.startTime;
+          }
+          if (entry.type === 'turn' && entry.blocks) {
+            for (const b of entry.blocks) {
+              if (b.type === 'thinking' && b.startTime && b.endTime) {
+                thoughtTimeMs += b.endTime - b.startTime;
+              }
+              if (b.type === 'tool') {
+                eventLog.push({
+                  turn_index: entry.turnIndex ?? 0,
+                  event_type: 'tool_call',
+                  payload: { name: b.name, args_summary: b.result?.slice(0, 200), is_error: b.is_error },
+                });
+              }
+            }
+          }
+        }
         dispatch(saveSessionMessages({
           sessionId: activeSessionId,
           messages: msgs,
           cwd: project.path,
           modelUsed: defaultModel,
+          processTimeMs: processTimeMs || undefined,
+          thoughtTimeMs: thoughtTimeMs || undefined,
+          eventLog,
         }) as any);
       }
     }
@@ -213,6 +239,7 @@ export const Sidebar = memo(function Sidebar({
   }, [dispatch, creatingSession, saveAndCacheCurrent]);
 
   const handleSelectSession = useCallback((sessionId: string, projectId: string) => {
+    console.log('[handleSelectSession]', { sessionId, projectId, activeSessionId });
     if (activeSessionId && activeSessionId !== sessionId) {
       saveAndCacheCurrent();
     }

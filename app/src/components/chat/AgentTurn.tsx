@@ -28,13 +28,15 @@ const ProcessingTimer = memo(function ProcessingTimer({ startTime, endTime }: { 
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
-    if (endTime) return;
+    // Only start the interval if the turn is actively processing (has startTime, no endTime yet)
+    if (!startTime || endTime) return;
     const interval = setInterval(() => setNow(Date.now()), 100);
     return () => clearInterval(interval);
-  }, [endTime]);
+  }, [startTime, endTime]);
 
   if (!startTime) return null;
-  const diff = (endTime || now) - startTime;
+  if (endTime) return <span>Processed {formatTime(endTime - startTime)}</span>;
+  const diff = now - startTime;
   return <span>Processed {formatTime(diff)}</span>;
 });
 
@@ -254,14 +256,17 @@ const THINKING_PHRASES = [
 const DynamicWorkingIndicator = memo(function DynamicWorkingIndicator({ entry }: { entry: any }) {
   const [phraseIndex, setPhraseIndex] = useState(0);
 
+  // Only run the phrase rotation when the turn is actually active
+  const isActive = entry.startTime && !entry.endTime;
   useEffect(() => {
+    if (!isActive) return;
     const interval = setInterval(() => {
       setPhraseIndex(prev => (prev + 1) % THINKING_PHRASES.length);
     }, 2500);
     return () => clearInterval(interval);
-  }, []);
+  }, [isActive]);
 
-  if (entry.endTime) return null;
+  if (!isActive) return null;
 
   const statusText = useMemo(() => {
     if (!entry.blocks || entry.blocks.length === 0) {
@@ -304,7 +309,11 @@ export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: any }) 
     return `Thought for ${formatTime(totalMs)}`;
   }, [entry.blocks]);
 
-  const totalTime = entry.endTime ? `Processed ${formatTime(entry.endTime - entry.startTime)}` : null;
+  // A turn is "actively processing" only if it has a startTime but no endTime.
+  // Restored turns have neither, so they should show as completed (no timer, no pulse).
+  const isProcessing = !!(entry.startTime && !entry.endTime);
+
+  const totalTime = entry.startTime && entry.endTime ? `Processed ${formatTime(entry.endTime - entry.startTime)}` : null;
 
   const subagentList = useMemo(() => {
     if (!entry.subagents) return [];
@@ -314,11 +323,11 @@ export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: any }) 
   return (
     <div className="agent-turn">
       <div
-        className={`turn-header ${!entry.endTime ? 'processing-pulse' : ''}`}
-        style={{ cursor: entry.endTime ? 'pointer' : 'default' }}
-        onClick={() => { if (entry.endTime) setCollapsed(!collapsed); }}
+        className={`turn-header ${isProcessing ? 'processing-pulse' : ''}`}
+        style={{ cursor: !isProcessing ? 'pointer' : 'default' }}
+        onClick={() => { if (!isProcessing) setCollapsed(!collapsed); }}
       >
-        {!entry.endTime ? (
+        {isProcessing ? (
           <>
             <ProcessingTimer startTime={entry.startTime} endTime={entry.endTime} />
             <ChevronDownIcon size={12} style={ml4}/>
@@ -365,7 +374,7 @@ export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: any }) 
         </div>
       )}
 
-      {!entry.endTime ? <DynamicWorkingIndicator entry={entry} /> : null}
+      {isProcessing ? <DynamicWorkingIndicator entry={entry} /> : null}
     </div>
   );
 });

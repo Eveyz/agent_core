@@ -260,7 +260,7 @@ impl PermissionPolicy {
     ///
     /// Returns `Allow`, `Deny(reason)`, or `Ask(reason, prompt)`.
     /// `tool_input_json` is the raw tool arguments as a JSON string.
-    /// `command` is extracted for `run_command`; `path` for file ops; `host` for network.
+    /// `command` is extracted for `bash`; `path` for file ops; `host` for network.
     pub fn check(
         &mut self,
         tool_name: &str,
@@ -461,7 +461,7 @@ impl PermissionPolicy {
 
         // Fallback heuristics
         match tool_name {
-            "run_command" => {
+            "bash" => {
                 // Check command for destructive patterns
                 if let Some(cmd) = command {
                     if is_destructive_command(cmd) {
@@ -591,14 +591,14 @@ mod tests {
     #[test]
     fn test_destructive_command_denied() {
         let mut policy = make_policy();
-        let result = policy.check("run_command", r#"{"command":"rm -rf /"}"#, Some("rm -rf /"), None, None);
+        let result = policy.check("bash", r#"{"command":"rm -rf /"}"#, Some("rm -rf /"), None, None);
         assert!(result.is_denied());
     }
 
     #[test]
     fn test_safe_command_asks_by_default() {
         let mut policy = make_policy();
-        let result = policy.check("run_command", r#"{"command":"ls -la"}"#, Some("ls -la"), None, None);
+        let result = policy.check("bash", r#"{"command":"ls -la"}"#, Some("ls -la"), None, None);
         assert!(result.needs_approval());
     }
 
@@ -606,10 +606,10 @@ mod tests {
     fn test_whitelist_overrides_default() {
         let mut policy = make_policy();
         policy.whitelist_mut().add(WhitelistEntry::new(
-            ToolPermissionPattern::simple("run_command"),
+            ToolPermissionPattern::simple("bash"),
             ApprovalScope::Session,
         ));
-        let result = policy.check("run_command", r#"{"command":"ls"}"#, Some("ls"), None, None);
+        let result = policy.check("bash", r#"{"command":"ls"}"#, Some("ls"), None, None);
         assert!(result.is_allowed());
     }
 
@@ -617,7 +617,7 @@ mod tests {
     fn test_yolo_mode_allows_everything() {
         let mut policy = make_policy();
         policy.mode = PermissionMode::Yolo;
-        let result = policy.check("run_command", r#"{"command":"rm -rf /"}"#, Some("rm -rf /"), None, None);
+        let result = policy.check("bash", r#"{"command":"rm -rf /"}"#, Some("rm -rf /"), None, None);
         assert!(result.is_allowed());
     }
 
@@ -633,11 +633,11 @@ mod tests {
     fn test_blacklist_overrides_whitelist() {
         let mut policy = make_policy();
         policy.whitelist_mut().add(WhitelistEntry::new(
-            ToolPermissionPattern::simple("run_command"),
+            ToolPermissionPattern::simple("bash"),
             ApprovalScope::Persistent,
         ));
-        policy.blacklist.push(ToolPermissionPattern::simple("run_command"));
-        let result = policy.check("run_command", r#"{"command":"ls"}"#, Some("ls"), None, None);
+        policy.blacklist.push(ToolPermissionPattern::simple("bash"));
+        let result = policy.check("bash", r#"{"command":"ls"}"#, Some("ls"), None, None);
         assert!(result.is_denied());
     }
 

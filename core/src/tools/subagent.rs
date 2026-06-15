@@ -79,7 +79,7 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
                 "tools": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Tool names (default: read_file, glob, grep, run_command). Use 'all' for all parent tools."
+                    "description": "Tool names (default: read_file, glob, grep, bash). Use 'all' for all parent tools."
                 },
                 "max_iterations": {
                     "type": "integer",
@@ -145,7 +145,7 @@ impl Tool for SubagentSpawnAllTool {
     fn description(&self) -> &str {
         "Spawn multiple sub-agents CONCURRENTLY (runs in parallel). \
 Use when task_ready returns multiple unblocked tasks that are independent. \
-Each sub-agent gets isolated context with access to: read_file, glob, grep, run_command, edit, webfetch, git tools. \
+Each sub-agent gets isolated context with access to: read_file, glob, grep, bash, edit, webfetch, git tools. \
 Returns all results. \
 Args: tasks (array of {id, task, tools?, max_iterations?})"
     }
@@ -355,8 +355,8 @@ async fn spawn_single(
     let system_prompt = args["system_prompt"]
         .as_str()
         .unwrap_or("You are a focused sub-agent. Complete the given task and return the result. Be concise. \
-You have access to tools: read_file, glob, grep, run_command, edit, webfetch, and git tools. \
-CRITICAL: ALWAYS use the 'webfetch' tool to fetch web content. NEVER use run_command with 'curl' or 'wget'. \
+You have access to tools: read_file, glob, grep, bash, edit, webfetch, and git tools. \
+CRITICAL: ALWAYS use the 'webfetch' tool to fetch web content. NEVER use bash with 'curl' or 'wget'. \
 Do NOT attempt to read or process image files.")
         .to_string();
 
@@ -372,7 +372,7 @@ Do NOT attempt to read or process image files.")
             "read_file".to_string(),
             "glob".to_string(),
             "grep".to_string(),
-            "run_command".to_string(),
+            "bash".to_string(),
             "edit".to_string(),
             "webfetch".to_string(),
         ]

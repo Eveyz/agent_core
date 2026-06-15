@@ -497,7 +497,7 @@ impl Tool for TaskExecuteTool {
                 "tools": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Tools to give the sub-agent (default: read_file, glob, grep, run_command)"
+                    "description": "Tools to give the sub-agent (default: read_file, glob, grep, bash)"
                 },
                 "system_prompt": {
                     "type": "string",
@@ -525,7 +525,7 @@ impl Tool for TaskExecuteTool {
                     "read_file".to_string(),
                     "glob".to_string(),
                     "grep".to_string(),
-                    "run_command".to_string(),
+                    "bash".to_string(),
                     "edit".to_string(),
                 ]
             });
