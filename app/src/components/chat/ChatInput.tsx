@@ -1,11 +1,15 @@
 import { useState, useRef, useCallback, useEffect, useMemo, memo } from 'react';
+import { useSelector } from 'react-redux';
 import { invoke } from '@tauri-apps/api/core';
+import { RootState } from '../../store';
 import SendIcon from 'lucide-react/dist/esm/icons/send.mjs';
 import PlusIcon from 'lucide-react/dist/esm/icons/plus.mjs';
 import TerminalSquareIcon from 'lucide-react/dist/esm/icons/terminal-square.mjs';
 import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
+import ChevronUpIcon from 'lucide-react/dist/esm/icons/chevron-up.mjs';
 import FolderIcon from 'lucide-react/dist/esm/icons/folder.mjs';
 import FileIcon from 'lucide-react/dist/esm/icons/file.mjs';
+import GitBranchIcon from 'lucide-react/dist/esm/icons/git-branch.mjs';
 import { parseMentions, findMentionBoundaries } from '../../utils/mentions';
 import { ModelSelector } from './ModelSelector';
 
@@ -41,6 +45,46 @@ export const ChatInput = memo(function ChatInput({
   const [autocompleteItems, setAutocompleteItems] = useState<AutocompleteItem[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [triggerInfo, setTriggerInfo] = useState<{ start: number; end: number; type: '@' | '/' } | null>(null);
+
+  const [showBranchDropdown, setShowBranchDropdown] = useState(false);
+  const branchDropdownRef = useRef<HTMLDivElement>(null);
+
+  const activeProjectId = useSelector((state: RootState) => state.project.activeProjectId);
+  const projects = useSelector((state: RootState) => state.project.projects);
+  const activeProject = projects.find((p) => p.id === activeProjectId);
+
+  const [branches, setBranches] = useState<string[]>([]);
+  const [activeBranch, setActiveBranch] = useState<string>('');
+  const [branchError, setBranchError] = useState<string>('');
+
+  useEffect(() => {
+    if (activeProject?.path) {
+      invoke<string[]>('list_git_branches', { path: activeProject.path })
+        .then((b) => {
+          setBranches(b);
+          setBranchError('');
+          if (b.length > 0 && !activeBranch) {
+            setActiveBranch(b[0]);
+          }
+        })
+        .catch((e) => {
+          setBranches([]);
+          setBranchError(String(e));
+        });
+    }
+  }, [activeProject?.path]);
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (branchDropdownRef.current && !branchDropdownRef.current.contains(e.target as Node)) {
+        setShowBranchDropdown(false);
+      }
+    }
+    if (showBranchDropdown) {
+      document.addEventListener('mousedown', handleClick);
+      return () => document.removeEventListener('mousedown', handleClick);
+    }
+  }, [showBranchDropdown]);
 
   const fetchDirectoryEntries = useCallback(async (query: string) => {
     try {
@@ -228,6 +272,21 @@ export const ChatInput = memo(function ChatInput({
       .join('');
   }, [input]);
 
+  const handleSwitchBranch = useCallback(async (branch: string) => {
+    if (!activeProject?.path || branch === activeBranch) {
+      setShowBranchDropdown(false);
+      return;
+    }
+    try {
+      await invoke('switch_git_branch', { path: activeProject.path, branch });
+      setActiveBranch(branch);
+      setBranchError('');
+    } catch (e) {
+      setBranchError(String(e));
+    }
+    setShowBranchDropdown(false);
+  }, [activeProject?.path, activeBranch]);
+
   return (
     <div className="input-area">
       <div className="input-container" style={{ position: 'relative' }}>
@@ -283,7 +342,38 @@ export const ChatInput = memo(function ChatInput({
 
       <div className="input-footer">
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}><TerminalSquareIcon size={10} /> tauri <ChevronDownIcon size={10} /></span>
+          <div ref={branchDropdownRef} style={{ position: 'relative' }}>
+            <span
+              style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', color: branchError ? '#ff5f57' : undefined }}
+              onClick={() => setShowBranchDropdown((s) => !s)}
+              title={branchError || undefined}
+            >
+              <GitBranchIcon size={10} />
+              {activeBranch || (activeProject ? activeProject.name : 'No project')}
+              {showBranchDropdown ? <ChevronUpIcon size={10} /> : <ChevronDownIcon size={10} />}
+            </span>
+            {showBranchDropdown && (
+              <div className="dropdown-menu dropdown-menu-up" style={{ bottom: '24px', left: 0, minWidth: '180px', maxHeight: '240px', overflowY: 'auto' }}>
+                {branches.length === 0 && (
+                  <div className="dropdown-item" style={{ color: '#808080', cursor: 'default' }}>
+                    {branchError ? 'Not a git repo' : 'No branches'}
+                  </div>
+                )}
+                {branches.map((branch) => (
+                  <div
+                    key={branch}
+                    className={`dropdown-item ${activeBranch === branch ? 'dropdown-item-active' : ''}`}
+                    onClick={() => handleSwitchBranch(branch)}
+                  >
+                    <GitBranchIcon size={12} />
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {branch}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
           <span>10.3k tokens</span>
           <span>$0.0003</span>
           <span>cache 97%</span>

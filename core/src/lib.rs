@@ -11,6 +11,7 @@ pub mod hooks;
 pub mod mcp;
 pub mod memory;
 pub mod permission;
+pub mod project;
 pub mod prompt;
 pub mod session;
 pub mod skills;
@@ -49,6 +50,7 @@ pub use permission::{
     PermissionPolicy, PermissionRule, RuleSource, ToolPermissionPattern, WhitelistEntry,
     WhitelistManager, is_destructive_command,
 };
+pub use project::{Project, ProjectManager};
 pub use skills::{SkillLoader, SkillManager, SkillManifest};
 pub use session::{Session, SessionCounts, SessionManager, SessionMeta, SubagentResultLike};
 pub use subagent::{Subagent, SubagentConfig, SubagentManager, SubagentResult};

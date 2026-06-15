@@ -8,6 +8,7 @@ struct AppState {
     agent: Arc<AsyncMutex<Agent>>,
     pending_approvals: Arc<std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<agent_core::ApprovalChoice>>>>,
     config_path: String,
+    project_manager: Arc<std::sync::Mutex<agent_core::ProjectManager>>,
 }
 
 #[tauri::command]
@@ -102,6 +103,75 @@ async fn switch_model(state: State<'_, AppState>, name: String) -> Result<(), St
     agent.switch_model(&name).map_err(|e| e.to_string())
 }
 
+// ── Project Commands ─────────────────────────────────────────────────
+
+#[tauri::command]
+fn list_projects(state: State<'_, AppState>) -> Result<Vec<agent_core::Project>, String> {
+    let pm = state.project_manager.lock().map_err(|e| e.to_string())?;
+    pm.list().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_project(state: State<'_, AppState>, path: String) -> Result<agent_core::Project, String> {
+    let pm = state.project_manager.lock().map_err(|e| e.to_string())?;
+    pm.create(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_project(state: State<'_, AppState>, project_id: String) -> Result<bool, String> {
+    let pm = state.project_manager.lock().map_err(|e| e.to_string())?;
+    pm.delete(&project_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn rename_project(state: State<'_, AppState>, project_id: String, new_name: String) -> Result<bool, String> {
+    let pm = state.project_manager.lock().map_err(|e| e.to_string())?;
+    pm.rename(&project_id, &new_name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn open_in_explorer(path: String) -> Result<(), String> {
+    tauri_plugin_opener::open_path(path, None::<&str>).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_git_branches(path: String) -> Result<Vec<String>, String> {
+    let output = std::process::Command::new("git")
+        .args(["branch", "--format=%(refname:short)"])
+        .current_dir(&path)
+        .output()
+        .map_err(|e| format!("Failed to run git branch: {}", e))?;
+    if !output.status.success() {
+        return Err(format!("git branch failed: {}", String::from_utf8_lossy(&output.stderr)));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let branches: Vec<String> = stdout
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    Ok(branches)
+}
+
+#[tauri::command]
+fn switch_git_branch(path: String, branch: String) -> Result<(), String> {
+    let output = std::process::Command::new("git")
+        .args(["checkout", &branch])
+        .current_dir(&path)
+        .output()
+        .map_err(|e| format!("Failed to run git checkout: {}", e))?;
+    if !output.status.success() {
+        return Err(format!("git checkout failed: {}", String::from_utf8_lossy(&output.stderr)));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn get_project_sessions(state: State<'_, AppState>, project_id: String) -> Result<Vec<agent_core::session::SessionMeta>, String> {
+    let pm = state.project_manager.lock().map_err(|e| e.to_string())?;
+    pm.list_sessions(&project_id).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -182,15 +252,34 @@ pub fn run() {
 
             let pending_approvals = agent.pending_approvals_clone();
 
+            // Initialize ProjectManager using the same SQLite path as memory
+            let db_path = if let Some(mem_config) = agent.config().memory.as_ref() {
+                mem_config.db_path.clone()
+            } else {
+                "~/.agent_core/memory.db".to_string()
+            };
+            let storage = agent_core::memory::storage::Storage::new(&db_path)
+                .expect("Failed to open storage database");
+            let project_manager = Arc::new(std::sync::Mutex::new(
+                agent_core::ProjectManager::new(storage)
+            ));
+
             app.manage(AppState {
                 agent: Arc::new(AsyncMutex::new(agent)),
                 pending_approvals,
                 config_path,
+                project_manager,
             });
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![send_message, approve_tool, list_directory, get_config, save_config, switch_model])
+        .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![
+            send_message, approve_tool, list_directory,
+            get_config, save_config, switch_model,
+            list_projects, create_project, delete_project, rename_project, open_in_explorer,
+            list_git_branches, switch_git_branch, get_project_sessions
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

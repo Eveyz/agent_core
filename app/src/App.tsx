@@ -10,6 +10,7 @@ import Maximize2Icon from 'lucide-react/dist/esm/icons/maximize-2.mjs';
 import { RootState } from './store';
 import { agentEventReceived, userMessageSent } from './features/chat/chatSlice';
 import { openSettings, fetchConfig } from './features/settings/settingsSlice';
+import { fetchProjects } from './features/project/projectSlice';
 import { Sidebar } from './components/layout/Sidebar';
 import { CosmicBackground } from './components/layout/CosmicBackground';
 import { EmptyState } from './components/chat/EmptyState';
@@ -37,6 +38,7 @@ function App() {
 
   useEffect(() => {
     dispatch(fetchConfig() as any);
+    dispatch(fetchProjects() as any);
   }, [dispatch]);
 
   useEffect(() => {

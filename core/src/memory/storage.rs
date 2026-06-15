@@ -84,6 +84,14 @@ impl Storage {
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS projects (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                path TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL DEFAULT 'Untitled',
@@ -97,6 +105,7 @@ impl Storage {
                 archived INTEGER DEFAULT 0,
                 parent_session_id TEXT DEFAULT '',
                 session_type TEXT DEFAULT 'main',
+                project_id TEXT DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -129,6 +138,7 @@ impl Storage {
             "ALTER TABLE recall_memory ADD COLUMN last_accessed_at TEXT",
             "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT DEFAULT ''",
             "ALTER TABLE sessions ADD COLUMN session_type TEXT DEFAULT 'main'",
+            "ALTER TABLE sessions ADD COLUMN project_id TEXT DEFAULT ''",
         ];
         for migration in migrations {
             let _ = db.execute_batch(migration);

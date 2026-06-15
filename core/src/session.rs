@@ -91,7 +91,19 @@ impl SessionManager {
         cwd: &str,
         model_used: &str,
     ) -> Result<String> {
-        self.save_with_parent(session_id, messages, cwd, model_used, None, "main")
+        self.save_with_project(session_id, messages, cwd, model_used, None)
+    }
+
+    /// Save with an associated project.
+    pub fn save_with_project(
+        &self,
+        session_id: Option<&str>,
+        messages: &[Message],
+        cwd: &str,
+        model_used: &str,
+        project_id: Option<&str>,
+    ) -> Result<String> {
+        self.save_full(session_id, messages, cwd, model_used, None, "main", project_id)
     }
 
     /// Save a subagent session, linked to a parent session.
@@ -102,18 +114,19 @@ impl SessionManager {
             Message::assistant(&result.summary_for_session()),
         ];
         // Create as new session — subagent_id is used as the session ID
-        self.save_with_parent(
+        self.save_full(
             None,  // always create new
             &messages,
             "",
             "subagent",
             None,
             "subagent",
+            None,
         )
     }
 
-    /// Save with full control over parent and type.
-    fn save_with_parent(
+    /// Save with full control over parent, type, and project.
+    fn save_full(
         &self,
         session_id: Option<&str>,
         messages: &[Message],
@@ -121,6 +134,7 @@ impl SessionManager {
         model_used: &str,
         parent_session_id: Option<&str>,
         session_type: &str,
+        project_id: Option<&str>,
     ) -> Result<String> {
         let db = self.storage.conn();
         let now = Utc::now().to_rfc3339();
@@ -145,10 +159,11 @@ impl SessionManager {
                 // Auto-generate title from first user message
                 let title = Self::auto_title(messages);
                 let parent = parent_session_id.unwrap_or("");
+                let proj = project_id.unwrap_or("");
                 db.execute(
-                    "INSERT INTO sessions (id, title, start_time, message_count, cwd, model_used, parent_session_id, session_type, created_at, updated_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
-                    rusqlite::params![new_id, title, now, msg_count, cwd, model_used, parent, session_type, now],
+                    "INSERT INTO sessions (id, title, start_time, message_count, cwd, model_used, parent_session_id, session_type, project_id, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
+                    rusqlite::params![new_id, title, now, msg_count, cwd, model_used, parent, session_type, proj, now],
                 )?;
                 new_id
             }
