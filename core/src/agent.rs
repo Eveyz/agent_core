@@ -281,6 +281,7 @@ impl AgentBuilder {
             transform_context: self.transform_context,
             pending_approvals,
             skill_manager: self.skill_manager,
+            current_session_id: None,
         })
     }
 }
@@ -304,6 +305,8 @@ pub struct Agent {
     pending_approvals: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<ApprovalChoice>>>>,
     /// Skill manager for auto-trigger and catalog
     skill_manager: Option<Arc<Mutex<SkillManager>>>,
+    /// Tracks which session's messages are currently loaded in context
+    current_session_id: Option<String>,
 }
 
 impl Agent {
@@ -1127,6 +1130,16 @@ impl Agent {
     /// Get mutable access to the context engine (for session resume).
     pub fn context_mut(&mut self) -> &mut crate::context::ContextEngine {
         &mut self.context
+    }
+
+    /// Get the current session ID whose messages are loaded in context.
+    pub fn current_session_id(&self) -> Option<&str> {
+        self.current_session_id.as_deref()
+    }
+
+    /// Set the current session ID (called after loading session history).
+    pub fn set_current_session_id(&mut self, id: String) {
+        self.current_session_id = Some(id);
     }
 
     pub fn memory(&self) -> Option<std::sync::MutexGuard<'_, MemoryManager>> {

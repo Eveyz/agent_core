@@ -371,7 +371,22 @@ export const chatSlice = createSlice({
     clearChat: (state) => {
       state.entries = [];
       state.isProcessing = false;
-    }
+    },
+    retryFromEntry: (state, action: PayloadAction<string>) => {
+      // Remove the target user entry and everything after it, then re-add the user message
+      const entryId = action.payload;
+      const idx = state.entries.findIndex(e => e.id === entryId);
+      if (idx === -1) return;
+      const userText = state.entries[idx].text ?? '';
+      state.entries = state.entries.slice(0, idx);
+      state.entries.push({
+        id: `user-${Date.now()}`,
+        type: 'user',
+        text: userText,
+      });
+      state.isProcessing = true;
+      state._resumedFromBackend = false;
+    },
   },
   extraReducers: (builder) => {
     builder.addCase(resumeSession.fulfilled, (state, action) => {
@@ -430,7 +445,7 @@ export const chatSlice = createSlice({
   },
 });
 
-export const { userMessageSent, agentEventReceived, toolApprovalResponded, clearChat, cacheCurrentSession, restoreOrClearSession } = chatSlice.actions;
+export const { userMessageSent, agentEventReceived, toolApprovalResponded, clearChat, cacheCurrentSession, restoreOrClearSession, retryFromEntry } = chatSlice.actions;
 export default chatSlice.reducer;
 
 // ── Helpers ──────────────────────────────────────────────────────────

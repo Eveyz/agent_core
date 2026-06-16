@@ -46,16 +46,43 @@ struct FrontendSession {
 }
 
 #[tauri::command]
-async fn send_message(state: State<'_, AppState>, app_handle: AppHandle, message: String) -> Result<String, String> {
+async fn send_message(state: State<'_, AppState>, app_handle: AppHandle, message: String, session_id: Option<String>) -> Result<String, String> {
     let mut agent = state.agent.lock().await;
-    
+
+    // If a session_id is provided, load its history into the agent's context
+    // so the LLM sees the full conversation, not just messages from this process.
+    if let Some(sid) = &session_id {
+        let current_len = agent.context_mut().raw_messages().len();
+        // Only reload if context is empty or from a different session
+        if current_len == 0 || agent.current_session_id() != Some(sid.as_str()) {
+            match state.session_manager.resume(sid) {
+                Ok(Some(session)) => {
+                    agent.clear_context();
+                    for msg in &session.messages {
+                        agent.context_mut().add(msg.clone());
+                    }
+                    agent.set_current_session_id(sid.clone());
+                }
+                Ok(None) => {
+                    // Session not found — clear context and start fresh
+                    agent.clear_context();
+                    agent.set_current_session_id(sid.clone());
+                }
+                Err(e) => {
+                    eprintln!("Warning: failed to load session history: {e}");
+                    // Continue without history rather than failing entirely
+                }
+            }
+        }
+    }
+
     let app_handle_clone = app_handle.clone();
     let result = agent.run_with_events(&message, move |event| {
         if let Err(e) = app_handle_clone.emit("agent-event", event) {
             eprintln!("Failed to emit agent event: {}", e);
         }
     }).await;
-    
+
     match result {
         Ok(res) => Ok(res),
         Err(e) => Err(e.to_string()),

@@ -11,7 +11,7 @@ import PencilIcon from 'lucide-react/dist/esm/icons/pencil.mjs';
 import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
 import XIcon from 'lucide-react/dist/esm/icons/x.mjs';
 import { RootState } from './store';
-import { agentEventReceived, userMessageSent, entriesToMessages } from './features/chat/chatSlice';
+import { agentEventReceived, userMessageSent, entriesToMessages, retryFromEntry } from './features/chat/chatSlice';
 import { openSettings, fetchConfig } from './features/settings/settingsSlice';
 import { fetchProjects, fetchProjectSessions, createSession, saveSessionMessages, renameSession, resumeSession, setActiveSession } from './features/project/projectSlice';
 import { Sidebar } from './components/layout/Sidebar';
@@ -185,12 +185,28 @@ function App() {
     }
 
     try {
-      await invoke('send_message', { message: msg });
+      await invoke('send_message', { message: msg, sessionId });
     } catch (e) {
       console.error('Invoke error:', e);
       dispatch(agentEventReceived({ Error: String(e) }));
     }
   }, [dispatch, activeProjectId, activeSessionId, sessionTitle]);
+
+  const handleRetry = useCallback(async (entryId: string, editedText?: string) => {
+    const entry = entries.find(e => e.id === entryId);
+    if (!entry) return;
+    const msg = editedText ?? entry.text ?? '';
+    if (!msg.trim() || !activeSessionId) return;
+
+    dispatch(retryFromEntry(entryId));
+
+    try {
+      await invoke('send_message', { message: msg, sessionId: activeSessionId });
+    } catch (e) {
+      console.error('Retry invoke error:', e);
+      dispatch(agentEventReceived({ Error: String(e) }));
+    }
+  }, [dispatch, entries, activeSessionId]);
 
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [titleEditValue, setTitleEditValue] = useState('');
@@ -270,7 +286,7 @@ function App() {
           <div className="chat-history">
             {entries.map((entry) =>
               entry.type === 'user' ? (
-                <UserRow key={entry.id} entry={entry} modelName={defaultModel} />
+                <UserRow key={entry.id} entry={entry} modelName={defaultModel} onRetry={handleRetry} isProcessing={isProcessing} />
               ) : (
                 <AgentRow key={entry.id} entry={entry} />
               )
