@@ -394,6 +394,7 @@ pub fn run() {
             // Register subagent tools so the LLM can spawn child agents
             {
                 let model_config = agent.current_model_config().clone();
+                let permission_config = agent.config().permissions.clone();
                 let tool_names: Vec<String> = agent
                     .tool_registry()
                     .list_names()
@@ -406,6 +407,7 @@ pub fn run() {
                     model_config,
                     tool_names,
                     None, // session manager not wired up in Tauri app yet
+                    permission_config,
                 );
             }
 

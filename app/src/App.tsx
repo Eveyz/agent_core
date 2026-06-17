@@ -1,19 +1,34 @@
-import { useState, useEffect, useRef, useCallback, memo } from 'react';
+import { useState, useEffect, useCallback, memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
-import { useDispatch, useSelector, useStore, shallowEqual } from 'react-redux';
+import { useSelector, useStore, shallowEqual } from 'react-redux';
+import PencilIcon from 'lucide-react/dist/esm/icons/pencil.mjs';
+import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
+import XIcon from 'lucide-react/dist/esm/icons/x.mjs';
 import BoxIcon from 'lucide-react/dist/esm/icons/box.mjs';
 import MessageSquareIcon from 'lucide-react/dist/esm/icons/message-square.mjs';
 import TerminalSquareIcon from 'lucide-react/dist/esm/icons/terminal-square.mjs';
 import FolderIcon from 'lucide-react/dist/esm/icons/folder.mjs';
 import Maximize2Icon from 'lucide-react/dist/esm/icons/maximize-2.mjs';
-import PencilIcon from 'lucide-react/dist/esm/icons/pencil.mjs';
-import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
-import XIcon from 'lucide-react/dist/esm/icons/x.mjs';
 import { RootState } from './store';
-import { agentEventReceived, userMessageSent, entriesToMessages, entriesToEventLog, retryFromEntry } from './features/chat/chatSlice';
+import {
+  agentEventReceived,
+  userMessageSent,
+  retryFromEntry,
+  selectEntryById,
+} from './features/chat/chatSlice';
 import { openSettings, fetchConfig } from './features/settings/settingsSlice';
-import { fetchProjects, fetchProjectSessions, createSession, saveSessionMessages, renameSession, resumeSession, setActiveSession } from './features/project/projectSlice';
+import {
+  fetchProjects,
+  fetchProjectSessions,
+  createSession,
+  renameSession,
+  resumeSession,
+  setActiveSession,
+} from './features/project/projectSlice';
+import { useAppDispatch } from './hooks/useAppDispatch';
+import { useAgentEventListener } from './hooks/useAgentEventListener';
+import { useAutoSaveSession } from './hooks/useAutoSaveSession';
+import { useAutoScroll } from './hooks/useAutoScroll';
 import { Sidebar } from './components/layout/Sidebar';
 import { CosmicBackground } from './components/layout/CosmicBackground';
 import { EmptyState } from './components/chat/EmptyState';
@@ -23,14 +38,6 @@ import { ChatInput } from './components/chat/ChatInput';
 import SettingsModal from './components/settings/SettingsModal';
 import './App.css';
 
-// ── Helpers ──────────────────────────────────────────────────────────
-
-export function roughTokenCount(text: string): number {
-  const chars = [...text].length;
-  const ascii = [...text].filter(c => c.charCodeAt(0) < 128).length;
-  return Math.floor(ascii / 4) + Math.floor((chars - ascii) / 2);
-}
-
 function getActiveSessionTitle(projectState: RootState['project']): string {
   if (!projectState.activeSessionId || !projectState.activeProjectId) return '';
   const list = projectState.sessions[projectState.activeProjectId] ?? [];
@@ -39,171 +46,108 @@ function getActiveSessionTitle(projectState: RootState['project']): string {
 }
 
 function App() {
-  const dispatch = useDispatch();
+  const dispatch = useAppDispatch();
   const store = useStore<RootState>();
-  
-  const entryIds = useSelector((state: RootState) => state.chat.entries.map(e => e.id), shallowEqual);
+
+  const entryIds = useSelector((state: RootState) => state.chat.entries.map((e) => e.id), shallowEqual);
   const entriesLength = useSelector((state: RootState) => state.chat.entries.length);
   const isProcessing = useSelector((state: RootState) => state.chat.isProcessing);
-  const resumedFromBackend = useSelector((state: RootState) => state.chat._resumedFromBackend);
   const defaultModel = useSelector((state: RootState) => state.settings.config?.default_model || '');
-  
+
   const activeProjectId = useSelector((state: RootState) => state.project.activeProjectId);
   const activeSessionId = useSelector((state: RootState) => state.project.activeSessionId);
   const projects = useSelector((state: RootState) => state.project.projects);
   const sessionTitle = useSelector((state: RootState) => getActiveSessionTitle(state.project));
 
-  // Debug: detect infinite re-render
-  const renderCount = useRef(0);
-  renderCount.current++;
-  if (renderCount.current > 100) {
-    console.warn('[App] Re-render count high:', renderCount.current);
-  }
   const activeProject = projects.find((p) => p.id === activeProjectId);
   const [activeTab, setActiveTab] = useState<'code' | 'write'>('code');
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const lastAgentEndRef = useRef(false);
 
-  const handleOpenSettings = useCallback(() => {
-    dispatch(openSettings());
-  }, [dispatch]);
+  const scrollRef = useAutoScroll<HTMLDivElement>();
+
+  useAgentEventListener();
+
+  useAutoSaveSession({
+    activeSessionId,
+    activeProjectPath: activeProject?.path ?? null,
+    defaultModel,
+  });
 
   useEffect(() => {
-    const el = messagesEndRef.current?.parentElement;
-    if (!el) return;
-    const observer = new MutationObserver(() => {
-      // Keep it scrolled to the bottom if the user is already near the bottom
-      const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 200;
-      if (isNearBottom) {
-        el.scrollTop = el.scrollHeight;
-      }
-    });
-    observer.observe(el, { childList: true, subtree: true, characterData: true });
-    return () => observer.disconnect();
-  }, []);
-
-  // Load config and projects on mount
-  useEffect(() => {
-    dispatch(fetchConfig() as any);
-    dispatch(fetchProjects() as any);
+    dispatch(fetchConfig());
+    dispatch(fetchProjects());
   }, [dispatch]);
 
-  // Restore last active session after projects are loaded
   const projectsLoaded = projects.length > 0;
   useEffect(() => {
     if (!projectsLoaded || !activeProjectId || !activeSessionId) return;
-    dispatch(fetchProjectSessions(activeProjectId) as any);
-    dispatch(resumeSession(activeSessionId) as any).then((result: any) => {
+    dispatch(fetchProjectSessions(activeProjectId));
+    dispatch(resumeSession(activeSessionId)).then((result) => {
       if (!resumeSession.fulfilled.match(result)) {
-        // Session no longer exists, clear it
         dispatch(setActiveSession(null));
       }
     });
-  }, [projectsLoaded, dispatch]);
+  }, [projectsLoaded, dispatch, activeProjectId, activeSessionId]);
 
-  // Listen for agent events
-  useEffect(() => {
-    let isMounted = true;
-    let unlistenFn: (() => void) | undefined;
-    const setupListener = async () => {
-      const fn = await listen<any>('agent-event', (event) => {
-        dispatch(agentEventReceived(event.payload));
-      });
-      if (!isMounted) { fn(); } else { unlistenFn = fn; }
-    };
-    setupListener();
-    return () => { isMounted = false; if (unlistenFn) unlistenFn(); };
-  }, [dispatch]);
-
-  // Save session messages after AgentEnd (skip if just resumed from backend)
-  useEffect(() => {
-    if (isProcessing) {
-      lastAgentEndRef.current = false;
-      return;
-    }
-    // Skip save if entries were just loaded from backend (not from an actual agent run)
-    if (resumedFromBackend) return;
-    
-    const state = store.getState();
-    const entries = state.chat.entries;
-
-    // Detect transition from processing → done (AgentEnd just happened)
-    if (!lastAgentEndRef.current && entries.length > 0) {
-      lastAgentEndRef.current = true;
-      if (activeSessionId && activeProject) {
-          const msgs = entriesToMessages(entries);
-          if (msgs.length > 0) {
-            const { eventLog, processTimeMs, thoughtTimeMs } = entriesToEventLog(entries);
-            dispatch(saveSessionMessages({
-              sessionId: activeSessionId,
-            messages: msgs,
-            cwd: activeProject.path,
-            modelUsed: defaultModel,
-            processTimeMs: processTimeMs || undefined,
-            thoughtTimeMs: thoughtTimeMs || undefined,
-            eventLog,
-          }) as any);
-        }
-      }
-    }
-  }, [isProcessing, resumedFromBackend, activeSessionId, activeProject, defaultModel, dispatch, store]);
-
-  const handleSend = useCallback(async (msg: string) => {
-    // Auto-create session if none active
-    let sessionId = activeSessionId;
-    let isNewSession = false;
-    if (!sessionId) {
-      if (!activeProjectId) {
-        console.error('No active project to create session in');
-        return;
-      }
-      try {
-        const result = await dispatch(createSession(activeProjectId) as any);
-        if (!createSession.fulfilled.match(result)) {
-          console.error('Failed to create session');
+  const handleSend = useCallback(
+    async (msg: string) => {
+      let sessionId = activeSessionId;
+      let isNewSession = false;
+      if (!sessionId) {
+        if (!activeProjectId) {
+          console.error('No active project to create session in');
           return;
         }
-        sessionId = result.payload.session.id;
-        isNewSession = true;
-      } catch (e) {
-        console.error('Failed to create session:', e);
-        return;
+        try {
+          const result = await dispatch(createSession(activeProjectId));
+          if (!createSession.fulfilled.match(result)) {
+            console.error('Failed to create session');
+            return;
+          }
+          sessionId = result.payload.session.id;
+          isNewSession = true;
+        } catch (e) {
+          console.error('Failed to create session:', e);
+          return;
+        }
       }
-    }
 
-    dispatch(userMessageSent(msg));
+      dispatch(userMessageSent(msg));
 
-    // Auto-rename "New Session" to first user message preview
-    const shouldRename = isNewSession || sessionTitle === 'New Session' || sessionTitle === '';
-    if (shouldRename && sessionId && activeProjectId) {
-      const preview = msg.trim().slice(0, 30) + (msg.trim().length > 30 ? '...' : '');
-      dispatch(renameSession({ sessionId, projectId: activeProjectId, newTitle: preview }) as any);
-    }
+      const shouldRename = isNewSession || sessionTitle === 'New Session' || sessionTitle === '';
+      if (shouldRename && sessionId && activeProjectId) {
+        const preview = msg.trim().slice(0, 30) + (msg.trim().length > 30 ? '...' : '');
+        dispatch(renameSession({ sessionId, projectId: activeProjectId, newTitle: preview }));
+      }
 
-    try {
-      await invoke('send_message', { message: msg, sessionId });
-    } catch (e) {
-      console.error('Invoke error:', e);
-      dispatch(agentEventReceived({ Error: String(e) }));
-    }
-  }, [dispatch, activeProjectId, activeSessionId, sessionTitle]);
+      try {
+        await invoke('send_message', { message: msg, sessionId });
+      } catch (e) {
+        console.error('Invoke error:', e);
+        dispatch(agentEventReceived({ Error: String(e) }));
+      }
+    },
+    [dispatch, activeProjectId, activeSessionId, sessionTitle]
+  );
 
-  const handleRetry = useCallback(async (entryId: string, editedText?: string) => {
-    const entries = store.getState().chat.entries;
-    const entry = entries.find(e => e.id === entryId);
-    if (!entry) return;
-    const msg = editedText ?? entry.text ?? '';
-    if (!msg.trim() || !activeSessionId) return;
+  const handleRetry = useCallback(
+    async (entryId: string, editedText?: string) => {
+      const entries = store.getState().chat.entries;
+      const entry = entries.find((e) => e.id === entryId);
+      if (!entry) return;
+      const msg = editedText ?? entry.text ?? '';
+      if (!msg.trim() || !activeSessionId) return;
 
-    dispatch(retryFromEntry(entryId));
+      dispatch(retryFromEntry(entryId));
 
-    try {
-      await invoke('send_message', { message: msg, sessionId: activeSessionId });
-    } catch (e) {
-      console.error('Retry invoke error:', e);
-      dispatch(agentEventReceived({ Error: String(e) }));
-    }
-  }, [dispatch, activeSessionId, store]);
+      try {
+        await invoke('send_message', { message: msg, sessionId: activeSessionId });
+      } catch (e) {
+        console.error('Retry invoke error:', e);
+        dispatch(agentEventReceived({ Error: String(e) }));
+      }
+    },
+    [dispatch, activeSessionId, store]
+  );
 
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [titleEditValue, setTitleEditValue] = useState('');
@@ -216,7 +160,7 @@ function App() {
   const commitTitleEdit = useCallback(() => {
     const trimmed = titleEditValue.trim();
     if (trimmed && activeSessionId && activeProjectId) {
-      dispatch(renameSession({ sessionId: activeSessionId, projectId: activeProjectId, newTitle: trimmed }) as any);
+      dispatch(renameSession({ sessionId: activeSessionId, projectId: activeProjectId, newTitle: trimmed }));
     }
     setIsEditingTitle(false);
   }, [dispatch, titleEditValue, activeSessionId, activeProjectId]);
@@ -224,6 +168,10 @@ function App() {
   const cancelTitleEdit = useCallback(() => {
     setIsEditingTitle(false);
   }, []);
+
+  const handleOpenSettings = useCallback(() => {
+    dispatch(openSettings());
+  }, [dispatch]);
 
   return (
     <div className="app-container">
@@ -255,14 +203,8 @@ function App() {
               </>
             ) : (
               <>
-                <span className="header-session-name">
-                  {sessionTitle || 'New Session'}
-                </span>
-                <button
-                  className="icon-btn header-edit-btn"
-                  onClick={startEditingTitle}
-                  title="Edit session title"
-                >
+                <span className="header-session-name">{sessionTitle || 'New Session'}</span>
+                <button className="icon-btn header-edit-btn" onClick={startEditingTitle} title="Edit session title">
                   <PencilIcon size={12} />
                 </button>
               </>
@@ -280,37 +222,37 @@ function App() {
         {entriesLength === 0 ? (
           <EmptyState onSend={handleSend} />
         ) : (
-          <div className="chat-history">
-            {entryIds.map((id) =>
-              <EntryRow 
-                key={id} 
-                entryId={id} 
-                defaultModel={defaultModel} 
-                handleRetry={handleRetry} 
-                isProcessing={isProcessing} 
+          <div className="chat-history" ref={scrollRef}>
+            {entryIds.map((id) => (
+              <EntryRow
+                key={id}
+                entryId={id}
+                defaultModel={defaultModel}
+                handleRetry={handleRetry}
+                isProcessing={isProcessing}
               />
-            )}
-            <div ref={messagesEndRef} />
+            ))}
           </div>
         )}
 
-        <ChatInput
-          isProcessing={isProcessing}
-          onSend={handleSend}
-          currentModel={defaultModel}
-        />
+        <ChatInput isProcessing={isProcessing} onSend={handleSend} currentModel={defaultModel} />
       </main>
     </div>
   );
 }
 
-const EntryRow = memo(function EntryRow({ entryId, defaultModel, handleRetry, isProcessing }: {
+const EntryRow = memo(function EntryRow({
+  entryId,
+  defaultModel,
+  handleRetry,
+  isProcessing,
+}: {
   entryId: string;
   defaultModel: string;
   handleRetry: (id: string, text?: string) => void;
   isProcessing: boolean;
 }) {
-  const entry = useSelector((state: RootState) => state.chat.entries.find(e => e.id === entryId));
+  const entry = useSelector((state: RootState) => selectEntryById(state, entryId));
   if (!entry) return null;
 
   if (entry.type === 'user') {
@@ -321,4 +263,3 @@ const EntryRow = memo(function EntryRow({ entryId, defaultModel, handleRetry, is
 });
 
 export default App;
-

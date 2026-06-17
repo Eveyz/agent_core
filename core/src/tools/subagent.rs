@@ -1,4 +1,5 @@
 use crate::config::ModelConfig;
+use crate::permission::PermissionConfig;
 use crate::session::SessionManager;
 use crate::subagent::{Subagent, SubagentConfig};
 use crate::tools::{Tool, ToolRegistry, ToolUpdateFn};
@@ -12,16 +13,19 @@ pub fn register_subagent_tools(
     model_config: ModelConfig,
     available_tool_names: Vec<String>,
     session_mgr: Option<Arc<Mutex<SessionManager>>>,
+    permission_config: PermissionConfig,
 ) {
     registry.register(Box::new(SubagentSpawnTool::new(
         model_config.clone(),
         available_tool_names.clone(),
         session_mgr.clone(),
+        permission_config.clone(),
     )));
     registry.register(Box::new(SubagentSpawnAllTool::new(
         model_config,
         available_tool_names,
         session_mgr,
+        permission_config,
     )));
 }
 
@@ -31,6 +35,7 @@ struct SubagentSpawnTool {
     model_config: ModelConfig,
     available_tools: Vec<String>,
     session_mgr: Option<Arc<Mutex<SessionManager>>>,
+    permission_config: PermissionConfig,
 }
 
 impl SubagentSpawnTool {
@@ -38,11 +43,13 @@ impl SubagentSpawnTool {
         model_config: ModelConfig,
         available_tools: Vec<String>,
         session_mgr: Option<Arc<Mutex<SessionManager>>>,
+        permission_config: PermissionConfig,
     ) -> Self {
         Self {
             model_config,
             available_tools,
             session_mgr,
+            permission_config,
         }
     }
 }
@@ -100,8 +107,14 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
         _on_update: Option<ToolUpdateFn>,
         event_sender: Option<EventSender>,
     ) -> Result<String> {
-        let (result, _messages) =
-            spawn_single(&args, &self.model_config, &self.available_tools, event_sender).await?;
+        let (result, _messages) = spawn_single(
+            &args,
+            &self.model_config,
+            &self.available_tools,
+            event_sender,
+            &self.permission_config,
+        )
+        .await?;
 
         // Save subagent session if session manager is available
         if let Some(ref mgr) = self.session_mgr {
@@ -120,6 +133,7 @@ struct SubagentSpawnAllTool {
     model_config: ModelConfig,
     available_tools: Vec<String>,
     session_mgr: Option<Arc<Mutex<SessionManager>>>,
+    permission_config: PermissionConfig,
 }
 
 impl SubagentSpawnAllTool {
@@ -127,11 +141,13 @@ impl SubagentSpawnAllTool {
         model_config: ModelConfig,
         available_tools: Vec<String>,
         session_mgr: Option<Arc<Mutex<SessionManager>>>,
+        permission_config: PermissionConfig,
     ) -> Self {
         Self {
             model_config,
             available_tools,
             session_mgr,
+            permission_config,
         }
     }
 }
@@ -218,6 +234,7 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
         let mut handles = Vec::new();
         for (id, task, tools, max_iterations) in task_infos {
             let model_config = self.model_config.clone();
+            let permission_config = self.permission_config.clone();
             let available_tools = if tools.is_empty() {
                 self.available_tools.clone()
             } else {
@@ -237,7 +254,9 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
 
                 // spawn_single will emit its own SubagentStart again;
                 // the TUI deduplicates by id so the second one is a no-op.
-                let result = spawn_single(&args, &model_config, &available_tools, sub_sender).await;
+                let result =
+                    spawn_single(&args, &model_config, &available_tools, sub_sender, &permission_config)
+                        .await;
 
                 if let Some(ref mgr) = mgr_clone {
                     if let Ok(mgr) = mgr.lock() {
@@ -337,6 +356,7 @@ async fn spawn_single(
     model_config: &ModelConfig,
     available_tools: &[String],
     event_sender: Option<EventSender>,
+    permission_config: &PermissionConfig,
 ) -> Result<(SpawnResult, Vec<crate::types::Message>)> {
     let id = args["id"]
         .as_str()
@@ -405,7 +425,7 @@ Do NOT attempt to read or process image files.")
         max_context_tokens: 32000,
     };
 
-    let mut subagent = Subagent::new(id, config, model_config, tool_registry);
+    let mut subagent = Subagent::new(id, config, model_config, tool_registry, permission_config.clone());
     let result = subagent.run_with_sender(task, event_sender).await?;
 
     // Collect subagent messages for session saving

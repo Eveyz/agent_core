@@ -457,6 +457,8 @@ body {
   width: 100%;
   max-width: 800px;
   margin: 0 auto;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 200px;
 }
 
 .message-row.user-row {
@@ -606,6 +608,7 @@ body {
   border-bottom-right-radius: 0;
   border-bottom-color: transparent;
   background-color: rgba(255, 255, 255, 0.03);
+  width: 100%;
 }
 
 .tool-name {

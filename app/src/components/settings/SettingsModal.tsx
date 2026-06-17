@@ -1,7 +1,8 @@
-import { useEffect, useCallback } from 'react';
-import { useDispatch, useSelector } from 'react-redux';
+import { useEffect, useCallback, Suspense, lazy } from 'react';
+import { useSelector } from 'react-redux';
 import { RootState } from '../../store';
 import { closeSettings, setActiveTab, fetchConfig } from '../../features/settings/settingsSlice';
+import { useAppDispatch } from '../../hooks/useAppDispatch';
 import XIcon from 'lucide-react/dist/esm/icons/x.mjs';
 import SettingsIcon from 'lucide-react/dist/esm/icons/settings.mjs';
 import ServerIcon from 'lucide-react/dist/esm/icons/server.mjs';
@@ -10,10 +11,11 @@ import PlugIcon from 'lucide-react/dist/esm/icons/plug.mjs';
 import WrenchIcon from 'lucide-react/dist/esm/icons/wrench.mjs';
 import LoaderIcon from 'lucide-react/dist/esm/icons/loader.mjs';
 import GeneralTab from './GeneralTab';
-import ProviderTab from './ProviderTab';
-import MemoryTab from './MemoryTab';
-import McpTab from './McpTab';
-import SkillsTab from './SkillsTab';
+
+const ProviderTab = lazy(() => import('./ProviderTab'));
+const MemoryTab = lazy(() => import('./MemoryTab'));
+const McpTab = lazy(() => import('./McpTab'));
+const SkillsTab = lazy(() => import('./SkillsTab'));
 
 const TABS = [
   { key: 'general' as const, label: 'General', icon: SettingsIcon },
@@ -24,7 +26,7 @@ const TABS = [
 ];
 
 export default function SettingsModal() {
-  const dispatch = useDispatch();
+  const dispatch = useAppDispatch();
   const isOpen = useSelector((state: RootState) => state.settings.isOpen);
   const activeTab = useSelector((state: RootState) => state.settings.activeTab);
   const loading = useSelector((state: RootState) => state.settings.loading);
@@ -32,7 +34,7 @@ export default function SettingsModal() {
 
   useEffect(() => {
     if (isOpen) {
-      dispatch(fetchConfig() as any);
+      dispatch(fetchConfig());
     }
   }, [isOpen, dispatch]);
 
@@ -40,24 +42,24 @@ export default function SettingsModal() {
     dispatch(closeSettings());
   }, [dispatch]);
 
-  const handleBackdropClick = useCallback((e: React.MouseEvent) => {
-    if (e.target === e.currentTarget) {
-      handleClose();
-    }
-  }, [handleClose]);
-
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      handleClose();
-    }
-  }, [handleClose]);
+  const handleBackdropClick = useCallback(
+    (e: React.MouseEvent) => {
+      if (e.target === e.currentTarget) {
+        handleClose();
+      }
+    },
+    [handleClose]
+  );
 
   useEffect(() => {
     if (isOpen) {
-      document.addEventListener('keydown', handleKeyDown as any);
-      return () => document.removeEventListener('keydown', handleKeyDown as any);
+      const handler = (e: KeyboardEvent) => {
+        if (e.key === 'Escape') handleClose();
+      };
+      document.addEventListener('keydown', handler);
+      return () => document.removeEventListener('keydown', handler);
     }
-  }, [isOpen, handleKeyDown]);
+  }, [isOpen, handleClose]);
 
   if (!isOpen) return null;
 
@@ -102,13 +104,19 @@ export default function SettingsModal() {
               </div>
             )}
             {!loading && !error && (
-              <>
+              <Suspense
+                fallback={
+                  <div className="settings-loading">
+                    <LoaderIcon size={20} className="settings-spinner" />
+                  </div>
+                }
+              >
                 {activeTab === 'general' && <GeneralTab />}
                 {activeTab === 'provider' && <ProviderTab />}
                 {activeTab === 'memory' && <MemoryTab />}
                 {activeTab === 'mcp' && <McpTab />}
                 {activeTab === 'skills' && <SkillsTab />}
-              </>
+              </Suspense>
             )}
           </div>
         </div>

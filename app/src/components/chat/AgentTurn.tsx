@@ -1,5 +1,5 @@
 import { useState, useEffect, memo, useMemo } from 'react';
-import { useDispatch } from 'react-redux';
+import { useAppDispatch } from '../../hooks/useAppDispatch';
 import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
 import ChevronRightIcon from 'lucide-react/dist/esm/icons/chevron-right.mjs';
 import ZapIcon from 'lucide-react/dist/esm/icons/zap.mjs';
@@ -9,31 +9,26 @@ import LoaderIcon from 'lucide-react/dist/esm/icons/loader.mjs';
 import CheckCircle2Icon from 'lucide-react/dist/esm/icons/check-circle-2.mjs';
 import XCircleIcon from 'lucide-react/dist/esm/icons/x-circle.mjs';
 import { invoke } from '@tauri-apps/api/core';
-import DOMPurify from 'dompurify';
-import { marked } from 'marked';
 import { toolApprovalResponded } from '../../features/chat/chatSlice';
+import type { ChatEntry, TurnBlock, SubagentEntry, SubagentBlock } from '../../features/chat/chatSlice';
+import { MarkdownContent, formatTime, parseMarkdown } from './MarkdownContent';
 
-export const parseMarkdown = (raw: string) => {
-  const html = marked.parse(raw) as string;
-  return { __html: DOMPurify.sanitize(html) };
-};
-
-export const formatTime = (ms: number) => {
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-  const m = Math.floor(ms / 60000);
-  const s = Math.floor((ms % 60000) / 1000);
-  return `${m}m ${s}s`;
-};
+export { formatTime, parseMarkdown };
 
 const ml4 = { marginLeft: '4px' };
 
-const ProcessingTimer = memo(function ProcessingTimer({ startTime, endTime }: { startTime?: number; endTime?: number }) {
+const ProcessingTimer = memo(function ProcessingTimer({
+  startTime,
+  endTime,
+}: {
+  startTime?: number;
+  endTime?: number;
+}) {
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
-    // Only start the interval if the turn is actively processing (has startTime, no endTime yet)
     if (!startTime || endTime) return;
-    const interval = setInterval(() => setNow(Date.now()), 100);
+    const interval = setInterval(() => setNow(Date.now()), 250);
     return () => clearInterval(interval);
   }, [startTime, endTime]);
 
@@ -95,7 +90,7 @@ const ToolBlockUI = memo(function ToolBlockUI({
   is_error,
 }: {
   name: string;
-  args?: any;
+  args?: unknown;
   result?: string;
   active?: boolean;
   is_error?: boolean;
@@ -144,10 +139,7 @@ const ToolBlockUI = memo(function ToolBlockUI({
           {result && !active && (
             <div className="tool-section">
               <div className="tool-section-label">OUTPUT</div>
-              <div
-                className="tool-result-content assistant-msg"
-                dangerouslySetInnerHTML={parseMarkdown(result)}
-              />
+              <MarkdownContent content={result} className="tool-result-content assistant-msg" />
             </div>
           )}
         </div>
@@ -156,13 +148,23 @@ const ToolBlockUI = memo(function ToolBlockUI({
   );
 });
 
-const ApprovalBlockUI = memo(function ApprovalBlockUI({ block }: { block: any }) {
-  const dispatch = useDispatch();
+interface ApprovalBlock {
+  prompt_id?: string;
+  tool_name?: string;
+  tool_input?: unknown;
+  danger_level?: string;
+  explanation?: string;
+  status?: 'pending' | 'approved' | 'denied';
+}
 
+const ApprovalBlockUI = memo(function ApprovalBlockUI({ block }: { block: ApprovalBlock }) {
+  const dispatch = useAppDispatch();
+
+  const promptId = block.prompt_id ?? '';
   const handleApprove = async (choice: string) => {
-    dispatch(toolApprovalResponded({ promptId: block.prompt_id, approved: choice !== 'deny' }));
+    dispatch(toolApprovalResponded({ promptId, approved: choice !== 'deny' }));
     try {
-      await invoke('approve_tool', { promptId: block.prompt_id, choice });
+      await invoke('approve_tool', { promptId, choice });
     } catch (e) {
       console.error('Failed to approve tool', e);
     }
@@ -173,9 +175,7 @@ const ApprovalBlockUI = memo(function ApprovalBlockUI({ block }: { block: any })
       <div className="approval-header">
         <span className="approval-title">Approval Required: {block.tool_name}</span>
         {block.danger_level ? (
-          <span className={`danger-badge danger-${block.danger_level}`}>
-            {block.danger_level}
-          </span>
+          <span className={`danger-badge danger-${block.danger_level}`}>{block.danger_level}</span>
         ) : null}
       </div>
       <div className="approval-explanation">{block.explanation}</div>
@@ -201,7 +201,7 @@ const ApprovalBlockUI = memo(function ApprovalBlockUI({ block }: { block: any })
   );
 });
 
-const SubagentBlockUI = memo(function SubagentBlockUI({ block }: { block: any }) {
+const SubagentBlockUI = memo(function SubagentBlockUI({ block }: { block: SubagentBlock }) {
   if (block.type === 'thinking') {
     const text = typeof block.text === 'string' ? block.text : JSON.stringify(block.text);
     return (
@@ -215,20 +215,12 @@ const SubagentBlockUI = memo(function SubagentBlockUI({ block }: { block: any })
   }
   if (block.type === 'assistant') {
     const text = typeof block.text === 'string' ? block.text : JSON.stringify(block.text);
-    return (
-      <div className="assistant-msg" dangerouslySetInnerHTML={parseMarkdown(text)} />
-    );
+    return <MarkdownContent content={text} className="assistant-msg" />;
   }
   if (block.type === 'tool') {
     const name = typeof block.name === 'string' ? block.name : JSON.stringify(block.name);
     const result = typeof block.result === 'string' ? block.result : JSON.stringify(block.result);
-    return (
-      <ToolBlockUI
-        name={name || ''}
-        result={result}
-        active={!!block.active}
-      />
-    );
+    return <ToolBlockUI name={name || ''} result={result} active={!!block.active} />;
   }
   if (block.type === 'error') {
     const text = typeof block.text === 'string' ? block.text : JSON.stringify(block.text);
@@ -240,7 +232,7 @@ const SubagentBlockUI = memo(function SubagentBlockUI({ block }: { block: any })
   return null;
 });
 
-const SubagentCard = memo(function SubagentCard({ subagent }: { subagent: any }) {
+const SubagentCard = memo(function SubagentCard({ subagent }: { subagent: SubagentEntry }) {
   const isDone = subagent.status === 'done' || subagent.status === 'error';
   const [collapsed, setCollapsed] = useState(isDone);
 
@@ -257,7 +249,7 @@ const SubagentCard = memo(function SubagentCard({ subagent }: { subagent: any })
   }, [subagent.status]);
 
   const toolCount = useMemo(() => {
-    return subagent.blocks?.filter((b: any) => b.type === 'tool').length || 0;
+    return subagent.blocks?.filter((b) => b.type === 'tool').length || 0;
   }, [subagent.blocks]);
 
   const statusText = useMemo(() => {
@@ -269,9 +261,8 @@ const SubagentCard = memo(function SubagentCard({ subagent }: { subagent: any })
     }
     const iterText = subagent.iterations_used ? `${subagent.iterations_used} iter` : '';
     const toolText = toolCount > 0 ? `${toolCount} tools` : '';
-    const timeText = subagent.endTime && subagent.startTime
-      ? formatTime(subagent.endTime - subagent.startTime)
-      : '';
+    const timeText =
+      subagent.endTime && subagent.startTime ? formatTime(subagent.endTime - subagent.startTime) : '';
     const parts = [subagent.status === 'done' ? 'Done' : 'Failed'];
     if (iterText) parts.push(iterText);
     if (toolText) parts.push(toolText);
@@ -283,11 +274,13 @@ const SubagentCard = memo(function SubagentCard({ subagent }: { subagent: any })
   const idText = typeof displayStr === 'string' ? displayStr : JSON.stringify(displayStr);
 
   const hasPendingApproval = useMemo(() => {
-    return subagent.blocks?.some((b: any) => b.type === 'approval' && b.status === 'pending');
+    return subagent.blocks?.some((b) => b.type === 'approval' && b.status === 'pending');
   }, [subagent.blocks]);
 
   return (
-    <div className={`subagent-card ${subagent.status === 'working' ? 'subagent-working' : ''} ${hasPendingApproval ? 'subagent-needs-approval' : ''}`}>
+    <div
+      className={`subagent-card ${subagent.status === 'working' ? 'subagent-working' : ''} ${hasPendingApproval ? 'subagent-needs-approval' : ''}`}
+    >
       <div className="subagent-header" onClick={() => setCollapsed(!collapsed)}>
         <span className="subagent-icon">{statusIcon}</span>
         <span className="subagent-id">{idText}</span>
@@ -300,8 +293,8 @@ const SubagentCard = memo(function SubagentCard({ subagent }: { subagent: any })
           <div className="subagent-task">
             {typeof subagent.task === 'string' ? subagent.task : JSON.stringify(subagent.task)}
           </div>
-          {subagent.blocks?.map((b: any, idx: number) => (
-            <SubagentBlockUI key={idx} block={b} />
+          {subagent.blocks?.map((b, idx) => (
+            <SubagentBlockUI key={`${b.type}-${idx}`} block={b} />
           ))}
         </div>
       )}
@@ -310,23 +303,22 @@ const SubagentCard = memo(function SubagentCard({ subagent }: { subagent: any })
 });
 
 const THINKING_PHRASES = [
-  "Analyzing context...",
-  "Synthesizing logic...",
-  "Exploring possibilities...",
-  "Simulating outcomes...",
-  "Consulting neural pathways...",
-  "Formulating strategy..."
+  'Analyzing context...',
+  'Synthesizing logic...',
+  'Exploring possibilities...',
+  'Simulating outcomes...',
+  'Consulting neural pathways...',
+  'Formulating strategy...',
 ];
 
-const DynamicWorkingIndicator = memo(function DynamicWorkingIndicator({ entry }: { entry: any }) {
+const DynamicWorkingIndicator = memo(function DynamicWorkingIndicator({ entry }: { entry: ChatEntry }) {
   const [phraseIndex, setPhraseIndex] = useState(0);
 
-  // Only run the phrase rotation when the turn is actually active
-  const isActive = entry.startTime && !entry.endTime;
+  const isActive = !!(entry.startTime && !entry.endTime);
   useEffect(() => {
     if (!isActive) return;
     const interval = setInterval(() => {
-      setPhraseIndex(prev => (prev + 1) % THINKING_PHRASES.length);
+      setPhraseIndex((prev) => (prev + 1) % THINKING_PHRASES.length);
     }, 2500);
     return () => clearInterval(interval);
   }, [isActive]);
@@ -335,22 +327,22 @@ const DynamicWorkingIndicator = memo(function DynamicWorkingIndicator({ entry }:
 
   const statusText = useMemo(() => {
     if (!entry.blocks || entry.blocks.length === 0) {
-      return "Waking up the agent...";
+      return 'Waking up the agent...';
     }
     const lastBlock = entry.blocks[entry.blocks.length - 1];
 
     if (lastBlock.type === 'thinking' && lastBlock.isStreaming) {
       return THINKING_PHRASES[phraseIndex];
     } else if (lastBlock.type === 'tool' && lastBlock.active) {
-      if (lastBlock.name === 'invoke_subagent') return "Waiting for subagents...";
+      if (lastBlock.name === 'invoke_subagent') return 'Waiting for subagents...';
       return `Interfacing with ${lastBlock.name}...`;
     } else if (lastBlock.type === 'approval' && lastBlock.status === 'pending') {
-      return "Awaiting human authorization...";
+      return 'Awaiting human authorization...';
     } else if (lastBlock.type === 'assistant' && lastBlock.isStreaming) {
-      return "Transmitting response...";
+      return 'Transmitting response...';
     }
 
-    return "Processing data...";
+    return 'Processing data...';
   }, [entry.blocks, phraseIndex]);
 
   return (
@@ -361,77 +353,95 @@ const DynamicWorkingIndicator = memo(function DynamicWorkingIndicator({ entry }:
   );
 });
 
-export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: any }) {
+export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: ChatEntry }) {
   const [collapsed, setCollapsed] = useState(false);
 
   const thoughtDuration = useMemo(() => {
     let totalMs = 0;
-    entry.blocks?.forEach((b: any) => {
+    entry.blocks?.forEach((b: TurnBlock) => {
       if (b.type === 'thinking' && b.startTime && b.endTime) {
-        totalMs += (b.endTime - b.startTime);
+        totalMs += b.endTime - b.startTime;
       }
     });
     if (totalMs === 0) return null;
     return `Thought for ${formatTime(totalMs)}`;
   }, [entry.blocks]);
 
-  // A turn is "actively processing" only if it has a startTime but no endTime.
-  // Restored turns have neither, so they should show as completed (no timer, no pulse).
   const isProcessing = !!(entry.startTime && !entry.endTime);
 
-  const totalTime = entry.startTime && entry.endTime ? `Processed ${formatTime(entry.endTime - entry.startTime)}` : null;
-
-
+  const totalTime =
+    entry.startTime && entry.endTime ? `Processed ${formatTime(entry.endTime - entry.startTime)}` : null;
 
   return (
     <div className="agent-turn">
       <div
         className={`turn-header ${isProcessing ? 'processing-pulse' : ''}`}
         style={{ cursor: !isProcessing ? 'pointer' : 'default' }}
-        onClick={() => { if (!isProcessing) setCollapsed(!collapsed); }}
+        onClick={() => {
+          if (!isProcessing) setCollapsed(!collapsed);
+        }}
       >
         {isProcessing ? (
           <>
             <ProcessingTimer startTime={entry.startTime} endTime={entry.endTime} />
-            <ChevronDownIcon size={12} style={ml4}/>
+            <ChevronDownIcon size={12} style={ml4} />
           </>
         ) : (
           <>
             {collapsed ? (thoughtDuration ? `${totalTime} · ${thoughtDuration}` : totalTime) : totalTime}
-            {collapsed ? <ChevronRightIcon size={12} style={ml4}/> : <ChevronDownIcon size={12} style={ml4}/>}
+            {collapsed ? <ChevronRightIcon size={12} style={ml4} /> : <ChevronDownIcon size={12} style={ml4} />}
           </>
         )}
       </div>
 
-      {entry.blocks?.map((b: any, idx: number) => {
+      {entry.blocks?.map((b: TurnBlock, idx: number) => {
         if (collapsed && b.type !== 'assistant' && b.type !== 'error') {
           return null;
         }
 
         if (b.type === 'thinking') {
           const text = typeof b.text === 'string' ? b.text : JSON.stringify(b.text);
-          return <ThinkingBlockUI key={idx} text={text} isStreaming={b.isStreaming} startTime={b.startTime} endTime={b.endTime} />;
+          return (
+            <ThinkingBlockUI
+              key={`thinking-${idx}`}
+              text={text}
+              isStreaming={b.isStreaming}
+              startTime={b.startTime}
+              endTime={b.endTime}
+            />
+          );
         } else if (b.type === 'tool') {
           const name = typeof b.name === 'string' ? b.name : JSON.stringify(b.name);
           if (name === 'invoke_subagent' || name === 'subagent') {
-            return null; // hide redundant tool block since SubagentCard handles it
+            return null;
           }
           const result = typeof b.result === 'string' ? b.result : JSON.stringify(b.result);
-          return <ToolBlockUI key={idx} name={name} args={b.args} result={result} active={b.active} is_error={b.is_error} />;
+          return (
+            <ToolBlockUI
+              key={`tool-${b.call_id}-${idx}`}
+              name={name}
+              args={b.args}
+              result={result}
+              active={b.active}
+              is_error={b.is_error}
+            />
+          );
         } else if (b.type === 'approval') {
-          return <ApprovalBlockUI key={idx} block={b} />;
+          return <ApprovalBlockUI key={`approval-${b.prompt_id}-${idx}`} block={b} />;
         } else if (b.type === 'assistant') {
           const text = typeof b.text === 'string' ? b.text : JSON.stringify(b.text);
-          return (
-            <div key={idx} className="assistant-msg" dangerouslySetInnerHTML={parseMarkdown(text)} />
-          );
+          return <MarkdownContent key={`assistant-${idx}`} content={text} className="assistant-msg" />;
         } else if (b.type === 'error') {
           const text = typeof b.text === 'string' ? b.text : JSON.stringify(b.text);
-          return <div key={idx} className="error-msg">{text}</div>;
+          return <div key={`error-${idx}`} className="error-msg">{text}</div>;
         } else if (b.type === 'subagent_ref') {
           const sa = entry.subagents?.[b.subagent_id];
           if (!sa) return null;
-          return <div key={idx} className="subagents-section"><SubagentCard subagent={sa} /></div>;
+          return (
+            <div key={`subagent-${b.subagent_id}-${idx}`} className="subagents-section">
+              <SubagentCard subagent={sa} />
+            </div>
+          );
         }
         return null;
       })}

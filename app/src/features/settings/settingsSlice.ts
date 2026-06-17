@@ -93,72 +93,74 @@ const initialState: SettingsState = {
   error: null,
 };
 
-function normalizeProviderModel(raw: any): ProviderModelEntry {
+function normalizeProviderModel(raw: Record<string, unknown>): ProviderModelEntry {
   return {
-    model_id: raw?.model_id ?? '',
-    temperature: raw?.temperature ?? undefined,
-    max_tokens: raw?.max_tokens ?? undefined,
-    system_prompt: raw?.system_prompt ?? undefined,
+    model_id: (raw.model_id as string) ?? '',
+    temperature: (raw.temperature as number) ?? undefined,
+    max_tokens: (raw.max_tokens as number) ?? undefined,
+    system_prompt: (raw.system_prompt as string) ?? undefined,
   };
 }
 
-function normalizeProvider(raw: any): ProviderConfig {
-  const rawModels = raw?.models ?? {};
+function normalizeProvider(raw: Record<string, unknown>): ProviderConfig {
+  const rawModels = (raw.models as Record<string, unknown>) ?? {};
   const models: Record<string, ProviderModelEntry> = {};
   for (const [key, value] of Object.entries(rawModels)) {
-    models[key] = normalizeProviderModel(value);
+    models[key] = normalizeProviderModel(value as Record<string, unknown>);
   }
   return {
-    name: raw?.name ?? '',
-    base_url: raw?.base_url ?? '',
-    api_key: raw?.api_key ?? '',
-    max_context_tokens: raw?.max_context_tokens ?? 32768,
-    temperature: raw?.temperature ?? undefined,
-    max_tokens: raw?.max_tokens ?? undefined,
-    react_enabled: raw?.react_enabled ?? true,
-    system_prompt: raw?.system_prompt ?? undefined,
-    max_iterations: raw?.max_iterations ?? 100,
-    request_timeout_secs: raw?.request_timeout_secs ?? 60,
+    name: (raw.name as string) ?? '',
+    base_url: (raw.base_url as string) ?? '',
+    api_key: (raw.api_key as string) ?? '',
+    max_context_tokens: (raw.max_context_tokens as number) ?? 32768,
+    temperature: (raw.temperature as number) ?? undefined,
+    max_tokens: (raw.max_tokens as number) ?? undefined,
+    react_enabled: (raw.react_enabled as boolean) ?? true,
+    system_prompt: (raw.system_prompt as string) ?? undefined,
+    max_iterations: (raw.max_iterations as number) ?? 100,
+    request_timeout_secs: (raw.request_timeout_secs as number) ?? 60,
     models,
   };
 }
 
-function normalizeMemory(raw: any): MemoryConfig {
+function normalizeMemory(raw: Record<string, unknown>): MemoryConfig {
   return {
-    db_path: raw?.db_path ?? '~/.agent_core/memory.db',
-    embedding_model: raw?.embedding_model ?? 'BAAI/bge-small-en-v1.5',
-    max_core_blocks: raw?.max_core_blocks ?? 5,
-    default_block_max_chars: raw?.default_block_max_chars ?? 2000,
-    consolidation_enabled: raw?.consolidation_enabled ?? true,
+    db_path: (raw.db_path as string) ?? '~/.agent_core/memory.db',
+    embedding_model: (raw.embedding_model as string) ?? 'BAAI/bge-small-en-v1.5',
+    max_core_blocks: (raw.max_core_blocks as number) ?? 5,
+    default_block_max_chars: (raw.default_block_max_chars as number) ?? 2000,
+    consolidation_enabled: (raw.consolidation_enabled as boolean) ?? true,
   };
 }
 
-function normalizeConfig(raw: any): AppConfig {
-  const rawProviders = raw?.providers ?? {};
+function normalizeConfig(raw: Record<string, unknown>): AppConfig {
+  const rawProviders = (raw.providers as Record<string, unknown>) ?? {};
   const providers: Record<string, ProviderConfig> = {};
   for (const [key, value] of Object.entries(rawProviders)) {
-    providers[key] = normalizeProvider(value);
+    providers[key] = normalizeProvider(value as Record<string, unknown>);
   }
+  const rawPerms = (raw.permissions as Record<string, unknown>) ?? {};
+  const rawMcp = (raw.mcp as Record<string, unknown>) ?? {};
   return {
-    default_model: raw?.default_model ?? '',
+    default_model: (raw.default_model as string) ?? '',
     providers,
-    memory: raw?.memory ? normalizeMemory(raw.memory) : undefined,
+    memory: raw.memory ? normalizeMemory(raw.memory as Record<string, unknown>) : undefined,
     permissions: {
-      mode: raw?.permissions?.mode ?? 'standard',
-      auto_allow_up_to: raw?.permissions?.auto_allow_up_to ?? undefined,
-      rules: raw?.permissions?.rules ?? [],
-      whitelist: raw?.permissions?.whitelist ?? [],
-      blacklist: raw?.permissions?.blacklist ?? [],
+      mode: (rawPerms.mode as string) ?? 'standard',
+      auto_allow_up_to: (rawPerms.auto_allow_up_to as string) ?? undefined,
+      rules: (rawPerms.rules as PermissionRule[]) ?? [],
+      whitelist: (rawPerms.whitelist as WhitelistEntry[]) ?? [],
+      blacklist: (rawPerms.blacklist as BlacklistEntry[]) ?? [],
     },
     mcp: {
-      servers: raw?.mcp?.servers ?? [],
+      servers: (rawMcp.servers as McpServerConfig[]) ?? [],
     },
   };
 }
 
 export const fetchConfig = createAsyncThunk('settings/fetchConfig', async (_, { rejectWithValue }) => {
   try {
-    const raw = await invoke<any>('get_config');
+    const raw = await invoke<Record<string, unknown>>('get_config');
     return normalizeConfig(raw);
   } catch (e) {
     return rejectWithValue(String(e));
@@ -173,6 +175,29 @@ export const saveConfig = createAsyncThunk('settings/saveConfig', async (config:
     return rejectWithValue(String(e));
   }
 });
+
+export const switchModel = createAsyncThunk(
+  'settings/switchModel',
+  async (
+    { modelKey, currentConfig }: { modelKey: string; currentConfig: AppConfig },
+    { dispatch, rejectWithValue }
+  ) => {
+    dispatch(setDefaultModel(modelKey));
+    const newConfig = { ...currentConfig, default_model: modelKey };
+    try {
+      await invoke('save_config', { config: newConfig });
+    } catch (e) {
+      dispatch(setDefaultModel(currentConfig.default_model));
+      return rejectWithValue(String(e));
+    }
+    try {
+      await invoke('switch_model', { name: modelKey });
+    } catch (e) {
+      return rejectWithValue(String(e));
+    }
+    return newConfig;
+  }
+);
 
 export const settingsSlice = createSlice({
   name: 'settings',
@@ -210,6 +235,17 @@ export const settingsSlice = createSlice({
       if (!state.config) return;
       state.config.default_model = action.payload;
     },
+    updateProvider: (state, action: PayloadAction<{ oldKey: string; newKey: string; provider: ProviderConfig }>) => {
+      if (!state.config) return;
+      const { oldKey, newKey, provider } = action.payload;
+      if (oldKey !== newKey) {
+        delete state.config.providers[oldKey];
+        if (state.config.default_model.startsWith(oldKey + '/')) {
+          state.config.default_model = state.config.default_model.replace(oldKey + '/', newKey + '/');
+        }
+      }
+      state.config.providers[newKey] = provider;
+    },
   },
   extraReducers: (builder) => {
     builder
@@ -236,9 +272,12 @@ export const settingsSlice = createSlice({
       .addCase(saveConfig.rejected, (state, action) => {
         state.saving = false;
         state.error = action.payload as string;
+      })
+      .addCase(switchModel.fulfilled, (state, action) => {
+        state.config = action.payload;
       });
   },
 });
 
-export const { openSettings, closeSettings, setActiveTab, upsertProvider, deleteProvider, setDefaultModel } = settingsSlice.actions;
+export const { openSettings, closeSettings, setActiveTab, upsertProvider, deleteProvider, setDefaultModel, updateProvider } = settingsSlice.actions;
 export default settingsSlice.reducer;

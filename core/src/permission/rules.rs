@@ -69,20 +69,10 @@ pub fn default_rules_with_danger() -> Vec<(ToolPermissionPattern, DangerLevel, A
             ApprovalLevel::Ask,
         ),
         // ── Shell commands ───────────────────────────────────────────
-        // Destructive patterns blocked first (highest priority)
-        (
-            ToolPermissionPattern::simple("bash")
-                .with_commands(vec![
-                    "rm ".into(), "rmdir ".into(), "del ".into(),
-                    "mkfs".into(), "dd ".into(), "fdisk".into(), "format ".into(),
-                    "sudo ".into(), "su ".into(),
-                    "shutdown".into(), "reboot".into(), "halt".into(),
-                    "chmod 777".into(), "chmod -R 777".into(),
-                    "> /dev/sda".into(), "> /dev/nvme".into(),
-                ]),
-            DangerLevel::Destructive,
-            ApprovalLevel::Deny,
-        ),
+        // Destructive shell commands are denied programmatically in
+        // `PermissionPolicy::check` via `is_destructive_command` (which is
+        // robust to whitespace/`$IFS` evasion and covers `doas`, `pkexec`,
+        // `chmod 0777`, …). See `core/src/permission/mod.rs`.
         // Catch-all shell commands: ask
         (
             ToolPermissionPattern::simple("bash"),
@@ -313,12 +303,16 @@ mod tests {
     }
 
     #[test]
-    fn test_destructive_commands_denied() {
+    fn test_bash_defaults_to_ask() {
+        // Destructive deny is now programmatic (is_destructive_command in
+        // PermissionPolicy::check), so the only built-in bash rule is the
+        // System→Ask catch-all.
         let rules = default_rules_with_danger();
-        let destructive = rules
+        let bash = rules
             .iter()
-            .find(|(p, d, _)| p.tool_pattern == "bash" && *d == DangerLevel::Destructive)
+            .find(|(p, _, _)| p.tool_pattern == "bash")
             .unwrap();
-        assert_eq!(destructive.2, ApprovalLevel::Deny);
+        assert_eq!(bash.1, DangerLevel::System);
+        assert_eq!(bash.2, ApprovalLevel::Ask);
     }
 }

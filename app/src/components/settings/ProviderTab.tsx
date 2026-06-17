@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useDispatch, useSelector } from 'react-redux';
+import { useSelector } from 'react-redux';
+import { useAppDispatch } from '../../hooks/useAppDispatch';
 import { RootState } from '../../store';
-import { upsertProvider, deleteProvider, setDefaultModel } from '../../features/settings/settingsSlice';
+import { upsertProvider, deleteProvider, setDefaultModel, updateProvider } from '../../features/settings/settingsSlice';
 import type { ProviderModelEntry } from '../../features/settings/settingsSlice';
 import ServerIcon from 'lucide-react/dist/esm/icons/server.mjs';
 import PlusIcon from 'lucide-react/dist/esm/icons/plus.mjs';
@@ -47,7 +48,7 @@ function ProviderForm({
   editKey: string | null;
   onCancel: () => void;
 }) {
-  const dispatch = useDispatch();
+  const dispatch = useAppDispatch();
   const config = useSelector((state: RootState) => state.settings.config);
   const [form, setForm] = useState<ProviderFormData>(EMPTY_FORM);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -141,10 +142,6 @@ function ProviderForm({
   const handleSave = () => {
     if (!validate()) return;
 
-    if (editKey && config) {
-      dispatch(deleteProvider(editKey));
-    }
-
     const models: Record<string, ProviderModelEntry> = {};
     form.models.forEach((row) => {
       if (row.key.trim()) {
@@ -152,22 +149,32 @@ function ProviderForm({
       }
     });
 
-    dispatch(upsertProvider({
-      key: form.provider_key.trim(),
-      provider: {
-        name: form.provider_name,
-        base_url: form.base_url,
-        api_key: form.api_key,
-        max_context_tokens: form.max_context_tokens,
-        temperature: undefined,
-        max_tokens: undefined,
-        react_enabled: true,
-        system_prompt: undefined,
-        max_iterations: 100,
-        request_timeout_secs: 60,
-        models,
-      },
-    }));
+    const providerData = {
+      name: form.provider_name,
+      base_url: form.base_url,
+      api_key: form.api_key,
+      max_context_tokens: form.max_context_tokens,
+      temperature: undefined,
+      max_tokens: undefined,
+      react_enabled: true,
+      system_prompt: undefined,
+      max_iterations: 100,
+      request_timeout_secs: 60,
+      models,
+    };
+
+    if (editKey && config) {
+      dispatch(updateProvider({
+        oldKey: editKey,
+        newKey: form.provider_key.trim(),
+        provider: providerData,
+      }));
+    } else {
+      dispatch(upsertProvider({
+        key: form.provider_key.trim(),
+        provider: providerData,
+      }));
+    }
 
     onCancel();
   };
@@ -297,7 +304,7 @@ function ProviderForm({
 }
 
 export default function ProviderTab() {
-  const dispatch = useDispatch();
+  const dispatch = useAppDispatch();
   const config = useSelector((state: RootState) => state.settings.config);
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);

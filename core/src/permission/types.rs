@@ -235,6 +235,11 @@ impl ToolPermissionPattern {
         self
     }
 
+    pub fn with_hosts(mut self, hosts: Vec<String>) -> Self {
+        self.hosts = Some(hosts);
+        self
+    }
+
     pub fn with_max_danger(mut self, level: DangerLevel) -> Self {
         self.max_danger = Some(level);
         self

@@ -5,6 +5,7 @@ pub use board::{TaskBoard, TaskRecord, TaskStatus};
 use serde_json::Value;
 
 use crate::config::ModelConfig;
+use crate::permission::PermissionConfig;
 use crate::subagent::{Subagent, SubagentConfig};
 use crate::tools::{Tool, ToolRegistry};
 use std::sync::{Arc, Mutex};
@@ -13,6 +14,7 @@ pub fn register_task_tools(
     registry: &mut ToolRegistry,
     board: Arc<Mutex<TaskBoard>>,
     model_config: ModelConfig,
+    permission_config: PermissionConfig,
 ) {
     registry.register(Box::new(TaskCreateTool::new(board.clone())));
     registry.register(Box::new(TaskBatchCreateTool::new(board.clone())));
@@ -21,7 +23,11 @@ pub fn register_task_tools(
     registry.register(Box::new(TaskGetTool::new(board.clone())));
     registry.register(Box::new(TaskPlanTool::new(board.clone())));
     registry.register(Box::new(TaskReadyTool::new(board.clone())));
-    registry.register(Box::new(TaskExecuteTool::new(board, model_config)));
+    registry.register(Box::new(TaskExecuteTool::new(
+        board,
+        model_config,
+        permission_config,
+    )));
 }
 
 fn detect_cycle(board: &TaskBoard, new_id: &str, depends_on: &[String]) -> Result<(), String> {
@@ -466,13 +472,19 @@ impl Tool for TaskReadyTool {
 struct TaskExecuteTool {
     board: Arc<Mutex<TaskBoard>>,
     model_config: ModelConfig,
+    permission_config: PermissionConfig,
 }
 
 impl TaskExecuteTool {
-    fn new(board: Arc<Mutex<TaskBoard>>, model_config: ModelConfig) -> Self {
+    fn new(
+        board: Arc<Mutex<TaskBoard>>,
+        model_config: ModelConfig,
+        permission_config: PermissionConfig,
+    ) -> Self {
         Self {
             board,
             model_config,
+            permission_config,
         }
     }
 }
@@ -615,7 +627,13 @@ impl Tool for TaskExecuteTool {
             max_context_tokens: 32000,
         };
 
-        let mut subagent = Subagent::new(id, config, &self.model_config, tool_registry);
+        let mut subagent = Subagent::new(
+            id,
+            config,
+            &self.model_config,
+            tool_registry,
+            self.permission_config.clone(),
+        );
         let result = subagent.run(&task_prompt).await?;
 
         // Update task with result

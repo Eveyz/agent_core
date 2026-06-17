@@ -280,6 +280,30 @@ impl PermissionPolicy {
     ) -> PermissionDecision {
         let danger = self.danger_level_for(tool_name, tool_input_json, command);
 
+        // Pre-layer: Sandbox — paths outside the sandbox are hard-denied.
+        // This is a security boundary: it is enforced before everything else
+        // (including Yolo mode and the whitelist) so a sandboxed agent can never
+        // touch files outside its allowed roots, regardless of other approvals.
+        if let Some(p) = path {
+            if let Err(reason) = self.check_path(p) {
+                self.audit_record(
+                    tool_name,
+                    tool_input_json,
+                    &ApprovalLevel::Deny,
+                    &RuleSource::Config,
+                    &reason,
+                    danger,
+                    None,
+                );
+                return PermissionDecision::Deny(reason);
+            }
+        }
+
+        // Whether a built-in safety rule unconditionally denies this call
+        // (currently: destructive shell commands). Such denies must not be
+        // bypassed by `auto_allow_up_to` — they are evaluated below at Layer 5.
+        let builtin_deny = tool_name == "bash" && danger == DangerLevel::Destructive;
+
         // Layer 0: Yolo mode — everything allowed
         if self.mode == PermissionMode::Yolo {
             self.audit_record(tool_name, tool_input_json, &ApprovalLevel::Allow, &RuleSource::Builtin, "yolo mode", danger, None);
@@ -319,7 +343,10 @@ impl PermissionPolicy {
 
         // Layer 3: Mode-based auto-allow
         if let Some(max_danger) = self.auto_allow_up_to {
-            if danger <= max_danger {
+            // Never short-circuit a built-in safety deny (e.g. destructive shell
+            // commands) — let it fire at Layer 5 instead. Without this, setting
+            // `auto_allow_up_to = Destructive` would bypass the destructive deny.
+            if danger <= max_danger && !builtin_deny {
                 self.audit_record(tool_name, tool_input_json, &ApprovalLevel::Allow, &RuleSource::Config,
                     &format!("auto_allow_up_to ≥ {:?}", danger), danger, None);
                 return PermissionDecision::Allow;
@@ -381,6 +408,23 @@ impl PermissionPolicy {
         }
 
         // Layer 5: Built-in rules (from rules.rs)
+        // Built-in safety deny: destructive shell commands are blocked by default.
+        // (Config rules at Layer 4 may still explicitly allow a specific command,
+        // and the whitelist at Layer 2 may allow an explicitly-approved command.)
+        if builtin_deny {
+            let reason = "destructive command blocked by built-in safety rule".to_string();
+            self.audit_record(
+                tool_name,
+                tool_input_json,
+                &ApprovalLevel::Deny,
+                &RuleSource::Builtin,
+                &reason,
+                danger,
+                None,
+            );
+            return PermissionDecision::Deny(format!("Tool '{}' denied: {}", tool_name, reason));
+        }
+
         for (pattern, rule_danger, level) in &self.builtin_rules {
             if pattern.matches_tool(tool_name) {
                 if let Some(cmd) = command {
@@ -435,20 +479,25 @@ impl PermissionPolicy {
     // ── Path sandbox ─────────────────────────────────────────────
 
     /// Check if a path is within sandbox boundaries.
+    ///
+    /// Handles paths that do not exist yet (e.g. `write_file` creating a new
+    /// file) by canonicalizing the existing parent directory and re-attaching
+    /// the file name. Both the target and the configured sandbox roots are
+    /// canonicalized so symlink/relative-path comparisons are correct.
     pub fn check_path(&self, file_path: &str) -> Result<(), String> {
         if self.sandbox_paths.is_empty() {
             return Ok(());
         }
-        let path = Path::new(file_path);
-        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let target = canonicalize_target(file_path);
         for sandbox in &self.sandbox_paths {
-            if canonical.starts_with(sandbox) {
+            let sandbox_canon = sandbox.canonicalize().unwrap_or_else(|_| sandbox.clone());
+            if target.starts_with(&sandbox_canon) {
                 return Ok(());
             }
         }
         Err(format!(
-            "Path '{}' is outside sandbox boundaries",
-            path.display()
+            "Path '{}' is outside sandbox boundaries (allowed roots: {:?})",
+            file_path, self.sandbox_paths
         ))
     }
 
@@ -461,7 +510,18 @@ impl PermissionPolicy {
         _tool_input_json: &str,
         command: Option<&str>,
     ) -> DangerLevel {
-        // First check built-in rules for an annotated danger level
+        // bash danger depends on the actual command: destructive commands
+        // (rm, mkfs, sudo, …) are `Destructive`, everything else is `System`.
+        // This is evaluated before the rule loop so the destructive deny in
+        // `check` fires precisely, instead of treating all bash as destructive.
+        if tool_name == "bash" {
+            if command.map_or(false, is_destructive_command) {
+                return DangerLevel::Destructive;
+            }
+            return DangerLevel::System;
+        }
+
+        // Other tools: use the danger annotated on built-in rules.
         for (pattern, danger, _) in &self.builtin_rules {
             if pattern.matches_tool(tool_name) {
                 return *danger;
@@ -470,15 +530,6 @@ impl PermissionPolicy {
 
         // Fallback heuristics
         match tool_name {
-            "bash" => {
-                // Check command for destructive patterns
-                if let Some(cmd) = command {
-                    if is_destructive_command(cmd) {
-                        return DangerLevel::Destructive;
-                    }
-                }
-                DangerLevel::System
-            }
             "webfetch" => DangerLevel::Network,
             "write_file" | "edit" => DangerLevel::ReadWrite,
             _ => DangerLevel::ReadOnly,
@@ -563,21 +614,151 @@ fn expand_tilde(path: &str) -> String {
     path.to_string()
 }
 
-/// Check if a command string contains destructive patterns.
+/// Canonicalize a path for sandbox comparison.
+///
+/// Absolute existing paths are canonicalized directly. For paths that do not
+/// exist yet (e.g. a file `write_file` is about to create), the existing
+/// parent directory is canonicalized and the file name re-attached. Relative
+/// paths are resolved against the current working directory first.
+fn canonicalize_target(file_path: &str) -> PathBuf {
+    let p = Path::new(file_path);
+    let abs = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(p)
+    };
+    if let Ok(canon) = abs.canonicalize() {
+        return canon;
+    }
+    // File does not exist yet — canonicalize the parent and re-attach the name.
+    if let Some(parent) = abs.parent() {
+        if let Ok(parent_canon) = parent.canonicalize() {
+            if let Some(name) = abs.file_name() {
+                return parent_canon.join(name);
+            }
+        }
+    }
+    abs
+}
+
+/// Normalize a command for destructive-pattern detection: collapse all
+/// Unicode whitespace (including tabs, newlines, and non-breaking spaces) to a
+/// single ASCII space, and expand the `${IFS}` / `$IFS` shell-variable trick
+/// used to split tokens without a literal space (e.g. `rm${IFS}-rf`).
+fn normalize_command(cmd: &str) -> String {
+    let mut s: String = cmd
+        .chars()
+        .map(|c| if c.is_whitespace() || c == '\u{00a0}' { ' ' } else { c })
+        .collect();
+    s = s.replace("${IFS}", " ");
+    s = s.replace("$IFS", " ");
+    s
+}
+
+/// Programs that merely wrap another command (e.g. `env rm -rf /`,
+/// `nohup rm`, `xargs rm`). The real target program follows them, possibly
+/// after `VAR=value` assignments.
+const COMMAND_WRAPPERS: &[&str] = &[
+    "env", "exec", "command", "nohup", "time", "nice", "ionice", "xargs",
+];
+
+/// Return the index of the effective program in a sub-command's token list,
+/// skipping wrapper prefixes and `VAR=value` env assignments.
+fn effective_program_index(tokens: &[&str]) -> Option<usize> {
+    let mut i = 0;
+    while i < tokens.len() {
+        let t = tokens[i];
+        if COMMAND_WRAPPERS.contains(&t) {
+            i += 1;
+            continue;
+        }
+        // `VAR=value` assignment (env-style), but not flags like `-i`.
+        if !t.starts_with('-') && t.contains('=') {
+            i += 1;
+            continue;
+        }
+        break;
+    }
+    (i < tokens.len()).then_some(i)
+}
+
+/// Whether a (program, args) pair is destructive on its own.
+fn is_destructive_tokens(prog: &str, args: &[&str]) -> bool {
+    if prog == "mkfs" || prog.starts_with("mkfs.") || prog == "mke2fs" {
+        return true;
+    }
+    match prog {
+        "rm" | "rmdir" | "del" | "deltree" | "unlink" | "shred" => true,
+        "dd" | "fdisk" | "format" | "parted" | "wipefs" => true,
+        "shutdown" | "reboot" | "halt" | "poweroff" | "init" | "telinit" => true,
+        // Privilege escalation — always treat as destructive.
+        "sudo" | "doas" | "pkexec" | "su" | "runuser" | "newgrp" => true,
+        // Namespace/container escape primitives.
+        "nsenter" | "unshare" | "chroot" => true,
+        "chmod" => args.iter().copied().any(|a| {
+            let a = a.trim_start_matches('-');
+            a == "777" || a == "0777" || a == "a+rwx" || a == "a=rwx" || a == "u+rwx,go+rwx"
+        }),
+        "chown" | "chgrp" => args
+            .iter()
+            .copied()
+            .any(|a| a == "-R" || a.starts_with("--recursive")),
+        "install" => {
+            let mut iter = args.iter().copied();
+            while let Some(a) = iter.next() {
+                if a == "-m" {
+                    if let Some(mode) = iter.next() {
+                        let m = mode.trim_start_matches('0');
+                        if m == "777" || mode == "a+rwx" || mode == "a=rwx" {
+                            return true;
+                        }
+                    }
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+/// Check if a command string is destructive.
+///
+/// This is deliberately conservative (false-positives preferred over
+/// false-negatives): it inspects every sub-command in a pipeline/sequence,
+/// normalizes whitespace and `$IFS` evasion, and skips wrapper prefixes like
+/// `env`/`nohup`/`xargs` to reach the real program. It cannot defeat arbitrary
+/// shell quoting/`$()` substitution, but it closes the common bypasses
+/// (`rm\t-rf`, `rm${IFS}-rf`, `doas`, `chmod 0777`, `install -m 777`, …).
 pub fn is_destructive_command(cmd: &str) -> bool {
-    let destructive_patterns = [
-        "rm ", "rmdir ", "del ", "deltree ",
-        "mkfs", "dd ", "fdisk", "format ",
-        "sudo ", "su ",
-        "chmod 777", "chmod -R 777",
-        "shutdown", "reboot", "halt",
-        ":(){ :|:& };:", // fork bomb
-        "> /dev/sda", "> /dev/nvme",
-    ];
-    let lower = cmd.to_lowercase();
-    destructive_patterns
-        .iter()
-        .any(|p| lower.contains(p))
+    let lower = normalize_command(cmd).to_lowercase();
+
+    // Fork bomb.
+    if lower.contains(":(){") || lower.contains(":|:&") {
+        return true;
+    }
+    // Writing to a block device (cat foo > /dev/sda, dd … of=/dev/nvme0n1).
+    let block_device =
+        lower.contains("/dev/sd") || lower.contains("/dev/nvme") || lower.contains("/dev/disk");
+    if block_device && (lower.contains('>') || lower.contains("of=")) {
+        return true;
+    }
+
+    // Inspect each sub-command (split on `;`, `|`, `&`, newline).
+    for sub in lower.split([';', '\n', '|', '&']) {
+        let sub = sub.trim();
+        if sub.is_empty() {
+            continue;
+        }
+        let tokens: Vec<&str> = sub.split_whitespace().collect();
+        if let Some(idx) = effective_program_index(&tokens) {
+            let prog = tokens[idx];
+            let args = &tokens[idx + 1..];
+            if is_destructive_tokens(prog, args) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -680,13 +861,39 @@ mod tests {
 
     #[test]
     fn test_is_destructive_command() {
+        // Basic destructive commands.
         assert!(is_destructive_command("rm -rf /"));
         assert!(is_destructive_command("sudo rm file"));
         assert!(is_destructive_command("mkfs.ext4 /dev/sda"));
         assert!(is_destructive_command("dd if=/dev/zero of=/dev/sda"));
+        // Whitespace / IFS evasion that the old substring check missed.
+        assert!(is_destructive_command("rm\t-rf /"));
+        assert!(is_destructive_command("rm${IFS}-rf /"));
+        assert!(is_destructive_command("rm\n-rf /"));
+        // Escalators the old check missed.
+        assert!(is_destructive_command("doas rm file"));
+        assert!(is_destructive_command("pkexec reboot"));
+        assert!(is_destructive_command("nsenter -t 1 -m sh"));
+        assert!(is_destructive_command("chroot / /bin/sh"));
+        // chmod / install variants the old check missed.
+        assert!(is_destructive_command("chmod 0777 /etc"));
+        assert!(is_destructive_command("chmod a=rwx file"));
+        assert!(is_destructive_command("install -m 777 script /usr/local/bin/script"));
+        // Wrapper-prefixed destructive command.
+        assert!(is_destructive_command("env rm -rf /tmp"));
+        assert!(is_destructive_command("nohup rm -rf /tmp &"));
+        // Block-device overwrite via redirection.
+        assert!(is_destructive_command("cat image.img > /dev/sda"));
+        // Fork bomb.
+        assert!(is_destructive_command(":(){ :|:& };:"));
+        // Sub-command after a separator.
+        assert!(is_destructive_command("echo hi; rm -rf /tmp"));
+        // Safe commands.
         assert!(!is_destructive_command("git status"));
         assert!(!is_destructive_command("cargo build"));
         assert!(!is_destructive_command("python script.py"));
+        assert!(!is_destructive_command("ls -la"));
+        assert!(!is_destructive_command("chmod 644 file"));
     }
 
     #[test]
@@ -695,5 +902,48 @@ mod tests {
             .with_sandbox_paths(vec![PathBuf::from("/tmp/sandbox")]);
         assert!(policy.check_path("/etc/passwd").is_err());
         assert!(policy.check_path("/home/user/file.txt").is_err());
+    }
+
+    #[test]
+    fn test_sandbox_denies_outside_in_check() {
+        let mut policy = PermissionPolicy::with_builtin_defaults()
+            .with_sandbox_paths(vec![PathBuf::from("/tmp/sandbox")]);
+        // write_file inside the sandbox: reaches the normal Ask path.
+        let inside = policy.check(
+            "write_file",
+            r#"{"path":"/tmp/sandbox/a.txt","content":"x"}"#,
+            None,
+            Some("/tmp/sandbox/a.txt"),
+            None,
+        );
+        assert!(inside.needs_approval() || inside.is_allowed());
+        // write_file outside the sandbox: hard-denied before any rule.
+        let outside = policy.check(
+            "write_file",
+            r#"{"path":"/etc/passwd","content":"x"}"#,
+            None,
+            Some("/etc/passwd"),
+            None,
+        );
+        assert!(outside.is_denied());
+    }
+
+    #[test]
+    fn test_auto_allow_does_not_bypass_destructive_deny() {
+        // `auto_allow_up_to = Destructive` must NOT auto-allow `rm -rf /`;
+        // the built-in destructive deny should still fire.
+        let mut policy = PermissionPolicy::with_builtin_defaults()
+            .with_auto_allow_up_to(DangerLevel::Destructive);
+        let result = policy.check(
+            "bash",
+            r#"{"command":"rm -rf /"}"#,
+            Some("rm -rf /"),
+            None,
+            None,
+        );
+        assert!(result.is_denied());
+        // A safe command at or below the auto-allow level is still allowed.
+        let safe = policy.check("bash", r#"{"command":"ls -la"}"#, Some("ls -la"), None, None);
+        assert!(safe.is_allowed());
     }
 }

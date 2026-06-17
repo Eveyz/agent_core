@@ -265,14 +265,16 @@ async fn run_tui_mode() -> anyhow::Result<()> {
 
     {
         let model_config = agent.current_model_config().clone();
+        let permission_config = agent.config().permissions.clone();
         let reg = agent.tool_registry_mut();
         tools::todo::register_todo_tools(reg, todo_list.clone());
         tools::skill::register_skill_tools(reg, skill_manager.clone());
         let task_board_clone = task_board.clone();
-        tasks::register_task_tools(reg, task_board_clone, model_config);
+        tasks::register_task_tools(reg, task_board_clone, model_config, permission_config);
     }
     {
         let model_config = agent.current_model_config().clone();
+        let permission_config = agent.config().permissions.clone();
         let tool_names: Vec<String> = agent
             .tool_registry()
             .list_names()
@@ -280,7 +282,13 @@ async fn run_tui_mode() -> anyhow::Result<()> {
             .map(|s| s.to_string())
             .collect();
         let reg = agent.tool_registry_mut();
-        tools::subagent::register_subagent_tools(reg, model_config, tool_names, None);
+        tools::subagent::register_subagent_tools(
+            reg,
+            model_config,
+            tool_names,
+            None,
+            permission_config,
+        );
     }
 
     let agent = Arc::new(tokio::sync::Mutex::new(agent));
@@ -363,11 +371,12 @@ async fn main() -> anyhow::Result<()> {
     // Register todo, skill, task, and subagent tools
     {
         let model_config = agent.current_model_config().clone();
+        let permission_config = agent.config().permissions.clone();
         let reg = agent.tool_registry_mut();
         tools::todo::register_todo_tools(reg, todo_list.clone());
         tools::skill::register_skill_tools(reg, skill_manager.clone());
         let task_board_clone = task_board.clone();
-        tasks::register_task_tools(reg, task_board_clone, model_config);
+        tasks::register_task_tools(reg, task_board_clone, model_config, permission_config);
     }
 
     // Session manager — create before tool registration for subagent sessions
@@ -380,6 +389,7 @@ async fn main() -> anyhow::Result<()> {
     // Register subagent tool (needs model config + tool names + session_mgr)
     {
         let model_config = agent.current_model_config().clone();
+        let permission_config = agent.config().permissions.clone();
         let tool_names: Vec<String> = agent
             .tool_registry()
             .list_names()
@@ -392,6 +402,7 @@ async fn main() -> anyhow::Result<()> {
             model_config,
             tool_names,
             Some(session_mgr.clone()),
+            permission_config,
         );
     }
 

@@ -1,8 +1,8 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import { useSelector, useDispatch } from 'react-redux';
-import { invoke } from '@tauri-apps/api/core';
+import { useSelector } from 'react-redux';
 import { RootState } from '../../store';
-import { setDefaultModel, saveConfig } from '../../features/settings/settingsSlice';
+import { switchModel } from '../../features/settings/settingsSlice';
+import { useAppDispatch } from '../../hooks/useAppDispatch';
 import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
 import SearchIcon from 'lucide-react/dist/esm/icons/search.mjs';
 import StarIcon from 'lucide-react/dist/esm/icons/star.mjs';
@@ -21,7 +21,7 @@ export function ModelSelector({
   currentModel: string;
   onModelChange?: (key: string) => void;
 }) {
-  const dispatch = useDispatch();
+  const dispatch = useAppDispatch();
   const configFromStore = useSelector((state: RootState) => state.settings.config);
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
@@ -29,7 +29,6 @@ export function ModelSelector({
   const searchInputRef = useRef<HTMLInputElement>(null);
   const saving = useSelector((state: RootState) => state.settings.saving);
 
-  // Close on outside click
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
@@ -42,14 +41,12 @@ export function ModelSelector({
     return () => document.removeEventListener('mousedown', handler);
   }, [open]);
 
-  // Focus search on open
   useEffect(() => {
     if (open && searchInputRef.current) {
       searchInputRef.current.focus();
     }
   }, [open]);
 
-  // Group models by provider
   const groupedModels = useMemo(() => {
     const config = configFromStore;
     if (!config) return new Map<string, ModelItem[]>();
@@ -76,42 +73,34 @@ export function ModelSelector({
     const q = search.toLowerCase();
     const result = new Map<string, ModelItem[]>();
     groupedModels.forEach((models, provider) => {
-      const matched = models.filter(
-        (m) => m.displayName.toLowerCase().includes(q)
-      );
+      const matched = models.filter((m) => m.displayName.toLowerCase().includes(q));
       if (matched.length > 0) result.set(provider, matched);
     });
     return result;
   }, [groupedModels, search]);
 
-  const handleSelect = useCallback(async (key: string) => {
-    dispatch(setDefaultModel(key));
-    onModelChange?.(key);
-    setOpen(false);
-    setSearch('');
-    // Save to config.toml with updated default_model
-    if (configFromStore) {
-      dispatch(saveConfig({ ...configFromStore, default_model: key }) as any);
-    }
-    // Tell the backend agent to switch models
-    try {
-      await invoke('switch_model', { name: key });
-    } catch (e) {
-      console.error('Failed to switch model:', e);
-    }
-  }, [dispatch, configFromStore, onModelChange]);
+  const handleSelect = useCallback(
+    async (key: string) => {
+      setOpen(false);
+      setSearch('');
+      onModelChange?.(key);
+      if (configFromStore) {
+        dispatch(switchModel({ modelKey: key, currentConfig: configFromStore }));
+      }
+    },
+    [dispatch, configFromStore, onModelChange]
+  );
 
   const config = configFromStore;
 
-  const currentKey = currentModel || (config?.default_model || '');
-  const currentDisplay = currentKey.includes('/') ? currentKey.slice(currentKey.lastIndexOf('/') + 1) : (currentKey || 'Select model');
+  const currentKey = currentModel || config?.default_model || '';
+  const currentDisplay = currentKey.includes('/')
+    ? currentKey.slice(currentKey.lastIndexOf('/') + 1)
+    : currentKey || 'Select model';
 
   return (
     <div className="model-selector-wrapper" ref={dropdownRef}>
-      <button
-        className="model-selector"
-        onClick={() => setOpen(!open)}
-      >
+      <button className="model-selector" onClick={() => setOpen(!open)}>
         <span className="model-selector-text">
           <span className="model-selector-name">{currentDisplay}</span>
         </span>
@@ -132,9 +121,7 @@ export function ModelSelector({
           </div>
 
           <div className="model-dropdown-list">
-            {filteredGroups.size === 0 && (
-              <div className="model-dropdown-empty">No models found</div>
-            )}
+            {filteredGroups.size === 0 && <div className="model-dropdown-empty">No models found</div>}
 
             {Array.from(filteredGroups.entries()).map(([provider, models]) => (
               <div key={provider} className="model-dropdown-group">
@@ -149,9 +136,7 @@ export function ModelSelector({
                     onClick={() => handleSelect(model.key)}
                   >
                     <span className="model-dropdown-item-key">{model.displayName}</span>
-                    {model.key === currentKey && (
-                      <StarIcon size={12} className="model-dropdown-item-star" />
-                    )}
+                    {model.key === currentKey && <StarIcon size={12} className="model-dropdown-item-star" />}
                   </button>
                 ))}
               </div>

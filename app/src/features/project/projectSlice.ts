@@ -36,7 +36,7 @@ export interface FrontendMessage {
 export interface EventLogEntry {
   turn_index: number;
   event_type: string;
-  payload: any;
+  payload: unknown;
   started_at: string | null;
   ended_at: string | null;
 }
@@ -77,7 +77,7 @@ const initialState: ProjectState = {
 
 export const fetchProjects = createAsyncThunk('project/fetchProjects', async (_, { rejectWithValue }) => {
   try {
-    const raw = await invoke<any[]>('list_projects');
+    const raw = await invoke<Record<string, unknown>[]>('list_projects');
     return raw.map(normalizeProject);
   } catch (e) {
     return rejectWithValue(String(e));
@@ -86,7 +86,7 @@ export const fetchProjects = createAsyncThunk('project/fetchProjects', async (_,
 
 export const createProject = createAsyncThunk('project/createProject', async (path: string, { rejectWithValue }) => {
   try {
-    const raw = await invoke<any>('create_project', { path });
+    const raw = await invoke<Record<string, unknown>>('create_project', { path });
     return normalizeProject(raw);
   } catch (e) {
     return rejectWithValue(String(e));
@@ -116,7 +116,7 @@ export const renameProject = createAsyncThunk(
 
 export const fetchProjectSessions = createAsyncThunk('project/fetchProjectSessions', async (projectId: string, { rejectWithValue }) => {
   try {
-    const raw = await invoke<any[]>('get_project_sessions', { projectId });
+    const raw = await invoke<Record<string, unknown>[]>('get_project_sessions', { projectId });
     return { projectId, sessions: raw.map(normalizeSession) };
   } catch (e) {
     return rejectWithValue(String(e));
@@ -129,7 +129,7 @@ export const createSession = createAsyncThunk(
   'project/createSession',
   async (projectId: string, { rejectWithValue }) => {
     try {
-      const raw = await invoke<any>('create_session', { projectId });
+      const raw = await invoke<Record<string, unknown>>('create_session', { projectId });
       return { projectId, session: normalizeSession(raw) };
     } catch (e) {
       return rejectWithValue(String(e));
@@ -170,7 +170,7 @@ export const saveSessionMessages = createAsyncThunk(
     modelUsed: string;
     processTimeMs?: number;
     thoughtTimeMs?: number;
-    eventLog?: any[];
+    eventLog?: unknown[];
   }, { rejectWithValue }) => {
     try {
       await invoke('save_session_messages', {
@@ -182,7 +182,7 @@ export const saveSessionMessages = createAsyncThunk(
         thoughtTimeMs: thoughtTimeMs ?? null,
         eventLogJson: eventLog ? JSON.stringify(eventLog) : null,
       });
-      return { sessionId };
+      return { sessionId, messageCount: messages.length };
     } catch (e) {
       return rejectWithValue(String(e));
     }
@@ -203,34 +203,34 @@ export const resumeSession = createAsyncThunk(
 
 // ── Normalizers ──────────────────────────────────────────────────────
 
-function normalizeProject(raw: any): Project {
+function normalizeProject(raw: Record<string, unknown>): Project {
   return {
-    id: raw?.id ?? '',
-    name: raw?.name ?? '',
-    path: raw?.path ?? '',
-    created_at: raw?.created_at ?? '',
-    updated_at: raw?.updated_at ?? '',
+    id: (raw.id as string) ?? '',
+    name: (raw.name as string) ?? '',
+    path: (raw.path as string) ?? '',
+    created_at: (raw.created_at as string) ?? '',
+    updated_at: (raw.updated_at as string) ?? '',
   };
 }
 
-function normalizeSession(raw: any): SessionMeta {
+function normalizeSession(raw: Record<string, unknown>): SessionMeta {
   return {
-    id: raw?.id ?? '',
-    title: raw?.title ?? '',
-    summary: raw?.summary ?? '',
-    start_time: raw?.start_time ?? '',
-    end_time: raw?.end_time ?? null,
-    message_count: raw?.message_count ?? 0,
-    cwd: raw?.cwd ?? '',
-    model_used: raw?.model_used ?? '',
-    tags: raw?.tags ?? [],
-    archived: raw?.archived ?? false,
-    parent_session_id: raw?.parent_session_id ?? null,
-    session_type: raw?.session_type ?? 'main',
-    process_time_ms: raw?.process_time_ms ?? 0,
-    thought_time_ms: raw?.thought_time_ms ?? 0,
-    created_at: raw?.created_at ?? '',
-    updated_at: raw?.updated_at ?? '',
+    id: (raw.id as string) ?? '',
+    title: (raw.title as string) ?? '',
+    summary: (raw.summary as string) ?? '',
+    start_time: (raw.start_time as string) ?? '',
+    end_time: (raw.end_time as string) ?? null,
+    message_count: (raw.message_count as number) ?? 0,
+    cwd: (raw.cwd as string) ?? '',
+    model_used: (raw.model_used as string) ?? '',
+    tags: (raw.tags as string[]) ?? [],
+    archived: (raw.archived as boolean) ?? false,
+    parent_session_id: (raw.parent_session_id as string) ?? null,
+    session_type: (raw.session_type as string) ?? 'main',
+    process_time_ms: (raw.process_time_ms as number) ?? 0,
+    thought_time_ms: (raw.thought_time_ms as number) ?? 0,
+    created_at: (raw.created_at as string) ?? '',
+    updated_at: (raw.updated_at as string) ?? '',
   };
 }
 
@@ -373,13 +373,11 @@ export const projectSlice = createSlice({
         }
       })
       .addCase(saveSessionMessages.fulfilled, (state, action) => {
-        // Update message count in session list
         const sessionId = action.payload.sessionId;
-        // Find and update count in any project's session list
         for (const [, list] of Object.entries(state.sessions)) {
           const s = list.find((s) => s.id === sessionId);
           if (s) {
-            s.message_count = state.sessionMessages.length;
+            s.message_count = action.payload.messageCount;
             s.updated_at = new Date().toISOString();
             list.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
             break;

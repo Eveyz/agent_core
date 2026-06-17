@@ -53,9 +53,17 @@ impl Subagent {
         config: SubagentConfig,
         model_config: &ModelConfig,
         registry: ToolRegistry,
+        permission_config: crate::permission::PermissionConfig,
     ) -> Self {
         let client = OpenAIClient::new(model_config.clone());
         let context = Context::new(&config.system_prompt, config.max_context_tokens);
+
+        // Inherit the parent's permission posture (mode, sandbox paths,
+        // blacklist, config rules, auto-allow level, persistent whitelist) so a
+        // sandboxed/strict parent cannot spawn a less-strict subagent. The
+        // subagent gets a fresh runtime whitelist for its own approvals.
+        let permission_policy = crate::permission::PermissionPolicy::with_builtin_defaults()
+            .with_config(&permission_config);
 
         Self {
             id: uuid::Uuid::new_v4().to_string(),
@@ -64,7 +72,7 @@ impl Subagent {
             client,
             context,
             registry,
-            permission_policy: crate::permission::PermissionPolicy::with_builtin_defaults(),
+            permission_policy,
             hook_registry: crate::hooks::HookRegistry::new(),
         }
     }
@@ -184,7 +192,25 @@ impl Subagent {
                 }).await
             };
 
+            // The orchestrator emits SubagentToolStart during execution, but —
+            // like the top-level agent — the caller is responsible for emitting
+            // the matching SubagentToolEnd once results are in. Without this,
+            // the UI tool block never flips out of its "active" (spinning)
+            // state. (executor::execute_tools does not emit ToolExecutionEnd
+            // itself; it is emitted by the caller, mirroring agent/mod.rs.)
             for (call, result) in tool_calls.iter().zip(&results) {
+                let is_error = result.starts_with("Error")
+                    || result.starts_with("Permission denied")
+                    || result.starts_with("Hook vetoed");
+                if let Some(ref tx) = event_sender {
+                    let _ = tx.send(AgentEvent::SubagentToolEnd {
+                        subagent_id: self.id.clone(),
+                        tool_call_id: call.id.clone(),
+                        tool_name: call.function.name.clone(),
+                        result: result.clone(),
+                        is_error,
+                    });
+                }
                 self.context
                     .add(Message::tool(call.id.clone(), result.clone()));
             }

@@ -1,5 +1,5 @@
 import { memo, useState, useCallback, useRef, useEffect } from 'react';
-import { useDispatch, useSelector } from 'react-redux';
+import { useSelector, useStore } from 'react-redux';
 import { open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { RootState } from '../../store';
@@ -10,6 +10,7 @@ import {
   saveSessionMessages,
 } from '../../features/project/projectSlice';
 import { clearChat, cacheCurrentSession, restoreOrClearSession, entriesToMessages, entriesToEventLog } from '../../features/chat/chatSlice';
+import { useAppDispatch } from '../../hooks/useAppDispatch';
 import PlusIcon from 'lucide-react/dist/esm/icons/plus.mjs';
 import LayoutGridIcon from 'lucide-react/dist/esm/icons/layout-grid.mjs';
 import MessageSquareIcon from 'lucide-react/dist/esm/icons/message-square.mjs';
@@ -124,13 +125,12 @@ export const Sidebar = memo(function Sidebar({
   onTabChange: (tab: 'code' | 'write') => void;
   onOpenSettings: () => void;
 }) {
-  const dispatch = useDispatch();
+  const dispatch = useAppDispatch();
+  const store = useStore<RootState>();
   const projects = useSelector((state: RootState) => state.project.projects);
   const sessions = useSelector((state: RootState) => state.project.sessions);
   const activeProjectId = useSelector((state: RootState) => state.project.activeProjectId);
   const activeSessionId = useSelector((state: RootState) => state.project.activeSessionId);
-  const chatEntries = useSelector((state: RootState) => state.chat.entries);
-  const resumedFromBackend = useSelector((state: RootState) => state.chat._resumedFromBackend);
   const defaultModel = useSelector((state: RootState) => state.settings.config?.default_model || '');
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [creatingSession, setCreatingSession] = useState(false);
@@ -146,7 +146,7 @@ export const Sidebar = memo(function Sidebar({
         next.add(activeProjectId);
         return next;
       });
-      dispatch(fetchProjectSessions(activeProjectId) as any);
+      dispatch(fetchProjectSessions(activeProjectId));
     }
   }, [activeProjectId, dispatch]);
 
@@ -161,37 +161,38 @@ export const Sidebar = memo(function Sidebar({
       return next;
     });
     // We can optimistically fetch sessions when toggled.
-    dispatch(fetchProjectSessions(projectId) as any);
+    dispatch(fetchProjectSessions(projectId));
   }, [dispatch]);
 
   const handleOpenFolder = useCallback(async () => {
     const selected = await open({ directory: true, multiple: false });
     if (selected && typeof selected === 'string') {
-      dispatch(createProject(selected) as any);
+      dispatch(createProject(selected));
     }
   }, [dispatch]);
 
   const handleDeleteProject = useCallback((projectId: string) => {
     if (confirm('Delete this project and all its sessions?')) {
-      dispatch(deleteProject(projectId) as any);
+      dispatch(deleteProject(projectId));
     }
   }, [dispatch]);
 
   const handleRenameProject = useCallback((projectId: string, newName: string) => {
     const name = prompt('New name:', newName);
-    if (name?.trim()) dispatch(renameProject({ projectId, newName: name.trim() }) as any);
+    if (name?.trim()) dispatch(renameProject({ projectId, newName: name.trim() }));
   }, [dispatch]);
 
 
 
   // Save current session to backend + memory cache
   const saveAndCacheCurrent = useCallback(() => {
-    if (!activeSessionId || !activeProjectId || resumedFromBackend) return;
-    const msgs = entriesToMessages(chatEntries);
+    const chatState = store.getState().chat;
+    if (!activeSessionId || !activeProjectId || chatState._resumedFromBackend) return;
+    const msgs = entriesToMessages(chatState.entries);
     if (msgs.length > 0) {
       const project = projects.find((p) => p.id === activeProjectId);
       if (project) {
-        const { eventLog, processTimeMs, thoughtTimeMs } = entriesToEventLog(chatEntries);
+        const { eventLog, processTimeMs, thoughtTimeMs } = entriesToEventLog(chatState.entries);
         dispatch(saveSessionMessages({
           sessionId: activeSessionId,
           messages: msgs,
@@ -200,11 +201,11 @@ export const Sidebar = memo(function Sidebar({
           processTimeMs: processTimeMs || undefined,
           thoughtTimeMs: thoughtTimeMs || undefined,
           eventLog,
-        }) as any);
+        }));
       }
     }
     dispatch(cacheCurrentSession(activeSessionId));
-  }, [dispatch, activeSessionId, activeProjectId, chatEntries, projects, defaultModel, resumedFromBackend]);
+  }, [dispatch, store, activeSessionId, activeProjectId, projects, defaultModel]);
 
   const handleNewSession = useCallback(async (projectId: string) => {
     if (creatingSession) return;
@@ -212,7 +213,7 @@ export const Sidebar = memo(function Sidebar({
     try {
       saveAndCacheCurrent();
       dispatch(setActiveProject(projectId));
-      await dispatch(createSession(projectId) as any);
+      await dispatch(createSession(projectId));
       dispatch(clearChat());
     } finally {
       setCreatingSession(false);
@@ -220,19 +221,18 @@ export const Sidebar = memo(function Sidebar({
   }, [dispatch, creatingSession, saveAndCacheCurrent]);
 
   const handleSelectSession = useCallback((sessionId: string, projectId: string) => {
-    console.log('[handleSelectSession]', { sessionId, projectId, activeSessionId });
     if (activeSessionId && activeSessionId !== sessionId) {
       saveAndCacheCurrent();
     }
     dispatch(setActiveProject(projectId));
     dispatch(setActiveSession(sessionId));
     dispatch(restoreOrClearSession(sessionId));
-    dispatch(resumeSession(sessionId) as any);
+    dispatch(resumeSession(sessionId));
   }, [dispatch, activeSessionId, saveAndCacheCurrent]);
 
   const handleDeleteSession = useCallback((sessionId: string, projectId: string) => {
     if (confirm('Delete this session?')) {
-      dispatch(deleteSession({ sessionId, projectId }) as any);
+      dispatch(deleteSession({ sessionId, projectId }));
     }
   }, [dispatch]);
 

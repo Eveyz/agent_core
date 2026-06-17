@@ -42,24 +42,24 @@ impl<'a> ToolOrchestrator<'a> {
             let args: Value = serde_json::from_str(&call.function.arguments).unwrap_or_default();
 
             // Permission check — layered: Deny → Ask(with approval) → Allow
-            let decision = {
-                // Extract command/path for fine-grained matching
-                let command = args.get("command").and_then(|v| v.as_str());
-                let path = args
-                    .get("path")
-                    .or(args.get("file_path"))
-                    .or(args.get("file"))
-                    .and_then(|v| v.as_str());
-                let host = args.get("url").or(args.get("host")).and_then(|v| v.as_str());
+            // Extract command/path/host for fine-grained matching; these are
+            // also reused below to scope any approval the user grants, so that
+            // e.g. allowing one `bash` command does not allow every command.
+            let command = args.get("command").and_then(|v| v.as_str());
+            let path = args
+                .get("path")
+                .or(args.get("file_path"))
+                .or(args.get("file"))
+                .and_then(|v| v.as_str());
+            let host = args.get("url").or(args.get("host")).and_then(|v| v.as_str());
 
-                self.permission_policy.check(
-                    &call.function.name,
-                    &call.function.arguments,
-                    command,
-                    path,
-                    host,
-                )
-            };
+            let decision = self.permission_policy.check(
+                &call.function.name,
+                &call.function.arguments,
+                command,
+                path,
+                host,
+            );
 
             match decision {
                 PermissionDecision::Deny(reason) => {
@@ -98,8 +98,11 @@ impl<'a> ToolOrchestrator<'a> {
                                     if matches!(choice, ApprovalChoice::DenyPersistent) {
                                         self.permission_policy.add_rule(
                                             crate::permission::ConfigRule {
-                                                pattern: ToolPermissionPattern::simple(
+                                                pattern: scoped_pattern(
                                                     &call.function.name,
+                                                    command,
+                                                    path,
+                                                    host,
                                                 ),
                                                 level: crate::permission::ApprovalLevel::Deny,
                                             },
@@ -114,8 +117,11 @@ impl<'a> ToolOrchestrator<'a> {
                                     // Add to session whitelist
                                     self.permission_policy.whitelist_mut().add(
                                         WhitelistEntry::new(
-                                            ToolPermissionPattern::simple(
+                                            scoped_pattern(
                                                 &call.function.name,
+                                                command,
+                                                path,
+                                                host,
                                             ),
                                             ApprovalScope::Session,
                                         ),
@@ -132,8 +138,11 @@ impl<'a> ToolOrchestrator<'a> {
                                     };
                                     self.permission_policy.whitelist_mut().add(
                                         WhitelistEntry::new(
-                                            ToolPermissionPattern::simple(
+                                            scoped_pattern(
                                                 &call.function.name,
+                                                command,
+                                                path,
+                                                host,
                                             ),
                                             ApprovalScope::Duration(dur_str),
                                         ),
@@ -142,8 +151,11 @@ impl<'a> ToolOrchestrator<'a> {
                                 ApprovalChoice::AllowPersistent => {
                                     self.permission_policy.whitelist_mut().add(
                                         WhitelistEntry::new(
-                                            ToolPermissionPattern::simple(
+                                            scoped_pattern(
                                                 &call.function.name,
+                                                command,
+                                                path,
+                                                host,
                                             ),
                                             ApprovalScope::Persistent,
                                         ),
@@ -335,4 +347,29 @@ impl<'a> ToolOrchestrator<'a> {
             Err(e) => format!("Error executing tool '{}': {}", tool_name, e),
         }
     }
+}
+
+/// Build a `ToolPermissionPattern` for an approval that is scoped to the exact
+/// invocation the user approved — the `command` (bash), `path` (file tools),
+/// and `host` (network) — rather than the bare tool name.
+///
+/// Without this, approving a single `bash` call would whitelist every `bash`
+/// command for the rest of the session (including `rm -rf ~`).
+fn scoped_pattern(
+    tool_name: &str,
+    command: Option<&str>,
+    path: Option<&str>,
+    host: Option<&str>,
+) -> ToolPermissionPattern {
+    let mut pattern = ToolPermissionPattern::simple(tool_name);
+    if let Some(cmd) = command {
+        pattern = pattern.with_commands(vec![cmd.to_string()]);
+    }
+    if let Some(p) = path {
+        pattern = pattern.with_paths(vec![p.to_string()]);
+    }
+    if let Some(h) = host {
+        pattern = pattern.with_hosts(vec![h.to_string()]);
+    }
+    pattern
 }
