@@ -62,11 +62,16 @@ pub fn default_rules_with_danger() -> Vec<(ToolPermissionPattern, DangerLevel, A
             DangerLevel::ReadWrite,
             ApprovalLevel::Ask,
         ),
-        // ── Network ──────────────────────────────────────────────────
+        // ── Network (read-only fetch — safe to auto-approve) ─────────
         (
             ToolPermissionPattern::simple("webfetch"),
             DangerLevel::Network,
-            ApprovalLevel::Ask,
+            ApprovalLevel::Allow,
+        ),
+        (
+            ToolPermissionPattern::simple("tavily_search"),
+            DangerLevel::Network,
+            ApprovalLevel::Allow,
         ),
         // ── Shell commands ───────────────────────────────────────────
         // Destructive shell commands are denied programmatically in
@@ -191,7 +196,12 @@ pub fn default_rules() -> Vec<super::PermissionRule> {
         super::PermissionRule {
             tool_pattern: "webfetch".to_string(),
             action_pattern: None,
-            level: ApprovalLevel::Ask,
+            level: ApprovalLevel::Allow,
+        },
+        super::PermissionRule {
+            tool_pattern: "tavily_search".to_string(),
+            action_pattern: None,
+            level: ApprovalLevel::Allow,
         },
         super::PermissionRule {
             tool_pattern: "bash".to_string(),

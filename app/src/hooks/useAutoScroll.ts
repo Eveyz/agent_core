@@ -1,7 +1,13 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useCallback } from 'react';
 
 export function useAutoScroll<T extends HTMLElement>() {
   const ref = useRef<T | null>(null);
+
+  const scrollToBottom = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, []);
 
   useEffect(() => {
     const el = ref.current;
@@ -18,5 +24,5 @@ export function useAutoScroll<T extends HTMLElement>() {
     return () => observer.disconnect();
   }, []);
 
-  return ref;
+  return { ref, scrollToBottom };
 }

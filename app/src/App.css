@@ -826,6 +826,31 @@ body {
 .status-approved { color: #22c55e; }
 .status-denied { color: #ef4444; }
 
+.approval-block.approval-resolved {
+  padding: 8px 12px;
+  margin: 4px 0;
+  opacity: 0.85;
+}
+
+.approval-block.approval-resolved .approval-header {
+  margin-bottom: 0;
+  gap: 8px;
+}
+
+.approval-status-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 500;
+  margin-left: auto;
+}
+.approval-status-badge.status-approved {
+  background: rgba(34, 197, 94, 0.15);
+}
+.approval-status-badge.status-denied {
+  background: rgba(239, 68, 68, 0.15);
+}
+
 .tool-block {
   border-left: 2px solid var(--text-dim);
   padding-left: 12px;

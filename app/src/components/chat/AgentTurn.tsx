@@ -157,18 +157,49 @@ interface ApprovalBlock {
   status?: 'pending' | 'approved' | 'denied';
 }
 
+const APPROVAL_LABELS: Record<string, string> = {
+  deny: 'Denied (once)',
+  deny_persistent: 'Denied (always)',
+  allow_once: 'Allowed (once)',
+  allow_session: 'Allowed (session)',
+  allow_persistent: 'Allowed (always)',
+};
+
 const ApprovalBlockUI = memo(function ApprovalBlockUI({ block }: { block: ApprovalBlock }) {
   const dispatch = useAppDispatch();
+  const [chosenAction, setChosenAction] = useState<string | null>(null);
 
   const promptId = block.prompt_id ?? '';
   const handleApprove = async (choice: string) => {
-    dispatch(toolApprovalResponded({ promptId, approved: choice !== 'deny' }));
+    setChosenAction(choice);
+    dispatch(toolApprovalResponded({ promptId, approved: !choice.startsWith('deny') }));
     try {
       await invoke('approve_tool', { promptId, choice });
     } catch (e) {
       console.error('Failed to approve tool', e);
     }
   };
+
+  const isResolved = block.status === 'approved' || block.status === 'denied';
+  const statusLabel = chosenAction
+    ? APPROVAL_LABELS[chosenAction] ?? (block.status === 'approved' ? 'Approved' : 'Denied')
+    : block.status === 'approved' ? 'Approved' : block.status === 'denied' ? 'Denied' : '';
+
+  if (isResolved) {
+    return (
+      <div className="approval-block approval-resolved">
+        <div className="approval-header">
+          <span className="approval-title">{block.tool_name}</span>
+          {block.danger_level ? (
+            <span className={`danger-badge danger-${block.danger_level}`}>{block.danger_level}</span>
+          ) : null}
+          <span className={`approval-status-badge ${block.status === 'approved' ? 'status-approved' : 'status-denied'}`}>
+            {statusLabel}
+          </span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="approval-block">
@@ -182,21 +213,13 @@ const ApprovalBlockUI = memo(function ApprovalBlockUI({ block }: { block: Approv
       <div className="approval-args">
         <pre>{typeof block.tool_input === 'string' ? block.tool_input : JSON.stringify(block.tool_input, null, 2)}</pre>
       </div>
-      {block.status === 'pending' ? (
-        <div className="approval-actions" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-          <button className="btn-deny" onClick={() => handleApprove('deny')}>Deny Once</button>
-          <button className="btn-deny" onClick={() => handleApprove('deny_persistent')}>Deny Always</button>
-          <button className="btn-allow" onClick={() => handleApprove('allow_once')}>Allow Once</button>
-          <button className="btn-allow" onClick={() => handleApprove('allow_session')}>Allow Session</button>
-          <button className="btn-allow" onClick={() => handleApprove('allow_persistent')}>Always Allow</button>
-        </div>
-      ) : (
-        <div className="approval-status">
-          <span className={block.status === 'approved' ? 'status-approved' : 'status-denied'}>
-            {block.status === 'approved' ? 'Approved' : 'Denied'}
-          </span>
-        </div>
-      )}
+      <div className="approval-actions" style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+        <button className="btn-deny" onClick={() => handleApprove('deny')}>Deny Once</button>
+        <button className="btn-deny" onClick={() => handleApprove('deny_persistent')}>Deny Always</button>
+        <button className="btn-allow" onClick={() => handleApprove('allow_once')}>Allow Once</button>
+        <button className="btn-allow" onClick={() => handleApprove('allow_session')}>Allow Session</button>
+        <button className="btn-allow" onClick={() => handleApprove('allow_persistent')}>Always Allow</button>
+      </div>
     </div>
   );
 });
@@ -412,7 +435,7 @@ export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: ChatEnt
           );
         } else if (b.type === 'tool') {
           const name = typeof b.name === 'string' ? b.name : JSON.stringify(b.name);
-          if (name === 'invoke_subagent' || name === 'subagent') {
+          if (name === 'invoke_subagent' || name === 'subagent' || name === 'subagents') {
             return null;
           }
           const result = typeof b.result === 'string' ? b.result : JSON.stringify(b.result);

@@ -748,6 +748,26 @@ export function selectEntryById(state: { chat: ChatState }, entryId: string): Ch
   return map[entryId];
 }
 
+export function selectPendingApprovalCount(state: { chat: ChatState }): number {
+  let count = 0;
+  for (const entry of state.chat.entries) {
+    if (entry.type !== 'turn') continue;
+    if (entry.blocks) {
+      for (const b of entry.blocks) {
+        if (b.type === 'approval' && b.status === 'pending') count++;
+      }
+    }
+    if (entry.subagents) {
+      for (const sa of Object.values(entry.subagents)) {
+        for (const b of sa.blocks) {
+          if (b.type === 'approval' && b.status === 'pending') count++;
+        }
+      }
+    }
+  }
+  return count;
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────
 
 export function entriesToMessages(entries: ChatEntry[]): import('../project/projectSlice').FrontendMessage[] {

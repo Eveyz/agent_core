@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, memo } from 'react';
+import { useState, useEffect, useCallback, memo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useSelector, useStore, shallowEqual } from 'react-redux';
 import PencilIcon from 'lucide-react/dist/esm/icons/pencil.mjs';
@@ -15,6 +15,7 @@ import {
   userMessageSent,
   retryFromEntry,
   selectEntryById,
+  selectPendingApprovalCount,
 } from './features/chat/chatSlice';
 import { openSettings, fetchConfig } from './features/settings/settingsSlice';
 import {
@@ -62,7 +63,7 @@ function App() {
   const activeProject = projects.find((p) => p.id === activeProjectId);
   const [activeTab, setActiveTab] = useState<'code' | 'write'>('code');
 
-  const scrollRef = useAutoScroll<HTMLDivElement>();
+  const { ref: scrollRef, scrollToBottom } = useAutoScroll<HTMLDivElement>();
 
   useAgentEventListener();
 
@@ -71,6 +72,16 @@ function App() {
     activeProjectPath: activeProject?.path ?? null,
     defaultModel,
   });
+
+  // Track pending approvals — scroll to bottom when a new one appears
+  const pendingApprovalCount = useSelector(selectPendingApprovalCount);
+  const prevPendingRef = useRef(0);
+  useEffect(() => {
+    if (pendingApprovalCount > prevPendingRef.current) {
+      scrollToBottom();
+    }
+    prevPendingRef.current = pendingApprovalCount;
+  }, [pendingApprovalCount, scrollToBottom]);
 
   useEffect(() => {
     dispatch(fetchConfig());
@@ -112,6 +123,7 @@ function App() {
       }
 
       dispatch(userMessageSent(msg));
+      scrollToBottom();
 
       const shouldRename = isNewSession || sessionTitle === 'New Session' || sessionTitle === '';
       if (shouldRename && sessionId && activeProjectId) {
@@ -126,7 +138,7 @@ function App() {
         dispatch(agentEventReceived({ Error: String(e) }));
       }
     },
-    [dispatch, activeProjectId, activeSessionId, sessionTitle]
+    [dispatch, activeProjectId, activeSessionId, sessionTitle, scrollToBottom]
   );
 
   const handleRetry = useCallback(
@@ -138,6 +150,7 @@ function App() {
       if (!msg.trim() || !activeSessionId) return;
 
       dispatch(retryFromEntry(entryId));
+      scrollToBottom();
 
       try {
         await invoke('send_message', { message: msg, sessionId: activeSessionId });

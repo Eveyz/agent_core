@@ -530,7 +530,7 @@ impl PermissionPolicy {
 
         // Fallback heuristics
         match tool_name {
-            "webfetch" => DangerLevel::Network,
+            "webfetch" | "tavily_search" => DangerLevel::Network,
             "write_file" | "edit" => DangerLevel::ReadWrite,
             _ => DangerLevel::ReadOnly,
         }
