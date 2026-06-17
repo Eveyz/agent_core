@@ -4,25 +4,34 @@ import { resumeSession } from '../project/projectSlice';
 export type TurnBlock =
   | { type: 'assistant'; text: string; isStreaming: boolean }
   | { type: 'thinking'; text: string; isStreaming: boolean; startTime?: number; endTime?: number }
-  | { type: 'tool'; call_id: string; name: string; result: string; active: boolean; is_error: boolean }
+  | { type: 'tool'; call_id: string; name: string; args?: any; result: string; active: boolean; is_error: boolean }
   | { type: 'approval'; prompt_id: string; tool_name: string; tool_input: any; danger_level: string; explanation: string; status: 'pending' | 'approved' | 'denied' }
-  | { type: 'error'; text: string };
+  | { type: 'error'; text: string }
+  | { type: 'subagent_ref'; subagent_id: string };
 
 export interface SubagentBlock {
-  type: 'assistant' | 'thinking' | 'tool' | 'error';
+  type: 'assistant' | 'thinking' | 'tool' | 'approval' | 'error';
   text?: string;
   isStreaming?: boolean;
   startTime?: number;
   endTime?: number;
   call_id?: string;
   name?: string;
+  args?: any;
   result?: string;
   active?: boolean;
   is_error?: boolean;
+  prompt_id?: string;
+  tool_name?: string;
+  tool_input?: any;
+  danger_level?: string;
+  explanation?: string;
+  status?: 'pending' | 'approved' | 'denied';
 }
 
 export interface SubagentEntry {
   id: string;
+  role_name?: string;
   task: string;
   status: 'working' | 'done' | 'error';
   iterations_used?: number;
@@ -68,11 +77,12 @@ function getActiveTurn(state: ChatState): ChatEntry | undefined {
   return undefined;
 }
 
-function getOrCreateSubagent(entry: ChatEntry, subagentId: string, task: string): SubagentEntry {
+function getOrCreateSubagent(entry: ChatEntry, subagentId: string, roleName: string, task: string): SubagentEntry {
   if (!entry.subagents) entry.subagents = {};
   if (!entry.subagents[subagentId]) {
     entry.subagents[subagentId] = {
       id: subagentId,
+      role_name: roleName,
       task,
       status: 'working',
       blocks: [],
@@ -203,7 +213,8 @@ export const chatSlice = createSlice({
              type: 'tool',
              call_id: tool_call_id,
              name: tool_name,
-             result: `Executing ${tool_name} with ${JSON.stringify(args)}...\n`,
+             args: args,
+             result: '',
              active: true,
              is_error: false
            });
@@ -223,7 +234,11 @@ export const chatSlice = createSlice({
          if (lastEntry && lastEntry.type === 'turn' && lastEntry.blocks) {
             const block = lastEntry.blocks.find(b => b.type === 'tool' && b.call_id === tool_call_id);
             if (block && block.type === 'tool') {
-              block.result = typeof result === 'string' ? result : JSON.stringify(result);
+              let finalResult = typeof result === 'string' ? result : JSON.stringify(result);
+              if (finalResult.length > 5000) {
+                 finalResult = finalResult.substring(0, 5000) + `\n\n... [Truncated ${finalResult.length - 5000} characters for performance]`;
+              }
+              block.result = finalResult;
               block.active = false;
               block.is_error = is_error;
             }
@@ -275,14 +290,18 @@ export const chatSlice = createSlice({
 
       // ── Subagent events ──
       else if (event.SubagentStart) {
-        const { subagent_id, task } = event.SubagentStart;
+        const { subagent_id, role_name, task } = event.SubagentStart;
         if (typeof task !== 'string') {
           console.warn('[SubagentStart] task is not a string:', task, 'event:', event.SubagentStart);
         }
         const safeTask = typeof task === 'string' ? task : JSON.stringify(task);
+        const safeRoleName = typeof role_name === 'string' ? role_name : String(subagent_id);
         const turn = getActiveTurn(state);
         if (turn) {
-          getOrCreateSubagent(turn, subagent_id, safeTask);
+          getOrCreateSubagent(turn, subagent_id, safeRoleName, safeTask);
+          if (turn.blocks) {
+            turn.blocks.push({ type: 'subagent_ref', subagent_id });
+          }
         }
       } else if (event.SubagentMessageUpdate) {
         const { subagent_id, delta } = event.SubagentMessageUpdate;
@@ -324,7 +343,8 @@ export const chatSlice = createSlice({
             type: 'tool',
             call_id: tool_call_id,
             name: tool_name,
-            result: `Executing ${tool_name} with ${JSON.stringify(args)}...\n`,
+            args: args,
+            result: '',
             active: true,
             is_error: false,
           });
@@ -336,10 +356,34 @@ export const chatSlice = createSlice({
           const sa = turn.subagents[subagent_id];
           const block = sa.blocks.find(b => b.type === 'tool' && b.call_id === tool_call_id);
           if (block && block.type === 'tool') {
-            block.result = typeof result === 'string' ? result : JSON.stringify(result);
+            let finalResult = typeof result === 'string' ? result : JSON.stringify(result);
+            if (finalResult.length > 5000) {
+               finalResult = finalResult.substring(0, 5000) + `\n\n... [Truncated ${finalResult.length - 5000} characters for performance]`;
+            }
+            block.result = finalResult;
             block.active = false;
             block.is_error = is_error;
           }
+        }
+      } else if (event.SubagentApprovalRequired) {
+        const { subagent_id, prompt_id, tool_name, tool_input, danger_level, explanation } = event.SubagentApprovalRequired;
+        const turn = getActiveTurn(state);
+        if (turn && turn.subagents && turn.subagents[subagent_id]) {
+          const sa = turn.subagents[subagent_id];
+          const lastBlock = sa.blocks[sa.blocks.length - 1];
+          if (lastBlock && lastBlock.isStreaming) {
+            lastBlock.isStreaming = false;
+            if (lastBlock.type === 'thinking') lastBlock.endTime = Date.now();
+          }
+          sa.blocks.push({
+            type: 'approval',
+            prompt_id,
+            tool_name,
+            tool_input,
+            danger_level,
+            explanation,
+            status: 'pending'
+          });
         }
       } else if (event.SubagentEnd) {
         const { subagent_id, success, iterations_used } = event.SubagentEnd;
@@ -361,10 +405,24 @@ export const chatSlice = createSlice({
     },
     toolApprovalResponded: (state, action: PayloadAction<{ promptId: string; approved: boolean }>) => {
       const lastEntry = state.entries[state.entries.length - 1];
-      if (lastEntry && lastEntry.type === 'turn' && lastEntry.blocks) {
-         const block = lastEntry.blocks.find(b => b.type === 'approval' && b.prompt_id === action.payload.promptId);
-         if (block && block.type === 'approval') {
-           block.status = action.payload.approved ? 'approved' : 'denied';
+      if (lastEntry && lastEntry.type === 'turn') {
+         if (lastEntry.blocks) {
+           const block = lastEntry.blocks.find(b => b.type === 'approval' && b.prompt_id === action.payload.promptId);
+           if (block && block.type === 'approval') {
+             block.status = action.payload.approved ? 'approved' : 'denied';
+             return;
+           }
+         }
+         if (lastEntry.subagents) {
+           for (const sa of Object.values(lastEntry.subagents)) {
+             if (sa.blocks) {
+               const saBlock = sa.blocks.find(b => b.type === 'approval' && b.prompt_id === action.payload.promptId);
+               if (saBlock && saBlock.type === 'approval') {
+                 saBlock.status = action.payload.approved ? 'approved' : 'denied';
+                 return;
+               }
+             }
+           }
          }
       }
     },
@@ -410,22 +468,74 @@ export const chatSlice = createSlice({
           assistantIdx++;
           const blocks: TurnBlock[] = [];
 
-          // Add assistant block
-          blocks.push({ type: 'assistant', text: msg.content, isStreaming: false });
-
-          // Add tool call blocks from event log (defensive: skip if payload is not an object)
+          // Add blocks from event log in their original chronological order
           if (event_log && Array.isArray(event_log)) {
-            const turnEvents = event_log.filter((e: any) => e.turn_index === turnIdx && e.event_type === 'tool_call');
+            const turnEvents = event_log.filter((e: any) => e.turn_index === turnIdx && (e.event_type === 'tool_call' || e.event_type === 'subagent' || e.event_type === 'thinking' || e.event_type === 'assistant'));
             for (const ev of turnEvents) {
               const payload = (ev.payload && typeof ev.payload === 'object' && !Array.isArray(ev.payload)) ? ev.payload : {};
-              blocks.push({
-                type: 'tool',
-                call_id: `restored-${Math.random()}`,
-                name: payload.name ?? 'unknown',
-                result: payload.args_summary ?? '',
-                active: false,
-                is_error: !!payload.is_error,
-              });
+              if (ev.event_type === 'tool_call') {
+                blocks.push({
+                  type: 'tool',
+                  call_id: `restored-${Math.random()}`,
+                  name: payload.name ?? 'unknown',
+                  args: payload.args ?? undefined,
+                  result: payload.args_summary ?? '',
+                  active: false,
+                  is_error: !!payload.is_error,
+                });
+              } else if (ev.event_type === 'subagent') {
+                const subId = payload.id;
+                if (subId) {
+                  blocks.push({
+                    type: 'subagent_ref',
+                    subagent_id: subId,
+                  });
+                }
+              } else if (ev.event_type === 'thinking') {
+                blocks.push({
+                  type: 'thinking',
+                  text: payload.text ?? '',
+                  isStreaming: false,
+                  startTime: payload.startTime,
+                  endTime: payload.endTime,
+                });
+              } else if (ev.event_type === 'assistant') {
+                blocks.push({
+                  type: 'assistant',
+                  text: payload.text ?? '',
+                  isStreaming: false,
+                });
+              }
+            }
+          }
+
+          // Backward compatibility for old sessions:
+          // If no 'assistant' block was restored from event_log, add a single assistant block with msg.content
+          if (!blocks.some(b => b.type === 'assistant')) {
+            blocks.push({ type: 'assistant', text: msg.content, isStreaming: false });
+          }
+
+          let startTime: number | undefined = undefined;
+          let endTime: number | undefined = undefined;
+          if (event_log && Array.isArray(event_log)) {
+            const metaEvent = event_log.find((e: any) => e.turn_index === turnIdx && e.event_type === 'turn_meta');
+            if (metaEvent && metaEvent.payload) {
+              startTime = metaEvent.payload.startTime;
+              endTime = metaEvent.payload.endTime;
+            }
+          }
+
+          let subagents: Record<string, SubagentEntry> | undefined = undefined;
+          if (event_log && Array.isArray(event_log)) {
+            const subEvents = event_log.filter((e: any) => e.turn_index === turnIdx && e.event_type === 'subagent');
+            if (subEvents.length > 0) {
+              subagents = {};
+              for (const ev of subEvents) {
+                const payload = (ev.payload && typeof ev.payload === 'object' && !Array.isArray(ev.payload)) ? ev.payload : {};
+                if (payload.id) {
+                  subagents[payload.id] = payload as SubagentEntry;
+                }
+              }
             }
           }
 
@@ -434,6 +544,9 @@ export const chatSlice = createSlice({
             type: 'turn',
             turnIndex: turnIdx,
             blocks,
+            subagents,
+            startTime,
+            endTime,
           });
         }
       }
@@ -468,4 +581,68 @@ export function entriesToMessages(entries: ChatEntry[]): import('../project/proj
     }
   }
   return msgs;
+}
+
+export function entriesToEventLog(entries: ChatEntry[]): { eventLog: any[], processTimeMs: number, thoughtTimeMs: number } {
+  const eventLog: any[] = [];
+  let processTimeMs = 0;
+  let thoughtTimeMs = 0;
+  let assistantIdx = 0;
+
+  for (const entry of entries) {
+    if (entry.type === 'turn' && entry.blocks) {
+      let assistantText = '';
+      for (const b of entry.blocks) {
+        if (b.type === 'assistant') assistantText += b.text;
+      }
+      if (!assistantText.trim()) continue;
+
+      if (entry.startTime && entry.endTime) {
+        processTimeMs += entry.endTime - entry.startTime;
+      }
+
+      if (entry.startTime || entry.endTime) {
+        eventLog.push({
+          turn_index: assistantIdx,
+          event_type: 'turn_meta',
+          payload: { startTime: entry.startTime, endTime: entry.endTime },
+        });
+      }
+      
+      for (const b of entry.blocks) {
+        if (b.type === 'thinking') {
+          if (b.startTime && b.endTime) thoughtTimeMs += b.endTime - b.startTime;
+          eventLog.push({
+            turn_index: assistantIdx,
+            event_type: 'thinking',
+            payload: { text: b.text, startTime: b.startTime, endTime: b.endTime },
+          });
+        } else if (b.type === 'tool') {
+          eventLog.push({
+            turn_index: assistantIdx,
+            event_type: 'tool_call',
+            payload: { name: b.name, args: b.args, args_summary: b.result?.slice(0, 1000), is_error: b.is_error },
+          });
+        } else if (b.type === 'subagent_ref') {
+          const sa = entry.subagents?.[b.subagent_id];
+          if (sa) {
+            eventLog.push({
+              turn_index: assistantIdx,
+              event_type: 'subagent',
+              payload: sa,
+            });
+          }
+        } else if (b.type === 'assistant') {
+          eventLog.push({
+            turn_index: assistantIdx,
+            event_type: 'assistant',
+            payload: { text: b.text },
+          });
+        }
+      }
+      assistantIdx++;
+    }
+  }
+
+  return { eventLog, processTimeMs, thoughtTimeMs };
 }

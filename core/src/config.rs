@@ -53,6 +53,9 @@ pub struct ModelConfig {
     /// Increase for slow models on weak hardware.
     #[serde(default = "default_request_timeout")]
     pub request_timeout_secs: u64,
+    /// Optional fallback model ID to use if this model fails
+    #[serde(default)]
+    pub fallback_model: Option<String>,
 }
 
 fn default_request_timeout() -> u64 {
@@ -85,6 +88,7 @@ impl Default for ModelConfig {
             system_prompt: None,
             max_iterations: 100,
             request_timeout_secs: 60,
+            fallback_model: None,
         }
     }
 }
@@ -229,6 +233,7 @@ impl Config {
             system_prompt: None,
             max_iterations: 100,
             request_timeout_secs: 60,
+            fallback_model: None,
         });
 
         Ok(Self {
@@ -269,6 +274,7 @@ impl Config {
                     system_prompt: entry.system_prompt.clone().or(provider.system_prompt.clone()),
                     max_iterations: provider.max_iterations,
                     request_timeout_secs: provider.request_timeout_secs,
+                    fallback_model: None,
                 });
             }
         }

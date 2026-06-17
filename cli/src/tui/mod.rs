@@ -49,8 +49,7 @@ async fn run_app(
         let a = agent.lock().await;
         state.model = a.current_model().to_string();
         state.tool_mode = format!("{:?}", a.tool_execution_mode());
-        state.pending_approvals = Some(a.pending_approvals_clone());
-        state.abort_flag = Some(a.abort_flag.clone());
+        state.cancel_token = Some(a.cancel_token.clone());
     }
 
     // ── MPSC channel ──────────────────────────────────────────────
@@ -117,8 +116,8 @@ async fn run_app(
             } else if cmd == "show_model_form" {
                 state.open_model_form();
             } else if cmd == "abort" {
-                if let Some(ref flag) = state.abort_flag {
-                    flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                if let Some(ref token) = state.cancel_token {
+                    token.cancel();
                 }
             } else {
                 let notice = process_command(&mut state, &agent, &cmd).await;

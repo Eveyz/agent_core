@@ -272,7 +272,7 @@ pub fn subagent_block_lines(sa: &SubagentState, _width: usize, pad: &str) -> Vec
         Span::styled(icon.to_string(), Style::default().fg(id_color)),
         Span::raw("  "),
         Span::styled(
-            sa.id.clone(),
+            sa.role_name.clone(),
             Style::default().fg(id_color).add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),

@@ -99,16 +99,16 @@ fn test_agent_with_skill_manager() {
 }
 
 #[test]
-fn test_agent_abort_flag() {
+fn test_agent_cancel_token() {
     let config = build_test_config();
     let agent = AgentBuilder::with_config(config)
         .with_memory(false)
         .build()
         .unwrap();
 
-    assert!(!agent.abort_flag.load(std::sync::atomic::Ordering::Relaxed));
-    agent.abort_flag.store(true, std::sync::atomic::Ordering::Relaxed);
-    assert!(agent.abort_flag.load(std::sync::atomic::Ordering::Relaxed));
+    assert!(!agent.cancel_token.is_cancelled());
+    agent.cancel_token.cancel();
+    assert!(agent.cancel_token.is_cancelled());
 }
 
 #[test]

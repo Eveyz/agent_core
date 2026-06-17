@@ -4,7 +4,9 @@ use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use tokio_util::sync::CancellationToken;
 
+pub mod executor;
 use crate::client::OpenAIClient;
 use crate::config::{Config, ModelConfig};
 use crate::context::Context;
@@ -27,6 +29,8 @@ pub type TransformContextFn = Box<dyn Fn(Vec<Message>) -> Vec<Message> + Send + 
 
 pub struct AgentBuilder {
     config: Config,
+    id: Option<String>,
+    name: Option<String>,
     tools: Vec<Box<dyn crate::tools::Tool>>,
     system_prompt: Option<String>,
     enable_memory: bool,
@@ -47,6 +51,8 @@ impl AgentBuilder {
         let config = Config::load(path)?;
         Ok(Self {
             config,
+            id: None,
+            name: None,
             tools: Vec::new(),
             system_prompt: None,
             enable_memory: false,
@@ -63,6 +69,8 @@ impl AgentBuilder {
         let config = Config::from_env()?;
         Ok(Self {
             config,
+            id: None,
+            name: None,
             tools: Vec::new(),
             system_prompt: None,
             enable_memory: false,
@@ -80,6 +88,16 @@ impl AgentBuilder {
         self
     }
 
+    pub fn with_id(mut self, id: String) -> Self {
+        self.id = Some(id);
+        self
+    }
+
+    pub fn with_name(mut self, name: String) -> Self {
+        self.name = Some(name);
+        self
+    }
+
     pub fn with_system_prompt(mut self, prompt: &str) -> Self {
         self.system_prompt = Some(prompt.to_string());
         self
@@ -89,6 +107,8 @@ impl AgentBuilder {
     pub fn with_config(config: Config) -> Self {
         Self {
             config,
+            id: None,
+            name: None,
             tools: Vec::new(),
             system_prompt: None,
             enable_memory: false,
@@ -132,16 +152,6 @@ impl AgentBuilder {
     /// Attach a SkillManager for auto-trigger and catalog management.
     pub fn with_skill_manager(mut self, mgr: Arc<Mutex<SkillManager>>) -> Self {
         self.skill_manager = Some(mgr);
-        self
-    }
-
-    /// Share a parent agent's pending approvals map so that subagents can
-    /// receive approval responses through the same channel.
-    pub fn with_pending_approvals(
-        mut self,
-        approvals: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<ApprovalChoice>>>>,
-    ) -> Self {
-        self.pending_approvals_override = Some(approvals);
         self
     }
 
@@ -250,7 +260,36 @@ impl AgentBuilder {
             }
         }
 
-        let client = OpenAIClient::new(model_config);
+        // Build client with fallback chain
+        let mut current_model = model_config.clone();
+        let mut fallbacks = Vec::new();
+        for _ in 0..3 {
+            if let Some(ref fallback_name) = current_model.fallback_model {
+                if let Some(fallback_cfg) = self.config.get_model(fallback_name) {
+                    fallbacks.push(fallback_cfg.clone());
+                    current_model = fallback_cfg.clone();
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        let mut client_opt = None;
+        for fallback_cfg in fallbacks.into_iter().rev() {
+            if let Some(child) = client_opt {
+                client_opt = Some(OpenAIClient::with_fallback(fallback_cfg, Some(child)));
+            } else {
+                client_opt = Some(OpenAIClient::new(fallback_cfg));
+            }
+        }
+        
+        let client = if let Some(child) = client_opt {
+            OpenAIClient::with_fallback(model_config.clone(), Some(child))
+        } else {
+            OpenAIClient::new(model_config.clone())
+        };
 
         // Build permission policy with built-in defaults if none was provided
         let permission_policy = self.permission_policy.unwrap_or_else(|| {
@@ -260,11 +299,12 @@ impl AgentBuilder {
             policy
         });
 
-        let pending_approvals = self
-            .pending_approvals_override
-            .unwrap_or_else(|| Arc::new(Mutex::new(HashMap::new())));
+        let id = self.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let name = self.name.unwrap_or_else(|| "Main Orchestrator".to_string());
 
         Ok(Agent {
+            id,
+            name,
             config: self.config,
             current_model_name: default_model_name,
             client,
@@ -277,9 +317,8 @@ impl AgentBuilder {
             tool_execution_mode: self.tool_execution_mode,
             steering_queue: VecDeque::new(),
             follow_up_queue: VecDeque::new(),
-            abort_flag: Arc::new(AtomicBool::new(false)),
+            cancel_token: CancellationToken::new(),
             transform_context: self.transform_context,
-            pending_approvals,
             skill_manager: self.skill_manager,
             current_session_id: None,
         })
@@ -287,6 +326,8 @@ impl AgentBuilder {
 }
 
 pub struct Agent {
+    pub id: String,
+    pub name: String,
     pub config: Config,
     current_model_name: String,
     client: OpenAIClient,
@@ -299,10 +340,8 @@ pub struct Agent {
     tool_execution_mode: ToolExecutionMode,
     steering_queue: VecDeque<Message>,
     follow_up_queue: VecDeque<Message>,
-    pub abort_flag: Arc<AtomicBool>,
+    pub cancel_token: CancellationToken,
     transform_context: Option<TransformContextFn>,
-    /// Pending approval channels: prompt_id → oneshot sender
-    pending_approvals: Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<ApprovalChoice>>>>,
     /// Skill manager for auto-trigger and catalog
     skill_manager: Option<Arc<Mutex<SkillManager>>>,
     /// Tracks which session's messages are currently loaded in context
@@ -314,10 +353,11 @@ impl Agent {
         self.run_with_events(input, |_| {}).await
     }
 
+    #[tracing::instrument(skip_all, fields(input = %input))]
     pub async fn run_with_events(
         &mut self,
         input: &str,
-        on_event: impl Fn(AgentEvent),
+        on_event: impl Fn(AgentEvent) + Send + Sync,
     ) -> Result<String> {
         self.context.add(Message::user(input));
 
@@ -363,7 +403,10 @@ impl Agent {
 
         on_event(AgentEvent::AgentStart);
         self.state = AgentState::Streaming;
-        self.abort_flag.store(false, Ordering::Relaxed);
+        // Token is one-shot, but if we need to reset we could create a new one, 
+        // however usually a new run uses the same token or creates a new one. 
+        // Here we just ensure we have a fresh token.
+        self.cancel_token = CancellationToken::new();
 
         let result = self.run_loop(&on_event).await;
 
@@ -377,16 +420,16 @@ impl Agent {
         result
     }
 
-    async fn run_loop(&mut self, on_event: &impl Fn(AgentEvent)) -> Result<String> {
+    #[tracing::instrument(skip_all)]
+    async fn run_loop(&mut self, on_event: &(impl Fn(AgentEvent) + Send + Sync)) -> Result<String> {
         let max_iterations = self.client.model.max_iterations;
 
         for turn_index in 0..max_iterations {
-            if self.abort_flag.load(Ordering::Relaxed) {
+            tracing::info!(turn = turn_index, "Starting turn {}", turn_index);
+            if self.cancel_token.is_cancelled() {
                 self.state = AgentState::Aborted;
-                return Ok("Agent aborted by user.".to_string());
-            }
-
-            on_event(AgentEvent::TurnStart { turn_index });
+                return Ok("Agent aborted by user during tool execution.".to_string());
+            }       on_event(AgentEvent::TurnStart { turn_index });
 
             // Refresh per-turn context segments
             self.refresh_context_segments();
@@ -419,7 +462,7 @@ impl Agent {
             let (text, tool_calls) = match self.collect_stream(stream, &on_event).await {
                 Ok(r) => r,
                 Err(e) => {
-                    if self.abort_flag.load(Ordering::Relaxed) {
+                    if self.cancel_token.is_cancelled() {
                         return Ok("Agent aborted by user.".to_string());
                     }
                     let err_msg = format!("Stream error: {e}");
@@ -477,7 +520,16 @@ impl Agent {
 
             // Execute tools
             self.state = AgentState::ExecutingTools;
-            let tool_results = self.execute_tools_with_hooks(&tool_calls, &on_event).await;
+            let tool_results = {
+                let mut orchestrator = executor::ToolOrchestrator {
+                    registry: &self.registry,
+                    permission_policy: &mut self.permission_policy,
+                    hook_registry: &mut self.hook_registry,
+                    tool_execution_mode: self.tool_execution_mode,
+                    cancel_token: self.cancel_token.clone(),
+                };
+                orchestrator.execute_tools(&tool_calls, &on_event).await
+            };
             self.state = AgentState::Streaming;
 
             // Add tool results to context and emit events
@@ -531,325 +583,23 @@ impl Agent {
         bail!("unexpected end of agent loop")
     }
 
-    async fn execute_tools_with_hooks(
-        &mut self,
-        calls: &[ToolCall],
-        on_event: &impl Fn(AgentEvent),
-    ) -> Vec<String> {
-        // Resolve execution mode (per-tool override wins)
-        let mode = self
-            .registry
-            .resolve_execution_mode(calls, self.tool_execution_mode);
 
-        // Always preflight sequentially (permission + hooks)
-        let mut allowed: Vec<(usize, ToolCall, Value)> = Vec::new();
-        let mut results = vec![String::new(); calls.len()];
-
-        for (i, call) in calls.iter().enumerate() {
-            let args: Value = serde_json::from_str(&call.function.arguments).unwrap_or_default();
-
-            // Permission check — layered: Deny → Ask(with approval) → Allow
-            let decision = {
-                // Extract command/path for fine-grained matching
-                let command = args.get("command").and_then(|v| v.as_str());
-                let path = args
-                    .get("path")
-                    .or(args.get("file_path"))
-                    .or(args.get("file"))
-                    .and_then(|v| v.as_str());
-                let host = args.get("url").or(args.get("host")).and_then(|v| v.as_str());
-
-                self.permission_policy.check(
-                    &call.function.name,
-                    &call.function.arguments,
-                    command,
-                    path,
-                    host,
-                )
-            };
-
-            match decision {
-                PermissionDecision::Deny(reason) => {
-                    results[i] = format!("Permission denied: {}", reason);
-                    continue;
-                }
-                PermissionDecision::Ask(_reason, prompt) => {
-                    // Create oneshot channel for approval
-                    let (tx, rx) = tokio::sync::oneshot::channel();
-                    {
-                        let mut pending = self.pending_approvals.lock().unwrap();
-                        pending.insert(prompt.prompt_id.clone(), tx);
-                    }
-
-                    // Emit approval event
-                    on_event(AgentEvent::ApprovalRequired {
-                        prompt_id: prompt.prompt_id.clone(),
-                        tool_name: prompt.tool_name.clone(),
-                        tool_input: prompt.tool_input.clone(),
-                        danger_level: format!("{:?}", prompt.danger_level),
-                        explanation: prompt.explanation.clone(),
-                    });
-
-                    // Wait for user response
-                    match rx.await {
-                        Ok(choice) => {
-                            match &choice {
-                                ApprovalChoice::Deny | ApprovalChoice::DenyPersistent => {
-                                    results[i] = format!(
-                                        "Permission denied by user: tool '{}' was not approved",
-                                        call.function.name
-                                    );
-
-                                    // Add to blacklist if persistent deny
-                                    if matches!(choice, ApprovalChoice::DenyPersistent) {
-                                        self.permission_policy.add_rule(
-                                            crate::permission::ConfigRule {
-                                                pattern: ToolPermissionPattern::simple(
-                                                    &call.function.name,
-                                                ),
-                                                level: crate::permission::ApprovalLevel::Deny,
-                                            },
-                                        );
-                                    }
-                                    continue;
-                                }
-                                ApprovalChoice::AllowOnce => {
-                                    // One-time allow — just proceed
-                                }
-                                ApprovalChoice::AllowSession => {
-                                    // Add to session whitelist
-                                    self.permission_policy.whitelist_mut().add(
-                                        WhitelistEntry::new(
-                                            ToolPermissionPattern::simple(
-                                                &call.function.name,
-                                            ),
-                                            ApprovalScope::Session,
-                                        ),
-                                    );
-                                }
-                                ApprovalChoice::AllowFor(duration) => {
-                                    let secs = duration.as_secs();
-                                    let dur_str = if secs >= 3600 {
-                                        format!("{}h", secs / 3600)
-                                    } else if secs >= 60 {
-                                        format!("{}m", secs / 60)
-                                    } else {
-                                        format!("{}s", secs)
-                                    };
-                                    self.permission_policy.whitelist_mut().add(
-                                        WhitelistEntry::new(
-                                            ToolPermissionPattern::simple(
-                                                &call.function.name,
-                                            ),
-                                            ApprovalScope::Duration(dur_str),
-                                        ),
-                                    );
-                                }
-                                ApprovalChoice::AllowPersistent => {
-                                    self.permission_policy.whitelist_mut().add(
-                                        WhitelistEntry::new(
-                                            ToolPermissionPattern::simple(
-                                                &call.function.name,
-                                            ),
-                                            ApprovalScope::Persistent,
-                                        ),
-                                    );
-                                }
-                            }
-                            // Clean up pending approval
-                            {
-                                let mut pending = self.pending_approvals.lock().unwrap();
-                                pending.remove(&prompt.prompt_id);
-                            }
-                        }
-                        Err(_) => {
-                            // Channel closed = cancelled/timed out → deny
-                            results[i] = format!(
-                                "Approval cancelled for tool '{}'",
-                                call.function.name
-                            );
-                            {
-                                let mut pending = self.pending_approvals.lock().unwrap();
-                                pending.remove(&prompt.prompt_id);
-                            }
-                            continue;
-                        }
-                    }
-                }
-                PermissionDecision::Allow => {
-                    // Allowed, no action needed
-                }
-            }
-
-            // Pre-tool hook
-            match self
-                .hook_registry
-                .fire_pre_tool_use(&call.function.name, &args)
-            {
-                PreToolResult::Veto(reason) => {
-                    results[i] = format!("Hook vetoed: {}", reason);
-                    continue;
-                }
-                PreToolResult::Proceed(modified_args) => {
-                    on_event(AgentEvent::ToolExecutionStart {
-                        tool_call_id: call.id.clone(),
-                        tool_name: call.function.name.clone(),
-                        args: modified_args.clone(),
-                    });
-                    allowed.push((i, call.clone(), modified_args));
-                }
-            }
-        }
-
-        if allowed.is_empty() {
-            return results;
-        }
-
-        match mode {
-            ToolExecutionMode::Sequential => {
-                for (i, call, args) in &allowed {
-                    let abort = self.abort_flag.clone();
-                    let result = self
-                        .execute_single_tool(
-                            &call.function.name,
-                            &call.id,
-                            args.clone(),
-                            abort,
-                            on_event,
-                        )
-                        .await;
-                    results[*i] = result;
-                }
-            }
-            ToolExecutionMode::Parallel => {
-                let abort = self.abort_flag.clone();
-
-                // TODO: wrap ToolRegistry in Arc to enable true parallel execution
-                // via JoinSet. Currently sequential due to &self borrow constraints.
-                for (i, call, args) in &allowed {
-                    if abort.load(Ordering::Relaxed) {
-                        results[*i] = "Aborted".to_string();
-                        continue;
-                    }
-                    let result = self
-                        .execute_single_tool(
-                            &call.function.name,
-                            &call.id,
-                            args.clone(),
-                            abort.clone(),
-                            on_event,
-                        )
-                        .await;
-                    results[*i] = result;
-                }
-            }
-        }
-
-        // Post-tool hooks
-        for (i, call, args) in &allowed {
-            let output = results[*i].clone();
-            let is_error = output.starts_with("Error")
-                || output.starts_with("Permission denied")
-                || output.starts_with("Hook vetoed");
-
-            if !is_error {
-                let final_output =
-                    self.hook_registry
-                        .fire_post_tool_use(&call.function.name, args, &output);
-                results[*i] = final_output;
-            }
-        }
-
-        results
-    }
-
-    async fn execute_single_tool(
-        &self,
-        tool_name: &str,
-        tool_call_id: &str,
-        args: serde_json::Value,
-        abort: Arc<AtomicBool>,
-        on_event: &impl Fn(AgentEvent),
-    ) -> String {
-        let tool = match self.registry.get(tool_name) {
-            Some(t) => t,
-            None => {
-                return format!(
-                    "Tool '{}' not found. Available: {}",
-                    tool_name,
-                    self.registry.list_names().join(", ")
-                );
-            }
-        };
-
-        // Collect streaming updates from the tool into a shared buffer.
-        let updates: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let updates_clone = updates.clone();
-        let abort_clone = abort.clone();
-        let on_update: ToolUpdateFn = Arc::new(move |partial: &str| {
-            if !abort_clone.load(Ordering::Relaxed)
-                && let Ok(mut buf) = updates_clone.lock()
-            {
-                buf.push(partial.to_string());
-            }
-        });
-
-        // Create event channel for tools that emit structured events (e.g. subagent).
-        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
-
-        // Forward tool-internal events to the main event stream in real
-        // time so the TUI can render them as they happen.  We run the
-        // tool execution and event forwarding concurrently so events
-        // arrive while the tool is still executing.
-        let tool_fut = tool.execute_with_stream(args, Some(on_update), Some(event_tx));
-        let drain_fut = async {
-            while let Some(event) = event_rx.recv().await {
-                on_event(event);
-            }
-        };
-
-        // Run both futures concurrently.  When the tool finishes, all
-        // senders are dropped, causing recv() to return None which
-        // ends the drain loop.
-        let (result, _) = tokio::join!(tool_fut, drain_fut);
-
-        // Drain any remaining events.
-        while let Ok(event) = event_rx.try_recv() {
-            on_event(event);
-        }
-
-        // Flush buffered streaming updates as ToolExecutionUpdate events
-        if let Ok(buf) = updates.lock() {
-            for partial in buf.iter() {
-                on_event(AgentEvent::ToolExecutionUpdate {
-                    tool_call_id: tool_call_id.to_string(),
-                    tool_name: tool_name.to_string(),
-                    partial_result: partial.clone(),
-                });
-            }
-        }
-
-        match result {
-            Ok(output) => output,
-            Err(e) => format!("Error executing tool '{}': {}", tool_name, e),
-        }
-    }
 
     async fn collect_stream(
         &self,
         stream: impl futures::Stream<Item = Result<StreamEvent>>,
-        on_event: &impl Fn(AgentEvent),
+        on_event: &(impl Fn(AgentEvent) + Send + Sync),
     ) -> Result<(String, Vec<ToolCall>)> {
         use crate::client::streaming::ToolCallAccumulator;
 
         let mut text_buffer = String::new();
         let mut accumulator = ToolCallAccumulator::new();
         let mut has_tool_calls = false;
-        let abort = self.abort_flag.clone();
+        let cancel = self.cancel_token.clone();
 
         tokio::pin!(stream);
         while let Some(event) = stream.next().await {
-            if abort.load(Ordering::Relaxed) {
+            if cancel.is_cancelled() {
                 break;
             }
 
@@ -1000,7 +750,7 @@ impl Agent {
     /// Abort the current agent run. The stream will be cancelled and the loop
     /// will exit at the next iteration boundary.
     pub fn abort(&self) {
-        self.abort_flag.store(true, Ordering::Relaxed);
+        self.cancel_token.cancel();
     }
 
     /// Inject a steering message. This is processed after the current turn
@@ -1166,17 +916,10 @@ impl Agent {
         &mut self.permission_policy
     }
 
-    /// Get a clone of the pending approvals map for use in event handlers.
-    pub fn pending_approvals_clone(
-        &self,
-    ) -> Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<ApprovalChoice>>>> {
-        self.pending_approvals.clone()
-    }
-
     /// Approve a pending permission request.
     /// Call this after receiving `AgentEvent::ApprovalRequired`.
     pub fn approve(&self, prompt_id: &str, choice: ApprovalChoice) -> bool {
-        if let Ok(mut pending) = self.pending_approvals.lock() {
+        if let Ok(mut pending) = crate::permission::global_pending_approvals().lock() {
             if let Some(tx) = pending.remove(prompt_id) {
                 return tx.send(choice).is_ok();
             }

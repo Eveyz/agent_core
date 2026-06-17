@@ -15,6 +15,7 @@ pub fn register_task_tools(
     model_config: ModelConfig,
 ) {
     registry.register(Box::new(TaskCreateTool::new(board.clone())));
+    registry.register(Box::new(TaskBatchCreateTool::new(board.clone())));
     registry.register(Box::new(TaskUpdateTool::new(board.clone())));
     registry.register(Box::new(TaskListTool::new(board.clone())));
     registry.register(Box::new(TaskGetTool::new(board.clone())));
@@ -38,7 +39,7 @@ fn detect_cycle(board: &TaskBoard, new_id: &str, depends_on: &[String]) -> Resul
             continue;
         }
         if let Some(task) = board.get(&dep_id) {
-            for transitive in &task.blocked_by {
+            for transitive in task.blocked_by() {
                 stack.push(transitive.clone());
             }
         }
@@ -52,17 +53,17 @@ fn build_dependency_context(board: &TaskBoard, task_id: &str) -> String {
         None => return String::new(),
     };
 
-    if task.blocked_by.is_empty() {
+    if task.blocked_by().is_empty() {
         return String::new();
     }
 
     let mut ctx = String::from("== Results from dependency tasks ==\n");
-    for dep_id in &task.blocked_by {
+    for dep_id in task.blocked_by() {
         if let Some(dep) = board.get(dep_id) {
-            let result = dep.result.as_deref().unwrap_or("(no result)");
+            let result = dep.result().unwrap_or("(no result)");
             ctx.push_str(&format!(
                 "--- {} ({}) ---\n{}\n\n",
-                dep_id, dep.goal, result
+                dep_id, dep.goal(), result
             ));
         }
     }
@@ -87,29 +88,29 @@ impl Tool for TaskCreateTool {
     }
 
     fn description(&self) -> &str {
-        "Create a task with optional dependencies. Tasks form a DAG. Circular deps are rejected. Args: id (string), description (string), depends_on (optional array of task IDs)"
+        "Create a task with optional dependencies. Tasks form a DAG. Circular deps are rejected. Args: title (string), description (string), depends_on (optional array of task UUIDs)"
     }
 
     fn parameters_schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "id": {"type": "string", "description": "Unique task ID"},
+                "title": {"type": "string", "description": "Short title for the task (for display)"},
                 "description": {"type": "string", "description": "What this task should accomplish"},
                 "depends_on": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Task IDs that must complete before this one can start"
+                    "description": "Task UUIDs that must complete before this one can start"
                 }
             },
-            "required": ["id", "description"]
+            "required": ["title", "description"]
         })
     }
 
     async fn execute(&self, args: Value) -> anyhow::Result<String> {
-        let id = args["id"]
+        let title = args["title"]
             .as_str()
-            .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
+            .ok_or_else(|| anyhow::anyhow!("missing 'title'"))?;
         let description = args["description"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("missing 'description'"))?;
@@ -127,27 +128,24 @@ impl Tool for TaskCreateTool {
             .lock()
             .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
 
-        if board.get(id).is_some() {
-            anyhow::bail!("Task '{}' already exists", id);
-        }
-
         for dep in &depends_on {
             if board.get(dep).is_none() {
-                anyhow::bail!("Dependency '{}' does not exist. Create it first.", dep);
+                anyhow::bail!("Dependency UUID '{}' does not exist. Create it first.", dep);
             }
         }
 
-        if let Err(e) = detect_cycle(&board, id, &depends_on) {
-            anyhow::bail!("{}", e);
-        }
-
-        board.create(id, description, depends_on.clone());
+        // Cycle detection will be handled by the board when it adds edges, or we can just let it create.
+        // Wait, detect_cycle is a function in mod.rs. Let's see if we can use a dummy UUID to test cycle.
+        // For now, since UUIDs are newly generated, a new task CANNOT create a cycle with existing tasks unless an existing task is updated to depend on it.
+        // So detect_cycle on creation is actually impossible to trigger with newly minted UUIDs!
+        
+        let new_uuid = board.create(title, description, depends_on.clone());
         let deps = if depends_on.is_empty() {
             String::new()
         } else {
             format!(" (blocked by: {})", depends_on.join(", "))
         };
-        Ok(format!("Task '{}' created: {}{}", id, description, deps))
+        Ok(format!("Task created! UUID: '{}' | Title: {} {}", new_uuid, title, deps))
     }
 }
 
@@ -168,14 +166,14 @@ impl Tool for TaskUpdateTool {
     }
 
     fn description(&self) -> &str {
-        "Update a task's status. Args: id (string), status (pending/in_progress/completed/failed), result (optional string with the task's output)"
+        "Update a task's status. Args: id (UUID string), status (pending/in_progress/completed/failed), result (optional string with the task's output)"
     }
 
     fn parameters_schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "id": {"type": "string", "description": "Task ID"},
+                "id": {"type": "string", "description": "Task UUID"},
                 "status": {
                     "type": "string",
                     "enum": ["pending", "in_progress", "completed", "failed"],
@@ -215,8 +213,8 @@ impl Tool for TaskUpdateTool {
         let unblocked: Vec<String> = board
             .ready_tasks()
             .iter()
-            .filter(|t| t.blocked_by.contains(&id.to_string()))
-            .map(|t| t.id.clone())
+            .filter(|t| t.blocked_by().contains(&id.to_string()))
+            .map(|t| t.id().to_string())
             .collect();
 
         let mut msg = format!("Task '{}' updated to {}", id, status_str);
@@ -302,17 +300,17 @@ impl Tool for TaskGetTool {
             .get(id)
             .ok_or_else(|| anyhow::anyhow!("task '{}' not found", id))?;
 
-        let deps = if task.blocked_by.is_empty() {
+        let deps = if task.blocked_by().is_empty() {
             String::from("(none)")
         } else {
-            task.blocked_by.join(", ")
+            task.blocked_by().join(", ")
         };
-        let result = task.result.as_deref().unwrap_or("(no result yet)");
-        let assigned = task.assigned_to.as_deref().unwrap_or("(unassigned)");
+        let result = task.result().unwrap_or("(no result yet)");
+        let assigned = task.assigned_to().unwrap_or("(unassigned)");
 
         Ok(format!(
             "Task: {}\nGoal: {}\nStatus: {}\nAssigned to: {}\nBlocked by: {}\nResult: {}",
-            task.id, task.goal, task.status, assigned, deps, result
+            task.id(), task.goal(), task.status(), assigned, deps, result
         ))
     }
 }
@@ -356,29 +354,29 @@ impl Tool for TaskPlanTool {
 
         // Show DAG structure
         out.push_str("Dependencies:\n");
-        for task in tasks {
-            if task.blocked_by.is_empty() {
-                out.push_str(&format!("  {} (no deps)\n", task.id));
+        for task in &tasks {
+            if task.blocked_by().is_empty() {
+                out.push_str(&format!("  {} (no deps)\n", task.id()));
             } else {
                 out.push_str(&format!(
                     "  {} <- [{}]\n",
-                    task.id,
-                    task.blocked_by.join(", ")
+                    task.id(),
+                    task.blocked_by().join(", ")
                 ));
             }
         }
 
         // Topological order
         out.push_str("\nExecution order (topological):\n");
-        let order = topological_sort(tasks);
+        let order = topological_sort(&tasks);
         for (i, task_id) in order.iter().enumerate() {
-            if let Some(task) = tasks.iter().find(|t| &t.id == task_id) {
+            if let Some(task) = tasks.iter().find(|t| &t.id() == task_id) {
                 out.push_str(&format!(
                     "  {}. {} [{}] — {}\n",
                     i + 1,
                     task_id,
-                    task.status,
-                    task.goal
+                    task.status(),
+                    task.goal()
                 ));
             }
         }
@@ -387,17 +385,17 @@ impl Tool for TaskPlanTool {
         let ready = board.ready_tasks();
         out.push_str(&format!("\nReady now ({}):\n", ready.len()));
         for task in &ready {
-            out.push_str(&format!("  -> {} — {}\n", task.id, task.goal));
+            out.push_str(&format!("  -> {} — {}\n", task.id(), task.goal()));
         }
 
         // Completed
         let completed = tasks
             .iter()
-            .filter(|t| t.status == TaskStatus::Completed)
+            .filter(|t| *t.status() == TaskStatus::Completed)
             .count();
         let failed = tasks
             .iter()
-            .filter(|t| t.status == TaskStatus::Failed)
+            .filter(|t| *t.status() == TaskStatus::Failed)
             .count();
         out.push_str(&format!(
             "\nProgress: {}/{} completed, {} failed\n",
@@ -445,7 +443,7 @@ impl Tool for TaskReadyTool {
             let all = board.all_tasks();
             let pending = all
                 .iter()
-                .filter(|t| t.status == TaskStatus::Pending)
+                .filter(|t| *t.status() == TaskStatus::Pending)
                 .count();
             if pending > 0 {
                 return Ok(format!(
@@ -458,7 +456,7 @@ impl Tool for TaskReadyTool {
 
         let mut out = String::from("Ready to execute:\n");
         for task in &ready {
-            out.push_str(&format!("  -> {} — {}\n", task.id, task.goal));
+            out.push_str(&format!("  -> {} — {}\n", task.id(), task.goal()));
         }
         out.push_str("\nUse task_execute <id> to run a task with a sub-agent.");
         Ok(out)
@@ -545,23 +543,23 @@ impl Tool for TaskExecuteTool {
                 .get(id)
                 .ok_or_else(|| anyhow::anyhow!("task '{}' not found", id))?;
 
-            if task.status != TaskStatus::Ready && task.status == TaskStatus::Pending {
+            if *task.status() != TaskStatus::Ready && *task.status() == TaskStatus::Pending {
                 anyhow::bail!(
                     "Task '{}' is not ready. Blocked by: {}",
                     id,
-                    task.blocked_by.join(", ")
+                    task.blocked_by().join(", ")
                 );
             }
-            if task.status == TaskStatus::Completed {
+            if *task.status() == TaskStatus::Completed {
                 anyhow::bail!("Task '{}' is already completed.", id);
             }
-            if task.status == TaskStatus::InProgress {
+            if *task.status() == TaskStatus::InProgress {
                 anyhow::bail!("Task '{}' is already in progress.", id);
             }
 
             let dep_ctx = build_dependency_context(&board, id);
-            let use_subagent = should_use_subagent(&task.goal, &board, id);
-            (task.goal.clone(), dep_ctx, !use_subagent)
+            let use_subagent = should_use_subagent(&task.goal(), &board, id);
+            (task.goal().to_string(), dep_ctx, !use_subagent)
         };
 
         // Mark in-progress
@@ -594,8 +592,8 @@ impl Tool for TaskExecuteTool {
             let ready = board.ready_tasks();
             let unblocked: Vec<&str> = ready
                 .iter()
-                .filter(|t| t.blocked_by.contains(&id.to_string()))
-                .map(|t| t.id.as_str())
+                .filter(|t| t.blocked_by().contains(&id.to_string()))
+                .map(|t| t.id())
                 .collect();
 
             let mut output = format!(
@@ -636,8 +634,8 @@ impl Tool for TaskExecuteTool {
             let ready = board.ready_tasks();
             let unblocked: Vec<&str> = ready
                 .iter()
-                .filter(|t| t.blocked_by.contains(&id.to_string()))
-                .map(|t| t.id.as_str())
+                .filter(|t| t.blocked_by().contains(&id.to_string()))
+                .map(|t| t.id())
                 .collect();
 
             let mut output = format!(
@@ -670,7 +668,7 @@ impl Tool for TaskExecuteTool {
 fn should_use_subagent(goal: &str, board: &TaskBoard, current_id: &str) -> bool {
     // Check for parallel-ready siblings first (always use subagent for concurrency)
     let ready = board.ready_tasks();
-    let parallel_count = ready.iter().filter(|t| t.id != current_id).count();
+    let parallel_count = ready.iter().filter(|t| t.id() != current_id).count();
     if parallel_count >= 1 {
         return true;
     }
@@ -701,13 +699,13 @@ fn should_use_subagent(goal: &str, board: &TaskBoard, current_id: &str) -> bool 
     false
 }
 
-fn topological_sort(tasks: &[TaskRecord]) -> Vec<String> {
+fn topological_sort(tasks: &[&TaskRecord]) -> Vec<String> {
     let mut result = Vec::new();
     let mut visited = std::collections::HashSet::new();
     let mut visiting = std::collections::HashSet::new();
 
     let task_map: std::collections::HashMap<&str, &TaskRecord> =
-        tasks.iter().map(|t| (t.id.as_str(), t)).collect();
+        tasks.iter().map(|t| (t.id(), *t)).collect();
 
     fn visit(
         id: &str,
@@ -724,7 +722,7 @@ fn topological_sort(tasks: &[TaskRecord]) -> Vec<String> {
         }
 
         if let Some(task) = task_map.get(id) {
-            for dep in &task.blocked_by {
+            for dep in task.blocked_by() {
                 visit(dep, task_map, visited, visiting, result);
             }
         }
@@ -736,7 +734,7 @@ fn topological_sort(tasks: &[TaskRecord]) -> Vec<String> {
 
     for task in tasks {
         visit(
-            &task.id,
+            &task.id(),
             &task_map,
             &mut visited,
             &mut visiting,
@@ -759,15 +757,15 @@ mod tests {
     #[test]
     fn test_cycle_detection_direct() {
         let board = make_board();
-        {
+        let (id_a, id_b) = {
             let mut b = board.lock().unwrap();
-            b.create("a", "A", vec![]);
-            b.create("b", "B", vec!["a".to_string()]);
-        }
+            let a = b.create("A", "a", vec![]);
+            let b_id = b.create("B", "b", vec![a.clone()]);
+            (a, b_id)
+        };
 
         let b = board.lock().unwrap();
-        // b -> a -> b would be a cycle
-        let result = detect_cycle(&b, "a", &["b".to_string()]);
+        let result = detect_cycle(&b, &id_a, &[id_b.clone()]);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Circular"));
     }
@@ -775,53 +773,50 @@ mod tests {
     #[test]
     fn test_cycle_detection_transitive() {
         let board = make_board();
-        {
+        let (id_a, id_c) = {
             let mut b = board.lock().unwrap();
-            b.create("a", "A", vec![]);
-            b.create("b", "B", vec!["a".to_string()]);
-            b.create("c", "C", vec!["b".to_string()]);
-        }
+            let a = b.create("A", "a", vec![]);
+            let b_id = b.create("B", "b", vec![a.clone()]);
+            let c = b.create("C", "c", vec![b_id.clone()]);
+            (a, c)
+        };
 
         let b = board.lock().unwrap();
-        // a -> c -> b -> a would be a cycle
-        let result = detect_cycle(&b, "a", &["c".to_string()]);
+        let result = detect_cycle(&b, &id_a, &[id_c.clone()]);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_no_cycle_valid_dag() {
         let board = make_board();
-        {
+        let (id_a, id_b, id_c, id_d) = {
             let mut b = board.lock().unwrap();
-            b.create("a", "A", vec![]);
-            b.create("b", "B", vec![]);
-            b.create("c", "C", vec!["a".to_string(), "b".to_string()]);
-            b.create("d", "D", vec!["c".to_string()]);
-        }
+            let a = b.create("A", "a", vec![]);
+            let b_id = b.create("B", "b", vec![]);
+            let c = b.create("C", "c", vec![a.clone(), b_id.clone()]);
+            let d = b.create("D", "d", vec![c.clone()]);
+            (a, b_id, c, d)
+        };
 
         let b = board.lock().unwrap();
-        // New task e depending on a and b — no cycle
-        assert!(detect_cycle(&b, "e", &["a".to_string(), "b".to_string()]).is_ok());
-        // New task f depending on d — no cycle
-        assert!(detect_cycle(&b, "f", &["d".to_string()]).is_ok());
-        // New task g depending on c and d — no cycle
-        assert!(detect_cycle(&b, "g", &["c".to_string(), "d".to_string()]).is_ok());
-        // a depending on d would create cycle: d -> c -> a -> d
-        assert!(detect_cycle(&b, "a", &["d".to_string()]).is_err());
+        assert!(detect_cycle(&b, "e", &[id_a.clone(), id_b.clone()]).is_ok());
+        assert!(detect_cycle(&b, "f", &[id_d.clone()]).is_ok());
+        assert!(detect_cycle(&b, "g", &[id_c.clone(), id_d.clone()]).is_ok());
+        assert!(detect_cycle(&b, &id_a, &[id_d.clone()]).is_err());
     }
 
     #[test]
     fn test_topological_sort_linear() {
         let board = TaskBoard::new();
         let mut b = board;
-        b.create("a", "A", vec![]);
-        b.create("b", "B", vec!["a".to_string()]);
-        b.create("c", "C", vec!["b".to_string()]);
+        let id_a = b.create("A", "a", vec![]);
+        let id_b = b.create("B", "b", vec![id_a.clone()]);
+        let id_c = b.create("C", "c", vec![id_b.clone()]);
 
-        let order = topological_sort(b.all_tasks());
-        let pos_a = order.iter().position(|x| x == "a").unwrap();
-        let pos_b = order.iter().position(|x| x == "b").unwrap();
-        let pos_c = order.iter().position(|x| x == "c").unwrap();
+        let order = topological_sort(&b.all_tasks());
+        let pos_a = order.iter().position(|x| x == &id_a).unwrap();
+        let pos_b = order.iter().position(|x| x == &id_b).unwrap();
+        let pos_c = order.iter().position(|x| x == &id_c).unwrap();
 
         assert!(pos_a < pos_b);
         assert!(pos_b < pos_c);
@@ -831,16 +826,16 @@ mod tests {
     fn test_topological_sort_diamond() {
         let board = TaskBoard::new();
         let mut b = board;
-        b.create("a", "A", vec![]);
-        b.create("b", "B", vec![]);
-        b.create("c", "C", vec!["a".to_string(), "b".to_string()]);
-        b.create("d", "D", vec!["c".to_string()]);
+        let id_a = b.create("A", "a", vec![]);
+        let id_b = b.create("B", "b", vec![]);
+        let id_c = b.create("C", "c", vec![id_a.clone(), id_b.clone()]);
+        let id_d = b.create("D", "d", vec![id_c.clone()]);
 
-        let order = topological_sort(b.all_tasks());
-        let pos_a = order.iter().position(|x| x == "a").unwrap();
-        let pos_b = order.iter().position(|x| x == "b").unwrap();
-        let pos_c = order.iter().position(|x| x == "c").unwrap();
-        let pos_d = order.iter().position(|x| x == "d").unwrap();
+        let order = topological_sort(&b.all_tasks());
+        let pos_a = order.iter().position(|x| x == &id_a).unwrap();
+        let pos_b = order.iter().position(|x| x == &id_b).unwrap();
+        let pos_c = order.iter().position(|x| x == &id_c).unwrap();
+        let pos_d = order.iter().position(|x| x == &id_d).unwrap();
 
         assert!(pos_a < pos_c);
         assert!(pos_b < pos_c);
@@ -853,8 +848,8 @@ mod tests {
     fn test_should_use_subagent_short_goal_inline() {
         let board = TaskBoard::new();
         let mut b = board;
-        b.create("t1", "Read main.rs", vec![]);
-        assert!(!should_use_subagent("Read main.rs", &b, "t1"));
+        let id1 = b.create("t1", "Read main.rs", vec![]);
+        assert!(!should_use_subagent("Read main.rs", &b, &id1));
     }
 
     #[test]
@@ -864,26 +859,127 @@ mod tests {
         let long_goal = "Refactor the entire authentication module to use OAuth2 with PKCE flow, \
                          including token refresh, session management, and error handling across \
                          all API endpoints";
-        b.create("t1", long_goal, vec![]);
-        assert!(should_use_subagent(long_goal, &b, "t1"));
+        let id1 = b.create("t1", long_goal, vec![]);
+        assert!(should_use_subagent(long_goal, &b, &id1));
     }
 
     #[test]
     fn test_should_use_subagent_parallel_siblings() {
         let board = TaskBoard::new();
         let mut b = board;
-        b.create("t1", "Find auth module", vec![]);
-        b.create("t2", "Find database module", vec![]);
+        let id1 = b.create("t1", "Find auth module", vec![]);
+        let _id2 = b.create("t2", "Find database module", vec![]);
         // t1 and t2 are both ready (parallel)
-        assert!(should_use_subagent("Find auth module", &b, "t1"));
+        assert!(should_use_subagent("Find auth module", &b, &id1));
     }
 
     #[test]
     fn test_should_use_subagent_tool_keywords() {
         let board = TaskBoard::new();
         let mut b = board;
-        b.create("t1", "Read and analyze the config file", vec![]);
+        let id1 = b.create("t1", "Read and analyze the config file", vec![]);
         // "read" + "analyze" = 2 tool keywords
-        assert!(should_use_subagent("Read and analyze the config file", &b, "t1"));
+        assert!(should_use_subagent("Read and analyze the config file", &b, &id1));
+    }
+}
+
+
+struct TaskBatchCreateTool {
+    board: Arc<Mutex<TaskBoard>>,
+}
+
+impl TaskBatchCreateTool {
+    fn new(board: Arc<Mutex<TaskBoard>>) -> Self {
+        Self { board }
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for TaskBatchCreateTool {
+    fn name(&self) -> &str {
+        "task_batch_create"
+    }
+
+    fn description(&self) -> &str {
+        "Create multiple tasks at once. Useful for defining an entire plan. Args: tasks (array of objects with local_id, title, description, depends_on)."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tasks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "local_id": {"type": "string", "description": "Temporary ID (e.g., 'task-1') to reference dependencies within this batch"},
+                            "title": {"type": "string"},
+                            "description": {"type": "string"},
+                            "depends_on": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Array of local_ids or existing UUIDs that this task depends on"
+                            }
+                        },
+                        "required": ["local_id", "title", "description"]
+                    }
+                }
+            },
+            "required": ["tasks"]
+        })
+    }
+
+    async fn execute(&self, args: Value) -> anyhow::Result<String> {
+        let tasks_arr = args["tasks"]
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("missing or invalid 'tasks' array"))?;
+
+        let mut board = self
+            .board
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+
+        let mut local_to_uuid: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut results = Vec::new();
+
+        for task_val in tasks_arr {
+            let local_id = task_val["local_id"].as_str().unwrap_or("").to_string();
+            let title = task_val["title"].as_str().unwrap_or("").to_string();
+            let description = task_val["description"].as_str().unwrap_or("").to_string();
+            
+            if local_id.is_empty() || title.is_empty() || description.is_empty() {
+                anyhow::bail!("Each task must have local_id, title, and description");
+            }
+
+            let depends_on_raw: Vec<String> = task_val["depends_on"]
+                .as_array()
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+
+            // Resolve dependencies: could be an existing UUID or a local_id created in this batch
+            let mut resolved_deps = Vec::new();
+            for dep in depends_on_raw {
+                if let Some(uuid) = local_to_uuid.get(&dep) {
+                    resolved_deps.push(uuid.clone());
+                } else if board.get(&dep).is_some() {
+                    resolved_deps.push(dep);
+                } else {
+                    anyhow::bail!("Dependency '{}' for task '{}' not found in this batch or existing tasks", dep, local_id);
+                }
+            }
+
+            let uuid = board.create(&title, &description, resolved_deps);
+            local_to_uuid.insert(local_id.clone(), uuid.clone());
+            results.push(format!("{} -> {} ({})", local_id, uuid, title));
+        }
+
+        let mut out = String::from("Batch creation successful:
+");
+        for r in results {
+            out.push_str(&format!("  {}
+", r));
+        }
+        Ok(out)
     }
 }

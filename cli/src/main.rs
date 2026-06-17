@@ -288,6 +288,13 @@ async fn run_tui_mode() -> anyhow::Result<()> {
 }
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Initialize tracing
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
+        .try_init()
+        .ok();
+
     let args: Args = argh::from_env();
     // ── TUI mode ──────────────────────────────────────────────────
     if args.tui {
@@ -413,8 +420,8 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    // Share abort_flag so CLI can abort mid-run
-    let abort_flag = agent.abort_flag.clone();
+    // Share cancel_token so CLI can abort mid-run
+    let cancel_token = agent.cancel_token.clone();
 
     // Print status
     println!("\n--- Status ---");
@@ -819,7 +826,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             "/abort" => {
-                abort_flag.store(true, Ordering::Relaxed);
+                cancel_token.cancel();
                 println!("Abort signal sent. The agent will stop at the next opportunity.");
             }
             "/state" => {
@@ -1071,9 +1078,9 @@ async fn main() -> anyhow::Result<()> {
             }
             _ => {
                 // Reset abort flag before each run
-                agent.abort_flag.store(false, Ordering::Relaxed);
-                let approvals = agent.pending_approvals_clone();
-                run_agent(&mut agent, &input, use_styles, &approvals).await;
+                // The cancel_token is recreated by agent run loop on next start.
+                // agent.cancel_token.cancel() would cancel it, but to clear it we do nothing.
+                run_agent(&mut agent, &input, use_styles).await;
             }
         }
     }
@@ -1274,42 +1281,40 @@ fn print_tool_line(
     }
 }
 
-/// Run agent inline — aborts are handled via `abort_flag` which is
+/// Run agent inline — aborts are handled via `cancel_token` which is
 /// checked inside `collect_stream` on every chunk and between turns.
 async fn run_agent(
     agent: &mut agent_core::Agent,
     input: &str,
     use_styles: bool,
-    pending_approvals: &Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<ApprovalChoice>>>>,
 ) {
-    let first_event = Cell::new(true);
-    let in_thinking = Cell::new(false);
-    let in_agent_text = Cell::new(false);
+    let first_event = std::sync::atomic::AtomicBool::new(true);
+    let in_thinking = std::sync::atomic::AtomicBool::new(false);
+    let in_agent_text = std::sync::atomic::AtomicBool::new(false);
     let skin = termimad::MadSkin::default();
-    let in_sub_thinking = Cell::new(false);
-    let in_sub_text = Cell::new(false);
-    let approvals = pending_approvals.clone();
+    let in_sub_thinking = std::sync::atomic::AtomicBool::new(false);
+    let in_sub_text = std::sync::atomic::AtomicBool::new(false);
 
     // Deferred tool output: buffer ToolExecutionStart until ToolExecutionEnd arrives
-    let pending_tool: Cell<Option<(String, serde_json::Value)>> = Cell::new(None);
+    let pending_tool: std::sync::Mutex<Option<(String, serde_json::Value)>> = std::sync::Mutex::new(None);
 
     print!("\r  ⏳{}", reset(use_styles));
     io::stdout().flush().ok();
 
     match agent
         .run_with_events(input, |event| {
-            if first_event.get() {
+            if first_event.load(std::sync::atomic::Ordering::Relaxed) {
                 print!("\r                                    \r");
                 io::stdout().flush().ok();
-                first_event.set(false);
+                first_event.store(false, std::sync::atomic::Ordering::Relaxed);
             }
             match event {
                 AgentEvent::AgentStart => {}
                 AgentEvent::AgentEnd { .. } => {}
                 AgentEvent::TurnStart { turn_index } => {
                     // Flush any pending tool before new turn
-                    in_thinking.set(false);
-                    in_agent_text.set(false);
+                    in_thinking.store(false, std::sync::atomic::Ordering::Relaxed);
+                    in_agent_text.store(false, std::sync::atomic::Ordering::Relaxed);
                     if turn_index > 0 {
                         println!(
                             "\n  {}─── Turn {turn_index} ───{}",
@@ -1321,12 +1326,12 @@ async fn run_agent(
                 AgentEvent::MessageUpdate { delta } => match delta {
                     MessageDelta::Thinking(t) => {
                         // Flush pending tool output before thinking
-                        pending_tool.set(None);
-                        if in_agent_text.get() {
+                        pending_tool.lock().unwrap().take();
+                        if in_agent_text.load(std::sync::atomic::Ordering::Relaxed) {
                             println!();
-                            in_agent_text.set(false);
+                            in_agent_text.store(false, std::sync::atomic::Ordering::Relaxed);
                         }
-                        if !in_thinking.get() {
+                        if !in_thinking.load(std::sync::atomic::Ordering::Relaxed) {
                             println!(); // visual separator before think block
                             print!(
                                 "  {}{}💭 Think{} {}",
@@ -1335,19 +1340,19 @@ async fn run_agent(
                                 reset(use_styles),
                                 dim(use_styles),
                             );
-                            in_thinking.set(true);
+                            in_thinking.store(true, std::sync::atomic::Ordering::Relaxed);
                         }
                         print!("{}{}{}", dim(use_styles), t, reset(use_styles));
                         io::stdout().flush().ok();
                     }
                     MessageDelta::Text(t) => {
                         // Flush pending tool output before text
-                        pending_tool.set(None);
-                        if in_thinking.get() {
+                        pending_tool.lock().unwrap().take();
+                        if in_thinking.load(std::sync::atomic::Ordering::Relaxed) {
                             println!("{}", reset(use_styles));
-                            in_thinking.set(false);
+                            in_thinking.store(false, std::sync::atomic::Ordering::Relaxed);
                         }
-                        if !in_agent_text.get() {
+                        if !in_agent_text.load(std::sync::atomic::Ordering::Relaxed) {
                             println!(); // visual separator before model output
                             print!(
                                 "  {}{}>>{} {}{}",
@@ -1357,7 +1362,7 @@ async fn run_agent(
                                 reset(use_styles),
                                 reset(use_styles),
                             );
-                            in_agent_text.set(true);
+                            in_agent_text.store(true, std::sync::atomic::Ordering::Relaxed);
                         }
                         if use_styles {
                             skin.print_inline(&t);
@@ -1372,7 +1377,7 @@ async fn run_agent(
                     tool_name, args, ..
                 } => {
                     // Defer — buffer it, print when ToolExecutionEnd arrives
-                    pending_tool.set(Some((tool_name, args)));
+                    pending_tool.lock().unwrap().replace((tool_name, args));
                 }
                 AgentEvent::ToolExecutionUpdate { .. } => {
                     // Silently consume — end event will show final result
@@ -1384,17 +1389,17 @@ async fn run_agent(
                     ..
                 } => {
                     // Flush thinking/text prefix before tool line
-                    if in_thinking.get() {
+                    if in_thinking.load(std::sync::atomic::Ordering::Relaxed) {
                         println!("{}", reset(use_styles));
-                        in_thinking.set(false);
+                        in_thinking.store(false, std::sync::atomic::Ordering::Relaxed);
                     }
-                    if in_agent_text.get() {
+                    if in_agent_text.load(std::sync::atomic::Ordering::Relaxed) {
                         println!(); // end in-progress text line
-                        in_agent_text.set(false);
+                        in_agent_text.store(false, std::sync::atomic::Ordering::Relaxed);
                     }
                     println!(); // visual separator before tool output
 
-                    let pt = pending_tool.take();
+                    let pt = pending_tool.lock().unwrap().take();
                     let args = pt
                         .as_ref()
                         .map(|(_, a)| a.clone())
@@ -1404,7 +1409,7 @@ async fn run_agent(
                     io::stdout().flush().ok();
                 }
                 AgentEvent::Error(e) => {
-                    pending_tool.set(None);
+                    pending_tool.lock().unwrap().take();
                     eprintln!(
                         "  {}{}✗{}{} {}{}",
                         bold(use_styles),
@@ -1421,8 +1426,14 @@ async fn run_agent(
                     danger_level,
                     explanation,
                     ..
+                } | AgentEvent::SubagentApprovalRequired {
+                    prompt_id,
+                    tool_name,
+                    danger_level,
+                    explanation,
+                    ..
                 } => {
-                    pending_tool.set(None);
+                    pending_tool.lock().unwrap().take();
                     println!(
                         "  {}⚠ APPROVAL{} {} ({})",
                         yellow(use_styles),
@@ -1436,30 +1447,32 @@ async fn run_agent(
                         explanation,
                         reset(use_styles)
                     );
-                    if let Ok(mut pending) = approvals.lock() {
+                    if let Ok(mut pending) = agent_core::permission::global_pending_approvals().lock() {
                         if let Some(tx) = pending.remove(&prompt_id) {
-                            let _ = tx.send(ApprovalChoice::AllowSession);
+                            let _ = tx.send(agent_core::permission::ApprovalChoice::AllowSession);
                         }
                     }
                 }
 
                 // ── Subagent events ────────────────────────────────
-                AgentEvent::SubagentStart { subagent_id, task } => {
-                    pending_tool.set(None);
-                    in_sub_thinking.set(false);
-                    in_sub_text.set(false);
+                AgentEvent::SubagentStart { subagent_id, role_name, task } => {
+                    pending_tool.lock().unwrap().take();
+                    in_sub_thinking.store(false, std::sync::atomic::Ordering::Relaxed);
+                    in_sub_text.store(false, std::sync::atomic::Ordering::Relaxed);
                     println!(
-                        "\n  {}├─ Sub-agent '{}':{} {}{}",
-                        yellow(use_styles),
+                        "\n  {}=== Subagent '{}' ({}) Started ==={}{}\n  {}{}",
+                        cyan(use_styles),
+                        role_name,
                         subagent_id,
                         reset(use_styles),
                         dim(use_styles),
                         truncate(&task, 60),
+                        reset(use_styles),
                     );
                 }
                 AgentEvent::SubagentTurnStart { turn_index, .. } => {
-                    in_sub_thinking.set(false);
-                    in_sub_text.set(false);
+                    in_sub_thinking.store(false, std::sync::atomic::Ordering::Relaxed);
+                    in_sub_text.store(false, std::sync::atomic::Ordering::Relaxed);
                     // Print turn line + immediate "waiting" indicator
                     print!(
                         "\n  {}│  ── Turn {turn_index} ──{}  {}⏳{}",
@@ -1474,8 +1487,8 @@ async fn run_agent(
                     match delta {
                         MessageDelta::Thinking(t) => {
                             // Clear the ⏳ indicator on first thinking token
-                            if !in_sub_thinking.get() {
-                                in_sub_text.set(false);
+                            if !in_sub_thinking.load(std::sync::atomic::Ordering::Relaxed) {
+                                in_sub_text.store(false, std::sync::atomic::Ordering::Relaxed);
                                 // Clear the ⏳ + newline + print prefix
                                 print!("\r                                    \r");
                                 print!(
@@ -1485,17 +1498,17 @@ async fn run_agent(
                                     reset(use_styles),
                                     dim(use_styles),
                                 );
-                                in_sub_thinking.set(true);
+                                in_sub_thinking.store(true, std::sync::atomic::Ordering::Relaxed);
                             }
                             print!("{}", t);
                             io::stdout().flush().ok();
                         }
                         MessageDelta::Text(t) => {
-                            if in_sub_thinking.get() {
+                            if in_sub_thinking.load(std::sync::atomic::Ordering::Relaxed) {
                                 println!("{}", reset(use_styles));
-                                in_sub_thinking.set(false);
+                                in_sub_thinking.store(false, std::sync::atomic::Ordering::Relaxed);
                             }
-                            if !in_sub_text.get() {
+                            if !in_sub_text.load(std::sync::atomic::Ordering::Relaxed) {
                                 println!(); // visual separator before sub-agent text
                                 print!(
                                     "  {}│ {}{}",
@@ -1503,7 +1516,7 @@ async fn run_agent(
                                     reset(use_styles),
                                     reset(use_styles),
                                 );
-                                in_sub_text.set(true);
+                                in_sub_text.store(true, std::sync::atomic::Ordering::Relaxed);
                             }
                             print!("{}", t);
                             io::stdout().flush().ok();
@@ -1514,11 +1527,11 @@ async fn run_agent(
                     tool_name, args, ..
                 } => {
                     // Flush any pending thinking/text before tool line
-                    if in_sub_thinking.get() {
+                    if in_sub_thinking.load(std::sync::atomic::Ordering::Relaxed) {
                         println!("{}", reset(use_styles));
-                        in_sub_thinking.set(false);
+                        in_sub_thinking.store(false, std::sync::atomic::Ordering::Relaxed);
                     }
-                    in_sub_text.set(false);
+                    in_sub_text.store(false, std::sync::atomic::Ordering::Relaxed);
                     println!(); // visual separator before sub-agent tool
                     let args_str = fmt_tool_args(&args);
                     println!(
@@ -1560,15 +1573,17 @@ async fn run_agent(
                 }
                 AgentEvent::SubagentEnd {
                     subagent_id,
+                    role_name,
                     success,
                     iterations_used,
                 } => {
-                    in_sub_thinking.set(false);
-                    in_sub_text.set(false);
+                    in_sub_thinking.store(false, std::sync::atomic::Ordering::Relaxed);
+                    in_sub_text.store(false, std::sync::atomic::Ordering::Relaxed);
                     if success {
                         println!(
-                            "  {}├─ '{}'{} {}✓{} ({} iterations){}",
+                            "  {}├─ '{}' ({}){} {}✓{} ({} iterations){}",
                             yellow(use_styles),
+                            role_name,
                             subagent_id,
                             reset(use_styles),
                             green(use_styles),
@@ -1578,8 +1593,9 @@ async fn run_agent(
                         );
                     } else {
                         println!(
-                            "  {}├─ '{}'{} {}✗{} ({} iterations){}",
+                            "  {}├─ '{}' ({}){} {}✗{} ({} iterations){}",
                             yellow(use_styles),
+                            role_name,
                             subagent_id,
                             reset(use_styles),
                             red(use_styles),

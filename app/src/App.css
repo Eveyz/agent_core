@@ -247,7 +247,16 @@ body {
 }
 
 /* Session list (inside expanded project) */
+.session-list-container {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.2s ease-out;
+}
+.session-list-container.expanded {
+  grid-template-rows: 1fr;
+}
 .session-list {
+  overflow: hidden;
   /* minimal indent to show hierarchy */
 }
 
@@ -552,6 +561,115 @@ body {
 .thinking-toggle:hover {
   background: var(--bg-hover);
   color: var(--text-main);
+}
+
+/* Tool Block Redesign */
+.tool-block-wrapper {
+  margin-bottom: 8px;
+  position: relative;
+}
+
+.tool-block-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 4px 10px;
+  width: fit-content;
+  position: relative;
+  z-index: 2;
+  transition: all 0.2s ease;
+  background-color: var(--bg-card);
+}
+
+.tool-block-header:hover {
+  background: var(--bg-hover);
+  color: var(--text-main);
+}
+
+.tool-block-wrapper.active .tool-block-header {
+  color: var(--text-main);
+  border-color: rgba(56, 189, 248, 0.4);
+}
+
+.tool-block-wrapper.error .tool-block-header {
+  border-color: rgba(248, 113, 113, 0.4);
+}
+
+.tool-block-header.expanded {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom-color: transparent;
+  background-color: rgba(255, 255, 255, 0.03);
+}
+
+.tool-name {
+  font-family: 'Fira Code', 'Menlo', monospace;
+  font-weight: 500;
+  color: #7dd3fc;
+}
+
+.tool-status-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tool-loader-icon {
+  animation: spin 1s linear infinite;
+  color: #38bdf8;
+}
+
+.tool-block-body {
+  border: 1px solid var(--border-color);
+  border-top: none;
+  border-radius: 0 0 12px 12px;
+  background-color: rgba(255, 255, 255, 0.02);
+  padding: 12px;
+  margin-top: -1px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.tool-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tool-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-dim);
+  letter-spacing: 0.5px;
+  user-select: none;
+}
+
+.tool-args-pre {
+  margin: 0;
+  padding: 8px 10px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  font-family: 'Fira Code', 'Menlo', monospace;
+  font-size: 12px;
+  color: #e0def4;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.tool-result-content {
+  background: rgba(0, 0, 0, 0.15);
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.03);
 }
 
 /* Animations */
@@ -1500,11 +1618,21 @@ body {
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.02);
   overflow: hidden;
-  transition: background 0.15s, border-color 0.15s;
+  transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.subagent-card:hover {
+  border-color: rgba(160, 216, 255, 0.3);
+  box-shadow: 0 0 15px rgba(160, 216, 255, 0.1), inset 0 0 10px rgba(160, 216, 255, 0.05);
 }
 
 .subagent-card.subagent-working {
   border-color: rgba(250, 204, 21, 0.25);
+}
+
+.subagent-card.subagent-working:hover {
+  border-color: rgba(250, 204, 21, 0.4);
+  box-shadow: 0 0 15px rgba(250, 204, 21, 0.1), inset 0 0 10px rgba(250, 204, 21, 0.05);
 }
 
 .subagent-header {
@@ -1526,6 +1654,30 @@ body {
   font-family: 'Fira Code', 'Menlo', monospace;
 }
 
+.subagent-badge-pending {
+  background: rgba(249, 115, 22, 0.15);
+  color: #fb923c;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  border: 1px solid rgba(249, 115, 22, 0.3);
+  text-transform: uppercase;
+  margin-left: 6px;
+  animation: pulse-orange 2s infinite;
+}
+
+@keyframes pulse-orange {
+  0% { box-shadow: 0 0 0 0 rgba(249, 115, 22, 0.4); }
+  70% { box-shadow: 0 0 0 4px rgba(249, 115, 22, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(249, 115, 22, 0); }
+}
+
+.subagent-card.subagent-needs-approval {
+  border-color: rgba(249, 115, 22, 0.4);
+  box-shadow: 0 0 10px rgba(249, 115, 22, 0.1);
+}
+
 .subagent-status {
   color: var(--text-dim);
   margin-left: auto;
@@ -1538,7 +1690,12 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  height: 250px;
+  overflow-y: auto;
 }
+
+.subagent-body::-webkit-scrollbar { width: 4px; }
+.subagent-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 
 .subagent-task {
   font-size: 12px;

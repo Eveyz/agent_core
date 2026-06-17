@@ -241,6 +241,7 @@ export const projectSlice = createSlice({
   initialState,
   reducers: {
     setActiveProject: (state, action: PayloadAction<string | null>) => {
+      if (state.activeProjectId === action.payload) return;
       state.activeProjectId = action.payload;
       // Clear session when switching projects
       state.activeSessionId = null;
@@ -339,8 +340,10 @@ export const projectSlice = createSlice({
           state.sessions[projectId] = [];
         }
         state.sessions[projectId].unshift(session);
+        state.activeProjectId = projectId;
         state.activeSessionId = session.id;
         state.sessionMessages = [];
+        localStorage.setItem(STORAGE_KEY, projectId);
         localStorage.setItem(SESSION_KEY, session.id);
       })
       .addCase(deleteSession.fulfilled, (state, action) => {
@@ -365,6 +368,7 @@ export const projectSlice = createSlice({
           if (s) {
             s.title = newTitle;
             s.updated_at = new Date().toISOString();
+            state.sessions[projectId].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
           }
         }
       })
@@ -377,6 +381,7 @@ export const projectSlice = createSlice({
           if (s) {
             s.message_count = state.sessionMessages.length;
             s.updated_at = new Date().toISOString();
+            list.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
             break;
           }
         }

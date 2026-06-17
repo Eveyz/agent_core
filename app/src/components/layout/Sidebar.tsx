@@ -9,7 +9,7 @@ import {
   createSession, deleteSession, resumeSession,
   saveSessionMessages,
 } from '../../features/project/projectSlice';
-import { clearChat, cacheCurrentSession, restoreOrClearSession, entriesToMessages } from '../../features/chat/chatSlice';
+import { clearChat, cacheCurrentSession, restoreOrClearSession, entriesToMessages, entriesToEventLog } from '../../features/chat/chatSlice';
 import PlusIcon from 'lucide-react/dist/esm/icons/plus.mjs';
 import LayoutGridIcon from 'lucide-react/dist/esm/icons/layout-grid.mjs';
 import MessageSquareIcon from 'lucide-react/dist/esm/icons/message-square.mjs';
@@ -130,20 +130,23 @@ export const Sidebar = memo(function Sidebar({
   const activeProjectId = useSelector((state: RootState) => state.project.activeProjectId);
   const activeSessionId = useSelector((state: RootState) => state.project.activeSessionId);
   const chatEntries = useSelector((state: RootState) => state.chat.entries);
+  const resumedFromBackend = useSelector((state: RootState) => state.chat._resumedFromBackend);
   const defaultModel = useSelector((state: RootState) => state.settings.config?.default_model || '');
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [creatingSession, setCreatingSession] = useState(false);
 
-  // Auto-expand active project
+  // Auto-expand active project when it changes
+  const lastAutoExpanded = useRef<string | null>(null);
   useEffect(() => {
-    if (activeProjectId) {
+    if (activeProjectId && lastAutoExpanded.current !== activeProjectId) {
+      lastAutoExpanded.current = activeProjectId;
       setExpandedProjects((prev) => {
         if (prev.has(activeProjectId)) return prev;
         const next = new Set(prev);
         next.add(activeProjectId);
-        dispatch(fetchProjectSessions(activeProjectId) as any);
         return next;
       });
+      dispatch(fetchProjectSessions(activeProjectId) as any);
     }
   }, [activeProjectId, dispatch]);
 
@@ -154,10 +157,11 @@ export const Sidebar = memo(function Sidebar({
         next.delete(projectId);
       } else {
         next.add(projectId);
-        dispatch(fetchProjectSessions(projectId) as any);
       }
       return next;
     });
+    // We can optimistically fetch sessions when toggled.
+    dispatch(fetchProjectSessions(projectId) as any);
   }, [dispatch]);
 
   const handleOpenFolder = useCallback(async () => {
@@ -178,40 +182,16 @@ export const Sidebar = memo(function Sidebar({
     if (name?.trim()) dispatch(renameProject({ projectId, newName: name.trim() }) as any);
   }, [dispatch]);
 
-  const handleSelectProject = useCallback((projectId: string) => {
-    dispatch(setActiveProject(projectId));
-  }, [dispatch]);
+
 
   // Save current session to backend + memory cache
   const saveAndCacheCurrent = useCallback(() => {
-    if (!activeSessionId || !activeProjectId) return;
+    if (!activeSessionId || !activeProjectId || resumedFromBackend) return;
     const msgs = entriesToMessages(chatEntries);
     if (msgs.length > 0) {
       const project = projects.find((p) => p.id === activeProjectId);
       if (project) {
-        // Compute timing
-        let processTimeMs = 0;
-        let thoughtTimeMs = 0;
-        const eventLog: any[] = [];
-        for (const entry of chatEntries) {
-          if (entry.type === 'turn' && entry.startTime && entry.endTime) {
-            processTimeMs += entry.endTime - entry.startTime;
-          }
-          if (entry.type === 'turn' && entry.blocks) {
-            for (const b of entry.blocks) {
-              if (b.type === 'thinking' && b.startTime && b.endTime) {
-                thoughtTimeMs += b.endTime - b.startTime;
-              }
-              if (b.type === 'tool') {
-                eventLog.push({
-                  turn_index: entry.turnIndex ?? 0,
-                  event_type: 'tool_call',
-                  payload: { name: b.name, args_summary: b.result?.slice(0, 200), is_error: b.is_error },
-                });
-              }
-            }
-          }
-        }
+        const { eventLog, processTimeMs, thoughtTimeMs } = entriesToEventLog(chatEntries);
         dispatch(saveSessionMessages({
           sessionId: activeSessionId,
           messages: msgs,
@@ -224,13 +204,14 @@ export const Sidebar = memo(function Sidebar({
       }
     }
     dispatch(cacheCurrentSession(activeSessionId));
-  }, [dispatch, activeSessionId, activeProjectId, chatEntries, projects, defaultModel]);
+  }, [dispatch, activeSessionId, activeProjectId, chatEntries, projects, defaultModel, resumedFromBackend]);
 
   const handleNewSession = useCallback(async (projectId: string) => {
     if (creatingSession) return;
     setCreatingSession(true);
     try {
       saveAndCacheCurrent();
+      dispatch(setActiveProject(projectId));
       await dispatch(createSession(projectId) as any);
       dispatch(clearChat());
     } finally {
@@ -313,7 +294,7 @@ export const Sidebar = memo(function Sidebar({
                 {/* Project row: folder icon + name + chevron + context menu */}
                 <div
                   className="sidebar-project-row"
-                  onClick={() => { handleSelectProject(project.id); toggleProject(project.id); }}
+                  onClick={() => { toggleProject(project.id); }}
                 >
                   <span className="sidebar-row-content">
                     {isExpanded
@@ -342,7 +323,7 @@ export const Sidebar = memo(function Sidebar({
                 </div>
 
                 {/* Sessions under this project */}
-                {isExpanded && (
+                <div className={`session-list-container ${isExpanded ? 'expanded' : ''}`}>
                   <div className="session-list">
                     {projectSessions.map((session) => {
                       const isSessionActive = activeSessionId === session.id && activeProjectId === project.id;
@@ -371,7 +352,7 @@ export const Sidebar = memo(function Sidebar({
                       );
                     })}
                   </div>
-                )}
+                </div>
               </div>
             );
           })}

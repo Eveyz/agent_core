@@ -1,20 +1,29 @@
+pub mod resilience;
 pub mod streaming;
 
+use crate::client::resilience::{CircuitBreaker, CircuitBreakerConfig, calculate_backoff};
 use crate::config::{ModelConfig, RuntimeOverrides};
 use crate::types::{Message, StreamEvent, ToolDefinition};
 use anyhow::{Result, bail};
 use reqwest::Response;
 use serde_json::Value;
 use std::time::Duration;
+use std::sync::Arc;
 
 pub struct OpenAIClient {
     http: reqwest::Client,
     pub(crate) model: ModelConfig,
     pub(crate) overrides: RuntimeOverrides,
+    circuit_breaker: Arc<CircuitBreaker>,
+    fallback_client: Option<Box<OpenAIClient>>,
 }
 
 impl OpenAIClient {
     pub fn new(model: ModelConfig) -> Self {
+        Self::with_fallback(model, None)
+    }
+
+    pub fn with_fallback(model: ModelConfig, fallback: Option<OpenAIClient>) -> Self {
         let http = Self::build_http_client(model.request_timeout_secs);
         Self {
             http,
@@ -23,6 +32,8 @@ impl OpenAIClient {
                 temperature: None,
                 max_tokens: None,
             },
+            circuit_breaker: CircuitBreaker::new(CircuitBreakerConfig::default()),
+            fallback_client: fallback.map(Box::new),
         }
     }
 
@@ -120,47 +131,91 @@ impl OpenAIClient {
     }
 
     async fn send_with_retry(&self, body: &Value) -> Result<Response> {
-        let url = format!("{}/chat/completions", self.model.base_url);
-        let mut backoff = Duration::from_millis(500);
-        let max_retries = 3;
-
-        for attempt in 0..max_retries {
-            let resp = self
-                .http
-                .post(&url)
-                .bearer_auth(&self.model.api_key)
-                .json(body)
-                .send()
-                .await;
-
-            match resp {
-                Ok(r) if r.status().is_success() => return Ok(r),
-                Ok(r) if r.status().as_u16() == 429 || r.status().is_server_error() => {
-                    let retry_after = r
-                        .headers()
-                        .get("retry-after")
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|v| v.parse::<u64>().ok())
-                        .map(Duration::from_secs);
-
-                    // retry silently — error will flow through Result if needed
-                    tokio::time::sleep(retry_after.unwrap_or(backoff)).await;
-                    backoff *= 2;
+        let mut current_client = self;
+        
+        loop {
+            // Circuit breaker check
+            if let Err(msg) = current_client.circuit_breaker.acquire_permit() {
+                if let Some(ref fallback) = current_client.fallback_client {
+                    tracing::warn!("Circuit breaker open for model {}: {}, falling back to {}", current_client.model.model_id, msg, fallback.model.model_id);
+                    current_client = fallback.as_ref();
+                    continue;
                 }
-                Ok(r) => {
-                    let status = r.status();
-                    let body_text = r.text().await.unwrap_or_default();
-                    bail!("API error {status}: {body_text}");
-                }
-                Err(e) if attempt < max_retries - 1 => {
-                    tokio::time::sleep(backoff).await;
-                    backoff *= 2;
-                }
-                Err(e) => return Err(e.into()),
+                bail!("Circuit breaker open: {}", msg);
             }
-        }
 
-        bail!("max retries ({max_retries}) exceeded")
+            let url = format!("{}/chat/completions", current_client.model.base_url);
+            let base_delay = Duration::from_millis(500);
+            let max_delay = Duration::from_secs(10);
+            let max_retries = 3;
+
+            let mut final_error = None;
+
+            for attempt in 0..max_retries {
+                let resp = current_client
+                    .http
+                    .post(&url)
+                    .bearer_auth(&current_client.model.api_key)
+                    .json(body)
+                    .send()
+                    .await;
+
+                match resp {
+                    Ok(r) if r.status().is_success() => {
+                        current_client.circuit_breaker.record_success();
+                        return Ok(r);
+                    }
+                    Ok(r) if r.status().as_u16() == 429 || r.status().is_server_error() => {
+                        current_client.circuit_breaker.record_failure();
+                        if attempt == max_retries - 1 {
+                            final_error = Some(anyhow::anyhow!("API error {}", r.status()));
+                            break;
+                        }
+                        
+                        let retry_after = r
+                            .headers()
+                            .get("retry-after")
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|v| v.parse::<u64>().ok())
+                            .map(Duration::from_secs);
+
+                        let delay = retry_after.unwrap_or_else(|| calculate_backoff(attempt, base_delay, max_delay));
+                        tracing::warn!("Model {} failed with {}, retrying in {:?}", current_client.model.model_id, r.status(), delay);
+                        tokio::time::sleep(delay).await;
+                    }
+                    Ok(r) => {
+                        current_client.circuit_breaker.record_failure();
+                        let status = r.status();
+                        let body_text = r.text().await.unwrap_or_default();
+                        final_error = Some(anyhow::anyhow!("API error {status}: {body_text}"));
+                        break;
+                    }
+                    Err(e) => {
+                        current_client.circuit_breaker.record_failure();
+                        if attempt == max_retries - 1 {
+                            final_error = Some(e.into());
+                            break;
+                        }
+                        
+                        let delay = calculate_backoff(attempt, base_delay, max_delay);
+                        tracing::warn!("Model {} network error: {}, retrying in {:?}", current_client.model.model_id, e, delay);
+                        tokio::time::sleep(delay).await;
+                    }
+                }
+            }
+            
+            // If we broke out of the loop with an error, try fallback
+            if let Some(ref fallback) = current_client.fallback_client {
+                tracing::warn!("Model {} exhausted retries or failed, falling back to {}", current_client.model.model_id, fallback.model.model_id);
+                current_client = fallback.as_ref();
+                continue;
+            }
+            
+            if let Some(e) = final_error {
+                return Err(e);
+            }
+            bail!("Max retries exceeded");
+        }
     }
 }
 

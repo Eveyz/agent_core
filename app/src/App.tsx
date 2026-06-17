@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { useDispatch, useSelector } from 'react-redux';
+import { useDispatch, useSelector, useStore, shallowEqual } from 'react-redux';
 import BoxIcon from 'lucide-react/dist/esm/icons/box.mjs';
 import MessageSquareIcon from 'lucide-react/dist/esm/icons/message-square.mjs';
 import TerminalSquareIcon from 'lucide-react/dist/esm/icons/terminal-square.mjs';
@@ -11,7 +11,7 @@ import PencilIcon from 'lucide-react/dist/esm/icons/pencil.mjs';
 import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
 import XIcon from 'lucide-react/dist/esm/icons/x.mjs';
 import { RootState } from './store';
-import { agentEventReceived, userMessageSent, entriesToMessages, retryFromEntry } from './features/chat/chatSlice';
+import { agentEventReceived, userMessageSent, entriesToMessages, entriesToEventLog, retryFromEntry } from './features/chat/chatSlice';
 import { openSettings, fetchConfig } from './features/settings/settingsSlice';
 import { fetchProjects, fetchProjectSessions, createSession, saveSessionMessages, renameSession, resumeSession, setActiveSession } from './features/project/projectSlice';
 import { Sidebar } from './components/layout/Sidebar';
@@ -25,7 +25,7 @@ import './App.css';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-function roughTokenCount(text: string): number {
+export function roughTokenCount(text: string): number {
   const chars = [...text].length;
   const ascii = [...text].filter(c => c.charCodeAt(0) < 128).length;
   return Math.floor(ascii / 4) + Math.floor((chars - ascii) / 2);
@@ -40,18 +40,24 @@ function getActiveSessionTitle(projectState: RootState['project']): string {
 
 function App() {
   const dispatch = useDispatch();
-  const entries = useSelector((state: RootState) => state.chat.entries);
+  const store = useStore<RootState>();
+  
+  const entryIds = useSelector((state: RootState) => state.chat.entries.map(e => e.id), shallowEqual);
+  const entriesLength = useSelector((state: RootState) => state.chat.entries.length);
   const isProcessing = useSelector((state: RootState) => state.chat.isProcessing);
   const resumedFromBackend = useSelector((state: RootState) => state.chat._resumedFromBackend);
   const defaultModel = useSelector((state: RootState) => state.settings.config?.default_model || '');
-  const projectState = useSelector((state: RootState) => state.project);
-  const { activeProjectId, activeSessionId, projects } = projectState;
+  
+  const activeProjectId = useSelector((state: RootState) => state.project.activeProjectId);
+  const activeSessionId = useSelector((state: RootState) => state.project.activeSessionId);
+  const projects = useSelector((state: RootState) => state.project.projects);
+  const sessionTitle = useSelector((state: RootState) => getActiveSessionTitle(state.project));
 
   // Debug: detect infinite re-render
   const renderCount = useRef(0);
   renderCount.current++;
   if (renderCount.current > 100) {
-    console.error('[App] Too many re-renders!', renderCount.current);
+    console.warn('[App] Re-render count high:', renderCount.current);
   }
   const activeProject = projects.find((p) => p.id === activeProjectId);
   const [activeTab, setActiveTab] = useState<'code' | 'write'>('code');
@@ -63,8 +69,18 @@ function App() {
   }, [dispatch]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [entries.length, isProcessing]);
+    const el = messagesEndRef.current?.parentElement;
+    if (!el) return;
+    const observer = new MutationObserver(() => {
+      // Keep it scrolled to the bottom if the user is already near the bottom
+      const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 200;
+      if (isNearBottom) {
+        el.scrollTop = el.scrollHeight;
+      }
+    });
+    observer.observe(el, { childList: true, subtree: true, characterData: true });
+    return () => observer.disconnect();
+  }, []);
 
   // Load config and projects on mount
   useEffect(() => {
@@ -107,37 +123,19 @@ function App() {
     }
     // Skip save if entries were just loaded from backend (not from an actual agent run)
     if (resumedFromBackend) return;
+    
+    const state = store.getState();
+    const entries = state.chat.entries;
+
     // Detect transition from processing → done (AgentEnd just happened)
     if (!lastAgentEndRef.current && entries.length > 0) {
       lastAgentEndRef.current = true;
       if (activeSessionId && activeProject) {
-        const msgs = entriesToMessages(entries);
-        if (msgs.length > 0) {
-          // Compute timing from entries
-          let processTimeMs = 0;
-          let thoughtTimeMs = 0;
-          const eventLog: any[] = [];
-          for (const entry of entries) {
-            if (entry.type === 'turn' && entry.startTime && entry.endTime) {
-              processTimeMs += entry.endTime - entry.startTime;
-            }
-            if (entry.type === 'turn' && entry.blocks) {
-              for (const b of entry.blocks) {
-                if (b.type === 'thinking' && b.startTime && b.endTime) {
-                  thoughtTimeMs += b.endTime - b.startTime;
-                }
-                if (b.type === 'tool') {
-                  eventLog.push({
-                    turn_index: entry.turnIndex ?? 0,
-                    event_type: 'tool_call',
-                    payload: { name: b.name, args_summary: b.result?.slice(0, 200), is_error: b.is_error },
-                  });
-                }
-              }
-            }
-          }
-          dispatch(saveSessionMessages({
-            sessionId: activeSessionId,
+          const msgs = entriesToMessages(entries);
+          if (msgs.length > 0) {
+            const { eventLog, processTimeMs, thoughtTimeMs } = entriesToEventLog(entries);
+            dispatch(saveSessionMessages({
+              sessionId: activeSessionId,
             messages: msgs,
             cwd: activeProject.path,
             modelUsed: defaultModel,
@@ -148,9 +146,7 @@ function App() {
         }
       }
     }
-  }, [isProcessing, entries, activeSessionId, activeProject, defaultModel, dispatch]);
-
-  const sessionTitle = getActiveSessionTitle(projectState);
+  }, [isProcessing, resumedFromBackend, activeSessionId, activeProject, defaultModel, dispatch, store]);
 
   const handleSend = useCallback(async (msg: string) => {
     // Auto-create session if none active
@@ -193,6 +189,7 @@ function App() {
   }, [dispatch, activeProjectId, activeSessionId, sessionTitle]);
 
   const handleRetry = useCallback(async (entryId: string, editedText?: string) => {
+    const entries = store.getState().chat.entries;
     const entry = entries.find(e => e.id === entryId);
     if (!entry) return;
     const msg = editedText ?? entry.text ?? '';
@@ -206,7 +203,7 @@ function App() {
       console.error('Retry invoke error:', e);
       dispatch(agentEventReceived({ Error: String(e) }));
     }
-  }, [dispatch, entries, activeSessionId]);
+  }, [dispatch, activeSessionId, store]);
 
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [titleEditValue, setTitleEditValue] = useState('');
@@ -280,16 +277,18 @@ function App() {
           </div>
         </header>
 
-        {entries.length === 0 ? (
+        {entriesLength === 0 ? (
           <EmptyState onSend={handleSend} />
         ) : (
           <div className="chat-history">
-            {entries.map((entry) =>
-              entry.type === 'user' ? (
-                <UserRow key={entry.id} entry={entry} modelName={defaultModel} onRetry={handleRetry} isProcessing={isProcessing} />
-              ) : (
-                <AgentRow key={entry.id} entry={entry} />
-              )
+            {entryIds.map((id) =>
+              <EntryRow 
+                key={id} 
+                entryId={id} 
+                defaultModel={defaultModel} 
+                handleRetry={handleRetry} 
+                isProcessing={isProcessing} 
+              />
             )}
             <div ref={messagesEndRef} />
           </div>
@@ -299,20 +298,27 @@ function App() {
           isProcessing={isProcessing}
           onSend={handleSend}
           currentModel={defaultModel}
-          tokenCount={entries.reduce((sum, e) => {
-            if (e.type === 'user' && e.text) return sum + roughTokenCount(e.text);
-            if (e.type === 'turn' && e.blocks) return sum + e.blocks.reduce((s, b) => {
-              if (b.type === 'assistant' || b.type === 'thinking') return s + roughTokenCount(b.text);
-              if (b.type === 'tool') return s + roughTokenCount(b.result);
-              return s;
-            }, 0);
-            return sum;
-          }, 0)}
-          turnCount={entries.filter(e => e.type === 'turn').length}
         />
       </main>
     </div>
   );
 }
 
+const EntryRow = memo(function EntryRow({ entryId, defaultModel, handleRetry, isProcessing }: {
+  entryId: string;
+  defaultModel: string;
+  handleRetry: (id: string, text?: string) => void;
+  isProcessing: boolean;
+}) {
+  const entry = useSelector((state: RootState) => state.chat.entries.find(e => e.id === entryId));
+  if (!entry) return null;
+
+  if (entry.type === 'user') {
+    return <UserRow entry={entry} modelName={defaultModel} onRetry={handleRetry} isProcessing={isProcessing} />;
+  } else {
+    return <AgentRow entry={entry} />;
+  }
+});
+
 export default App;
+

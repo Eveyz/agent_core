@@ -26,6 +26,15 @@ pub mod whitelist;
 use anyhow::Result;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::collections::HashMap;
+
+pub type PendingApprovalMap = HashMap<String, tokio::sync::oneshot::Sender<types::ApprovalChoice>>;
+
+pub fn global_pending_approvals() -> Arc<Mutex<PendingApprovalMap>> {
+    static MAP: OnceLock<Arc<Mutex<PendingApprovalMap>>> = OnceLock::new();
+    MAP.get_or_init(|| Arc::new(Mutex::new(HashMap::new()))).clone()
+}
 
 pub use audit::{AuditLog, AuditStats};
 pub use types::AuditEntry;

@@ -30,22 +30,26 @@ impl Default for SubagentConfig {
 #[derive(Debug, Clone)]
 pub struct SubagentResult {
     pub subagent_id: String,
+    pub role_name: String,
     pub output: String,
     pub iterations_used: usize,
     pub success: bool,
 }
 
 pub struct Subagent {
-    id: String,
+    pub id: String,
+    pub role_name: String,
     config: SubagentConfig,
     client: OpenAIClient,
     context: Context,
     registry: ToolRegistry,
+    permission_policy: crate::permission::PermissionPolicy,
+    hook_registry: crate::hooks::HookRegistry,
 }
 
 impl Subagent {
     pub fn new(
-        id: &str,
+        role_name: &str,
         config: SubagentConfig,
         model_config: &ModelConfig,
         registry: ToolRegistry,
@@ -54,11 +58,14 @@ impl Subagent {
         let context = Context::new(&config.system_prompt, config.max_context_tokens);
 
         Self {
-            id: id.to_string(),
+            id: uuid::Uuid::new_v4().to_string(),
+            role_name: role_name.to_string(),
             config,
             client,
             context,
             registry,
+            permission_policy: crate::permission::PermissionPolicy::with_builtin_defaults(),
+            hook_registry: crate::hooks::HookRegistry::new(),
         }
     }
 
@@ -77,6 +84,7 @@ impl Subagent {
         if let Some(ref tx) = event_sender {
             let _ = tx.send(AgentEvent::SubagentStart {
                 subagent_id: self.id.clone(),
+                role_name: self.role_name.clone(),
                 task: task.to_string(),
             });
         }
@@ -107,6 +115,7 @@ impl Subagent {
                 if let Some(ref tx) = event_sender {
                     let _ = tx.send(AgentEvent::SubagentEnd {
                         subagent_id: self.id.clone(),
+                        role_name: self.role_name.clone(),
                         success: true,
                         iterations_used: iteration + 1,
                     });
@@ -114,6 +123,7 @@ impl Subagent {
 
                 return Ok(SubagentResult {
                     subagent_id: self.id.clone(),
+                    role_name: self.role_name.clone(),
                     output: text,
                     iterations_used: iteration + 1,
                     success: true,
@@ -126,38 +136,55 @@ impl Subagent {
             }
 
             // Execute tools, emitting SubagentToolStart/SubagentToolEnd events
-            let results = self
-                .registry
-                .call_all_with_sender(&tool_calls, event_sender.clone())
-                .await;
+            let results = {
+                let mut orchestrator = crate::agent::executor::ToolOrchestrator {
+                    registry: &self.registry,
+                    permission_policy: &mut self.permission_policy,
+                    hook_registry: &mut self.hook_registry,
+                    tool_execution_mode: crate::types::ToolExecutionMode::Sequential,
+                    cancel_token: tokio_util::sync::CancellationToken::new(),
+                };
+                
+                let sender_clone = event_sender.clone();
+                let subagent_id = self.id.clone();
+                orchestrator.execute_tools(&tool_calls, &move |e| {
+                    if let Some(ref tx) = sender_clone {
+                        let mapped = match e {
+                            AgentEvent::ToolExecutionStart { tool_call_id, tool_name, args } => {
+                                AgentEvent::SubagentToolStart {
+                                    subagent_id: subagent_id.clone(),
+                                    tool_call_id,
+                                    tool_name,
+                                    args,
+                                }
+                            }
+                            AgentEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error } => {
+                                AgentEvent::SubagentToolEnd {
+                                    subagent_id: subagent_id.clone(),
+                                    tool_call_id,
+                                    tool_name,
+                                    result,
+                                    is_error,
+                                }
+                            }
+                            AgentEvent::ApprovalRequired { prompt_id, tool_name, tool_input, danger_level, explanation } => {
+                                AgentEvent::SubagentApprovalRequired {
+                                    subagent_id: subagent_id.clone(),
+                                    prompt_id,
+                                    tool_name,
+                                    tool_input,
+                                    danger_level,
+                                    explanation,
+                                }
+                            }
+                            _ => e,
+                        };
+                        let _ = tx.send(mapped);
+                    }
+                }).await
+            };
 
             for (call, result) in tool_calls.iter().zip(&results) {
-                // Emit SubagentToolStart
-                if let Some(ref tx) = event_sender {
-                    let args: serde_json::Value =
-                        serde_json::from_str(&call.function.arguments).unwrap_or_default();
-                    let _ = tx.send(AgentEvent::SubagentToolStart {
-                        subagent_id: self.id.clone(),
-                        tool_call_id: call.id.clone(),
-                        tool_name: call.function.name.clone(),
-                        args,
-                    });
-                }
-
-                // Emit SubagentToolEnd
-                let is_error = result.starts_with("Error")
-                    || result.starts_with("Permission denied")
-                    || result.starts_with("Hook vetoed");
-                if let Some(ref tx) = event_sender {
-                    let _ = tx.send(AgentEvent::SubagentToolEnd {
-                        subagent_id: self.id.clone(),
-                        tool_call_id: call.id.clone(),
-                        tool_name: call.function.name.clone(),
-                        result: result.clone(),
-                        is_error,
-                    });
-                }
-
                 self.context
                     .add(Message::tool(call.id.clone(), result.clone()));
             }
@@ -167,6 +194,7 @@ impl Subagent {
         if let Some(ref tx) = event_sender {
             let _ = tx.send(AgentEvent::SubagentEnd {
                 subagent_id: self.id.clone(),
+                role_name: self.role_name.clone(),
                 success: false,
                 iterations_used: self.config.max_iterations,
             });
@@ -174,6 +202,7 @@ impl Subagent {
 
         Ok(SubagentResult {
             subagent_id: self.id.clone(),
+            role_name: self.role_name.clone(),
             output: format!(
                 "Subagent '{}' reached max iterations ({})",
                 self.id, self.config.max_iterations

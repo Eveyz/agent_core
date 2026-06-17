@@ -143,6 +143,7 @@ pub enum AgentEvent {
     // ── Subagent lifecycle ─────────────────────────────────────────
     SubagentStart {
         subagent_id: String,
+        role_name: String,
         task: String,
     },
     SubagentTurnStart {
@@ -168,8 +169,17 @@ pub enum AgentEvent {
     },
     SubagentEnd {
         subagent_id: String,
+        role_name: String,
         success: bool,
         iterations_used: usize,
+    },
+    SubagentApprovalRequired {
+        subagent_id: String,
+        prompt_id: String,
+        tool_name: String,
+        tool_input: serde_json::Value,
+        danger_level: String,
+        explanation: String,
     },
 
     // ── Permissions ─────────────────────────────────────────────────
@@ -412,6 +422,7 @@ mod tests {
         let events = [
             AgentEvent::SubagentStart {
                 subagent_id: "researcher".to_string(),
+                role_name: "test_role".to_string(),
                 task: "analyze codebase".to_string(),
             },
             AgentEvent::SubagentTurnStart {
@@ -437,6 +448,7 @@ mod tests {
             },
             AgentEvent::SubagentEnd {
                 subagent_id: "researcher".to_string(),
+                role_name: "test_role".to_string(),
                 success: true,
                 iterations_used: 2,
             },
@@ -458,6 +470,7 @@ mod tests {
         match &events[5] {
             AgentEvent::SubagentEnd {
                 subagent_id,
+                role_name,
                 success,
                 iterations_used,
             } => {
@@ -475,12 +488,14 @@ mod tests {
 
         tx.send(AgentEvent::SubagentStart {
             subagent_id: "test".to_string(),
+            role_name: "test_role".to_string(),
             task: "test task".to_string(),
         })
         .unwrap();
 
         tx.send(AgentEvent::SubagentEnd {
             subagent_id: "test".to_string(),
+            role_name: "test_role".to_string(),
             success: true,
             iterations_used: 1,
         })

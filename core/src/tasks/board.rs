@@ -1,6 +1,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -28,21 +29,23 @@ impl std::fmt::Display for TaskStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskRecord {
-    pub id: String,
-    pub goal: String,
-    pub status: TaskStatus,
-    pub blocked_by: Vec<String>,
-    pub assigned_to: Option<String>,
-    pub result: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    id: String,
+    title: String,
+    goal: String,
+    status: TaskStatus,
+    blocked_by: Vec<String>,
+    assigned_to: Option<String>,
+    result: Option<String>,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
 }
 
 impl TaskRecord {
-    pub fn new(id: &str, goal: &str, blocked_by: Vec<String>) -> Self {
+    pub fn new(title: &str, goal: &str, blocked_by: Vec<String>) -> Self {
         let now = Utc::now();
         Self {
-            id: id.to_string(),
+            id: uuid::Uuid::new_v4().to_string(),
+            title: title.to_string(),
             goal: goal.to_string(),
             status: if blocked_by.is_empty() {
                 TaskStatus::Ready
@@ -56,10 +59,73 @@ impl TaskRecord {
             updated_at: now,
         }
     }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    pub fn goal(&self) -> &str {
+        &self.goal
+    }
+
+    pub fn status(&self) -> &TaskStatus {
+        &self.status
+    }
+
+    pub fn blocked_by(&self) -> &[String] {
+        &self.blocked_by
+    }
+
+    pub fn assigned_to(&self) -> Option<&str> {
+        self.assigned_to.as_deref()
+    }
+
+    pub fn result(&self) -> Option<&str> {
+        self.result.as_deref()
+    }
+
+    pub fn created_at(&self) -> DateTime<Utc> {
+        self.created_at
+    }
+
+    pub fn updated_at(&self) -> DateTime<Utc> {
+        self.updated_at
+    }
+
+    pub fn mark_in_progress(&mut self, agent_id: &str) {
+        self.status = TaskStatus::InProgress;
+        self.assigned_to = Some(agent_id.to_string());
+        self.updated_at = Utc::now();
+    }
+
+    pub fn mark_completed(&mut self, result: Option<String>) {
+        self.status = TaskStatus::Completed;
+        if let Some(r) = result {
+            self.result = Some(r);
+        }
+        self.updated_at = Utc::now();
+    }
+
+    pub fn mark_failed(&mut self, result: Option<String>) {
+        self.status = TaskStatus::Failed;
+        if let Some(r) = result {
+            self.result = Some(r);
+        }
+        self.updated_at = Utc::now();
+    }
+
+    pub fn set_status(&mut self, status: TaskStatus) {
+        self.status = status;
+        self.updated_at = Utc::now();
+    }
 }
 
 pub struct TaskBoard {
-    tasks: Vec<TaskRecord>,
+    tasks: HashMap<String, TaskRecord>,
     storage_path: Option<PathBuf>,
 }
 
@@ -72,7 +138,7 @@ impl Default for TaskBoard {
 impl TaskBoard {
     pub fn new() -> Self {
         Self {
-            tasks: Vec::new(),
+            tasks: HashMap::new(),
             storage_path: None,
         }
     }
@@ -82,15 +148,17 @@ impl TaskBoard {
             std::fs::read_to_string(&path)
                 .ok()
                 .and_then(|content| {
-                    content
-                        .lines()
-                        .filter_map(|line| serde_json::from_str(line).ok())
-                        .collect::<Vec<TaskRecord>>()
-                        .into()
+                    let mut map = HashMap::new();
+                    for line in content.lines() {
+                        if let Ok(task) = serde_json::from_str::<TaskRecord>(line) {
+                            map.insert(task.id.clone(), task);
+                        }
+                    }
+                    Some(map)
                 })
                 .unwrap_or_default()
         } else {
-            Vec::new()
+            HashMap::new()
         };
 
         Self {
@@ -99,17 +167,18 @@ impl TaskBoard {
         }
     }
 
-    pub fn create(&mut self, id: &str, goal: &str, blocked_by: Vec<String>) {
-        let task = TaskRecord::new(id, goal, blocked_by);
-        self.tasks.push(task);
+    pub fn create(&mut self, title: &str, goal: &str, blocked_by: Vec<String>) -> String {
+        let task = TaskRecord::new(title, goal, blocked_by);
+        let id = task.id.clone();
+        self.tasks.insert(id.clone(), task);
         self.persist();
+        id
     }
 
     pub fn update(&mut self, id: &str, status: TaskStatus, result: Option<String>) -> Result<()> {
         let task = self
             .tasks
-            .iter_mut()
-            .find(|t| t.id == id)
+            .get_mut(id)
             .ok_or_else(|| anyhow::anyhow!("task '{}' not found", id))?;
 
         task.status = status.clone();
@@ -123,28 +192,29 @@ impl TaskBoard {
 
         if status == TaskStatus::Completed || status == TaskStatus::Failed {
             self.update_dependents();
+        } else {
+            self.persist();
         }
 
-        self.persist();
         Ok(())
     }
 
     fn update_dependents(&mut self) {
         let completed_ids: Vec<String> = self
             .tasks
-            .iter()
+            .values()
             .filter(|t| t.status == TaskStatus::Completed)
             .map(|t| t.id.clone())
             .collect();
 
         let failed_ids: Vec<String> = self
             .tasks
-            .iter()
+            .values()
             .filter(|t| t.status == TaskStatus::Failed)
             .map(|t| t.id.clone())
             .collect();
 
-        for task in &mut self.tasks {
+        for task in self.tasks.values_mut() {
             if task.status == TaskStatus::Pending {
                 let has_failed_dep = task.blocked_by.iter().any(|dep| failed_ids.contains(dep));
 
@@ -162,21 +232,27 @@ impl TaskBoard {
                 }
             }
         }
+        self.persist();
     }
 
     pub fn get(&self, id: &str) -> Option<&TaskRecord> {
-        self.tasks.iter().find(|t| t.id == id)
+        self.tasks.get(id)
     }
 
     pub fn ready_tasks(&self) -> Vec<&TaskRecord> {
-        self.tasks
-            .iter()
+        let mut ready: Vec<_> = self
+            .tasks
+            .values()
             .filter(|t| t.status == TaskStatus::Ready)
-            .collect()
+            .collect();
+        ready.sort_by_key(|t| t.created_at);
+        ready
     }
 
-    pub fn all_tasks(&self) -> &[TaskRecord] {
-        &self.tasks
+    pub fn all_tasks(&self) -> Vec<&TaskRecord> {
+        let mut all: Vec<_> = self.tasks.values().collect();
+        all.sort_by_key(|t| t.created_at);
+        all
     }
 
     pub fn summary(&self) -> String {
@@ -185,7 +261,8 @@ impl TaskBoard {
         }
 
         let mut out = String::from("== Task Board ==\n");
-        for task in &self.tasks {
+        let all = self.all_tasks();
+        for task in &all {
             let icon = match task.status {
                 TaskStatus::Pending => "[ ]",
                 TaskStatus::Ready => "[>]",
@@ -205,8 +282,8 @@ impl TaskBoard {
                 .map(|r| format!(" -> {}", truncate(r, 80)))
                 .unwrap_or_default();
             out.push_str(&format!(
-                "{} {} {}: {}{}{}\n",
-                icon, task.id, task.status, task.goal, deps, result
+                "{} {} [{}] ({}){}{}\n",
+                icon, task.title, task.id, task.goal, deps, result
             ));
         }
         out.push_str(&format!(
@@ -214,11 +291,11 @@ impl TaskBoard {
             self.tasks.len(),
             self.ready_tasks().len(),
             self.tasks
-                .iter()
+                .values()
                 .filter(|t| t.status == TaskStatus::InProgress)
                 .count(),
             self.tasks
-                .iter()
+                .values()
                 .filter(|t| t.status == TaskStatus::Completed)
                 .count()
         ));
@@ -230,8 +307,10 @@ impl TaskBoard {
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            let content: String = self
-                .tasks
+            // Sort by created_at to make file deterministic
+            let mut all_tasks: Vec<_> = self.tasks.values().collect();
+            all_tasks.sort_by_key(|t| t.created_at);
+            let content: String = all_tasks
                 .iter()
                 .filter_map(|t| serde_json::to_string(t).ok())
                 .collect::<Vec<_>>()
@@ -256,76 +335,76 @@ mod tests {
     #[test]
     fn test_create_and_list() {
         let mut board = TaskBoard::new();
-        board.create("1", "First task", vec![]);
-        board.create("2", "Second task", vec!["1".to_string()]);
+        let id1 = board.create("First task", "goal 1", vec![]);
+        let id2 = board.create("Second task", "goal 2", vec![id1.clone()]);
 
         assert_eq!(board.all_tasks().len(), 2);
         assert_eq!(board.ready_tasks().len(), 1);
-        assert_eq!(board.ready_tasks()[0].id, "1");
+        assert_eq!(board.ready_tasks()[0].id, id1);
     }
 
     #[test]
     fn test_dependency_resolution() {
         let mut board = TaskBoard::new();
-        board.create("1", "First", vec![]);
-        board.create("2", "Second", vec!["1".to_string()]);
+        let id1 = board.create("First", "goal 1", vec![]);
+        let id2 = board.create("Second", "goal 2", vec![id1.clone()]);
 
-        board.update("1", TaskStatus::Completed, None).unwrap();
+        board.update(&id1, TaskStatus::Completed, None).unwrap();
 
         let ready = board.ready_tasks();
         assert_eq!(ready.len(), 1);
-        assert_eq!(ready[0].id, "2");
+        assert_eq!(ready[0].id, id2);
     }
 
     #[test]
     fn test_assign_and_result() {
         let mut board = TaskBoard::new();
-        board.create("1", "Task", vec![]);
+        let id1 = board.create("Task", "goal", vec![]);
         board
-            .update("1", TaskStatus::Completed, Some("done".to_string()))
+            .update(&id1, TaskStatus::Completed, Some("done".to_string()))
             .unwrap();
 
-        let task = board.get("1").unwrap();
+        let task = board.get(&id1).unwrap();
         assert_eq!(task.result.as_deref(), Some("done"));
     }
 
     #[test]
     fn test_failed_dep_blocks_dependents() {
         let mut board = TaskBoard::new();
-        board.create("1", "First", vec![]);
-        board.create("2", "Second", vec!["1".to_string()]);
+        let id1 = board.create("First", "g1", vec![]);
+        let id2 = board.create("Second", "g2", vec![id1.clone()]);
 
         board
-            .update("1", TaskStatus::Failed, Some("error".to_string()))
+            .update(&id1, TaskStatus::Failed, Some("error".to_string()))
             .unwrap();
 
-        let task = board.get("2").unwrap();
+        let task = board.get(&id2).unwrap();
         assert_eq!(task.status, TaskStatus::Blocked);
     }
 
     #[test]
     fn test_complex_dag() {
         let mut board = TaskBoard::new();
-        board.create("a", "Step A", vec![]);
-        board.create("b", "Step B", vec![]);
-        board.create("c", "Step C", vec!["a".to_string(), "b".to_string()]);
-        board.create("d", "Step D", vec!["c".to_string()]);
+        let a = board.create("Step A", "a", vec![]);
+        let b = board.create("Step B", "b", vec![]);
+        let c = board.create("Step C", "c", vec![a.clone(), b.clone()]);
+        let d = board.create("Step D", "d", vec![c.clone()]);
 
         // A and B are ready
         assert_eq!(board.ready_tasks().len(), 2);
 
-        board.update("a", TaskStatus::Completed, None).unwrap();
+        board.update(&a, TaskStatus::Completed, None).unwrap();
         // C still blocked on B
         assert_eq!(board.ready_tasks().len(), 1);
 
-        board.update("b", TaskStatus::Completed, None).unwrap();
+        board.update(&b, TaskStatus::Completed, None).unwrap();
         // Now C is ready
         assert_eq!(board.ready_tasks().len(), 1);
-        assert_eq!(board.ready_tasks()[0].id, "c");
+        assert_eq!(board.ready_tasks()[0].id, c);
 
-        board.update("c", TaskStatus::Completed, None).unwrap();
+        board.update(&c, TaskStatus::Completed, None).unwrap();
         // D is ready
         assert_eq!(board.ready_tasks().len(), 1);
-        assert_eq!(board.ready_tasks()[0].id, "d");
+        assert_eq!(board.ready_tasks()[0].id, d);
     }
 }

@@ -211,13 +211,6 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                 .unwrap_or_default();
             let max_iterations = task_spec["max_iterations"].as_u64().map(|v| v as usize).unwrap_or(usize::MAX);
 
-            if let Some(ref tx) = event_sender {
-                let _ = tx.send(crate::types::AgentEvent::SubagentStart {
-                    subagent_id: id.clone(),
-                    task: task.clone(),
-                });
-            }
-
             task_infos.push((id, task, tools, max_iterations));
         }
 

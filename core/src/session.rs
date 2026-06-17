@@ -366,8 +366,8 @@ impl SessionManager {
     ) -> Result<()> {
         let db = self.storage.conn();
         let now = Utc::now().to_rfc3339();
-        // Truncate payload values to keep storage small
-        let truncated = Self::truncate_payload(payload, 500);
+        // Truncate payload values to keep storage small but allow subagent metadata
+        let truncated = Self::truncate_payload(payload, 2000);
         let payload_str = serde_json::to_string(&truncated)?;
         db.execute(
             "INSERT INTO session_event_log (session_id, turn_index, event_type, payload, started_at, ended_at, created_at) \
@@ -997,6 +997,7 @@ mod tests {
     fn test_save_subagent_creates_session() {
         let (mgr, _dir) = make_manager();
         let result = crate::subagent::SubagentResult {
+            role_name: "test_role".to_string(),
             subagent_id: "sub-1".to_string(),
             output: "Found 3 files matching pattern".to_string(),
             iterations_used: 2,

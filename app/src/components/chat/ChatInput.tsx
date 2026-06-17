@@ -12,6 +12,7 @@ import FileIcon from 'lucide-react/dist/esm/icons/file.mjs';
 import GitBranchIcon from 'lucide-react/dist/esm/icons/git-branch.mjs';
 import { parseMentions, findMentionBoundaries } from '../../utils/mentions';
 import { ModelSelector } from './ModelSelector';
+import { roughTokenCount } from '../../App';
 
 interface AutocompleteItem {
   label: string;
@@ -30,14 +31,10 @@ export const ChatInput = memo(function ChatInput({
   isProcessing,
   onSend,
   currentModel,
-  tokenCount,
-  turnCount,
 }: {
   isProcessing: boolean;
   onSend: (msg: string) => void;
   currentModel: string;
-  tokenCount: number;
-  turnCount: number;
 }) {
   const [input, setInput] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -52,8 +49,30 @@ export const ChatInput = memo(function ChatInput({
   const branchDropdownRef = useRef<HTMLDivElement>(null);
 
   const activeProjectId = useSelector((state: RootState) => state.project.activeProjectId);
+  const activeSessionId = useSelector((state: RootState) => state.project.activeSessionId);
   const projects = useSelector((state: RootState) => state.project.projects);
   const activeProject = projects.find((p) => p.id === activeProjectId);
+
+  useEffect(() => {
+    if (activeSessionId || activeProjectId) {
+      setTimeout(() => {
+        textareaRef.current?.focus();
+      }, 150);
+    }
+  }, [activeSessionId, activeProjectId]);
+
+  const tokenCount = useSelector((state: RootState) => {
+    return state.chat.entries.reduce((sum, e) => {
+      if (e.type === 'user' && e.text) return sum + roughTokenCount(e.text);
+      if (e.type === 'turn' && e.blocks) return sum + e.blocks.reduce((s, b) => {
+        if (b.type === 'assistant' || b.type === 'thinking') return s + roughTokenCount(b.text || '');
+        if (b.type === 'tool') return s + roughTokenCount(b.result || '');
+        return s;
+      }, 0);
+      return sum;
+    }, 0);
+  });
+  const turnCount = useSelector((state: RootState) => state.chat.entries.filter(e => e.type === 'turn').length);
 
   const [branches, setBranches] = useState<string[]>([]);
   const [activeBranch, setActiveBranch] = useState<string>('');
@@ -322,6 +341,7 @@ export const ChatInput = memo(function ChatInput({
           onChange={handleChange}
           onKeyDown={handleKeyDown}
           onScroll={handleScroll}
+          autoFocus={true}
           placeholder="Ask the agent...  Type @ for files, / for commands"
           rows={1}
         />

@@ -5,6 +5,7 @@ use ratatui::text::Line;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 // ── Conversation block cache ─────────────────────────────────────────
 
@@ -234,7 +235,7 @@ pub struct AppState {
     pub cache_dirty: bool,
     pub force_cache_rebuild: bool,
     /// Cloned from Agent — allows abort without locking the agent mutex.
-    pub abort_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    pub cancel_token: Option<CancellationToken>,
 }
 
 impl AppState {
@@ -268,7 +269,7 @@ impl AppState {
             content_version: 0,
             cache_dirty: true,
             force_cache_rebuild: false,
-            abort_flag: None,
+            cancel_token: None,
         }
     }
 
@@ -676,7 +677,7 @@ impl AppState {
                 self.mark_dirty();
             }
 
-            AgentEvent::ApprovalRequired { prompt_id, .. } => {
+            AgentEvent::ApprovalRequired { prompt_id, .. } | AgentEvent::SubagentApprovalRequired { prompt_id, .. } => {
                 // Auto-approve silently for now. In the future this will
                 // pause and ask the user via a modal.
                 if let Some(ref approvals) = self.pending_approvals {
@@ -689,13 +690,14 @@ impl AppState {
             }
 
             // ── Subagent events ──────────────────────────────────
-            AgentEvent::SubagentStart { subagent_id, task } => {
+            AgentEvent::SubagentStart { subagent_id, role_name, task } => {
                 let already_exists = self.find_subagent(&subagent_id).is_some();
                 if already_exists {
                     return;
                 }
                 let block = TurnBlock::Subagent(SubagentState {
                     id: subagent_id,
+                    role_name,
                     task,
                     children: Vec::new(),
                     done: false,
@@ -779,6 +781,7 @@ impl AppState {
             }
             AgentEvent::SubagentEnd {
                 subagent_id,
+                role_name: _,
                 success,
                 iterations_used,
             } => {
@@ -1081,6 +1084,7 @@ pub struct ToolResult {
 #[allow(dead_code)]
 pub struct SubagentState {
     pub id: String,
+    pub role_name: String,
     pub task: String,
     pub children: Vec<TurnBlock>,
     pub done: bool,

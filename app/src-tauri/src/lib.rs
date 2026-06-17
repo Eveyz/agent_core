@@ -6,7 +6,6 @@ use tokio::sync::Mutex as AsyncMutex;
 
 struct AppState {
     agent: Arc<AsyncMutex<Agent>>,
-    pending_approvals: Arc<std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<agent_core::ApprovalChoice>>>>,
     config_path: String,
     project_manager: Arc<std::sync::Mutex<agent_core::ProjectManager>>,
     session_manager: Arc<agent_core::SessionManager>,
@@ -129,13 +128,15 @@ fn list_directory(path: Option<String>) -> Result<Vec<std::collections::HashMap<
 }
 
 #[tauri::command]
-fn approve_tool(state: State<'_, AppState>, prompt_id: String, choice: String) {
-    if let Ok(mut map) = state.pending_approvals.lock() {
+fn approve_tool(_state: State<'_, AppState>, prompt_id: String, choice: String) {
+    if let Ok(mut map) = agent_core::permission::global_pending_approvals().lock() {
         if let Some(tx) = map.remove(&prompt_id) {
             let choice_enum = match choice.as_str() {
-                "allow_session" => agent_core::ApprovalChoice::AllowSession,
-                "allow_persistent" => agent_core::ApprovalChoice::AllowPersistent,
-                _ => agent_core::ApprovalChoice::Deny,
+                "allow_once" => agent_core::permission::ApprovalChoice::AllowOnce,
+                "allow_session" => agent_core::permission::ApprovalChoice::AllowSession,
+                "allow_persistent" => agent_core::permission::ApprovalChoice::AllowPersistent,
+                "deny_persistent" => agent_core::permission::ApprovalChoice::DenyPersistent,
+                _ => agent_core::permission::ApprovalChoice::Deny,
             };
             let _ = tx.send(choice_enum);
         }
@@ -408,8 +409,6 @@ pub fn run() {
                 );
             }
 
-            let pending_approvals = agent.pending_approvals_clone();
-
             // Initialize ProjectManager using the same SQLite path as memory
             let db_path = if let Some(mem_config) = agent.config().memory.as_ref() {
                 mem_config.db_path.clone()
@@ -427,7 +426,6 @@ pub fn run() {
 
             app.manage(AppState {
                 agent: Arc::new(AsyncMutex::new(agent)),
-                pending_approvals,
                 config_path: config_path_str,
                 project_manager,
                 session_manager,
