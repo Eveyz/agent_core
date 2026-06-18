@@ -24,6 +24,7 @@ pub mod types;
 pub mod worktree;
 
 pub use agent::{Agent, AgentBuilder};
+pub use tokio_util::sync::CancellationToken;
 pub use config::{Config, MemoryConfig, ModelConfig, RuntimeOverrides};
 pub use context::{CacheHint, Context, ContextEngine, ContextSegment, RefreshPolicy, Stability};
 pub use memory::{MemoryCategory, MemoryManager, MemoryStats, SalienceConfig, SalienceScorer, ScoredRecord};

@@ -9,6 +9,7 @@ import ChevronUpIcon from 'lucide-react/dist/esm/icons/chevron-up.mjs';
 import FolderIcon from 'lucide-react/dist/esm/icons/folder.mjs';
 import FileIcon from 'lucide-react/dist/esm/icons/file.mjs';
 import GitBranchIcon from 'lucide-react/dist/esm/icons/git-branch.mjs';
+import SquareIcon from 'lucide-react/dist/esm/icons/square.mjs';
 import { ModelSelector } from './ModelSelector';
 import { useAutocomplete } from '../../hooks/useAutocomplete';
 import { useGitBranch } from '../../hooks/useGitBranch';
@@ -17,15 +18,18 @@ import { useTokenCount, useTurnCount } from '../../hooks/useTokenCount';
 export const ChatInput = memo(function ChatInput({
   isProcessing,
   onSend,
+  onAbort,
   currentModel,
 }: {
   isProcessing: boolean;
   onSend: (msg: string) => void;
+  onAbort: () => void;
   currentModel: string;
 }) {
   const [input, setInput] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const overlayRef = useRef<HTMLPreElement>(null);
+  const isComposingRef = useRef(false);
 
   const activeProjectId = useSelector((state: RootState) => state.project.activeProjectId);
   const activeSessionId = useSelector((state: RootState) => state.project.activeSessionId);
@@ -74,8 +78,17 @@ export const ChatInput = memo(function ChatInput({
     closeAutocomplete();
   }, [input, isProcessing, onSend, closeAutocomplete]);
 
+  const handleAbort = useCallback(() => {
+    onAbort();
+  }, [onAbort]);
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      // IME composition: Enter confirms the candidate, doesn't send
+      if (e.nativeEvent.isComposing || isComposingRef.current) {
+        return;
+      }
+
       if (handleAutocompleteKeydown(e)) return;
       if (handleMentionBackspace(e)) return;
 
@@ -96,6 +109,14 @@ export const ChatInput = memo(function ChatInput({
     },
     [handleChange]
   );
+
+  const onCompositionStart = useCallback(() => {
+    isComposingRef.current = true;
+  }, []);
+
+  const onCompositionEnd = useCallback(() => {
+    isComposingRef.current = false;
+  }, []);
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -143,6 +164,8 @@ export const ChatInput = memo(function ChatInput({
           value={input}
           onChange={onChange}
           onKeyDown={handleKeyDown}
+          onCompositionStart={onCompositionStart}
+          onCompositionEnd={onCompositionEnd}
           onScroll={handleScroll}
           autoFocus={true}
           placeholder="Ask the agent...  Type @ for files, / for commands"
@@ -154,13 +177,19 @@ export const ChatInput = memo(function ChatInput({
           </div>
           <div className="input-actions-right">
             <ModelSelector currentModel={currentModel} />
-            <button
-              className="send-btn"
-              onClick={handleSend}
-              disabled={!input.trim() || isProcessing}
-            >
-              <SendIcon size={14} />
-            </button>
+            {isProcessing ? (
+              <button className="send-btn stop-btn" onClick={handleAbort} title="Stop (Esc)">
+                <SquareIcon size={14} fill="currentColor" />
+              </button>
+            ) : (
+              <button
+                className="send-btn"
+                onClick={handleSend}
+                disabled={!input.trim()}
+              >
+                <SendIcon size={14} />
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -209,7 +238,7 @@ export const ChatInput = memo(function ChatInput({
           <span>{tokenCount >= 1000 ? `${(tokenCount / 1000).toFixed(1)}k` : tokenCount} tokens</span>
           <span>{turnCount} turns</span>
         </div>
-        <div>Type @ for files, / for commands</div>
+        <div>{isProcessing ? 'Press Esc to stop' : 'Type @ for files, / for commands'}</div>
       </div>
     </div>
   );

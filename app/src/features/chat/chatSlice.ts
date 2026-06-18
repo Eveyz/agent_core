@@ -581,6 +581,16 @@ export const chatSlice = createSlice({
       state.entries = [];
       state.isProcessing = false;
     },
+    agentAborted: (state) => {
+      state.isProcessing = false;
+      const last = state.entries[state.entries.length - 1];
+      if (last && last.type === 'turn' && !last.endTime) {
+        last.endTime = Date.now();
+        if (last.blocks) {
+          last.blocks.push({ type: 'error', text: '— Interrupted —' });
+        }
+      }
+    },
     retryFromEntry: (state, action: PayloadAction<string>) => {
       const entryId = action.payload;
       const idx = state.entries.findIndex((e) => e.id === entryId);
@@ -727,6 +737,7 @@ export const {
   agentEventReceived,
   toolApprovalResponded,
   clearChat,
+  agentAborted,
   cacheCurrentSession,
   restoreOrClearSession,
   retryFromEntry,

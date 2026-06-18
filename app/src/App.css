@@ -451,6 +451,31 @@ body {
 .chat-history::-webkit-scrollbar { width: 6px; }
 .chat-history::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
 
+/* Scroll-to-bottom floating button */
+.scroll-to-bottom-btn {
+  position: absolute;
+  bottom: 140px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--bg-hover, #2a2a2e);
+  border: 1px solid var(--border-color, #3a3a3e);
+  color: var(--text-main, #e0e0e0);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 10;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  transition: all 0.2s ease;
+}
+.scroll-to-bottom-btn:hover {
+  background: var(--bg-active, #3a3a3e);
+  transform: translateX(-50%) scale(1.1);
+}
+
 /* Messages */
 .message-row {
   display: flex;
@@ -516,6 +541,80 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.turn-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 2px;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.agent-turn:hover .turn-footer {
+  opacity: 1;
+}
+
+.turn-end-time {
+  font-size: 11px;
+  color: var(--text-dim, #555);
+}
+
+.turn-copy-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: 1px solid var(--border-color, #333);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.turn-copy-btn:hover {
+  background: var(--bg-hover, rgba(255,255,255,0.05));
+  color: var(--text-main);
+}
+
+.scroll-to-bottom-btn {
+  position: absolute;
+  bottom: 160px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--bg-hover, #2a2a2a);
+  border: 1px solid var(--border-color, #444);
+  color: var(--text-main);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 10;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  transition: all 0.2s ease;
+  animation: fadeInUp 0.2s ease;
+}
+
+.scroll-to-bottom-btn:hover {
+  background: var(--bg-main, #333);
+  transform: translateX(-50%) scale(1.05);
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
 }
 
 .block-wrapper {
@@ -1520,6 +1619,14 @@ body {
 .send-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.send-btn.stop-btn {
+  color: #ef4444;
+}
+.send-btn.stop-btn:hover {
+  color: #dc2626;
+  background: rgba(239, 68, 68, 0.1);
 }
 
 .input-footer {

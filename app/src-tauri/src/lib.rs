@@ -1,11 +1,12 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-use agent_core::{Agent, ToolExecutionMode};
+use agent_core::{Agent, ToolExecutionMode, CancellationToken};
 use tauri::{AppHandle, Emitter, Manager, State};
 use std::sync::Arc;
 use tokio::sync::Mutex as AsyncMutex;
 
 struct AppState {
     agent: Arc<AsyncMutex<Agent>>,
+    cancel_token: Arc<std::sync::Mutex<CancellationToken>>,
     config_path: String,
     project_manager: Arc<std::sync::Mutex<agent_core::ProjectManager>>,
     session_manager: Arc<agent_core::SessionManager>,
@@ -47,6 +48,14 @@ struct FrontendSession {
 #[tauri::command]
 async fn send_message(state: State<'_, AppState>, app_handle: AppHandle, message: String, session_id: Option<String>) -> Result<String, String> {
     let mut agent = state.agent.lock().await;
+
+    // Reset cancel token for this run (in case a previous run was aborted)
+    let new_token = CancellationToken::new();
+    agent.set_cancel_token(new_token.clone());
+    {
+        let mut shared = state.cancel_token.lock().unwrap();
+        *shared = new_token;
+    }
 
     // If a session_id is provided, load its history into the agent's context
     // so the LLM sees the full conversation, not just messages from this process.
@@ -141,6 +150,16 @@ fn approve_tool(_state: State<'_, AppState>, prompt_id: String, choice: String) 
             let _ = tx.send(choice_enum);
         }
     }
+}
+
+#[tauri::command]
+async fn abort_agent(state: State<'_, AppState>) -> Result<(), String> {
+    let token = {
+        let guard = state.cancel_token.lock().unwrap();
+        guard.clone()
+    };
+    token.cancel();
+    Ok(())
 }
 
 #[tauri::command]
@@ -426,8 +445,11 @@ pub fn run() {
                 agent_core::SessionManager::new(storage)
             );
 
+            let cancel_token = Arc::new(std::sync::Mutex::new(agent.cancel_token().clone()));
+
             app.manage(AppState {
                 agent: Arc::new(AsyncMutex::new(agent)),
+                cancel_token,
                 config_path: config_path_str,
                 project_manager,
                 session_manager,
@@ -437,7 +459,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            send_message, approve_tool, list_directory,
+            send_message, approve_tool, abort_agent, list_directory,
             get_config, save_config, switch_model,
             create_session, delete_session, rename_session,
             save_session_messages, resume_session,

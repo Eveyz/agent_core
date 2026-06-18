@@ -753,6 +753,16 @@ impl Agent {
         self.cancel_token.cancel();
     }
 
+    /// Get a reference to the current cancel token.
+    pub fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel_token
+    }
+
+    /// Replace the cancel token with a new one (for resetting between runs).
+    pub fn set_cancel_token(&mut self, token: CancellationToken) {
+        self.cancel_token = token;
+    }
+
     /// Inject a steering message. This is processed after the current turn
     /// completes, before the next LLM call. Use it to redirect the agent
     /// while tools are still running.

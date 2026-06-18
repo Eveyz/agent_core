@@ -1,4 +1,4 @@
-import { useState, useEffect, memo, useMemo } from 'react';
+import { useState, useEffect, memo, useMemo, useCallback } from 'react';
 import { useAppDispatch } from '../../hooks/useAppDispatch';
 import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
 import ChevronRightIcon from 'lucide-react/dist/esm/icons/chevron-right.mjs';
@@ -8,6 +8,7 @@ import XIcon from 'lucide-react/dist/esm/icons/x.mjs';
 import LoaderIcon from 'lucide-react/dist/esm/icons/loader.mjs';
 import CheckCircle2Icon from 'lucide-react/dist/esm/icons/check-circle-2.mjs';
 import XCircleIcon from 'lucide-react/dist/esm/icons/x-circle.mjs';
+import CopyIcon from 'lucide-react/dist/esm/icons/copy.mjs';
 import { invoke } from '@tauri-apps/api/core';
 import { toolApprovalResponded } from '../../features/chat/chatSlice';
 import type { ChatEntry, TurnBlock, SubagentEntry, SubagentBlock } from '../../features/chat/chatSlice';
@@ -51,10 +52,6 @@ const ThinkingBlockUI = memo(function ThinkingBlockUI({
 }) {
   const [collapsed, setCollapsed] = useState(false);
 
-  useEffect(() => {
-    setCollapsed(!isStreaming);
-  }, [isStreaming]);
-
   const durationText = useMemo(() => {
     if (isStreaming) return 'Thinking...';
     if (startTime && endTime) {
@@ -66,7 +63,7 @@ const ThinkingBlockUI = memo(function ThinkingBlockUI({
   return (
     <div className="block-wrapper">
       <div
-        className={`thinking-toggle ${isStreaming ? 'thinking-pulse' : ''}`}
+        className={`thinking-toggle ${isStreaming ? 'thinking-pulse' : ''} ${!collapsed ? 'expanded' : ''}`}
         onClick={() => setCollapsed(!collapsed)}
         style={{ cursor: 'pointer' }}
       >
@@ -376,6 +373,48 @@ const DynamicWorkingIndicator = memo(function DynamicWorkingIndicator({ entry }:
   );
 });
 
+const TurnFooter = memo(function TurnFooter({ entry }: { entry: ChatEntry }) {
+  const [copied, setCopied] = useState(false);
+
+  const rawOutput = useMemo(() => {
+    if (!entry.blocks) return '';
+    return entry.blocks
+      .filter((b): b is Extract<TurnBlock, { type: 'assistant' }> => b.type === 'assistant')
+      .map((b) => b.text)
+      .join('\n');
+  }, [entry.blocks]);
+
+  const endTimeText = useMemo(() => {
+    if (!entry.endTime) return null;
+    const d = new Date(entry.endTime);
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }, [entry.endTime]);
+
+  const handleCopy = useCallback(async () => {
+    if (!rawOutput) return;
+    try {
+      await navigator.clipboard.writeText(rawOutput);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // ignore
+    }
+  }, [rawOutput]);
+
+  if (!endTimeText && !rawOutput) return null;
+
+  return (
+    <div className="turn-footer">
+      {rawOutput && (
+        <button className="turn-copy-btn" onClick={handleCopy} title="Copy raw output">
+          {copied ? <CheckIcon size={11} color="#4ade80" /> : <CopyIcon size={11} />}
+        </button>
+      )}
+      {endTimeText && <span className="turn-end-time">{endTimeText}</span>}
+    </div>
+  );
+});
+
 export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: ChatEntry }) {
   const [collapsed, setCollapsed] = useState(false);
 
@@ -469,7 +508,7 @@ export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: ChatEnt
         return null;
       })}
 
-      {isProcessing ? <DynamicWorkingIndicator entry={entry} /> : null}
+      {isProcessing ? <DynamicWorkingIndicator entry={entry} /> : <TurnFooter entry={entry} />}
     </div>
   );
 });

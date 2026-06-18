@@ -9,11 +9,13 @@ import MessageSquareIcon from 'lucide-react/dist/esm/icons/message-square.mjs';
 import TerminalSquareIcon from 'lucide-react/dist/esm/icons/terminal-square.mjs';
 import FolderIcon from 'lucide-react/dist/esm/icons/folder.mjs';
 import Maximize2Icon from 'lucide-react/dist/esm/icons/maximize-2.mjs';
+import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
 import { RootState } from './store';
 import {
   agentEventReceived,
   userMessageSent,
   retryFromEntry,
+  agentAborted,
   selectEntryById,
   selectPendingApprovalCount,
 } from './features/chat/chatSlice';
@@ -63,7 +65,7 @@ function App() {
   const activeProject = projects.find((p) => p.id === activeProjectId);
   const [activeTab, setActiveTab] = useState<'code' | 'write'>('code');
 
-  const { ref: scrollRef, scrollToBottom } = useAutoScroll<HTMLDivElement>();
+  const { ref: scrollRef, scrollToBottom, forceStickToBottom, isAtBottom } = useAutoScroll<HTMLDivElement>();
 
   useAgentEventListener();
 
@@ -82,6 +84,39 @@ function App() {
     }
     prevPendingRef.current = pendingApprovalCount;
   }, [pendingApprovalCount, scrollToBottom]);
+
+  // When a session is opened/switched, force-stick to the bottom. This pins the
+  // view through the async reflows (markdown, code blocks, tool calls) that happen
+  // as a loaded session renders, so the latest message — and its copy icon — lands
+  // fully in view. Covers both sync cache restore and async backend resume.
+  const prevSessionIdRef = useRef<string | null | undefined>(activeSessionId);
+  useEffect(() => {
+    if (prevSessionIdRef.current !== activeSessionId) {
+      prevSessionIdRef.current = activeSessionId;
+      if (activeSessionId) {
+        forceStickToBottom();
+      }
+    }
+  }, [activeSessionId, forceStickToBottom]);
+
+  // Esc key to abort agent during processing
+  useEffect(() => {
+    if (!isProcessing) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        dispatch(agentAborted());
+        invoke('abort_agent').catch((e) => console.error('Failed to abort agent:', e));
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [isProcessing, dispatch]);
+
+  const handleAbort = useCallback(() => {
+    dispatch(agentAborted());
+    invoke('abort_agent').catch((e) => console.error('Failed to abort agent:', e));
+  }, [dispatch]);
 
   useEffect(() => {
     dispatch(fetchConfig());
@@ -235,20 +270,27 @@ function App() {
         {entriesLength === 0 ? (
           <EmptyState onSend={handleSend} />
         ) : (
-          <div className="chat-history" ref={scrollRef}>
-            {entryIds.map((id) => (
-              <EntryRow
-                key={id}
-                entryId={id}
-                defaultModel={defaultModel}
-                handleRetry={handleRetry}
-                isProcessing={isProcessing}
-              />
-            ))}
-          </div>
+          <>
+            <div className="chat-history" ref={scrollRef}>
+              {entryIds.map((id) => (
+                <EntryRow
+                  key={id}
+                  entryId={id}
+                  defaultModel={defaultModel}
+                  handleRetry={handleRetry}
+                  isProcessing={isProcessing}
+                />
+              ))}
+            </div>
+            {!isAtBottom && (
+              <button className="scroll-to-bottom-btn" onClick={scrollToBottom} title="Scroll to latest">
+                <ChevronDownIcon size={18} />
+              </button>
+            )}
+          </>
         )}
 
-        <ChatInput isProcessing={isProcessing} onSend={handleSend} currentModel={defaultModel} />
+        <ChatInput isProcessing={isProcessing} onSend={handleSend} currentModel={defaultModel} onAbort={handleAbort} />
       </main>
     </div>
   );
