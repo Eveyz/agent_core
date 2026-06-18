@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use std::sync::{Arc, Mutex};
 
 use crate::agent::AgentBuilder;
@@ -10,7 +10,9 @@ use crate::skills::SkillManager;
 use crate::tasks::TaskBoard;
 use crate::teams::AgentTeam;
 use crate::todo::TodoList;
+use crate::reflector::{Reflector, Suggestion, SuggestionAction};
 use crate::worktree::WorktreeManager;
+use std::path::PathBuf;
 
 pub struct ComprehensiveAgentBuilder {
     config_path: Option<String>,
@@ -27,6 +29,10 @@ pub struct ComprehensiveAgentBuilder {
     team_name: Option<String>,
     enable_worktree: bool,
     repo_root: Option<String>,
+    /// Enable offline reflection (Phase F). Off by default.
+    enable_reflector: bool,
+    /// Directory where auto-applied skills are written.
+    reflector_skills_dir: Option<String>,
 }
 
 impl Default for ComprehensiveAgentBuilder {
@@ -46,6 +52,8 @@ impl Default for ComprehensiveAgentBuilder {
             team_name: None,
             enable_worktree: false,
             repo_root: None,
+            enable_reflector: false,
+            reflector_skills_dir: None,
         }
     }
 }
@@ -110,6 +118,16 @@ impl ComprehensiveAgentBuilder {
     pub fn worktree(mut self, enable: bool, repo_root: Option<&str>) -> Self {
         self.enable_worktree = enable;
         self.repo_root = repo_root.map(String::from);
+        self
+    }
+
+    /// Enable offline reflection. When enabled, the agent exposes
+    /// [`ComprehensiveAgent::reflect_on`] which analyzes a trace file and
+    /// auto-applies safe suggestions (append-only skills) while surfacing
+    /// everything else for approval. Off by default.
+    pub fn reflector(mut self, enable: bool, skills_dir: Option<&str>) -> Self {
+        self.enable_reflector = enable;
+        self.reflector_skills_dir = skills_dir.map(String::from);
         self
     }
 
@@ -188,6 +206,16 @@ impl ComprehensiveAgentBuilder {
             None
         };
 
+        let reflector = if self.enable_reflector {
+            let dir = self
+                .reflector_skills_dir
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(".agent_core_history/reflector-skills"));
+            Some(Reflector::new(dir))
+        } else {
+            None
+        };
+
         Ok(ComprehensiveAgent {
             agent,
             permission_policy,
@@ -199,6 +227,7 @@ impl ComprehensiveAgentBuilder {
             skill_manager,
             team,
             worktree_manager,
+            reflector,
         })
     }
 }
@@ -214,6 +243,8 @@ pub struct ComprehensiveAgent {
     pub skill_manager: Option<SkillManager>,
     pub team: Option<AgentTeam>,
     pub worktree_manager: Option<WorktreeManager>,
+    /// Offline reflector (Phase F). None unless explicitly enabled.
+    pub reflector: Option<Reflector>,
 }
 
 impl ComprehensiveAgent {
@@ -255,6 +286,55 @@ impl ComprehensiveAgent {
 
     pub fn has_worktree(&self) -> bool {
         self.worktree_manager.is_some()
+    }
+
+    pub fn has_reflector(&self) -> bool {
+        self.reflector.is_some()
+    }
+
+    /// Analyze a trace file and apply safe suggestions automatically.
+    ///
+    /// Returns a [`ReflectionReport`] summarizing what was auto-applied, what
+    /// needs approval, and what was forbidden. Auto-application is limited to
+    /// append-only skills; everything else is collected for human review.
+    ///
+    /// The optional LLM enrichment step (`enrich`) rewrites each suggestion's
+    /// rationale using the agent's model. It is purely cosmetic and cannot
+    /// change the safety classification. Pass `false` to skip it (e.g. when
+    /// running offline).
+    pub async fn reflect_on(
+        &mut self,
+        trace_path: &std::path::Path,
+        enrich: bool,
+    ) -> Result<ReflectionReport> {
+        let reflector = self
+            .reflector
+            .as_ref()
+            .context("reflector not enabled")?;
+
+        let records = Reflector::load_trace(trace_path)?;
+        let mut suggestions = reflector.analyze(&records);
+
+        if enrich {
+            // Borrow the agent's client for the cosmetic rationale rewrite.
+            // The client lives behind a private field on Agent; expose it via
+            // a helper. We use the current model configured on the agent.
+            if let Some(client) = self.agent.client_for_reflection() {
+                reflector.enrich_with_llm(&mut suggestions, client).await;
+            }
+        }
+
+        let mut report = ReflectionReport::default();
+        for sug in &suggestions {
+            match reflector.apply(sug)? {
+                SuggestionAction::Applied => report.applied.push(sug.clone()),
+                SuggestionAction::NeedsApproval(diff) => {
+                    report.needs_approval.push((sug.clone(), diff));
+                }
+                SuggestionAction::Forbidden => report.forbidden.push(sug.clone()),
+            }
+        }
+        Ok(report)
     }
 
     pub fn status(&self) -> String {
@@ -306,5 +386,119 @@ impl ComprehensiveAgent {
         }
 
         parts.join("\n")
+    }
+}
+
+/// Outcome of a reflection pass.
+#[derive(Debug, Default)]
+pub struct ReflectionReport {
+    /// Suggestions auto-applied (append-only skills).
+    pub applied: Vec<Suggestion>,
+    /// Suggestions needing human approval, with their diff preview.
+    pub needs_approval: Vec<(Suggestion, String)>,
+    /// Suggestions refused because they touch security fields.
+    pub forbidden: Vec<Suggestion>,
+}
+
+impl ReflectionReport {
+    pub fn total(&self) -> usize {
+        self.applied.len() + self.needs_approval.len() + self.forbidden.len()
+    }
+
+    /// Human-readable summary.
+    pub fn summary(&self) -> String {
+        format!(
+            "Reflection complete: {} applied, {} need approval, {} forbidden (of {} total).",
+            self.applied.len(),
+            self.needs_approval.len(),
+            self.forbidden.len(),
+            self.total(),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn write_config(dir: &TempDir) -> std::path::PathBuf {
+        let cfg = dir.path().join("config.toml");
+        std::fs::write(
+            &cfg,
+            "\ndefault_model = \"test/default\"\n\n[providers.test]\nname = \"test\"\nbase_url = \"http://127.0.0.1:1\"\napi_key = \"sk-test\"\n\n[providers.test.models]\ndefault = { model_id = \"mock\" }\n",
+        )
+        .unwrap();
+        cfg
+    }
+
+    fn trace_with_errors(dir: &TempDir) -> std::path::PathBuf {
+        let p = dir.path().join("trace.jsonl");
+        let lines = vec![
+            r#"{"ts":"2026-06-18T10:00:00Z","event":"TurnStart","turn_index":0}"#,
+            r#"{"ts":"2026-06-18T10:00:01Z","event":{"ToolExecutionEnd":{"tool_call_id":"c1","tool_name":"bash","result":"Error: not found","is_error":true}}}"#,
+            r#"{"ts":"2026-06-18T10:00:02Z","event":{"ToolExecutionEnd":{"tool_call_id":"c2","tool_name":"bash","result":"Error: not found","is_error":true}}}"#,
+            r#"{"ts":"2026-06-18T10:00:03Z","event":{"ToolExecutionEnd":{"tool_call_id":"c3","tool_name":"bash","result":"Error: not found","is_error":true}}}"#,
+        ];
+        std::fs::write(&p, lines.join("\n") + "\n").unwrap();
+        p
+    }
+
+    /// Phase F #1: reflect_on analyzes a trace and auto-applies a skill,
+    /// without needing a live LLM (enrich disabled).
+    #[tokio::test]
+    async fn reflect_on_applies_safe_skill_without_llm() {
+        let dir = TempDir::new().unwrap();
+        let cfg = write_config(&dir);
+        let skills_dir = dir.path().join("skills");
+
+        let mut agent = ComprehensiveAgentBuilder::new()
+            .config(cfg.to_str().unwrap())
+            .memory(false)
+            .reflector(true, Some(skills_dir.to_str().unwrap()))
+            .build()
+            .unwrap();
+
+        assert!(agent.has_reflector());
+
+        let trace = trace_with_errors(&dir);
+        // enrich=false to avoid hitting the (unreachable) model endpoint.
+        let report = agent.reflect_on(&trace, false).await.unwrap();
+
+        assert!(report.total() >= 1, "expected at least one suggestion");
+        assert!(
+            !report.applied.is_empty(),
+            "the consecutive-error skill should be auto-applied"
+        );
+        assert!(
+            report.forbidden.is_empty(),
+            "no security-field suggestions expected from this trace"
+        );
+        // The skill file was actually written.
+        assert!(std::fs::read_dir(&skills_dir).unwrap().count() >= 1);
+        assert!(report.summary().contains("Reflection complete"));
+    }
+
+    /// Phase F #1: reflect_on with no errors produces an empty report.
+    #[tokio::test]
+    async fn reflect_on_clean_trace_is_empty() {
+        let dir = TempDir::new().unwrap();
+        let cfg = write_config(&dir);
+        let trace = dir.path().join("clean.jsonl");
+        std::fs::write(
+            &trace,
+            r##"{"ts":"2026-06-18T10:00:00Z","event":"TurnStart","turn_index":0}"##,
+        )
+        .unwrap();
+
+        let mut agent = ComprehensiveAgentBuilder::new()
+            .config(cfg.to_str().unwrap())
+            .memory(false)
+            .reflector(true, Some(dir.path().join("s").to_str().unwrap()))
+            .build()
+            .unwrap();
+
+        let report = agent.reflect_on(&trace, false).await.unwrap();
+        assert_eq!(report.total(), 0);
     }
 }

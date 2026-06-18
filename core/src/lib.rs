@@ -20,10 +20,12 @@ pub mod tasks;
 pub mod teams;
 pub mod todo;
 pub mod tools;
+pub mod reflector;
+pub mod trace;
 pub mod types;
 pub mod worktree;
 
-pub use agent::{Agent, AgentBuilder};
+pub use agent::{Agent, AgentBuilder, ContextProcessor, TransformContextFn};
 pub use tokio_util::sync::CancellationToken;
 pub use config::{Config, MemoryConfig, ModelConfig, RuntimeOverrides};
 pub use context::{CacheHint, Context, ContextEngine, ContextSegment, RefreshPolicy, Stability};
@@ -36,7 +38,7 @@ pub use types::{
 
 // New harness modules
 pub use background::{BackgroundPool, Notification};
-pub use comprehensive::{ComprehensiveAgent, ComprehensiveAgentBuilder};
+pub use comprehensive::{ComprehensiveAgent, ComprehensiveAgentBuilder, ReflectionReport};
 pub use compressor::{CompressionResult, Compressor, SummarizeRequest, TurnSummary};
 pub use cron::{CronJob, CronSchedule, CronScheduler};
 pub use error_recovery::{RecoveryAction, RecoveryContext, RecoveryEngine};
@@ -59,3 +61,5 @@ pub use tasks::{TaskBoard, TaskRecord, TaskStatus};
 pub use teams::{AgentTeam, MessageBus, TeamMessage, TeamMessageType};
 pub use todo::{TodoItem, TodoList, TodoStatus};
 pub use worktree::{WorktreeManager, WorktreeRecord, WorktreeStatus};
+pub use trace::TraceCollector;
+pub use reflector::{Digester, Reflector, Suggestion, SuggestionAction, SuggestionKind};

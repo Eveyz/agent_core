@@ -10,6 +10,7 @@ pub mod executor;
 use crate::client::OpenAIClient;
 use crate::config::{Config, ModelConfig};
 use crate::context::Context;
+use crate::error_recovery::{RecoveryAction, RecoveryContext, RecoveryEngine};
 use crate::hooks::{HookRegistry, PreToolResult};
 use crate::memory::MemoryManager;
 use crate::permission::{
@@ -17,6 +18,7 @@ use crate::permission::{
     WhitelistEntry,
 };
 use crate::skills::SkillManager;
+use crate::trace::TraceCollector;
 use crate::prompt::{self, PromptBuilder};
 use crate::tools::{ToolRegistry, ToolUpdateFn};
 use crate::types::{
@@ -26,6 +28,16 @@ use crate::types::{
 
 /// Callback type for transform_context: receives messages, returns transformed messages.
 pub type TransformContextFn = Box<dyn Fn(Vec<Message>) -> Vec<Message> + Send + Sync>;
+
+/// A named, ordered context processor applied to the outgoing message list
+/// just before each LLM call. Multiple processors run in registration order;
+/// each receives the output of the previous one. This is the lightweight
+/// "BeforeModel processor" seam — no trait, no control-flow change, just an
+/// ordered list of transforms.
+pub struct ContextProcessor {
+    pub name: String,
+    pub transform: TransformContextFn,
+}
 
 pub struct AgentBuilder {
     config: Config,
@@ -37,7 +49,11 @@ pub struct AgentBuilder {
     permission_policy: Option<PermissionPolicy>,
     hook_registry: Option<HookRegistry>,
     tool_execution_mode: ToolExecutionMode,
-    transform_context: Option<TransformContextFn>,
+    context_processors: Vec<ContextProcessor>,
+    recovery: Option<RecoveryEngine>,
+    /// Optional directory for execution trace (.jsonl) recording. When set,
+    /// every [`AgentEvent`] is appended to `<dir>/<agent_id>.jsonl`.
+    trace_dir: Option<String>,
     skill_manager: Option<Arc<Mutex<SkillManager>>>,
     /// Share approvals map from parent agent — subagents use this to avoid
     /// deadlocks when awaiting approval in TUI mode.
@@ -59,7 +75,9 @@ impl AgentBuilder {
             permission_policy: None,
             hook_registry: None,
             tool_execution_mode: ToolExecutionMode::Parallel,
-            transform_context: None,
+            context_processors: Vec::new(),
+            trace_dir: None,
+            recovery: None,
             skill_manager: None,
             pending_approvals_override: None,
         })
@@ -77,7 +95,9 @@ impl AgentBuilder {
             permission_policy: None,
             hook_registry: None,
             tool_execution_mode: ToolExecutionMode::Parallel,
-            transform_context: None,
+            context_processors: Vec::new(),
+            trace_dir: None,
+            recovery: None,
             skill_manager: None,
             pending_approvals_override: None,
         })
@@ -115,7 +135,9 @@ impl AgentBuilder {
             permission_policy: None,
             hook_registry: None,
             tool_execution_mode: ToolExecutionMode::Parallel,
-            transform_context: None,
+            context_processors: Vec::new(),
+            trace_dir: None,
+            recovery: None,
             skill_manager: None,
             pending_approvals_override: None,
         }
@@ -145,7 +167,24 @@ impl AgentBuilder {
         mut self,
         f: impl Fn(Vec<Message>) -> Vec<Message> + Send + Sync + 'static,
     ) -> Self {
-        self.transform_context = Some(Box::new(f));
+        self.context_processors.push(ContextProcessor {
+            name: "transform_context".to_string(),
+            transform: Box::new(f),
+        });
+        self
+    }
+
+    /// Append a named context processor. Processors run in registration order
+    /// before each model call. See [`ContextProcessor`].
+    pub fn with_context_processor(
+        mut self,
+        name: impl Into<String>,
+        f: impl Fn(Vec<Message>) -> Vec<Message> + Send + Sync + 'static,
+    ) -> Self {
+        self.context_processors.push(ContextProcessor {
+            name: name.into(),
+            transform: Box::new(f),
+        });
         self
     }
 
@@ -154,6 +193,27 @@ impl AgentBuilder {
         self.skill_manager = Some(mgr);
         self
     }
+
+    /// Enable execution-trace recording. Every [`AgentEvent`] emitted during
+    /// `run` / `run_with_events` is appended (best-effort, failure-proof) to
+    /// `<dir>/<agent_id>.jsonl`. This is a pure side-channel and never alters
+    /// agent control flow.
+    pub fn with_trace(mut self, dir: impl Into<String>) -> Self {
+        self.trace_dir = Some(dir.into());
+        self
+    }
+
+
+    /// Attach a custom [`RecoveryEngine`] for loop-level error recovery
+    /// (context compaction, token escalation, retry). Defaults to
+    /// [`RecoveryEngine::default`] when not set. This complements — and does
+    /// not replace — the HTTP-level retry/fallback already performed by
+    /// [`crate::client::OpenAIClient`].
+    pub fn with_recovery(mut self, engine: RecoveryEngine) -> Self {
+        self.recovery = Some(engine);
+        self
+    }
+
 
     pub fn build(self) -> Result<Agent> {
         let default_model_name = self.config.default_model.clone();
@@ -302,6 +362,19 @@ impl AgentBuilder {
         let id = self.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         let name = self.name.unwrap_or_else(|| "Main Orchestrator".to_string());
 
+        // Build the trace collector before the struct literal so `id` can be
+        // borrowed here and moved into the agent below.
+        let trace = match &self.trace_dir {
+            Some(dir) => match TraceCollector::new(dir, &id) {
+                Ok(tc) => Some(Arc::new(Mutex::new(tc))),
+                Err(e) => {
+                    tracing::warn!("failed to initialize trace collector: {e}");
+                    None
+                }
+            },
+            None => None,
+        };
+
         Ok(Agent {
             id,
             name,
@@ -318,9 +391,15 @@ impl AgentBuilder {
             steering_queue: VecDeque::new(),
             follow_up_queue: VecDeque::new(),
             cancel_token: CancellationToken::new(),
-            transform_context: self.transform_context,
+            context_processors: self.context_processors,
+            recovery: self.recovery.unwrap_or_default(),
+            recovery_ctx: RecoveryContext::new(
+                &model_config.model_id,
+                model_config.max_context_tokens,
+            ),
             skill_manager: self.skill_manager,
             current_session_id: None,
+            trace,
         })
     }
 }
@@ -341,11 +420,58 @@ pub struct Agent {
     steering_queue: VecDeque<Message>,
     follow_up_queue: VecDeque<Message>,
     pub cancel_token: CancellationToken,
-    transform_context: Option<TransformContextFn>,
+    context_processors: Vec<ContextProcessor>,
+    /// Loop-level error recovery (context compaction / token escalation / retry).
+    recovery: RecoveryEngine,
+    recovery_ctx: RecoveryContext,
     /// Skill manager for auto-trigger and catalog
     skill_manager: Option<Arc<Mutex<SkillManager>>>,
     /// Tracks which session's messages are currently loaded in context
     current_session_id: Option<String>,
+    /// Optional execution-trace sink (pure side-channel).
+    trace: Option<Arc<Mutex<TraceCollector>>>,
+}
+
+/// Result of a single recovery attempt within `model_turn`.
+enum RecoveryOutcome {
+    Retry,
+    GiveUp,
+}
+
+/// Named stages of a single turn. Used for structured logging and as the
+/// spine for future per-stage hooks. Introduced in Phase E so the control
+/// flow is explicit without rewriting the loop as an external pipeline.
+#[derive(Debug, Clone, Copy)]
+enum Stage {
+    Refresh,
+    Compact,
+    Model,
+    Dispatch,
+    Execute,
+    Observe,
+}
+
+impl Stage {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Stage::Refresh => "refresh",
+            Stage::Compact => "compact",
+            Stage::Model => "model",
+            Stage::Dispatch => "dispatch",
+            Stage::Execute => "execute",
+            Stage::Observe => "observe",
+        }
+    }
+}
+
+/// Outcome of a single turn, returned by [`Agent::run_turn`].
+enum TurnOutcome {
+    /// The agent produced a final answer; the run is complete.
+    Final(String),
+    /// The turn completed and the loop should continue.
+    Continue,
+    /// The run must stop with this user-facing message.
+    Stop(String),
 }
 
 impl Agent {
@@ -359,6 +485,19 @@ impl Agent {
         input: &str,
         on_event: impl Fn(AgentEvent) + Send + Sync,
     ) -> Result<String> {
+        // Compose the user's event callback with the trace side-channel so
+        // tracing is transparent to callers. Recording is best-effort and
+        // never propagates errors into the run.
+        let trace = self.trace.clone();
+        let traced = move |ev: AgentEvent| {
+            if let Some(ref tc) = trace {
+                if let Ok(mut guard) = tc.lock() {
+                    guard.record(&ev);
+                }
+            }
+            on_event(ev);
+        };
+
         self.context.add(Message::user(input));
 
         if let Some(ref mem) = self.memory
@@ -401,19 +540,21 @@ impl Agent {
             }
         }
 
-        on_event(AgentEvent::AgentStart);
+        traced(AgentEvent::AgentStart);
+        self.hook_registry.fire_session_start(&self.id);
         self.state = AgentState::Streaming;
         // Token is one-shot, but if we need to reset we could create a new one, 
         // however usually a new run uses the same token or creates a new one. 
         // Here we just ensure we have a fresh token.
         self.cancel_token = CancellationToken::new();
 
-        let result = self.run_loop(&on_event).await;
+        let result = self.run_loop(&traced).await;
 
         self.state = AgentState::Idle;
         self.steering_queue.clear();
         self.follow_up_queue.clear();
-        on_event(AgentEvent::AgentEnd {
+        self.hook_registry.fire_session_end(&self.id);
+        traced(AgentEvent::AgentEnd {
             messages: self.context.messages(),
         });
 
@@ -429,161 +570,356 @@ impl Agent {
             if self.cancel_token.is_cancelled() {
                 self.state = AgentState::Aborted;
                 return Ok("Agent aborted by user during tool execution.".to_string());
-            }       on_event(AgentEvent::TurnStart { turn_index });
-
-            // Refresh per-turn context segments
-            self.refresh_context_segments();
-
-            self.context.trim_to_fit();
-
-            // Stage 4 LLM compaction: if still near limit, summarize old turns
-            self.maybe_llm_compact().await;
-
-            // Build messages with optional transform
-            let raw_messages = self.context.messages();
-            let messages = if let Some(ref transform) = self.transform_context {
-                transform(raw_messages)
-            } else {
-                raw_messages
-            };
-            let tools = self.registry.tool_definitions();
-
-            let stream = match self.client.chat_completion_stream(&messages, &tools).await {
-                Ok(s) => s,
-                Err(e) => {
-                    let err_msg = format!("LLM request failed: {e}");
-                    on_event(AgentEvent::Error(err_msg.clone()));
-                    return Ok(format!(
-                        "I encountered an error communicating with the model: {e}. Please try again."
-                    ));
-                }
-            };
-
-            let (text, tool_calls) = match self.collect_stream(stream, &on_event).await {
-                Ok(r) => r,
-                Err(e) => {
-                    if self.cancel_token.is_cancelled() {
-                        return Ok("Agent aborted by user.".to_string());
-                    }
-                    let err_msg = format!("Stream error: {e}");
-                    on_event(AgentEvent::Error(err_msg));
-                    return Ok(format!(
-                        "I encountered an error reading the model response: {e}. Please try again."
-                    ));
-                }
-            };
-
-            if tool_calls.is_empty() {
-                // No tool calls — this is the final answer
-                let assistant_msg = Message::assistant(&text);
-                self.context.add(assistant_msg.clone());
-                on_event(AgentEvent::MessageEnd {
-                    message: assistant_msg.clone(),
-                });
-                on_event(AgentEvent::TurnEnd {
-                    turn_index,
-                    assistant_message: assistant_msg,
-                    tool_results: vec![],
-                });
-
-                if let Some(ref mem) = self.memory {
-                    if let Ok(m) = mem.lock() {
-                        let _ = m.store_conversation("assistant", &text);
-                    }
-                    self.refresh_core_memory_in_context();
-                    self.maybe_consolidate();
-                }
-
-                // Check for follow-up messages
-                if let Some(follow_up) = self.follow_up_queue.pop_front() {
-                    self.context.add(follow_up);
-                    continue;
-                }
-
-                return Ok(text);
             }
+            on_event(AgentEvent::TurnStart { turn_index });
+            self.hook_registry.fire_turn_start(turn_index);
 
-            // Add assistant message with tool calls
-            let assistant_msg = if !text.is_empty() {
-                let msg = Message::assistant_with_tools(&text, tool_calls.clone());
-                self.context.add(msg.clone());
-                msg
-            } else {
-                let msg = Message::assistant_with_tools("", tool_calls.clone());
-                self.context.add(msg.clone());
-                msg
-            };
-
-            on_event(AgentEvent::MessageEnd {
-                message: assistant_msg.clone(),
-            });
-
-            // Execute tools
-            self.state = AgentState::ExecutingTools;
-            let tool_results = {
-                let mut orchestrator = executor::ToolOrchestrator {
-                    registry: &self.registry,
-                    permission_policy: &mut self.permission_policy,
-                    hook_registry: &mut self.hook_registry,
-                    tool_execution_mode: self.tool_execution_mode,
-                    cancel_token: self.cancel_token.clone(),
-                };
-                orchestrator.execute_tools(&tool_calls, &on_event).await
-            };
-            self.state = AgentState::Streaming;
-
-            // Add tool results to context and emit events
-            let mut result_records = Vec::new();
-            for (call, result) in tool_calls.iter().zip(&tool_results) {
-                let is_error = result.starts_with("Error")
-                    || result.starts_with("Permission denied")
-                    || result.starts_with("Hook vetoed");
-
-                result_records.push(ToolResultRecord {
-                    tool_call_id: call.id.clone(),
-                    tool_name: call.function.name.clone(),
-                    result: result.clone(),
-                    is_error,
-                });
-
-                on_event(AgentEvent::ToolExecutionEnd {
-                    tool_call_id: call.id.clone(),
-                    tool_name: call.function.name.clone(),
-                    result: result.clone(),
-                    is_error,
-                });
-
-                self.context
-                    .add(Message::tool(call.id.clone(), result.clone()));
-            }
-
-            on_event(AgentEvent::TurnEnd {
-                turn_index,
-                assistant_message: assistant_msg,
-                tool_results: result_records,
-            });
-
-            // Check for steering messages (injected before next LLM call)
-            if let Some(steer_msg) = self.steering_queue.pop_front() {
-                self.context.add(steer_msg);
-            }
-
-            // Check for follow-up messages (only when no more tool calls pending)
-            if let Some(follow_up) = self.follow_up_queue.pop_front() {
-                self.context.add(follow_up);
-            }
-
-            if turn_index == max_iterations - 1 {
-                let summary = build_iteration_limit_summary(&self.context, max_iterations);
-                on_event(AgentEvent::Error(summary.clone()));
-                return Ok(summary);
+            match self.run_turn(turn_index, max_iterations, on_event).await {
+                TurnOutcome::Final(text) => return Ok(text),
+                TurnOutcome::Continue => {}
+                TurnOutcome::Stop(msg) => return Ok(msg),
             }
         }
 
         bail!("unexpected end of agent loop")
     }
 
+    /// Execute one turn of the ReAct loop, segmented into named stages:
+    /// `Refresh → Compact → Model → Dispatch → Execute → Observe`.
+    ///
+    /// Control flow is identical to the pre-Phase-E inline implementation;
+    /// the staging is structural (named stages + logging) only, with no
+    /// external processor abstraction.
+    async fn run_turn(
+        &mut self,
+        turn_index: usize,
+        max_iterations: usize,
+        on_event: &(impl Fn(AgentEvent) + Send + Sync),
+    ) -> TurnOutcome {
+        // ── Stage: Refresh ───────────────────────────────────────────
+        tracing::debug!(turn = turn_index, stage = Stage::Refresh.as_str());
+        self.refresh_context_segments();
+        self.context.trim_to_fit();
 
+        // ── Stage: Compact ───────────────────────────────────────────
+        // LLM compaction: if still near limit, summarize old turns.
+        tracing::debug!(turn = turn_index, stage = Stage::Compact.as_str());
+        self.maybe_llm_compact().await;
+
+        // ── Stage: Model ─────────────────────────────────────────────
+        // Invoke the model with loop-level recovery (Phase A). This
+        // centralizes HTTP-stream errors and applies context compaction /
+        // token escalation / retry instead of abandoning the turn on the
+        // first failure.
+        tracing::debug!(turn = turn_index, stage = Stage::Model.as_str());
+        let (text, tool_calls) = match self.model_turn(on_event).await {
+            Ok(r) => r,
+            Err(e) => {
+                if self.cancel_token.is_cancelled() {
+                    return TurnOutcome::Stop("Agent aborted by user.".to_string());
+                }
+                on_event(AgentEvent::Error(e.clone()));
+                return TurnOutcome::Stop(format!(
+                    "I encountered an error communicating with the model: {e}. Please try again."
+                ));
+            }
+        };
+
+        // ── Stage: Dispatch ──────────────────────────────────────────
+        tracing::debug!(turn = turn_index, stage = Stage::Dispatch.as_str());
+        if tool_calls.is_empty() {
+            // No tool calls — this is the final answer.
+            let assistant_msg = Message::assistant(&text);
+            self.context.add(assistant_msg.clone());
+            on_event(AgentEvent::MessageEnd {
+                message: assistant_msg.clone(),
+            });
+            on_event(AgentEvent::TurnEnd {
+                turn_index,
+                assistant_message: assistant_msg,
+                tool_results: vec![],
+            });
+            self.hook_registry.fire_turn_end(turn_index);
+
+            if let Some(ref mem) = self.memory {
+                if let Ok(m) = mem.lock() {
+                    let _ = m.store_conversation("assistant", &text);
+                }
+                self.refresh_core_memory_in_context();
+                self.maybe_consolidate();
+            }
+
+            // Check for follow-up messages
+            if let Some(follow_up) = self.follow_up_queue.pop_front() {
+                self.context.add(follow_up);
+                return TurnOutcome::Continue;
+            }
+
+            return TurnOutcome::Final(text);
+        }
+
+        // Add assistant message with tool calls
+        let assistant_msg = if !text.is_empty() {
+            let msg = Message::assistant_with_tools(&text, tool_calls.clone());
+            self.context.add(msg.clone());
+            msg
+        } else {
+            let msg = Message::assistant_with_tools("", tool_calls.clone());
+            self.context.add(msg.clone());
+            msg
+        };
+
+        on_event(AgentEvent::MessageEnd {
+            message: assistant_msg.clone(),
+        });
+
+        // ── Stage: Execute ───────────────────────────────────────────
+        tracing::debug!(turn = turn_index, stage = Stage::Execute.as_str());
+        self.state = AgentState::ExecutingTools;
+        let tool_results = {
+            let mut orchestrator = executor::ToolOrchestrator {
+                registry: &self.registry,
+                permission_policy: &mut self.permission_policy,
+                hook_registry: &mut self.hook_registry,
+                tool_execution_mode: self.tool_execution_mode,
+                cancel_token: self.cancel_token.clone(),
+            };
+            orchestrator.execute_tools(&tool_calls, &on_event).await
+        };
+        self.state = AgentState::Streaming;
+
+        // ── Stage: Observe ───────────────────────────────────────────
+        tracing::debug!(turn = turn_index, stage = Stage::Observe.as_str());
+        let mut result_records = Vec::new();
+        for (call, result) in tool_calls.iter().zip(&tool_results) {
+            let is_error = result.starts_with("Error")
+                || result.starts_with("Permission denied")
+                || result.starts_with("Hook vetoed");
+
+            result_records.push(ToolResultRecord {
+                tool_call_id: call.id.clone(),
+                tool_name: call.function.name.clone(),
+                result: result.clone(),
+                is_error,
+            });
+
+            on_event(AgentEvent::ToolExecutionEnd {
+                tool_call_id: call.id.clone(),
+                tool_name: call.function.name.clone(),
+                result: result.clone(),
+                is_error,
+            });
+
+            self.context
+                .add(Message::tool(call.id.clone(), result.clone()));
+        }
+
+        on_event(AgentEvent::TurnEnd {
+            turn_index,
+            assistant_message: assistant_msg,
+            tool_results: result_records,
+        });
+        self.hook_registry.fire_turn_end(turn_index);
+
+        // Check for steering messages (injected before next LLM call)
+        if let Some(steer_msg) = self.steering_queue.pop_front() {
+            self.context.add(steer_msg);
+        }
+
+        // Check for follow-up messages (only when no more tool calls pending)
+        if let Some(follow_up) = self.follow_up_queue.pop_front() {
+            self.context.add(follow_up);
+        }
+
+        if turn_index == max_iterations - 1 {
+            let summary = build_iteration_limit_summary(&self.context, max_iterations);
+            on_event(AgentEvent::Error(summary.clone()));
+            return TurnOutcome::Stop(summary);
+        }
+
+        TurnOutcome::Continue
+    }
+
+
+
+    /// Build the outgoing message list for this turn: refresh-independent
+    /// snapshot of context messages with optional `transform_context` applied.
+    fn build_messages(&self) -> Vec<Message> {
+        let mut messages = self.context.messages();
+        for processor in &self.context_processors {
+            messages = (processor.transform)(messages);
+        }
+        messages
+    }
+
+    /// Serialize messages to JSON values for the `BeforeModel` hook snapshot.
+    /// Only the role + a truncated content preview is kept to bound cost.
+    fn snapshot_messages_for_hook(&self, messages: &[Message]) -> Vec<Value> {
+        messages
+            .iter()
+            .map(|m| {
+                let content = m.content.as_deref().unwrap_or("");
+                let preview = if content.len() > 500 {
+                    let end = content.floor_char_boundary(500);
+                    format!("{}...", &content[..end])
+                } else {
+                    content.to_string()
+                };
+                serde_json::json!({ "role": format!("{:?}", m.role), "preview": preview })
+            })
+            .collect()
+    }
+
+    /// Invoke the model for one turn with loop-level recovery.
+    ///
+    /// This wraps `chat_completion_stream` + `collect_stream` and consults the
+    /// [`RecoveryEngine`] on failure. Unlike the HTTP-layer retry/fallback in
+    /// [`crate::client::OpenAIClient`], this handles *whole-turn* recovery:
+    /// context-too-long (compact then retry), token truncation (escalate
+    /// `max_tokens` then retry), and a bounded number of generic retries.
+    async fn model_turn(
+        &mut self,
+        on_event: &(impl Fn(AgentEvent) + Send + Sync),
+    ) -> Result<(String, Vec<ToolCall>), String> {
+        const MAX_RECOVERY_ATTEMPTS: u32 = 3;
+
+        for _attempt in 0..MAX_RECOVERY_ATTEMPTS {
+            if self.cancel_token.is_cancelled() {
+                return Err("aborted".to_string());
+            }
+
+            let messages = self.build_messages();
+            let tools = self.registry.tool_definitions();
+
+            // BeforeModel hook: allows SkipModel short-circuit (testing/cache).
+            let snapshot = self.snapshot_messages_for_hook(&messages);
+            if let Some(preset) = self.hook_registry.fire_before_model(&snapshot) {
+                self.recovery_ctx.record_success();
+                self.hook_registry.fire_after_model(&preset, 0);
+                return Ok((preset, Vec::new()));
+            }
+
+            // Acquire the stream. On error we propagate an owned String so the
+            // immutable borrow of `self.client` ends before we call the
+            // `&mut self` recovery path below.
+            let stream = self
+                .client
+                .chat_completion_stream(&messages, &tools)
+                .await
+                .map_err(|e| format!("LLM request failed: {e}"))?;
+
+            // Collect the stream within a scope that only borrows `self`
+            // immutably (cancel token). The result is owned, so the borrow is
+            // released by the time we reach the recovery path.
+            let collected: Result<(String, Vec<ToolCall>), String> = {
+                let cancel = self.cancel_token.clone();
+                let res = self.collect_stream(stream, on_event).await;
+                match res {
+                    Ok(r) => Ok(r),
+                    Err(e) => {
+                        if cancel.is_cancelled() {
+                            return Err("aborted".to_string());
+                        }
+                        Err(format!("Stream error: {e}"))
+                    }
+                }
+            };
+
+            match collected {
+                Ok((text, tool_calls)) => {
+                    self.recovery_ctx.record_success();
+                    self.hook_registry
+                        .fire_after_model(&text, tool_calls.len());
+                    return Ok((text, tool_calls));
+                }
+                Err(msg) => {
+                    self.recovery_ctx.record_error(&msg);
+                    match self.try_recover(&msg, on_event).await {
+                        RecoveryOutcome::Retry => continue,
+                        RecoveryOutcome::GiveUp => return Err(msg),
+                    }
+                }
+            }
+        }
+
+        Err("exhausted recovery attempts".to_string())
+    }
+
+    /// Apply one recovery action based on the current [`RecoveryContext`].
+    /// Returns whether the turn should be retried or given up.
+    async fn try_recover(
+        &mut self,
+        error: &str,
+        on_event: &(impl Fn(AgentEvent) + Send + Sync),
+    ) -> RecoveryOutcome {
+        let action = self.recovery.determine_strategy(&self.recovery_ctx);
+        match action {
+            RecoveryAction::CompactContext { target_ratio } => {
+                on_event(AgentEvent::Error(format!(
+                    "context too long; compacting to {:.0}% before retry",
+                    target_ratio * 100.0
+                )));
+                self.force_compact(target_ratio).await;
+                RecoveryOutcome::Retry
+            }
+            RecoveryAction::EscalateTokens { new_max_tokens } => {
+                on_event(AgentEvent::Error(format!(
+                    "escalating max_tokens to {new_max_tokens}"
+                )));
+                self.client.set_max_tokens(new_max_tokens);
+                RecoveryOutcome::Retry
+            }
+            RecoveryAction::Retry { delay_ms } => {
+                on_event(AgentEvent::Error(format!(
+                    "retrying model call after {delay_ms}ms"
+                )));
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                RecoveryOutcome::Retry
+            }
+            RecoveryAction::SwitchModel { model } => {
+                if self.config.get_model(&model).is_some()
+                    && self.switch_model(&model).is_ok()
+                {
+                    on_event(AgentEvent::Error(format!(
+                        "switched to fallback model: {model}"
+                    )));
+                    RecoveryOutcome::Retry
+                } else {
+                    on_event(AgentEvent::Error(format!(
+                        "recovery requested fallback model '{model}' which is unavailable; giving up: {error}"
+                    )));
+                    RecoveryOutcome::GiveUp
+                }
+            }
+            RecoveryAction::Fail => {
+                on_event(AgentEvent::Error(format!("unrecoverable: {error}")));
+                RecoveryOutcome::GiveUp
+            }
+        }
+    }
+
+    /// Force an LLM compaction of the oldest turns regardless of current token
+    /// count. `target_ratio` is the desired remaining fraction of context after
+    /// compaction (e.g. 0.8 means summarize the oldest 20%).
+    async fn force_compact(&mut self, target_ratio: f64) {
+        let remove_fraction = (1.0 - target_ratio).clamp(0.1, 0.6);
+        let num_turns = (self.context.len().max(4) as f64 * remove_fraction) as usize;
+        let request = match self.context.prepare_summary(num_turns) {
+            Some(r) => r,
+            None => return,
+        };
+        let messages = vec![Message::system(&request.prompt)];
+        let (result_text, _) = match self.client.chat_completion(&messages, &[]).await {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+        let summary: crate::compressor::TurnSummary = match serde_json::from_str(&result_text) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        self.context
+            .apply_summary(request.split_index, &summary, num_turns);
+    }
 
     async fn collect_stream(
         &self,
@@ -805,7 +1141,28 @@ impl Agent {
         &mut self,
         f: impl Fn(Vec<Message>) -> Vec<Message> + Send + Sync + 'static,
     ) {
-        self.transform_context = Some(Box::new(f));
+        self.context_processors.push(ContextProcessor {
+            name: "transform_context".to_string(),
+            transform: Box::new(f),
+        });
+    }
+
+    /// Append a named context processor at runtime. See
+    /// [`AgentBuilder::with_context_processor`].
+    pub fn add_context_processor(
+        &mut self,
+        name: impl Into<String>,
+        f: impl Fn(Vec<Message>) -> Vec<Message> + Send + Sync + 'static,
+    ) {
+        self.context_processors.push(ContextProcessor {
+            name: name.into(),
+            transform: Box::new(f),
+        });
+    }
+
+    /// Read-only access to the registered context processors.
+    pub fn context_processors(&self) -> &[ContextProcessor] {
+        &self.context_processors
     }
 
     pub fn switch_model(&mut self, name: &str) -> Result<()> {
@@ -957,6 +1314,13 @@ impl Agent {
     pub fn config(&self) -> &Config {
         &self.config
     }
+
+    /// Borrow the HTTP client for offline, read-only reflection work
+    /// (e.g. enriching suggestion rationales). The client performs its own
+    /// retry/fallback; callers must not mutate agent state through it.
+    pub fn client_for_reflection(&self) -> Option<&crate::client::OpenAIClient> {
+        Some(&self.client)
+    }
 }
 
 /// Build a map from tool name → DangerLevel using the permission policy's built-in rules.
@@ -1053,4 +1417,225 @@ fn build_iteration_limit_summary(
     }
 
     msg
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_config() -> Config {
+        let toml = r#"
+default_model = "test/default"
+
+[providers.test]
+name = "test"
+base_url = "http://127.0.0.1:1"
+api_key = "sk-test"
+
+[providers.test.models]
+default = { model_id = "mock" }
+"#;
+        let mut config: Config = toml::from_str(toml).unwrap();
+        config.rebuild_models();
+        config
+    }
+
+    /// Phase C: `transform_context` is now an ordered, named list. Both the
+    /// legacy `with_transform_context` and the new `with_context_processor`
+    /// append, and `build_messages` applies them in registration order.
+    #[test]
+    fn test_context_processors_registered_in_order() {
+        let agent = AgentBuilder::with_config(test_config())
+            .with_transform_context(|msgs| msgs)
+            .with_context_processor("trim", |msgs| msgs)
+            .with_context_processor("enrich", |msgs| msgs)
+            .with_memory(false)
+            .build()
+            .unwrap();
+
+        let names: Vec<&str> = agent
+            .context_processors()
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["transform_context", "trim", "enrich"]);
+    }
+
+    /// Phase C: `build_messages` applies processors in order, each receiving
+    /// the previous one's output.
+    #[test]
+    fn test_build_messages_applies_processors_in_order() {
+        // Processor 1 tags messages with "[a]"; processor 2 tags with "[b]".
+        // The final system-prompt-bearing message should carry both tags in
+        // order, proving sequential composition.
+        let agent = AgentBuilder::with_config(test_config())
+            .with_context_processor("a", |mut msgs| {
+                for m in msgs.iter_mut() {
+                    if let Some(c) = m.content.as_mut() {
+                        c.push_str("[a]");
+                    }
+                }
+                msgs
+            })
+            .with_context_processor("b", |mut msgs| {
+                for m in msgs.iter_mut() {
+                    if let Some(c) = m.content.as_mut() {
+                        c.push_str("[b]");
+                    }
+                }
+                msgs
+            })
+            .with_memory(false)
+            .build()
+            .unwrap();
+
+        let messages = agent.build_messages();
+        // The context always has at least the identity system prompt.
+        let any_tagged = messages.iter().any(|m| {
+            m.content
+                .as_ref()
+                .map(|c| c.contains("[a][b]"))
+                .unwrap_or(false)
+        });
+        assert!(any_tagged, "processors not applied in order: {:?}", messages);
+    }
+
+    /// Phase D: enabling tracing via the builder must not break the build.
+    #[test]
+    fn test_trace_enabled_builds() {
+        let dir = std::env::temp_dir().join(format!(
+            "agent_core_trace_test_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let agent = AgentBuilder::with_config(test_config())
+            .with_trace(dir.to_str().unwrap())
+            .with_memory(false)
+            .build()
+            .unwrap();
+        // The trace file path is <dir>/<agent_id>.jsonl.
+        let expected = dir.join(format!("{}.jsonl", agent.id));
+        assert!(expected.exists(), "trace file not created: {expected:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod stage_tests {
+    use super::*;
+    use crate::hooks::{Hook, HookAction, HookEvent};
+    use crate::types::AgentEvent;
+    use std::sync::{Arc, Mutex};
+
+    /// A hook that short-circuits the model with a fixed preset answer, so
+    /// `run_turn` can be exercised end-to-end without a live LLM.
+    struct PresetAnswerHook {
+        answer: String,
+    }
+
+    impl Hook for PresetAnswerHook {
+        fn name(&self) -> &str {
+            "preset_answer"
+        }
+        fn handle(&self, event: &HookEvent) -> Option<HookAction> {
+            if let HookEvent::BeforeModel { .. } = event {
+                Some(HookAction::SkipModel {
+                    preset_text: self.answer.clone(),
+                })
+            } else {
+                None
+            }
+        }
+    }
+
+    fn test_config() -> Config {
+        let toml = r#"
+default_model = "test/default"
+
+[providers.test]
+name = "test"
+base_url = "http://127.0.0.1:1"
+api_key = "sk-test"
+
+[providers.test.models]
+default = { model_id = "mock" }
+"#;
+        let mut config: Config = toml::from_str(toml).unwrap();
+        config.rebuild_models();
+        config
+    }
+
+    /// Phase E + B: a turn segmented into stages completes via the BeforeModel
+    /// SkipModel short-circuit, returning the preset answer and emitting the
+    /// expected event ordering (TurnStart → MessageEnd → TurnEnd → AgentEnd).
+    #[tokio::test]
+    async fn run_turn_completes_with_preset_answer() {
+        let events: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let ev_clone = events.clone();
+
+        let mut agent = AgentBuilder::with_config(test_config())
+            .with_memory(false)
+            .build()
+            .unwrap();
+        agent
+            .hook_registry_mut()
+            .register(Box::new(PresetAnswerHook {
+                answer: "42".to_string(),
+            }));
+
+        let result = agent
+            .run_with_events("what is the answer", move |ev| {
+                let tag = match ev {
+                    AgentEvent::AgentStart => "AgentStart",
+                    AgentEvent::TurnStart { .. } => "TurnStart",
+                    AgentEvent::MessageEnd { .. } => "MessageEnd",
+                    AgentEvent::TurnEnd { .. } => "TurnEnd",
+                    AgentEvent::AgentEnd { .. } => "AgentEnd",
+                    AgentEvent::Error(_) => "Error",
+                    _ => return,
+                };
+                ev_clone.lock().unwrap().push(tag);
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result, "42");
+        let recorded = events.lock().unwrap().clone();
+        assert_eq!(
+            recorded,
+            vec!["AgentStart", "TurnStart", "MessageEnd", "TurnEnd", "AgentEnd"],
+            "event ordering must be unchanged by Phase E staging"
+        );
+    }
+
+    /// Phase E: the final-answer branch (no tool calls) is reachable and
+    /// terminates the run after exactly one turn.
+    #[tokio::test]
+    async fn run_turn_final_answer_stops_loop() {
+        let turn_count: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+        let tc_clone = turn_count.clone();
+
+        let mut agent = AgentBuilder::with_config(test_config())
+            .with_memory(false)
+            .build()
+            .unwrap();
+        agent
+            .hook_registry_mut()
+            .register(Box::new(PresetAnswerHook {
+                answer: "done".to_string(),
+            }));
+
+        let result = agent
+            .run_with_events("hi", move |ev| {
+                if matches!(ev, AgentEvent::TurnStart { .. }) {
+                    *tc_clone.lock().unwrap() += 1;
+                }
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result, "done");
+        // The final-answer branch returns after the first turn.
+        assert_eq!(*turn_count.lock().unwrap(), 1);
+    }
 }
