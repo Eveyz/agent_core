@@ -34,7 +34,7 @@ fn test_agent_builds_with_defaults() {
         .build()
         .unwrap();
 
-    assert_eq!(agent.current_model(), "test");
+    assert_eq!(agent.current_model(), "test/default");
     let state_str = format!("{:?}", agent.state());
     assert!(state_str.contains("Idle"), "Expected Idle, got: {}", state_str);
 }
@@ -95,7 +95,7 @@ fn test_agent_with_skill_manager() {
         .build()
         .unwrap();
 
-    assert_eq!(agent.current_model(), "test");
+    assert_eq!(agent.current_model(), "test/default");
 }
 
 #[test]
@@ -126,9 +126,16 @@ fn test_agent_context_initialized() {
 
 #[test]
 fn test_agent_from_config_file() {
-    // Test loading from the actual config.toml
-    let result = AgentBuilder::from_config("config.toml");
-    assert!(result.is_ok(), "Failed to load config.toml: {:?}", result.err());
+    // config.toml lives at the workspace root, one level above the `core/`
+    // crate. Resolve it relative to CARGO_MANIFEST_DIR so the test works
+    // regardless of the cargo invocation directory.
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let config_path = std::path::Path::new(manifest_dir)
+        .parent()
+        .expect("crate must have a parent dir")
+        .join("config.toml");
+    let result = AgentBuilder::from_config(config_path.to_str().unwrap());
+    assert!(result.is_ok(), "Failed to load {:?}: {:?}", config_path, result.err());
 }
 
 #[test]
