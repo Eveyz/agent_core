@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
 pub mod executor;
+mod scheduler;
 use crate::client::OpenAIClient;
 use crate::config::{Config, ModelConfig};
 use crate::context::Context;

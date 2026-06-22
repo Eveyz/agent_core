@@ -23,7 +23,12 @@ impl OpenAIClient {
         Self::with_fallback(model, None)
     }
 
-    pub fn with_fallback(model: ModelConfig, fallback: Option<OpenAIClient>) -> Self {
+    pub fn with_fallback(mut model: ModelConfig, fallback: Option<OpenAIClient>) -> Self {
+        // Resolve `${VAR}` env-var references at the point of use. This keeps the
+        // on-disk Config holding the `${VAR}` reference (so save()/get_config
+        // never leak the plaintext secret) while the running client still gets
+        // the real key for bearer_auth.
+        model.api_key = crate::config::resolve_env_value(&model.api_key);
         let http = Self::build_http_client(model.request_timeout_secs);
         Self {
             http,
@@ -38,7 +43,10 @@ impl OpenAIClient {
     }
 
     /// Reconfigure model without destroying the HTTP connection pool.
-    pub fn switch_model(&mut self, model: ModelConfig) {
+    pub fn switch_model(&mut self, mut model: ModelConfig) {
+        // Resolve `${VAR}` references here too (mirrors with_fallback) so a
+        // model switched at runtime from an on-disk Config still gets the real key.
+        model.api_key = crate::config::resolve_env_value(&model.api_key);
         let new_timeout = Duration::from_secs(model.request_timeout_secs);
         let old_timeout = Duration::from_secs(self.model.request_timeout_secs);
         // Rebuild client only if timeout changed (affects connection pool settings)

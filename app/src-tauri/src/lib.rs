@@ -6,6 +6,11 @@ use tokio::sync::Mutex as AsyncMutex;
 
 struct AppState {
     agent: Arc<AsyncMutex<Agent>>,
+    // Separate guard for "an agent turn is running right now". Held only for
+    // the duration of a run, so lightweight commands (switch_model, config
+    // writes, approvals) don't block on the long-held `agent` mutex — and a
+    // turn can't be interrupted by a model switch mid-flight either.
+    run_guard: Arc<tokio::sync::Mutex<()>>,
     cancel_token: Arc<std::sync::Mutex<CancellationToken>>,
     config_path: String,
     project_manager: Arc<std::sync::Mutex<agent_core::ProjectManager>>,
@@ -47,6 +52,10 @@ struct FrontendSession {
 
 #[tauri::command]
 async fn send_message(state: State<'_, AppState>, app_handle: AppHandle, message: String, session_id: Option<String>) -> Result<String, String> {
+    // Acquire the run guard first. This is a separate lock from the agent data
+    // mutex: it's held for the whole turn so lightweight commands can detect
+    // "a turn is in progress" via try_lock instead of blocking behind it.
+    let _run_guard = state.run_guard.lock().await;
     let mut agent = state.agent.lock().await;
 
     // Reset cancel token for this run (in case a previous run was aborted)
@@ -98,42 +107,48 @@ async fn send_message(state: State<'_, AppState>, app_handle: AppHandle, message
 }
 
 #[tauri::command]
-fn list_directory(path: Option<String>) -> Result<Vec<std::collections::HashMap<String, String>>, String> {
-    let target_path = match path {
-        Some(p) => std::path::PathBuf::from(p),
-        None => std::env::current_dir().map_err(|e| e.to_string())?,
-    };
-
-    let mut entries = Vec::new();
-    let dir_entries = std::fs::read_dir(&target_path).map_err(|e| e.to_string())?;
-
-    for entry in dir_entries {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let metadata = entry.metadata().map_err(|e| e.to_string())?;
-        let mut map = std::collections::HashMap::new();
-        let name = entry.file_name().to_string_lossy().to_string();
-        let file_type = if metadata.is_dir() {
-            "directory"
-        } else {
-            "file"
+async fn list_directory(path: Option<String>) -> Result<Vec<std::collections::HashMap<String, String>>, String> {
+    // Filesystem I/O: run off the async runtime so we don't stall Tauri's
+    // sync command pool (and the UI) while reading large directories.
+    tokio::task::spawn_blocking(move || {
+        let target_path = match path {
+            Some(p) => std::path::PathBuf::from(p),
+            None => std::env::current_dir().map_err(|e| e.to_string())?,
         };
-        map.insert("name".to_string(), name);
-        map.insert("type".to_string(), file_type.to_string());
-        entries.push(map);
-    }
 
-    // Sort directories first, then files
-    entries.sort_by(|a, b| {
-        let a_is_dir = a.get("type").map(|t| t == "directory").unwrap_or(false);
-        let b_is_dir = b.get("type").map(|t| t == "directory").unwrap_or(false);
-        match (a_is_dir, b_is_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.get("name").cmp(&b.get("name")),
+        let mut entries = Vec::new();
+        let dir_entries = std::fs::read_dir(&target_path).map_err(|e| e.to_string())?;
+
+        for entry in dir_entries {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let metadata = entry.metadata().map_err(|e| e.to_string())?;
+            let mut map = std::collections::HashMap::new();
+            let name = entry.file_name().to_string_lossy().to_string();
+            let file_type = if metadata.is_dir() {
+                "directory"
+            } else {
+                "file"
+            };
+            map.insert("name".to_string(), name);
+            map.insert("type".to_string(), file_type.to_string());
+            entries.push(map);
         }
-    });
 
-    Ok(entries)
+        // Sort directories first, then files
+        entries.sort_by(|a, b| {
+            let a_is_dir = a.get("type").map(|t| t == "directory").unwrap_or(false);
+            let b_is_dir = b.get("type").map(|t| t == "directory").unwrap_or(false);
+            match (a_is_dir, b_is_dir) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.get("name").cmp(&b.get("name")),
+            }
+        });
+
+        Ok(entries)
+    })
+    .await
+    .map_err(|e| format!("list_directory task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -176,6 +191,19 @@ fn save_config(state: State<'_, AppState>, config: agent_core::config::Config) -
 
 #[tauri::command]
 async fn switch_model(state: State<'_, AppState>, name: String) -> Result<(), String> {
+    // Refuse to switch while a turn is running: mutating the live client /
+    // context mid-turn would corrupt the in-flight stream. This is a try_lock
+    // (non-blocking) so the command returns immediately instead of hanging
+    // behind the long-running turn's hold on the agent mutex.
+    let _guard = match state.run_guard.try_lock() {
+        Ok(g) => g,
+        Err(_) => {
+            return Err(
+                "Cannot switch model while a turn is in progress. Please wait for it to finish or stop it first."
+                    .to_string(),
+            );
+        }
+    };
     let mut agent = state.agent.lock().await;
     // Reload config so newly added models are available
     if let Ok(fresh_config) = agent_core::config::Config::load(&state.config_path) {
@@ -187,34 +215,54 @@ async fn switch_model(state: State<'_, AppState>, name: String) -> Result<(), St
 // ── Session Commands ─────────────────────────────────────────────────
 
 #[tauri::command]
-fn create_session(state: State<'_, AppState>, project_id: String) -> Result<agent_core::SessionMeta, String> {
-    let messages: Vec<agent_core::types::Message> = vec![];
-    let pm = state.project_manager.lock().map_err(|e| e.to_string())?;
-    let project = pm.get(&project_id).map_err(|e| e.to_string())?
-        .ok_or_else(|| "Project not found".to_string())?;
-    let cwd = project.path.clone();
-    let model = "default";
-    let session_id = state.session_manager.save_with_project(None, &messages, &cwd, model, Some(&project_id))
-        .map_err(|e| e.to_string())?;
-    let _ = state.session_manager.rename(&session_id, "New Session");
-    let meta = state.session_manager.get_meta(&session_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Session not found after creation".to_string())?;
-    Ok(meta)
+async fn create_session(state: State<'_, AppState>, project_id: String) -> Result<agent_core::SessionMeta, String> {
+    // All of this touches disk (pm.get + several session_manager writes), so
+    // clone the Arcs and run it on the blocking pool.
+    let pm = state.project_manager.clone();
+    let sm = state.session_manager.clone();
+    tokio::task::spawn_blocking(move || {
+        let messages: Vec<agent_core::types::Message> = vec![];
+        let project = {
+            let pm = pm.lock().map_err(|e| e.to_string())?;
+            pm.get(&project_id).map_err(|e| e.to_string())?
+                .ok_or_else(|| "Project not found".to_string())?
+        };
+        let cwd = project.path.clone();
+        let model = "default";
+        let session_id = sm.save_with_project(None, &messages, &cwd, model, Some(&project_id))
+            .map_err(|e| e.to_string())?;
+        let _ = sm.rename(&session_id, "New Session");
+        let meta = sm.get_meta(&session_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Session not found after creation".to_string())?;
+        Ok(meta)
+    })
+    .await
+    .map_err(|e| format!("create_session task failed: {e}"))?
 }
 
 #[tauri::command]
-fn delete_session(state: State<'_, AppState>, session_id: String) -> Result<bool, String> {
-    state.session_manager.delete(&session_id).map_err(|e| e.to_string())
+async fn delete_session(state: State<'_, AppState>, session_id: String) -> Result<bool, String> {
+    let sm = state.session_manager.clone();
+    tokio::task::spawn_blocking(move || {
+        sm.delete(&session_id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("delete_session task failed: {e}"))?
 }
 
 #[tauri::command]
-fn rename_session(state: State<'_, AppState>, session_id: String, new_title: String) -> Result<bool, String> {
-    state.session_manager.rename(&session_id, &new_title).map_err(|e| e.to_string())
+async fn rename_session(state: State<'_, AppState>, session_id: String, new_title: String) -> Result<bool, String> {
+    let sm = state.session_manager.clone();
+    tokio::task::spawn_blocking(move || {
+        sm.rename(&session_id, &new_title).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("rename_session task failed: {e}"))?
 }
 
 #[tauri::command]
-fn save_session_messages(
+async fn save_session_messages(
     state: State<'_, AppState>,
     session_id: String,
     messages_json: String,
@@ -224,47 +272,57 @@ fn save_session_messages(
     thought_time_ms: Option<u64>,
     event_log_json: Option<String>,
 ) -> Result<(), String> {
-    let frontend_msgs: Vec<FrontendMessage> = serde_json::from_str(&messages_json)
-        .map_err(|e| format!("Invalid messages JSON: {}", e))?;
-    let messages: Vec<agent_core::types::Message> = frontend_msgs
-        .iter()
-        .map(|m| m.to_agent_message())
-        .collect();
-    state.session_manager.save(Some(&session_id), &messages, &cwd, &model_used)
-        .map_err(|e| e.to_string())?;
-
-    // Save timing data
-    if let (Some(pt), Some(tt)) = (process_time_ms, thought_time_ms) {
-        state.session_manager.save_timing(&session_id, pt, tt)
+    let sm = state.session_manager.clone();
+    tokio::task::spawn_blocking(move || {
+        let frontend_msgs: Vec<FrontendMessage> = serde_json::from_str(&messages_json)
+            .map_err(|e| format!("Invalid messages JSON: {}", e))?;
+        let messages: Vec<agent_core::types::Message> = frontend_msgs
+            .iter()
+            .map(|m| m.to_agent_message())
+            .collect();
+        sm.save(Some(&session_id), &messages, &cwd, &model_used)
             .map_err(|e| e.to_string())?;
-    }
 
-    // Save event log (replace all existing events for this session)
-    if let Some(log_json) = event_log_json {
-        state.session_manager.clear_event_log(&session_id)
-            .map_err(|e| e.to_string())?;
-        let events: Vec<serde_json::Value> = serde_json::from_str(&log_json)
-            .map_err(|e| format!("Invalid event log JSON: {}", e))?;
-        for event in &events {
-            let turn_index = event["turn_index"].as_u64().unwrap_or(0) as usize;
-            let event_type = event["event_type"].as_str().unwrap_or("unknown");
-            let payload = event.get("payload").cloned().unwrap_or(serde_json::json!({}));
-            let started_at = event["started_at"].as_str();
-            let ended_at = event["ended_at"].as_str();
-            state.session_manager.log_event(
-                &session_id, turn_index, event_type, &payload, started_at, ended_at,
-            ).map_err(|e| e.to_string())?;
+        // Save timing data
+        if let (Some(pt), Some(tt)) = (process_time_ms, thought_time_ms) {
+            sm.save_timing(&session_id, pt, tt)
+                .map_err(|e| e.to_string())?;
         }
-    }
 
-    Ok(())
+        // Save event log (replace all existing events for this session)
+        if let Some(log_json) = event_log_json {
+            sm.clear_event_log(&session_id)
+                .map_err(|e| e.to_string())?;
+            let events: Vec<serde_json::Value> = serde_json::from_str(&log_json)
+                .map_err(|e| format!("Invalid event log JSON: {}", e))?;
+            for event in &events {
+                let turn_index = event["turn_index"].as_u64().unwrap_or(0) as usize;
+                let event_type = event["event_type"].as_str().unwrap_or("unknown");
+                let payload = event.get("payload").cloned().unwrap_or(serde_json::json!({}));
+                let started_at = event["started_at"].as_str();
+                let ended_at = event["ended_at"].as_str();
+                sm.log_event(
+                    &session_id, turn_index, event_type, &payload, started_at, ended_at,
+                ).map_err(|e| e.to_string())?;
+            }
+        }
+
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("save_session_messages task failed: {e}"))?
 }
 
 #[tauri::command]
-fn resume_session(state: State<'_, AppState>, session_id: String) -> Result<FrontendSession, String> {
-    let session = state.session_manager.resume(&session_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Session not found".to_string())?;
+async fn resume_session(state: State<'_, AppState>, session_id: String) -> Result<FrontendSession, String> {
+    let sm = state.session_manager.clone();
+    let session = tokio::task::spawn_blocking(move || {
+        sm.resume(&session_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "Session not found".to_string())
+    })
+    .await
+    .map_err(|e| format!("resume_session task failed: {e}"))??;
     let messages: Vec<FrontendMessage> = session.messages.iter().map(|m| FrontendMessage {
         role: m.role.to_string(),
         content: m.content.clone().unwrap_or_default(),
@@ -279,27 +337,49 @@ fn resume_session(state: State<'_, AppState>, session_id: String) -> Result<Fron
 // ── Project Commands ─────────────────────────────────────────────────
 
 #[tauri::command]
-fn list_projects(state: State<'_, AppState>) -> Result<Vec<agent_core::Project>, String> {
-    let pm = state.project_manager.lock().map_err(|e| e.to_string())?;
-    pm.list().map_err(|e| e.to_string())
+async fn list_projects(state: State<'_, AppState>) -> Result<Vec<agent_core::Project>, String> {
+    // pm.list() reads project metadata from disk → blocking. Clone the Arc
+    // (State can't cross spawn_blocking) and lock inside the blocking task.
+    let pm = state.project_manager.clone();
+    tokio::task::spawn_blocking(move || {
+        let pm = pm.lock().map_err(|e| e.to_string())?;
+        pm.list().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("list_projects task failed: {e}"))?
 }
 
 #[tauri::command]
-fn create_project(state: State<'_, AppState>, path: String) -> Result<agent_core::Project, String> {
-    let pm = state.project_manager.lock().map_err(|e| e.to_string())?;
-    pm.create(&path).map_err(|e| e.to_string())
+async fn create_project(state: State<'_, AppState>, path: String) -> Result<agent_core::Project, String> {
+    let pm = state.project_manager.clone();
+    tokio::task::spawn_blocking(move || {
+        let pm = pm.lock().map_err(|e| e.to_string())?;
+        pm.create(&path).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("create_project task failed: {e}"))?
 }
 
 #[tauri::command]
-fn delete_project(state: State<'_, AppState>, project_id: String) -> Result<bool, String> {
-    let pm = state.project_manager.lock().map_err(|e| e.to_string())?;
-    pm.delete(&project_id).map_err(|e| e.to_string())
+async fn delete_project(state: State<'_, AppState>, project_id: String) -> Result<bool, String> {
+    let pm = state.project_manager.clone();
+    tokio::task::spawn_blocking(move || {
+        let pm = pm.lock().map_err(|e| e.to_string())?;
+        pm.delete(&project_id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("delete_project task failed: {e}"))?
 }
 
 #[tauri::command]
-fn rename_project(state: State<'_, AppState>, project_id: String, new_name: String) -> Result<bool, String> {
-    let pm = state.project_manager.lock().map_err(|e| e.to_string())?;
-    pm.rename(&project_id, &new_name).map_err(|e| e.to_string())
+async fn rename_project(state: State<'_, AppState>, project_id: String, new_name: String) -> Result<bool, String> {
+    let pm = state.project_manager.clone();
+    tokio::task::spawn_blocking(move || {
+        let pm = pm.lock().map_err(|e| e.to_string())?;
+        pm.rename(&project_id, &new_name).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("rename_project task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -308,41 +388,55 @@ fn open_in_explorer(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn list_git_branches(path: String) -> Result<Vec<String>, String> {
-    let output = std::process::Command::new("git")
-        .args(["branch", "--format=%(refname:short)"])
-        .current_dir(&path)
-        .output()
-        .map_err(|e| format!("Failed to run git branch: {}", e))?;
-    if !output.status.success() {
-        return Err(format!("git branch failed: {}", String::from_utf8_lossy(&output.stderr)));
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let branches: Vec<String> = stdout
-        .lines()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-    Ok(branches)
+async fn list_git_branches(path: String) -> Result<Vec<String>, String> {
+    // `git` is a blocking subprocess; keep it off the async runtime.
+    tokio::task::spawn_blocking(move || {
+        let output = std::process::Command::new("git")
+            .args(["branch", "--format=%(refname:short)"])
+            .current_dir(&path)
+            .output()
+            .map_err(|e| format!("Failed to run git branch: {}", e))?;
+        if !output.status.success() {
+            return Err(format!("git branch failed: {}", String::from_utf8_lossy(&output.stderr)));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let branches: Vec<String> = stdout
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        Ok(branches)
+    })
+    .await
+    .map_err(|e| format!("list_git_branches task failed: {e}"))?
 }
 
 #[tauri::command]
-fn switch_git_branch(path: String, branch: String) -> Result<(), String> {
-    let output = std::process::Command::new("git")
-        .args(["checkout", &branch])
-        .current_dir(&path)
-        .output()
-        .map_err(|e| format!("Failed to run git checkout: {}", e))?;
-    if !output.status.success() {
-        return Err(format!("git checkout failed: {}", String::from_utf8_lossy(&output.stderr)));
-    }
-    Ok(())
+async fn switch_git_branch(path: String, branch: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let output = std::process::Command::new("git")
+            .args(["checkout", &branch])
+            .current_dir(&path)
+            .output()
+            .map_err(|e| format!("Failed to run git checkout: {}", e))?;
+        if !output.status.success() {
+            return Err(format!("git checkout failed: {}", String::from_utf8_lossy(&output.stderr)));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("switch_git_branch task failed: {e}"))?
 }
 
 #[tauri::command]
-fn get_project_sessions(state: State<'_, AppState>, project_id: String) -> Result<Vec<agent_core::session::SessionMeta>, String> {
-    let pm = state.project_manager.lock().map_err(|e| e.to_string())?;
-    pm.list_sessions(&project_id).map_err(|e| e.to_string())
+async fn get_project_sessions(state: State<'_, AppState>, project_id: String) -> Result<Vec<agent_core::session::SessionMeta>, String> {
+    let pm = state.project_manager.clone();
+    tokio::task::spawn_blocking(move || {
+        let pm = pm.lock().map_err(|e| e.to_string())?;
+        pm.list_sessions(&project_id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("get_project_sessions task failed: {e}"))?
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -449,6 +543,7 @@ pub fn run() {
 
             app.manage(AppState {
                 agent: Arc::new(AsyncMutex::new(agent)),
+                run_guard: Arc::new(tokio::sync::Mutex::new(())),
                 cancel_token,
                 config_path: config_path_str,
                 project_manager,

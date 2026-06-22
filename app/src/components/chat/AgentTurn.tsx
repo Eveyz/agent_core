@@ -235,7 +235,13 @@ const SubagentBlockUI = memo(function SubagentBlockUI({ block }: { block: Subage
   }
   if (block.type === 'assistant') {
     const text = typeof block.text === 'string' ? block.text : JSON.stringify(block.text);
-    return <MarkdownContent content={text} className="assistant-msg" />;
+    return (
+      <MarkdownContent
+        content={text}
+        className="assistant-msg"
+        isStreaming={!!block.isStreaming}
+      />
+    );
   }
   if (block.type === 'tool') {
     const name = typeof block.name === 'string' ? block.name : JSON.stringify(block.name);
@@ -492,7 +498,14 @@ export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: ChatEnt
           return <ApprovalBlockUI key={`approval-${b.prompt_id}-${idx}`} block={b} />;
         } else if (b.type === 'assistant') {
           const text = typeof b.text === 'string' ? b.text : JSON.stringify(b.text);
-          return <MarkdownContent key={`assistant-${idx}`} content={text} className="assistant-msg" />;
+          return (
+            <MarkdownContent
+              key={`assistant-${idx}`}
+              content={text}
+              className="assistant-msg"
+              isStreaming={!!b.isStreaming}
+            />
+          );
         } else if (b.type === 'error') {
           const text = typeof b.text === 'string' ? b.text : JSON.stringify(b.text);
           return <div key={`error-${idx}`} className="error-msg">{text}</div>;

@@ -183,9 +183,12 @@ impl Config {
             );
         }
 
-        for model in config.models.values_mut() {
-            model.api_key = resolve_env_value(&model.api_key);
-        }
+        // NOTE: api_key env-var resolution (`${VAR}`) is intentionally NOT done
+        // here anymore. Resolving it into the in-memory Config would leak the
+        // plaintext secret back to disk via save() / to the UI via get_config.
+        // Instead, resolution happens at the HTTP-client construction site
+        // (OpenAIClient::with_fallback), so the on-disk config keeps the
+        // `${VAR}` reference and never materializes the secret in Config state.
 
         Ok(config)
     }
@@ -367,7 +370,12 @@ impl Config {
     }
 }
 
-fn resolve_env_value(raw: &str) -> String {
+/// Resolve a config value that may reference an env var via `${VAR}` syntax.
+/// If the value is `"${VAR}"`, returns the env var; otherwise returns the raw
+/// value unchanged. Used for secrets (`api_key`) at the point of use (HTTP
+/// client construction) so the on-disk Config keeps the `${VAR}` reference and
+/// the plaintext secret never materializes in Config state.
+pub fn resolve_env_value(raw: &str) -> String {
     if raw.starts_with("${") && raw.ends_with('}') {
         let var_name = &raw[2..raw.len() - 1];
         std::env::var(var_name).unwrap_or_else(|_| {
@@ -620,7 +628,12 @@ gpt = { model_id = "gpt-4o" }
         );
         let config = Config::load(path.to_str().unwrap()).unwrap();
         let model = config.get_model("openai/gpt").unwrap();
-        assert_eq!(model.api_key, "from-env");
+        // Config::load must NOT resolve `${VAR}` into the in-memory api_key —
+        // doing so would leak the plaintext secret back via save()/get_config.
+        // The on-disk reference is preserved verbatim.
+        assert_eq!(model.api_key, "${MY_KEY}");
+        // Resolution happens at the point of use (HTTP client construction).
+        assert_eq!(resolve_env_value(&model.api_key), "from-env");
         unsafe { std::env::remove_var("MY_KEY") };
     }
 

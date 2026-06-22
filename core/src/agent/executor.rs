@@ -1,3 +1,4 @@
+use crate::agent::scheduler::{classify_resources, DepGraph, SchedNode};
 use crate::hooks::{HookRegistry, PreToolResult};
 use crate::permission::{
     ApprovalChoice, ApprovalScope, PermissionDecision, PermissionPolicy, ToolPermissionPattern,
@@ -5,9 +6,8 @@ use crate::permission::{
 };
 use crate::tools::{ToolRegistry, ToolUpdateFn};
 use crate::types::{AgentEvent, ToolCall, ToolExecutionMode};
+use futures::stream::{FuturesUnordered, StreamExt};
 use serde_json::Value;
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
@@ -213,44 +213,74 @@ impl<'a> ToolOrchestrator<'a> {
             return results;
         }
 
-        match mode {
-            ToolExecutionMode::Sequential => {
-                for (i, call, args) in &allowed {
-                    let cancel = self.cancel_token.clone();
-                    let result = tokio::select! {
-                        res = self.execute_single_tool(
-                            &call.function.name,
-                            &call.id,
-                            args.clone(),
-                            cancel,
-                            on_event,
-                        ) => res,
-                        _ = self.cancel_token.cancelled() => "Aborted".to_string(),
-                    };
-                    results[*i] = result;
+        // ── Execution stage: DAG-scheduled. ────────────────────────────────
+        // We don't blindly parallelize (calls may mutate the same file) nor
+        // blindly serialize (independent calls waste wall-clock). We build a
+        // dependency graph keyed on the resources each call touches and run
+        // topologically: calls with no outstanding predecessors run
+        // concurrently on a FuturesUnordered, and each completion releases its
+        // dependents. Sequential mode collapses to a linear chain.
+        let nodes: Vec<SchedNode> = allowed
+            .iter()
+            .map(|(idx, call, args)| {
+                let (mutations, reads) = classify_resources(&call.function.name, args);
+                SchedNode {
+                    idx: *idx,
+                    tool_name: call.function.name.clone(),
+                    tool_call_id: call.id.clone(),
+                    args: args.clone(),
+                    mutations,
+                    reads,
+                }
+            })
+            .collect();
+        let graph = DepGraph::build(&nodes, mode);
+
+        // Each in-flight future returns (node_idx, output), so completions map
+        // straight back to the graph without a separate slot table.
+        let mut indegree = graph.indegree.clone();
+        let dependents = graph.dependents.clone();
+        let mut in_flight: FuturesUnordered<_> = FuturesUnordered::new();
+
+        // Seed: launch every node with indegree 0.
+        for (node_idx, node) in nodes.iter().enumerate() {
+            if self.cancel_token.is_cancelled() {
+                results[node.idx] = "Aborted".to_string();
+                indegree[node_idx] = usize::MAX; // mark so we never launch
+            } else if indegree[node_idx] == 0 {
+                in_flight.push(self.run_node(node_idx, node, on_event));
+            }
+        }
+
+        loop {
+            if in_flight.is_empty() {
+                break;
+            }
+            let (done_node_idx, output) = tokio::select! {
+                Some((idx, res)) = in_flight.next() => (idx, res),
+                _ = self.cancel_token.cancelled() => {
+                    // On cancel, stop launching; remaining in-flight will be
+                    // drained/aborted below.
+                    break;
+                }
+            };
+            results[nodes[done_node_idx].idx] = output;
+
+            // Release dependents whose predecessors are all done.
+            for &dep in &dependents[done_node_idx] {
+                if indegree[dep] > 0 && indegree[dep] != usize::MAX {
+                    indegree[dep] -= 1;
+                }
+                if indegree[dep] == 0 && !self.cancel_token.is_cancelled() {
+                    in_flight.push(self.run_node(dep, &nodes[dep], on_event));
                 }
             }
-            ToolExecutionMode::Parallel => {
-                // TODO: wrap ToolRegistry in Arc to enable true parallel execution
-                // via JoinSet. Currently sequential due to &self borrow constraints.
-                for (i, call, args) in &allowed {
-                    if self.cancel_token.is_cancelled() {
-                        results[*i] = "Aborted".to_string();
-                        continue;
-                    }
-                    let cancel = self.cancel_token.clone();
-                    let result = tokio::select! {
-                        res = self.execute_single_tool(
-                            &call.function.name,
-                            &call.id,
-                            args.clone(),
-                            cancel,
-                            on_event,
-                        ) => res,
-                        _ = self.cancel_token.cancelled() => "Aborted".to_string(),
-                    };
-                    results[*i] = result;
-                }
+        }
+
+        // Anything still unfinished (cancelled mid-flight) is aborted.
+        for node in nodes.iter() {
+            if results[node.idx].is_empty() {
+                results[node.idx] = "Aborted".to_string();
             }
         }
 
@@ -270,6 +300,27 @@ impl<'a> ToolOrchestrator<'a> {
         }
 
         results
+    }
+
+    /// Run one scheduled node to completion, respecting cancellation. Returns
+    /// `(node_idx, output)` so the scheduler can fan completions back to the
+    /// right slot without a separate index map.
+    async fn run_node<F>(&self, node_idx: usize, node: &SchedNode, on_event: &F) -> (usize, String)
+    where
+        F: Fn(AgentEvent) + Send + Sync,
+    {
+        let cancel = self.cancel_token.clone();
+        let out = tokio::select! {
+            res = self.execute_single_tool(
+                &node.tool_name,
+                &node.tool_call_id,
+                node.args.clone(),
+                cancel,
+                on_event,
+            ) => res,
+            _ = self.cancel_token.cancelled() => "Aborted".to_string(),
+        };
+        (node_idx, out)
     }
 
     #[tracing::instrument(skip_all, fields(tool = %tool_name, id = %tool_call_id))]

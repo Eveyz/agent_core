@@ -27,7 +27,7 @@ pub mod worktree;
 
 pub use agent::{Agent, AgentBuilder, ContextProcessor, TransformContextFn};
 pub use tokio_util::sync::CancellationToken;
-pub use config::{Config, MemoryConfig, ModelConfig, RuntimeOverrides};
+pub use config::{resolve_env_value, Config, MemoryConfig, ModelConfig, RuntimeOverrides};
 pub use context::{CacheHint, Context, ContextEngine, ContextSegment, RefreshPolicy, Stability};
 pub use memory::{MemoryCategory, MemoryManager, MemoryStats, SalienceConfig, SalienceScorer, ScoredRecord};
 pub use tools::{Tool, ToolRegistry, ToolUpdateFn, build_tool_by_name};

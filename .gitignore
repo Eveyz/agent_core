@@ -1,8 +1,9 @@
 # Build
 /target
 
-# Config with secrets
+# Config with secrets (covers both root and per-app copies)
 config.toml
+app/config.toml
 
 # IDE
 .idea/
