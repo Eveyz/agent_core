@@ -1,17 +1,15 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-use agent_core::{Agent, ToolExecutionMode, CancellationToken};
+use agent_core::{
+    Brain, RunCommand, RunEvent, RunManager, RunState,
+    permission::ApprovalChoice,
+};
 use tauri::{AppHandle, Emitter, Manager, State};
 use std::sync::Arc;
 use tokio::sync::Mutex as AsyncMutex;
 
 struct AppState {
-    agent: Arc<AsyncMutex<Agent>>,
-    // Separate guard for "an agent turn is running right now". Held only for
-    // the duration of a run, so lightweight commands (switch_model, config
-    // writes, approvals) don't block on the long-held `agent` mutex — and a
-    // turn can't be interrupted by a model switch mid-flight either.
-    run_guard: Arc<tokio::sync::Mutex<()>>,
-    cancel_token: Arc<std::sync::Mutex<CancellationToken>>,
+    /// The RunManager owns the Brain and tracks all active Runs.
+    run_manager: Arc<AsyncMutex<RunManager>>,
     config_path: String,
     project_manager: Arc<std::sync::Mutex<agent_core::ProjectManager>>,
     session_manager: Arc<agent_core::SessionManager>,
@@ -50,66 +48,175 @@ struct FrontendSession {
     event_log: Vec<agent_core::EventLogEntry>,
 }
 
+// ── Run lifecycle commands ───────────────────────────────────────────
+
+/// Create a new Run for a user message. Returns the run_id.
+/// The Run starts in `Created` state — the frontend should call
+/// `start_run(run_id)` to begin execution.
 #[tauri::command]
-async fn send_message(state: State<'_, AppState>, app_handle: AppHandle, message: String, session_id: Option<String>) -> Result<String, String> {
-    // Acquire the run guard first. This is a separate lock from the agent data
-    // mutex: it's held for the whole turn so lightweight commands can detect
-    // "a turn is in progress" via try_lock instead of blocking behind it.
-    let _run_guard = state.run_guard.lock().await;
-    let mut agent = state.agent.lock().await;
+async fn send_message(
+    state: State<'_, AppState>,
+    app_handle: AppHandle,
+    message: String,
+    session_id: Option<String>,
+) -> Result<String, String> {
+    let manager = state.run_manager.lock().await;
 
-    // Reset cancel token for this run (in case a previous run was aborted)
-    let new_token = CancellationToken::new();
-    agent.set_cancel_token(new_token.clone());
-    {
-        let mut shared = state.cancel_token.lock().unwrap();
-        *shared = new_token;
-    }
+    // Create the Run
+    let run_id = manager
+        .create_run(&message, session_id.clone())
+        .await
+        .map_err(|e| e.to_string())?;
 
-    // If a session_id is provided, load its history into the agent's context
-    // so the LLM sees the full conversation, not just messages from this process.
-    if let Some(sid) = &session_id {
-        let current_len = agent.context_mut().raw_messages().len();
-        // Only reload if context is empty or from a different session
-        if current_len == 0 || agent.current_session_id() != Some(sid.as_str()) {
-            match state.session_manager.resume(sid) {
-                Ok(Some(session)) => {
-                    agent.clear_context();
-                    for msg in &session.messages {
-                        agent.context_mut().add(msg.clone());
+    // Subscribe to events BEFORE starting, so we don't miss any.
+    let mut event_rx = manager
+        .subscribe(&run_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Start the Run
+    manager
+        .command(&run_id, RunCommand::Start)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Drop the manager lock so other commands can proceed while we stream events.
+    drop(manager);
+
+    // Spawn a task to forward events to the frontend.
+    let app_handle_clone = app_handle.clone();
+    tokio::spawn(async move {
+        loop {
+            match event_rx.recv().await {
+                Ok(event) => {
+                    if let Err(e) = app_handle_clone.emit("agent-event", &event) {
+                        eprintln!("Failed to emit agent event: {}", e);
                     }
-                    agent.set_current_session_id(sid.clone());
+                    // Check if this is a terminal event
+                    if matches!(
+                        event,
+                        RunEvent::RunCompleted { .. }
+                            | RunEvent::RunCancelled { .. }
+                            | RunEvent::RunFailed { .. }
+                    ) {
+                        break;
+                    }
                 }
-                Ok(None) => {
-                    // Session not found — clear context and start fresh
-                    agent.clear_context();
-                    agent.set_current_session_id(sid.clone());
-                }
-                Err(e) => {
-                    eprintln!("Warning: failed to load session history: {e}");
-                    // Continue without history rather than failing entirely
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    eprintln!("Event stream lagged by {n} events");
+                    continue;
                 }
             }
         }
+    });
+
+    Ok(run_id)
+}
+
+/// Cancel a running Run. Kills all child processes and aborts all tasks.
+#[tauri::command]
+async fn abort_agent(state: State<'_, AppState>, run_id: Option<String>) -> Result<(), String> {
+    let manager = state.run_manager.lock().await;
+    if let Some(id) = run_id {
+        manager.cancel_run(&id).await.map_err(|e| e.to_string())?;
+    } else {
+        // Cancel all active runs (backward compat with old abort_agent)
+        manager.cancel_all().await;
     }
+    Ok(())
+}
 
-    let app_handle_clone = app_handle.clone();
-    let result = agent.run_with_events(&message, move |event| {
-        if let Err(e) = app_handle_clone.emit("agent-event", event) {
-            eprintln!("Failed to emit agent event: {}", e);
+/// Pause a running Run.
+#[tauri::command]
+async fn pause_run(state: State<'_, AppState>, run_id: String) -> Result<(), String> {
+    let manager = state.run_manager.lock().await;
+    manager
+        .command(&run_id, RunCommand::Pause)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Resume a paused Run.
+#[tauri::command]
+async fn resume_run(state: State<'_, AppState>, run_id: String) -> Result<(), String> {
+    let manager = state.run_manager.lock().await;
+    manager
+        .command(&run_id, RunCommand::Resume)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Inject a steering message into a running Run.
+#[tauri::command]
+async fn steer_run(state: State<'_, AppState>, run_id: String, message: String) -> Result<(), String> {
+    let manager = state.run_manager.lock().await;
+    manager
+        .command(&run_id, RunCommand::Steer { message })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Approve a tool execution that's waiting for approval.
+#[tauri::command]
+async fn approve_tool(
+    state: State<'_, AppState>,
+    run_id: Option<String>,
+    prompt_id: String,
+    choice: String,
+) -> Result<(), String> {
+    let choice_enum = match choice.as_str() {
+        "allow_once" => ApprovalChoice::AllowOnce,
+        "allow_session" => ApprovalChoice::AllowSession,
+        "allow_persistent" => ApprovalChoice::AllowPersistent,
+        "deny_persistent" => ApprovalChoice::DenyPersistent,
+        _ => ApprovalChoice::Deny,
+    };
+
+    let manager = state.run_manager.lock().await;
+
+    // If run_id is provided, route to that specific run.
+    // Otherwise, try to find a run that's awaiting approval (backward compat).
+    if let Some(id) = run_id {
+        manager
+            .command(&id, RunCommand::Approve {
+                prompt_id,
+                choice: choice_enum,
+            })
+            .await
+            .map_err(|e| e.to_string())
+    } else {
+        // Find any run awaiting approval
+        let runs = manager.list_runs().await;
+        for id in runs {
+            if manager.run_state(&id).await.unwrap_or(RunState::Failed) == RunState::AwaitingApproval {
+                return manager
+                    .command(&id, RunCommand::Approve {
+                        prompt_id,
+                        choice: choice_enum,
+                    })
+                    .await
+                    .map_err(|e| e.to_string());
+            }
         }
-    }).await;
-
-    match result {
-        Ok(res) => Ok(res),
-        Err(e) => Err(e.to_string()),
+        Err("no run awaiting approval".to_string())
     }
 }
 
+/// Get the state of a Run.
+#[tauri::command]
+async fn get_run_state(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<RunState, String> {
+    let manager = state.run_manager.lock().await;
+    manager.run_state(&run_id).await.map_err(|e| e.to_string())
+}
+
+// ── Filesystem commands ──────────────────────────────────────────────
+
 #[tauri::command]
 async fn list_directory(path: Option<String>) -> Result<Vec<std::collections::HashMap<String, String>>, String> {
-    // Filesystem I/O: run off the async runtime so we don't stall Tauri's
-    // sync command pool (and the UI) while reading large directories.
     tokio::task::spawn_blocking(move || {
         let target_path = match path {
             Some(p) => std::path::PathBuf::from(p),
@@ -122,22 +229,16 @@ async fn list_directory(path: Option<String>) -> Result<Vec<std::collections::Ha
         for entry in dir_entries {
             let entry = entry.map_err(|e| e.to_string())?;
             let metadata = entry.metadata().map_err(|e| e.to_string())?;
-            let mut map = std::collections::HashMap::new();
-            let name = entry.file_name().to_string_lossy().to_string();
-            let file_type = if metadata.is_dir() {
-                "directory"
-            } else {
-                "file"
-            };
-            map.insert("name".to_string(), name);
-            map.insert("type".to_string(), file_type.to_string());
-            entries.push(map);
+            let mut info = std::collections::HashMap::new();
+            info.insert("name".to_string(), entry.file_name().to_string_lossy().to_string());
+            info.insert("type".to_string(), if metadata.is_dir() { "dir".to_string() } else { "file".to_string() });
+            info.insert("size".to_string(), metadata.len().to_string());
+            entries.push(info);
         }
 
-        // Sort directories first, then files
         entries.sort_by(|a, b| {
-            let a_is_dir = a.get("type").map(|t| t == "directory").unwrap_or(false);
-            let b_is_dir = b.get("type").map(|t| t == "directory").unwrap_or(false);
+            let a_is_dir = a.get("type").map(|t| t == "dir").unwrap_or(false);
+            let b_is_dir = b.get("type").map(|t| t == "dir").unwrap_or(false);
             match (a_is_dir, b_is_dir) {
                 (true, false) => std::cmp::Ordering::Less,
                 (false, true) => std::cmp::Ordering::Greater,
@@ -148,91 +249,58 @@ async fn list_directory(path: Option<String>) -> Result<Vec<std::collections::Ha
         Ok(entries)
     })
     .await
-    .map_err(|e| format!("list_directory task failed: {e}"))?
+    .map_err(|e| e.to_string())?
 }
 
-#[tauri::command]
-fn approve_tool(_state: State<'_, AppState>, prompt_id: String, choice: String) {
-    if let Ok(mut map) = agent_core::permission::global_pending_approvals().lock() {
-        if let Some(tx) = map.remove(&prompt_id) {
-            let choice_enum = match choice.as_str() {
-                "allow_once" => agent_core::permission::ApprovalChoice::AllowOnce,
-                "allow_session" => agent_core::permission::ApprovalChoice::AllowSession,
-                "allow_persistent" => agent_core::permission::ApprovalChoice::AllowPersistent,
-                "deny_persistent" => agent_core::permission::ApprovalChoice::DenyPersistent,
-                _ => agent_core::permission::ApprovalChoice::Deny,
-            };
-            let _ = tx.send(choice_enum);
-        }
-    }
-}
-
-#[tauri::command]
-async fn abort_agent(state: State<'_, AppState>) -> Result<(), String> {
-    let token = {
-        let guard = state.cancel_token.lock().unwrap();
-        guard.clone()
-    };
-    token.cancel();
-    Ok(())
-}
+// ── Config commands ──────────────────────────────────────────────────
 
 #[tauri::command]
 fn get_config(state: State<'_, AppState>) -> Result<agent_core::config::Config, String> {
-    agent_core::config::Config::load(&state.config_path)
-        .map_err(|e| e.to_string())
+    let manager = state.run_manager.blocking_lock();
+    Ok(manager.brain().config.clone())
 }
 
 #[tauri::command]
 fn save_config(state: State<'_, AppState>, config: agent_core::config::Config) -> Result<(), String> {
-    config.save(&state.config_path)
-        .map_err(|e| e.to_string())
+    config.save(&state.config_path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn switch_model(state: State<'_, AppState>, name: String) -> Result<(), String> {
-    // Refuse to switch while a turn is running: mutating the live client /
-    // context mid-turn would corrupt the in-flight stream. This is a try_lock
-    // (non-blocking) so the command returns immediately instead of hanging
-    // behind the long-running turn's hold on the agent mutex.
-    let _guard = match state.run_guard.try_lock() {
-        Ok(g) => g,
-        Err(_) => {
-            return Err(
-                "Cannot switch model while a turn is in progress. Please wait for it to finish or stop it first."
-                    .to_string(),
-            );
-        }
-    };
-    let mut agent = state.agent.lock().await;
-    // Reload config so newly added models are available
-    if let Ok(fresh_config) = agent_core::config::Config::load(&state.config_path) {
-        agent.config = fresh_config;
+    let manager = state.run_manager.lock().await;
+    // Check if there are active runs
+    let runs = manager.list_runs().await;
+    if !runs.is_empty() {
+        return Err("Cannot switch model while runs are active".to_string());
     }
-    agent.switch_model(&name).map_err(|e| e.to_string())
+    // Model switching requires &mut Brain. The RunManager holds Arc<Brain>.
+    // For now, we use the switch_model method on RunManager which handles
+    // interior mutability internally.
+    manager.switch_model(&name).map_err(|e| e.to_string())
 }
 
-// ── Session Commands ─────────────────────────────────────────────────
+// ── Session commands ─────────────────────────────────────────────────
 
 #[tauri::command]
 async fn create_session(state: State<'_, AppState>, project_id: String) -> Result<agent_core::SessionMeta, String> {
-    // All of this touches disk (pm.get + several session_manager writes), so
-    // clone the Arcs and run it on the blocking pool.
     let pm = state.project_manager.clone();
     let sm = state.session_manager.clone();
     tokio::task::spawn_blocking(move || {
         let messages: Vec<agent_core::types::Message> = vec![];
         let project = {
             let pm = pm.lock().map_err(|e| e.to_string())?;
-            pm.get(&project_id).map_err(|e| e.to_string())?
+            pm.get(&project_id)
+                .map_err(|e| e.to_string())?
                 .ok_or_else(|| "Project not found".to_string())?
         };
         let cwd = project.path.clone();
         let model = "default";
-        let session_id = sm.save_with_project(None, &messages, &cwd, model, Some(&project_id))
+        let session_id = sm
+            .save_with_project(None, &messages, &cwd, model, Some(&project_id))
             .map_err(|e| e.to_string())?;
         let _ = sm.rename(&session_id, "New Session");
-        let meta = sm.get_meta(&session_id)
+        let meta = sm
+            .get_meta(&session_id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| "Session not found after creation".to_string())?;
         Ok(meta)
@@ -252,7 +320,11 @@ async fn delete_session(state: State<'_, AppState>, session_id: String) -> Resul
 }
 
 #[tauri::command]
-async fn rename_session(state: State<'_, AppState>, session_id: String, new_title: String) -> Result<bool, String> {
+async fn rename_session(
+    state: State<'_, AppState>,
+    session_id: String,
+    new_title: String,
+) -> Result<bool, String> {
     let sm = state.session_manager.clone();
     tokio::task::spawn_blocking(move || {
         sm.rename(&session_id, &new_title).map_err(|e| e.to_string())
@@ -282,14 +354,10 @@ async fn save_session_messages(
             .collect();
         sm.save(Some(&session_id), &messages, &cwd, &model_used)
             .map_err(|e| e.to_string())?;
-
-        // Save timing data
         if let (Some(pt), Some(tt)) = (process_time_ms, thought_time_ms) {
             sm.save_timing(&session_id, pt, tt)
                 .map_err(|e| e.to_string())?;
         }
-
-        // Save event log (replace all existing events for this session)
         if let Some(log_json) = event_log_json {
             sm.clear_event_log(&session_id)
                 .map_err(|e| e.to_string())?;
@@ -303,10 +371,10 @@ async fn save_session_messages(
                 let ended_at = event["ended_at"].as_str();
                 sm.log_event(
                     &session_id, turn_index, event_type, &payload, started_at, ended_at,
-                ).map_err(|e| e.to_string())?;
+                )
+                .map_err(|e| e.to_string())?;
             }
         }
-
         Ok(())
     })
     .await
@@ -323,10 +391,14 @@ async fn resume_session(state: State<'_, AppState>, session_id: String) -> Resul
     })
     .await
     .map_err(|e| format!("resume_session task failed: {e}"))??;
-    let messages: Vec<FrontendMessage> = session.messages.iter().map(|m| FrontendMessage {
-        role: m.role.to_string(),
-        content: m.content.clone().unwrap_or_default(),
-    }).collect();
+    let messages: Vec<FrontendMessage> = session
+        .messages
+        .iter()
+        .map(|m| FrontendMessage {
+            role: m.role.to_string(),
+            content: m.content.clone().unwrap_or_default(),
+        })
+        .collect();
     Ok(FrontendSession {
         meta: session.meta,
         messages,
@@ -334,12 +406,10 @@ async fn resume_session(state: State<'_, AppState>, session_id: String) -> Resul
     })
 }
 
-// ── Project Commands ─────────────────────────────────────────────────
+// ── Project commands ─────────────────────────────────────────────────
 
 #[tauri::command]
 async fn list_projects(state: State<'_, AppState>) -> Result<Vec<agent_core::Project>, String> {
-    // pm.list() reads project metadata from disk → blocking. Clone the Arc
-    // (State can't cross spawn_blocking) and lock inside the blocking task.
     let pm = state.project_manager.clone();
     tokio::task::spawn_blocking(move || {
         let pm = pm.lock().map_err(|e| e.to_string())?;
@@ -372,7 +442,11 @@ async fn delete_project(state: State<'_, AppState>, project_id: String) -> Resul
 }
 
 #[tauri::command]
-async fn rename_project(state: State<'_, AppState>, project_id: String, new_name: String) -> Result<bool, String> {
+async fn rename_project(
+    state: State<'_, AppState>,
+    project_id: String,
+    new_name: String,
+) -> Result<bool, String> {
     let pm = state.project_manager.clone();
     tokio::task::spawn_blocking(move || {
         let pm = pm.lock().map_err(|e| e.to_string())?;
@@ -389,7 +463,6 @@ fn open_in_explorer(path: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn list_git_branches(path: String) -> Result<Vec<String>, String> {
-    // `git` is a blocking subprocess; keep it off the async runtime.
     tokio::task::spawn_blocking(move || {
         let output = std::process::Command::new("git")
             .args(["branch", "--format=%(refname:short)"])
@@ -429,7 +502,10 @@ async fn switch_git_branch(path: String, branch: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn get_project_sessions(state: State<'_, AppState>, project_id: String) -> Result<Vec<agent_core::session::SessionMeta>, String> {
+async fn get_project_sessions(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<Vec<agent_core::session::SessionMeta>, String> {
     let pm = state.project_manager.clone();
     tokio::task::spawn_blocking(move || {
         let pm = pm.lock().map_err(|e| e.to_string())?;
@@ -439,11 +515,12 @@ async fn get_project_sessions(state: State<'_, AppState>, project_id: String) ->
     .map_err(|e| format!("get_project_sessions task failed: {e}"))?
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
+// ── App entry point ──────────────────────────────────────────────────
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            // Resolve home directory (handles both Unix HOME and Windows USERPROFILE)
+            // Resolve home directory
             let home = std::env::var("HOME")
                 .or_else(|_| std::env::var("USERPROFILE"))
                 .unwrap_or_else(|_| ".".to_string());
@@ -455,11 +532,10 @@ pub fn run() {
             std::fs::create_dir_all(&agverse_dir)
                 .unwrap_or_else(|e| eprintln!("warning: could not create ~/.agverse: {e}"));
 
-            // Try to load config from ~/.agverse/config.toml first, then fallbacks
+            // Load config
             let config = if let Ok(cfg) = agent_core::config::Config::load(&config_path_str) {
                 cfg
             } else if let Ok(cfg) = agent_core::config::Config::from_env() {
-                // Save the env-based config so it persists for next launch
                 let _ = cfg.save(&config_path_str);
                 cfg
             } else {
@@ -496,36 +572,16 @@ pub fn run() {
                     mcp: Default::default(),
                 };
                 default_config.rebuild_models();
-                // Save default config so next launch finds it
                 let _ = default_config.save(&config_path_str);
                 default_config
             };
 
-            let builder = agent_core::AgentBuilder::with_config(config);
-            let mut agent = builder.with_tool_execution_mode(ToolExecutionMode::Parallel).build().expect("Failed to build agent");
+            // Build the Brain (reusable across all Runs)
+            let brain = Brain::from_config(config)
+                .expect("Failed to build brain from config");
 
-            // Register subagent tools so the LLM can spawn child agents
-            {
-                let model_config = agent.current_model_config().clone();
-                let permission_config = agent.config().permissions.clone();
-                let tool_names: Vec<String> = agent
-                    .tool_registry()
-                    .list_names()
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect();
-                let reg = agent.tool_registry_mut();
-                agent_core::tools::subagent::register_subagent_tools(
-                    reg,
-                    model_config,
-                    tool_names,
-                    None, // session manager not wired up in Tauri app yet
-                    permission_config,
-                );
-            }
-
-            // Initialize ProjectManager using the same SQLite path as memory
-            let db_path = if let Some(mem_config) = agent.config().memory.as_ref() {
+            // Determine the SQLite path for project/session storage
+            let db_path = if let Some(ref mem_config) = brain.config.memory {
                 mem_config.db_path.clone()
             } else {
                 "~/.agverse/memory.db".to_string()
@@ -539,12 +595,11 @@ pub fn run() {
                 agent_core::SessionManager::new(storage)
             );
 
-            let cancel_token = Arc::new(std::sync::Mutex::new(agent.cancel_token().clone()));
+            // Build the RunManager
+            let run_manager = RunManager::new(brain);
 
             app.manage(AppState {
-                agent: Arc::new(AsyncMutex::new(agent)),
-                run_guard: Arc::new(tokio::sync::Mutex::new(())),
-                cancel_token,
+                run_manager: Arc::new(AsyncMutex::new(run_manager)),
                 config_path: config_path_str,
                 project_manager,
                 session_manager,
@@ -554,7 +609,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            send_message, approve_tool, abort_agent, list_directory,
+            send_message, approve_tool, abort_agent,
+            pause_run, resume_run, steer_run, get_run_state,
+            list_directory,
             get_config, save_config, switch_model,
             create_session, delete_session, rename_session,
             save_session_messages, resume_session,

@@ -10,6 +10,8 @@ import FolderIcon from 'lucide-react/dist/esm/icons/folder.mjs';
 import FileIcon from 'lucide-react/dist/esm/icons/file.mjs';
 import GitBranchIcon from 'lucide-react/dist/esm/icons/git-branch.mjs';
 import SquareIcon from 'lucide-react/dist/esm/icons/square.mjs';
+import PauseIcon from 'lucide-react/dist/esm/icons/pause.mjs';
+import PlayIcon from 'lucide-react/dist/esm/icons/play.mjs';
 import { ModelSelector } from './ModelSelector';
 import { useAutocomplete } from '../../hooks/useAutocomplete';
 import { useGitBranch } from '../../hooks/useGitBranch';
@@ -20,11 +22,19 @@ export const ChatInput = memo(function ChatInput({
   onSend,
   onAbort,
   currentModel,
+  runState,
+  onPause,
+  onResume,
+  onSteer,
 }: {
   isProcessing: boolean;
   onSend: (msg: string) => void;
   onAbort: () => void;
   currentModel: string;
+  runState?: string | null;
+  onPause?: () => void;
+  onResume?: () => void;
+  onSteer?: (message: string) => void;
 }) {
   const [input, setInput] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -178,9 +188,31 @@ export const ChatInput = memo(function ChatInput({
           <div className="input-actions-right">
             <ModelSelector currentModel={currentModel} />
             {isProcessing ? (
-              <button className="send-btn stop-btn" onClick={handleAbort} title="Stop (Esc)">
-                <SquareIcon size={14} fill="currentColor" />
-              </button>
+              <div style={{ display: 'flex', gap: '4px' }}>
+                {runState === 'paused' && onResume && (
+                  <button className="send-btn" onClick={onResume} title="Resume">
+                    <PlayIcon size={14} />
+                  </button>
+                )}
+                {runState === 'running' && onPause && (
+                  <button className="send-btn" onClick={onPause} title="Pause">
+                    <PauseIcon size={14} />
+                  </button>
+                )}
+                {onSteer && input.trim() && (
+                  <button
+                    className="send-btn"
+                    onClick={() => { onSteer(input); setInput(''); }}
+                    title="Steer — inject this message mid-run"
+                    style={{ opacity: 0.7 }}
+                  >
+                    <SendIcon size={14} />
+                  </button>
+                )}
+                <button className="send-btn stop-btn" onClick={handleAbort} title="Stop (Esc)">
+                  <SquareIcon size={14} fill="currentColor" />
+                </button>
+              </div>
             ) : (
               <button
                 className="send-btn"
@@ -238,7 +270,7 @@ export const ChatInput = memo(function ChatInput({
           <span>{tokenCount >= 1000 ? `${(tokenCount / 1000).toFixed(1)}k` : tokenCount} tokens</span>
           <span>{turnCount} turns</span>
         </div>
-        <div>{isProcessing ? 'Press Esc to stop' : 'Type @ for files, / for commands'}</div>
+        <div>{isProcessing ? (runState === 'paused' ? 'Paused — press Play to resume' : 'Press Esc to stop, Pause to suspend') : 'Type @ for files, / for commands'}</div>
       </div>
     </div>
   );

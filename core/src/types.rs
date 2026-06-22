@@ -193,6 +193,16 @@ pub enum AgentEvent {
 
     // ── Errors ─────────────────────────────────────────────────────
     Error(String),
+
+    // ── Cancellation ───────────────────────────────────────────────
+    /// Emitted when the agent run was cancelled by the user (or a parent
+    /// task). This is the termination contract: front-ends should treat it
+    /// as the authoritative "run has stopped" signal and transition to a
+    /// `stopped` state, rather than assuming success the moment an abort
+    /// is *requested*.
+    Aborted {
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

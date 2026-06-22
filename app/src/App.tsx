@@ -16,6 +16,7 @@ import {
   userMessageSent,
   retryFromEntry,
   agentAborted,
+  runIdSet,
   selectEntryById,
   selectPendingApprovalCount,
 } from './features/chat/chatSlice';
@@ -77,6 +78,8 @@ function App() {
 
   // Track pending approvals — scroll to bottom when a new one appears
   const pendingApprovalCount = useSelector(selectPendingApprovalCount);
+  const runId = useSelector((state: RootState) => state.chat.runId);
+  const runState = useSelector((state: RootState) => state.chat.runState);
   const prevPendingRef = useRef(0);
   useEffect(() => {
     if (pendingApprovalCount > prevPendingRef.current) {
@@ -106,7 +109,7 @@ function App() {
       if (e.key === 'Escape') {
         e.preventDefault();
         dispatch(agentAborted());
-        invoke('abort_agent').catch((e) => console.error('Failed to abort agent:', e));
+        invoke('abort_agent', { runId }).catch((e) => console.error('Failed to abort agent:', e));
       }
     };
     document.addEventListener('keydown', handler);
@@ -115,8 +118,23 @@ function App() {
 
   const handleAbort = useCallback(() => {
     dispatch(agentAborted());
-    invoke('abort_agent').catch((e) => console.error('Failed to abort agent:', e));
-  }, [dispatch]);
+    invoke('abort_agent', { runId }).catch((e) => console.error('Failed to abort agent:', e));
+  }, [dispatch, runId]);
+
+  const handlePause = useCallback(() => {
+    if (!runId) return;
+    invoke('pause_run', { runId }).catch((e) => console.error('Failed to pause run:', e));
+  }, [runId]);
+
+  const handleResume = useCallback(() => {
+    if (!runId) return;
+    invoke('resume_run', { runId }).catch((e) => console.error('Failed to resume run:', e));
+  }, [runId]);
+
+  const handleSteer = useCallback((message: string) => {
+    if (!runId || !message.trim()) return;
+    invoke('steer_run', { runId, message }).catch((e) => console.error('Failed to steer run:', e));
+  }, [runId]);
 
   useEffect(() => {
     dispatch(fetchConfig());
@@ -167,7 +185,8 @@ function App() {
       }
 
       try {
-        await invoke('send_message', { message: msg, sessionId });
+        const id = await invoke<string>('send_message', { message: msg, sessionId });
+        dispatch(runIdSet(id));
       } catch (e) {
         console.error('Invoke error:', e);
         dispatch(agentEventReceived({ Error: String(e) }));
@@ -188,7 +207,8 @@ function App() {
       scrollToBottom();
 
       try {
-        await invoke('send_message', { message: msg, sessionId: activeSessionId });
+        const id = await invoke<string>('send_message', { message: msg, sessionId: activeSessionId });
+        dispatch(runIdSet(id));
       } catch (e) {
         console.error('Retry invoke error:', e);
         dispatch(agentEventReceived({ Error: String(e) }));
@@ -290,7 +310,7 @@ function App() {
           </>
         )}
 
-        <ChatInput isProcessing={isProcessing} onSend={handleSend} currentModel={defaultModel} onAbort={handleAbort} />
+        <ChatInput isProcessing={isProcessing} onSend={handleSend} currentModel={defaultModel} onAbort={handleAbort} runState={runState} onPause={handlePause} onResume={handleResume} onSteer={handleSteer} />
       </main>
     </div>
   );

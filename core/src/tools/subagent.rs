@@ -230,8 +230,11 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
             task_infos.push((id, task, tools, max_iterations));
         }
 
-        // Now spawn all subagents concurrently
-        let mut handles = Vec::new();
+        // Spawn all subagents concurrently on a JoinSet so they can be
+        // aborted if the parent tool execution is cancelled. Without this,
+        // canceling the parent leaves child subagents running as detached
+        // tasks (process leak).
+        let mut join_set = tokio::task::JoinSet::new();
         for (id, task, tools, max_iterations) in task_infos {
             let model_config = self.model_config.clone();
             let permission_config = self.permission_config.clone();
@@ -244,7 +247,7 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
             let mgr_clone = self.session_mgr.clone();
             let sub_sender = event_sender.clone();
 
-            handles.push(tokio::spawn(async move {
+            join_set.spawn(async move {
                 let args = serde_json::json!({
                     "id": id.clone(),
                     "task": task,
@@ -252,8 +255,6 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                     "max_iterations": max_iterations,
                 });
 
-                // spawn_single will emit its own SubagentStart again;
-                // the TUI deduplicates by id so the second one is a no-op.
                 let result =
                     spawn_single(&args, &model_config, &available_tools, sub_sender, &permission_config)
                         .await;
@@ -267,10 +268,15 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                 }
 
                 (id, result)
-            }));
+            });
         }
 
-        let results = futures::future::join_all(handles).await;
+        // Collect results. If the parent is cancelled, the JoinSet is
+        // dropped, which aborts all child tasks.
+        let mut results = Vec::new();
+        while let Some(res) = join_set.join_next().await {
+            results.push(res);
+        }
 
         let mut output = String::new();
         output.push_str(&format!(

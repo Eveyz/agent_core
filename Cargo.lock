@@ -41,6 +41,7 @@ dependencies = [
  "glob",
  "htmd",
  "jsonschema",
+ "libc",
  "rand 0.8.6",
  "readability",
  "regex",

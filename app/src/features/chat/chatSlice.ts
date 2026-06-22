@@ -56,6 +56,10 @@ export interface ChatEntry {
 interface ChatState {
   entries: ChatEntry[];
   isProcessing: boolean;
+  /** ID of the currently active Run (set when send_message returns). */
+  runId: string | null;
+  /** Current lifecycle state of the active Run. */
+  runState: RunState | null;
   entriesBySession: Record<string, ChatEntry[]>;
   processingBySession: Record<string, boolean>;
   _resumedFromBackend: boolean;
@@ -64,6 +68,8 @@ interface ChatState {
 const initialState: ChatState = {
   entries: [],
   isProcessing: false,
+  runId: null,
+  runState: null,
   entriesBySession: {},
   processingBySession: {},
   _resumedFromBackend: false,
@@ -77,6 +83,7 @@ interface DeltaPayload {
 }
 
 export interface AgentEvent {
+  // Legacy AgentEvent format (inline tagged)
   TurnStart?: { turn_index: number };
   TurnEnd?: unknown;
   MessageUpdate?: { delta: DeltaPayload };
@@ -86,6 +93,8 @@ export interface AgentEvent {
   ToolExecutionEnd?: { tool_call_id: string; result: unknown; is_error: boolean };
   ApprovalRequired?: { prompt_id: string; tool_name: string; tool_input: unknown; danger_level: string; explanation: string };
   AgentEnd?: unknown;
+  AgentStart?: unknown;
+  Aborted?: { reason: string };
   Error?: string;
   SubagentStart?: { subagent_id: string; role_name?: string; task: string | unknown };
   SubagentMessageUpdate?: { subagent_id: string; delta: DeltaPayload };
@@ -93,6 +102,110 @@ export interface AgentEvent {
   SubagentToolEnd?: { subagent_id: string; tool_call_id: string; result: unknown; is_error: boolean };
   SubagentApprovalRequired?: { subagent_id: string; prompt_id: string; tool_name: string; tool_input: unknown; danger_level: string; explanation: string };
   SubagentEnd?: { subagent_id: string; success: boolean; iterations_used?: number };
+}
+
+// New RunEvent format (externally tagged: { "event": "snake_case", ...fields })
+export type RunEventType =
+  | 'run_created' | 'run_started' | 'run_paused' | 'run_resumed'
+  | 'run_completed' | 'run_cancelled' | 'run_failed'
+  | 'state_changed'
+  | 'turn_started' | 'turn_ended'
+  | 'model_call_started' | 'model_streaming' | 'model_call_ended'
+  | 'message_start' | 'message_update' | 'message_end'
+  | 'tool_started' | 'tool_update' | 'tool_ended'
+  | 'approval_required' | 'approval_resolved' | 'input_requested'
+  | 'context_compacted' | 'error'
+  | 'subagent_started' | 'subagent_ended'
+  | 'process_spawned' | 'process_killed';
+
+export interface RunEventPayload {
+  event: RunEventType;
+  // Lifecycle
+  id?: string;
+  session_id?: string;
+  final_text?: string;
+  reason?: string;
+  // State
+  from?: string;
+  to?: string;
+  // Turn
+  index?: number;
+  // Model
+  delta?: DeltaPayload;
+  text?: string;
+  tool_count?: number;
+  // Messages (message_start event)
+  message?: { role: string; content?: string };
+  // Tools
+  call_id?: string;
+  name?: string;
+  args?: unknown;
+  partial?: string;
+  result?: string;
+  is_error?: boolean;
+  // Approval
+  prompt_id?: string;
+  tool_name?: string;
+  tool_input?: unknown;
+  danger_level?: string;
+  explanation?: string;
+  // Error
+  error?: string;
+  // Subagent
+  subagent_id?: string;
+  role_name?: string;
+  task?: string;
+  success?: boolean;
+  iterations_used?: number;
+  // Process
+  child_id?: string;
+  label?: string;
+}
+
+export type RunState = 'created' | 'running' | 'awaiting_approval' | 'awaiting_input' | 'paused' | 'completed' | 'cancelled' | 'failed';
+
+
+// ── RunEvent → AgentEvent converter ──────────────────────────────────
+
+function runEventToAgentEvent(ev: RunEventPayload): AgentEvent {
+  switch (ev.event) {
+    case 'run_started':
+      return {}; // no-op, like AgentStart
+    case 'run_completed':
+      return { AgentEnd: {} };
+    case 'run_cancelled':
+      return { Aborted: { reason: ev.reason ?? 'cancelled' } };
+    case 'run_failed':
+      return { Error: ev.error ?? 'run failed' };
+    case 'error':
+      return { Error: ((ev as unknown as Record<string, unknown>).message as string) ?? 'unknown error' };
+    case 'turn_started':
+      return { TurnStart: { turn_index: ev.index ?? 0 } };
+    case 'turn_ended':
+      return { TurnEnd: {} };
+    case 'message_update':
+      return { MessageUpdate: { delta: ev.delta ?? {} } };
+    case 'message_end':
+      return { MessageEnd: {} };
+    case 'model_streaming':
+      return { MessageUpdate: { delta: ev.delta ?? {} } };
+    case 'tool_started':
+      return { ToolExecutionStart: { tool_call_id: ev.call_id ?? '', tool_name: ev.name ?? '', args: ev.args } };
+    case 'tool_update':
+      return { ToolExecutionUpdate: { tool_call_id: ev.call_id ?? '', partial_result: ev.partial ?? '' } };
+    case 'tool_ended':
+      return { ToolExecutionEnd: { tool_call_id: ev.call_id ?? '', result: ev.result ?? '', is_error: ev.is_error ?? false } };
+    case 'approval_required':
+      return { ApprovalRequired: { prompt_id: ev.prompt_id ?? '', tool_name: ev.tool_name ?? '', tool_input: ev.tool_input, danger_level: ev.danger_level ?? '', explanation: ev.explanation ?? '' } };
+    case 'error':
+      return { Error: ((ev as unknown as Record<string, unknown>).message as string) ?? 'unknown error' };
+    case 'subagent_started':
+      return { SubagentStart: { subagent_id: ev.subagent_id ?? '', role_name: ev.role_name, task: ev.task ?? '' } };
+    case 'subagent_ended':
+      return { SubagentEnd: { subagent_id: ev.subagent_id ?? '', success: ev.success ?? false, iterations_used: ev.iterations_used } };
+    default:
+      return {};
+  }
 }
 
 // ── Block helpers (shared between main agent + subagent) ─────────────
@@ -462,17 +575,56 @@ export const chatSlice = createSlice({
       state.isProcessing = true;
       state._resumedFromBackend = false;
     },
+    runIdSet: (state, action: PayloadAction<string>) => {
+      state.runId = action.payload;
+      state.runState = 'running';
+    },
+    runStateChanged: (state, action: PayloadAction<RunState>) => {
+      state.runState = action.payload;
+      if (action.payload === 'completed' || action.payload === 'cancelled' || action.payload === 'failed') {
+        state.isProcessing = false;
+      }
+    },
     agentEventReceived: (state, action: PayloadAction<string | Record<string, unknown>>) => {
       let event: AgentEvent;
+      let raw: Record<string, unknown>;
       if (typeof action.payload === 'string') {
         if (action.payload === 'AgentStart') return;
         try {
-          event = JSON.parse(action.payload) as AgentEvent;
+          raw = JSON.parse(action.payload);
         } catch {
           return;
         }
       } else {
-        event = action.payload as AgentEvent;
+        raw = action.payload as Record<string, unknown>;
+      }
+
+      // Detect new RunEvent format: { "event": "snake_case", ... }
+      if (raw && typeof raw.event === 'string') {
+        const runEv = raw as unknown as RunEventPayload;
+        // Handle lifecycle events directly (don't convert to AgentEvent)
+        if (runEv.event === 'state_changed' && runEv.to) {
+          state.runState = runEv.to as RunState;
+          if (runEv.to === 'completed' || runEv.to === 'cancelled' || runEv.to === 'failed') {
+            state.isProcessing = false;
+          }
+        }
+        if (runEv.event === 'run_started') {
+          state.runState = 'running';
+        }
+        if (runEv.event === 'run_completed' || runEv.event === 'run_cancelled' || runEv.event === 'run_failed') {
+          state.isProcessing = false;
+          state.runId = null;
+        }
+        if (runEv.event === 'run_paused') {
+          state.runState = 'paused';
+        }
+        if (runEv.event === 'run_resumed') {
+          state.runState = 'running';
+        }
+        event = runEventToAgentEvent(runEv);
+      } else {
+        event = raw as unknown as AgentEvent;
       }
 
       if (event.TurnStart) {
@@ -741,6 +893,8 @@ export const {
   cacheCurrentSession,
   restoreOrClearSession,
   retryFromEntry,
+  runIdSet,
+  runStateChanged,
 } = chatSlice.actions;
 export default chatSlice.reducer;
 

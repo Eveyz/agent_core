@@ -788,6 +788,12 @@ impl AppState {
                 self.finalize_subagent(&subagent_id, success, iterations_used);
                 self.mark_dirty_force();
             }
+            AgentEvent::Aborted { reason: _ } => {
+                self.flush_streaming();
+                self.agent_running = false;
+                self.agent_state = "stopped".into();
+                self.mark_dirty();
+            }
         }
     }
 

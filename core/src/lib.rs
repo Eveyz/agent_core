@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod runtime;
 pub mod background;
 pub mod client;
 pub mod comprehensive;
@@ -25,6 +26,8 @@ pub mod trace;
 pub mod types;
 pub mod worktree;
 
+// Legacy agent types — still used by the CLI. New code should use the
+// `runtime` module (Brain + Run + RunManager) instead.
 pub use agent::{Agent, AgentBuilder, ContextProcessor, TransformContextFn};
 pub use tokio_util::sync::CancellationToken;
 pub use config::{resolve_env_value, Config, MemoryConfig, ModelConfig, RuntimeOverrides};
@@ -63,3 +66,7 @@ pub use todo::{TodoItem, TodoList, TodoStatus};
 pub use worktree::{WorktreeManager, WorktreeRecord, WorktreeStatus};
 pub use trace::TraceCollector;
 pub use reflector::{Digester, Reflector, Suggestion, SuggestionAction, SuggestionKind};
+pub use runtime::{
+    ApprovalResolver, Brain, ChildId, EventLog, ProcessSupervisor, Run, RunCommand, RunEvent,
+    RunHandle, RunId, RunManager, RunState, SupervisedChild,
+};

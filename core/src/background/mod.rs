@@ -26,6 +26,8 @@ pub struct BackgroundPool {
     tasks: HashMap<String, BackgroundStatus>,
     rx: mpsc::UnboundedReceiver<Notification>,
     tx: mpsc::UnboundedSender<Notification>,
+    /// Tracked tasks so they can be aborted on drop / cancel.
+    join_set: tokio::task::JoinSet<()>,
 }
 
 impl BackgroundPool {
@@ -35,6 +37,7 @@ impl BackgroundPool {
             tasks: HashMap::new(),
             rx,
             tx,
+            join_set: tokio::task::JoinSet::new(),
         }
     }
 
@@ -107,10 +110,28 @@ impl BackgroundPool {
             .filter(|s| matches!(s, BackgroundStatus::Running))
             .count()
     }
+
+    /// Abort all tracked background tasks. Called on cancel / drop.
+    pub fn abort_all(&mut self) {
+        self.join_set.abort_all();
+        // Mark all running tasks as failed
+        for (_, status) in self.tasks.iter_mut() {
+            if matches!(status, BackgroundStatus::Running) {
+                *status = BackgroundStatus::Failed("aborted".to_string());
+            }
+        }
+    }
 }
 
 impl Default for BackgroundPool {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Drop for BackgroundPool {
+    fn drop(&mut self) {
+        // RAII: abort all background tasks when the pool is dropped.
+        self.join_set.abort_all();
     }
 }

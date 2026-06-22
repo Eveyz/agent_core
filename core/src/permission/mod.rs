@@ -31,6 +31,10 @@ use std::collections::HashMap;
 
 pub type PendingApprovalMap = HashMap<String, tokio::sync::oneshot::Sender<types::ApprovalChoice>>;
 
+/// **Deprecated**: Per-Run approval routing via [`ApprovalResolver`](crate::runtime::ApprovalResolver)
+/// replaces this global map. This is kept only for backward compatibility with
+/// the legacy `Agent` path used by the CLI.
+#[deprecated(note = "use runtime::ApprovalResolver instead — this global map is not scoped per-Run")]
 pub fn global_pending_approvals() -> Arc<Mutex<PendingApprovalMap>> {
     static MAP: OnceLock<Arc<Mutex<PendingApprovalMap>>> = OnceLock::new();
     MAP.get_or_init(|| Arc::new(Mutex::new(HashMap::new()))).clone()

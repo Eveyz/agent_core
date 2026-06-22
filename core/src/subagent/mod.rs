@@ -151,6 +151,7 @@ impl Subagent {
                     hook_registry: &mut self.hook_registry,
                     tool_execution_mode: crate::types::ToolExecutionMode::Sequential,
                     cancel_token: tokio_util::sync::CancellationToken::new(),
+                    approval_resolver: None,
                 };
                 
                 let sender_clone = event_sender.clone();

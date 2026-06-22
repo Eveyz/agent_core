@@ -1,9 +1,11 @@
+#![allow(deprecated)]
 use crate::agent::scheduler::{classify_resources, DepGraph, SchedNode};
 use crate::hooks::{HookRegistry, PreToolResult};
 use crate::permission::{
     ApprovalChoice, ApprovalScope, PermissionDecision, PermissionPolicy, ToolPermissionPattern,
     WhitelistEntry,
 };
+use crate::runtime::ApprovalResolver;
 use crate::tools::{ToolRegistry, ToolUpdateFn};
 use crate::types::{AgentEvent, ToolCall, ToolExecutionMode};
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -17,6 +19,9 @@ pub struct ToolOrchestrator<'a> {
     pub hook_registry: &'a mut HookRegistry,
     pub tool_execution_mode: ToolExecutionMode,
     pub cancel_token: CancellationToken,
+    /// Per-Run approval resolver. If `None`, falls back to the global map
+    /// (for backward compat with the old Agent path).
+    pub approval_resolver: Option<ApprovalResolver>,
 }
 
 impl<'a> ToolOrchestrator<'a> {
@@ -69,7 +74,10 @@ impl<'a> ToolOrchestrator<'a> {
                 PermissionDecision::Ask(_reason, prompt) => {
                     // Create oneshot channel for approval
                     let (tx, rx) = tokio::sync::oneshot::channel();
-                    {
+                    if let Some(ref resolver) = self.approval_resolver {
+                        resolver.insert(prompt.prompt_id.clone(), tx);
+                    } else {
+                        // Fallback: global map (old Agent path)
                         let pending_arc = crate::permission::global_pending_approvals();
                         let mut pending = pending_arc.lock().unwrap();
                         pending.insert(prompt.prompt_id.clone(), tx);
@@ -84,8 +92,15 @@ impl<'a> ToolOrchestrator<'a> {
                         explanation: prompt.explanation.clone(),
                     });
 
-                    // Wait for user response
-                    match rx.await {
+                    // Wait for user response, but also listen for cancellation so
+                    // that an agent stuck on `ApprovalRequired` can be stopped
+                    // instead of blocking forever.
+                    let outcome: Result<ApprovalChoice, ()> = tokio::select! {
+                        choice = rx => choice.map_err(|_| ()),
+                        _ = self.cancel_token.cancelled() => Err(()),
+                    };
+
+                    match outcome {
                         Ok(choice) => {
                             match &choice {
                                 ApprovalChoice::Deny | ApprovalChoice::DenyPersistent => {
@@ -163,22 +178,30 @@ impl<'a> ToolOrchestrator<'a> {
                                 }
                             }
                             // Clean up pending approval
-                            {
+                            if let Some(ref resolver) = self.approval_resolver {
+                                resolver.remove(&prompt.prompt_id);
+                            } else {
                                 let pending_arc = crate::permission::global_pending_approvals();
                                 let mut pending = pending_arc.lock().unwrap();
                                 pending.remove(&prompt.prompt_id);
                             }
                         }
                         Err(_) => {
-                            // Channel closed = cancelled/timed out → deny
-                            results[i] = format!(
-                                "Approval cancelled for tool '{}'",
-                                call.function.name
-                            );
-                            {
+                            // Channel closed or run cancelled → deny and stop.
+                            if let Some(ref resolver) = self.approval_resolver {
+                                resolver.remove(&prompt.prompt_id);
+                            } else {
                                 let pending_arc = crate::permission::global_pending_approvals();
                                 let mut pending = pending_arc.lock().unwrap();
                                 pending.remove(&prompt.prompt_id);
+                            }
+                            if self.cancel_token.is_cancelled() {
+                                results[i] = "Aborted".to_string();
+                            } else {
+                                results[i] = format!(
+                                    "Approval cancelled for tool '{}'",
+                                    call.function.name
+                                );
                             }
                             continue;
                         }

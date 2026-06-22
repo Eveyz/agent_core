@@ -1,3 +1,4 @@
+#![allow(deprecated)]
 mod cli_completer;
 mod tui;
 

@@ -369,7 +369,7 @@ pub struct ApprovalPrompt {
 }
 
 /// User's response to an approval prompt.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ApprovalChoice {
     /// Allow this specific invocation.
     AllowOnce,

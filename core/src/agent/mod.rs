@@ -56,11 +56,6 @@ pub struct AgentBuilder {
     /// every [`AgentEvent`] is appended to `<dir>/<agent_id>.jsonl`.
     trace_dir: Option<String>,
     skill_manager: Option<Arc<Mutex<SkillManager>>>,
-    /// Share approvals map from parent agent — subagents use this to avoid
-    /// deadlocks when awaiting approval in TUI mode.
-    pending_approvals_override: Option<
-        Arc<Mutex<HashMap<String, tokio::sync::oneshot::Sender<ApprovalChoice>>>>,
-    >,
 }
 
 impl AgentBuilder {
@@ -80,7 +75,6 @@ impl AgentBuilder {
             trace_dir: None,
             recovery: None,
             skill_manager: None,
-            pending_approvals_override: None,
         })
     }
 
@@ -100,7 +94,6 @@ impl AgentBuilder {
             trace_dir: None,
             recovery: None,
             skill_manager: None,
-            pending_approvals_override: None,
         })
     }
 
@@ -140,7 +133,6 @@ impl AgentBuilder {
             trace_dir: None,
             recovery: None,
             skill_manager: None,
-            pending_approvals_override: None,
         }
     }
 
@@ -544,14 +536,22 @@ impl Agent {
         traced(AgentEvent::AgentStart);
         self.hook_registry.fire_session_start(&self.id);
         self.state = AgentState::Streaming;
-        // Token is one-shot, but if we need to reset we could create a new one, 
-        // however usually a new run uses the same token or creates a new one. 
-        // Here we just ensure we have a fresh token.
-        self.cancel_token = CancellationToken::new();
 
         let result = self.run_loop(&traced).await;
 
-        self.state = AgentState::Idle;
+        // The cancel token is owned by the caller (Tauri/CLI), which creates a
+        // fresh one before each run. Core must NOT recreate it here — doing so
+        // would replace the token the caller holds, making every abort cancel a
+        // stale instance while the running loop watches a different one.
+        let was_aborted = self.cancel_token.is_cancelled();
+        if was_aborted {
+            self.state = AgentState::Aborted;
+            traced(AgentEvent::Aborted {
+                reason: "Cancelled by user".to_string(),
+            });
+        } else {
+            self.state = AgentState::Idle;
+        }
         self.steering_queue.clear();
         self.follow_up_queue.clear();
         self.hook_registry.fire_session_end(&self.id);
@@ -684,6 +684,7 @@ impl Agent {
                 hook_registry: &mut self.hook_registry,
                 tool_execution_mode: self.tool_execution_mode,
                 cancel_token: self.cancel_token.clone(),
+                approval_resolver: None,
             };
             orchestrator.execute_tools(&tool_calls, &on_event).await
         };
@@ -935,33 +936,44 @@ impl Agent {
         let cancel = self.cancel_token.clone();
 
         tokio::pin!(stream);
-        while let Some(event) = stream.next().await {
-            if cancel.is_cancelled() {
-                break;
-            }
-
-            let event = event?;
-            match event {
-                StreamEvent::ThinkingDelta(delta) => {
-                    if !delta.is_empty() {
-                        on_event(AgentEvent::MessageUpdate {
-                            delta: MessageDelta::Thinking(delta),
-                        });
+        loop {
+            tokio::select! {
+                // Active cancellation: wake immediately when the token fires,
+                // even if the model stream is stalled (network block, server
+                // holding the connection open with no tokens). The old
+                // reactive check only ran after `stream.next()` returned a new
+                // event, so a stalled stream could never be interrupted.
+                _ = cancel.cancelled() => {
+                    return Err(anyhow::anyhow!("aborted"));
+                }
+                next = stream.next() => {
+                    let event = match next {
+                        None => break,
+                        Some(e) => e?,
+                    };
+                    match event {
+                        StreamEvent::ThinkingDelta(delta) => {
+                            if !delta.is_empty() {
+                                on_event(AgentEvent::MessageUpdate {
+                                    delta: MessageDelta::Thinking(delta),
+                                });
+                            }
+                        }
+                        StreamEvent::TextDelta(delta) => {
+                            if !delta.is_empty() {
+                                text_buffer.push_str(&delta);
+                                on_event(AgentEvent::MessageUpdate {
+                                    delta: MessageDelta::Text(delta),
+                                });
+                            }
+                        }
+                        StreamEvent::ToolCallDelta { .. } => {
+                            has_tool_calls = true;
+                            accumulator.push(event);
+                        }
+                        StreamEvent::Done => break,
                     }
                 }
-                StreamEvent::TextDelta(delta) => {
-                    if !delta.is_empty() {
-                        text_buffer.push_str(&delta);
-                        on_event(AgentEvent::MessageUpdate {
-                            delta: MessageDelta::Text(delta),
-                        });
-                    }
-                }
-                StreamEvent::ToolCallDelta { .. } => {
-                    has_tool_calls = true;
-                    accumulator.push(event);
-                }
-                StreamEvent::Done => break,
             }
         }
 
@@ -1282,22 +1294,6 @@ impl Agent {
 
     pub fn permission_policy_mut(&mut self) -> &mut PermissionPolicy {
         &mut self.permission_policy
-    }
-
-    /// Approve a pending permission request.
-    /// Call this after receiving `AgentEvent::ApprovalRequired`.
-    pub fn approve(&self, prompt_id: &str, choice: ApprovalChoice) -> bool {
-        if let Ok(mut pending) = crate::permission::global_pending_approvals().lock() {
-            if let Some(tx) = pending.remove(prompt_id) {
-                return tx.send(choice).is_ok();
-            }
-        }
-        false
-    }
-
-    /// Deny a pending permission request (shorthand for approve with Deny).
-    pub fn deny_approval(&self, prompt_id: &str) -> bool {
-        self.approve(prompt_id, ApprovalChoice::Deny)
     }
 
     pub fn hook_registry(&self) -> &HookRegistry {
