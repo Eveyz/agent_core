@@ -599,11 +599,7 @@ body {
 }
 
 .agent-turn > .assistant-msg {
-  margin-top: 8px;
-}
-
-.agent-turn > .assistant-msg:first-child {
-  margin-top: 0;
+  /* margin removed to rely on flex gap for uniform spacing */
 }
 
 .turn-header {

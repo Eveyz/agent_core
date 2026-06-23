@@ -495,7 +495,7 @@ impl Run {
                 hook_registry: &mut self.hook_registry,
                 tool_execution_mode: self.tool_execution_mode,
                 cancel_token: self.cancel.clone(),
-                approval_resolver: Some(self.approval_resolver.clone()),
+                approval_resolver: None, // Use global map to avoid actor deadlock
             };
             orchestrator
                 .execute_tools(&tool_calls, &move |ev| {

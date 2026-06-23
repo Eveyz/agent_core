@@ -6,7 +6,7 @@ import { resumeSession } from '../project/projectSlice';
 export type TurnBlock =
   | { type: 'assistant'; text: string; isStreaming: boolean }
   | { type: 'thinking'; text: string; isStreaming: boolean; startTime?: number; endTime?: number }
-  | { type: 'tool'; call_id: string; name: string; args?: unknown; result: string; active: boolean; is_error: boolean }
+  | { type: 'tool'; call_id: string; name: string; args?: unknown; result: string; active: boolean; is_error: boolean; startTime?: number; endTime?: number }
   | { type: 'approval'; prompt_id: string; tool_name: string; tool_input: unknown; danger_level: string; explanation: string; status: 'pending' | 'approved' | 'denied' }
   | { type: 'error'; text: string }
   | { type: 'subagent_ref'; subagent_id: string };
@@ -375,6 +375,7 @@ function handleToolStart(
       result: '',
       active: true,
       is_error: false,
+      startTime: Date.now(),
     });
   }
 }
@@ -399,9 +400,10 @@ function handleToolEnd(
   if (lastEntry && lastEntry.type === 'turn' && lastEntry.blocks) {
     const block = lastEntry.blocks.find((b) => b.type === 'tool' && b.call_id === toolCallId);
     if (block && block.type === 'tool') {
-      block.result = truncateResult(stringifyResult(result));
       block.active = false;
       block.is_error = isError;
+      block.endTime = Date.now();
+      block.result = truncateResult(stringifyResult(result));
     }
   }
 }
@@ -434,6 +436,15 @@ function handleAgentEnd(state: ChatState): void {
   const last = state.entries[state.entries.length - 1];
   if (last && last.type === 'turn' && !last.endTime) {
     last.endTime = Date.now();
+    // Stop any dangling subagents
+    if (last.subagents) {
+      Object.values(last.subagents).forEach(sa => {
+        if (sa.status === 'working') {
+          sa.status = 'error';
+          sa.endTime = Date.now();
+        }
+      });
+    }
   }
 }
 

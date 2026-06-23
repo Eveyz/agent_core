@@ -9,6 +9,7 @@ import CheckCircle2Icon from 'lucide-react/dist/esm/icons/check-circle-2.mjs';
 import XCircleIcon from 'lucide-react/dist/esm/icons/x-circle.mjs';
 import CopyIcon from 'lucide-react/dist/esm/icons/copy.mjs';
 import BrainIcon from 'lucide-react/dist/esm/icons/brain.mjs';
+import WrenchIcon from 'lucide-react/dist/esm/icons/wrench.mjs';
 import { invoke } from '@tauri-apps/api/core';
 import { toolApprovalResponded } from '../../features/chat/chatSlice';
 import type { ChatEntry, TurnBlock, SubagentEntry } from '../../features/chat/chatSlice';
@@ -100,87 +101,126 @@ const TurnIterationUI = memo(function TurnIterationUI({
   entry?: ChatEntry | null;
 }) {
   const isStreaming = !!(iteration.thinkingBlock as any)?.isStreaming;
-  const [collapsed, setCollapsed] = useState(!isStreaming && !iteration.isLast);
+  
+  const [thoughtCollapsed, setThoughtCollapsed] = useState(!isStreaming && !iteration.isLast);
+  const [toolsCollapsed, setToolsCollapsed] = useState(!isStreaming && !iteration.isLast);
 
   useEffect(() => {
-    if (!isStreaming && !iteration.isLast) setCollapsed(true);
-    else setCollapsed(false);
+    if (!isStreaming && !iteration.isLast) {
+      setThoughtCollapsed(true);
+      setToolsCollapsed(true);
+    } else {
+      setThoughtCollapsed(false);
+      setToolsCollapsed(false);
+    }
   }, [isStreaming, iteration.isLast]);
 
   const toolCount = useMemo(() => {
     return iteration.toolBlocks.filter(b => b.type === 'tool' && b.name !== 'invoke_subagent' && b.name !== 'subagent' && b.name !== 'subagents').length;
   }, [iteration.toolBlocks]);
 
-  const durationText = useMemo(() => {
-    let text = 'Thought';
-    if (isStreaming) {
-      text = 'Thinking...';
-    } else if ((iteration.thinkingBlock as any)?.startTime && (iteration.thinkingBlock as any)?.endTime) {
-      text = `Thought for ${formatTime((iteration.thinkingBlock as any).endTime - (iteration.thinkingBlock as any).startTime)}`;
-    }
-    if (toolCount > 0) {
-      text += ` · ${toolCount} tool${toolCount > 1 ? 's' : ''}`;
-    }
-    return text;
-  }, [isStreaming, iteration.thinkingBlock, toolCount]);
-
+  const thinkingBlock = iteration.thinkingBlock as any;
+  const hasThinkingContent = thinkingBlock?.text && thinkingBlock.text.trim().length > 0;
+  const hasToolsOrErrors = iteration.toolBlocks.length > 0 || iteration.errorBlocks.length > 0;
   const hasErrors = iteration.errorBlocks.length > 0;
 
+  const thoughtLabel = useMemo(() => {
+    if (isStreaming) return 'Thinking...';
+    if (thinkingBlock?.startTime && thinkingBlock?.endTime) {
+      return `Thought for ${formatTime(thinkingBlock.endTime - thinkingBlock.startTime)}`;
+    }
+    return 'Thought';
+  }, [isStreaming, thinkingBlock]);
+
+  const toolsLabel = useMemo(() => {
+    if (isStreaming) {
+      return toolCount > 0 ? `Calling ${toolCount} tool${toolCount > 1 ? 's' : ''}...` : 'Calling tool...';
+    } else {
+      return toolCount > 0 ? `Called ${toolCount} tool${toolCount > 1 ? 's' : ''}` : 'Called tool';
+    }
+  }, [isStreaming, toolCount]);
+
   return (
-    <div className="step-block">
-      <div
-        className={`step-row ${isStreaming ? 'step-row-active' : ''} ${hasErrors ? 'step-row-error' : ''}`}
-        onClick={() => setCollapsed(!collapsed)}
-      >
-        <BrainIcon size={13} className={`step-icon ${isStreaming ? 'step-icon-thinking' : ''}`} color={isStreaming ? undefined : "#888"} />
-        <span className="step-label" style={{ fontWeight: 500 }}>{durationText}</span>
-        {collapsed ? <ChevronRightIcon size={12} className="step-chevron" /> : <ChevronDownIcon size={12} className="step-chevron" />}
-      </div>
-      {!collapsed && (
-        <div className="iteration-body" style={{ marginLeft: '6px', paddingLeft: '12px', borderLeft: '1px solid var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '6px', paddingBottom: '4px' }}>
-          {iteration.thinkingBlock && (
-            <div className="thinking-block">
-              {typeof (iteration.thinkingBlock as any).text === 'string' ? (iteration.thinkingBlock as any).text : JSON.stringify((iteration.thinkingBlock as any).text)}
-              {isStreaming ? <span className="typing-dot" style={{ display: 'inline-block', marginLeft: '4px' }}>...</span> : null}
+    <>
+      {hasThinkingContent && (
+        <div className="step-block">
+          <div
+            className={`step-row ${isStreaming ? 'step-row-active' : ''}`}
+            onClick={() => setThoughtCollapsed(!thoughtCollapsed)}
+          >
+            <BrainIcon size={13} className={`step-icon ${isStreaming ? 'step-icon-thinking' : ''}`} color={isStreaming ? undefined : "#888"} />
+            <span className="step-label" style={{ fontWeight: 500 }}>{thoughtLabel}</span>
+            {thoughtCollapsed ? <ChevronRightIcon size={12} className="step-chevron" /> : <ChevronDownIcon size={12} className="step-chevron" />}
+          </div>
+          {!thoughtCollapsed && (
+            <div className="iteration-body" style={{ marginLeft: '6px', paddingLeft: '12px', borderLeft: '1px solid var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '6px', paddingBottom: '4px' }}>
+              <div className="thinking-block">
+                {typeof thinkingBlock.text === 'string' ? thinkingBlock.text : JSON.stringify(thinkingBlock.text)}
+                {isStreaming ? <span className="typing-dot" style={{ display: 'inline-block', marginLeft: '4px' }}>...</span> : null}
+              </div>
             </div>
           )}
-          {iteration.toolBlocks.map((b: TurnBlock, idx: number) => {
-            if (b.type === 'tool') {
-              const name = typeof b.name === 'string' ? b.name : JSON.stringify(b.name);
-              if (name === 'invoke_subagent' || name === 'subagent' || name === 'subagents') {
-                return null;
-              }
-              const result = typeof b.result === 'string' ? b.result : JSON.stringify(b.result);
-              return (
-                <ToolBlockUI
-                  key={`tool-${b.call_id}-${idx}`}
-                  name={name}
-                  args={b.args}
-                  result={result}
-                  active={b.active}
-                  is_error={b.is_error}
-                />
-              );
-            } else if (b.type === 'approval') {
-              return <ApprovalBlockUI key={`approval-${b.prompt_id}-${idx}`} block={b as ApprovalBlock} />;
-            } else if (b.type === 'subagent_ref') {
-              const sa = entry?.subagents?.[b.subagent_id!];
-              if (!sa) return null;
-              return (
-                <div key={`subagent-${b.subagent_id}-${idx}`} className="subagents-section">
-                  <SubagentCard subagent={sa} entry={entry} />
-                </div>
-              );
-            }
-            return null;
-          })}
-          {iteration.errorBlocks.map((b: TurnBlock, idx: number) => {
-             const text = typeof (b as any).text === 'string' ? (b as any).text : JSON.stringify((b as any).text);
-             return <div key={`error-${idx}`} className="error-msg">{text}</div>;
-          })}
         </div>
       )}
-    </div>
+
+      {hasToolsOrErrors && (
+        <div className="step-block" style={{ marginTop: hasThinkingContent ? '4px' : '0' }}>
+          <div
+            className={`step-row ${isStreaming ? 'step-row-active' : ''} ${hasErrors ? 'step-row-error' : ''}`}
+            onClick={() => setToolsCollapsed(!toolsCollapsed)}
+          >
+            <WrenchIcon size={13} className="step-icon" color={hasErrors ? "#f87171" : (isStreaming ? undefined : "#888")} />
+            <span className="step-label" style={{ fontWeight: 500 }}>{toolsLabel}</span>
+            {toolsCollapsed ? <ChevronRightIcon size={12} className="step-chevron" /> : <ChevronDownIcon size={12} className="step-chevron" />}
+          </div>
+          {!toolsCollapsed && (
+            <div className="iteration-body" style={{ marginLeft: '6px', paddingLeft: '12px', borderLeft: '1px solid var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '6px', paddingBottom: '4px' }}>
+              {iteration.toolBlocks.map((b: TurnBlock, idx: number) => {
+                if (b.type === 'tool') {
+                  const name = typeof b.name === 'string' ? b.name : JSON.stringify(b.name);
+                  if (name === 'invoke_subagent' || name === 'subagent' || name === 'subagents') {
+                    return null;
+                  }
+                  return (
+                    <ToolBlockUI
+                      key={b.call_id || idx}
+                      name={name}
+                      args={(b as any).args || {}}
+                      result={(b as any).result}
+                      active={b.active}
+                      is_error={b.is_error}
+                      startTime={(b as any).startTime}
+                      endTime={(b as any).endTime}
+                    />
+                  );
+                } else if (b.type === 'approval') {
+                  return <ApprovalBlockUI key={`approval-${b.prompt_id}-${idx}`} block={b as ApprovalBlock} />;
+                } else if (b.type === 'subagent_ref') {
+                  const sa = entry?.subagents?.[b.subagent_id!];
+                  if (!sa) return null;
+                  return (
+                    <div key={`subagent-${b.subagent_id}-${idx}`} className="subagents-section">
+                      <SubagentCard subagent={sa} entry={entry} />
+                    </div>
+                  );
+                }
+                return null;
+              })}
+              {iteration.errorBlocks.map((b: TurnBlock, idx: number) => {
+                if (b.type === 'error') {
+                  return (
+                    <div key={`err-${idx}`} style={{ color: '#f87171', fontSize: '12px', marginTop: '4px' }}>
+                      {b.text}
+                    </div>
+                  );
+                }
+                return null;
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </>
   );
 });
 
@@ -193,12 +233,16 @@ const ToolBlockUI = memo(function ToolBlockUI({
   result,
   active,
   is_error,
+  startTime,
+  endTime,
 }: {
   name: string;
   args?: unknown;
   result?: string;
   active?: boolean;
   is_error?: boolean;
+  startTime?: number;
+  endTime?: number;
 }) {
   const [collapsed, setCollapsed] = useState(!active);
   const [showMore, setShowMore] = useState(false);
@@ -239,7 +283,12 @@ const ToolBlockUI = memo(function ToolBlockUI({
         onClick={() => setCollapsed(!collapsed)}
       >
         <span className="step-icon">{statusIcon}</span>
-        <span className="step-label tool-name">{name}</span>
+        <span className="step-label tool-name">
+          {name}
+          {collapsed && startTime && endTime && (
+            <span style={{ opacity: 0.5, fontWeight: 'normal' }}> · {formatTime(endTime - startTime)}</span>
+          )}
+        </span>
         {collapsed ? <ChevronRightIcon size={12} className="step-chevron" /> : <ChevronDownIcon size={12} className="step-chevron" />}
       </div>
       {!collapsed && (
@@ -569,7 +618,12 @@ export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: ChatEnt
 
   const renderItems = useMemo(() => groupBlocksIntoItems(entry.blocks || []), [entry.blocks]);
   const firstIterIdx = useMemo(() => renderItems.findIndex(i => i.type === 'iteration'), [renderItems]);
-  const lastIterIdx = useMemo(() => renderItems.findLastIndex(i => i.type === 'iteration'), [renderItems]);
+  const lastIterIdx = useMemo(() => {
+    for (let i = renderItems.length - 1; i >= 0; i--) {
+      if (renderItems[i].type === 'iteration') return i;
+    }
+    return -1;
+  }, [renderItems]);
 
   return (
     <div className="agent-turn">

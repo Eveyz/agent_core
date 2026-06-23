@@ -183,8 +183,17 @@ async fn approve_tool(
 
     let manager = state.run_manager.lock().await;
 
+    // Try global pending approvals first (used by subagents)
+    {
+        let pending_arc = agent_core::permission::global_pending_approvals();
+        let mut pending = pending_arc.lock().unwrap();
+        if let Some(tx) = pending.remove(&prompt_id) {
+            let _ = tx.send(choice_enum.clone());
+            return Ok(());
+        }
+    }
+
     // If run_id is provided, route to that specific run.
-    // Otherwise, try to find a run that's awaiting approval (backward compat).
     if let Some(id) = run_id {
         manager
             .command(&id, RunCommand::Approve {
@@ -194,20 +203,15 @@ async fn approve_tool(
             .await
             .map_err(|e| e.to_string())
     } else {
-        // Find any run awaiting approval
+        // Broadcast to all active runs since we don't know which one owns the prompt
         let runs = manager.list_runs().await;
         for id in runs {
-            if manager.run_state(&id).await.unwrap_or(RunState::Failed) == RunState::AwaitingApproval {
-                return manager
-                    .command(&id, RunCommand::Approve {
-                        prompt_id,
-                        choice: choice_enum,
-                    })
-                    .await
-                    .map_err(|e| e.to_string());
-            }
+            let _ = manager.command(&id, RunCommand::Approve {
+                prompt_id: prompt_id.clone(),
+                choice: choice_enum.clone(),
+            }).await;
         }
-        Err("no run awaiting approval".to_string())
+        Ok(())
     }
 }
 
