@@ -79,7 +79,7 @@ function App() {
   // Track pending approvals — scroll to bottom when a new one appears
   const pendingApprovalCount = useSelector(selectPendingApprovalCount);
   const runId = useSelector((state: RootState) => state.chat.runId);
-  const runState = useSelector((state: RootState) => state.chat.runState);
+
   const prevPendingRef = useRef(0);
   useEffect(() => {
     if (pendingApprovalCount > prevPendingRef.current) {
@@ -120,16 +120,6 @@ function App() {
     dispatch(agentAborted());
     invoke('abort_agent', { runId }).catch((e) => console.error('Failed to abort agent:', e));
   }, [dispatch, runId]);
-
-  const handlePause = useCallback(() => {
-    if (!runId) return;
-    invoke('pause_run', { runId }).catch((e) => console.error('Failed to pause run:', e));
-  }, [runId]);
-
-  const handleResume = useCallback(() => {
-    if (!runId) return;
-    invoke('resume_run', { runId }).catch((e) => console.error('Failed to resume run:', e));
-  }, [runId]);
 
   const handleSteer = useCallback((message: string) => {
     if (!runId || !message.trim()) return;
@@ -310,7 +300,7 @@ function App() {
           </>
         )}
 
-        <ChatInput isProcessing={isProcessing} onSend={handleSend} currentModel={defaultModel} onAbort={handleAbort} runState={runState} onPause={handlePause} onResume={handleResume} onSteer={handleSteer} />
+        <ChatInput isProcessing={isProcessing} onSend={handleSend} currentModel={defaultModel} onAbort={handleAbort} onSteer={handleSteer} />
       </main>
     </div>
   );

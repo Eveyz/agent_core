@@ -138,9 +138,7 @@ impl BashTool {
             supervisor.spawn_bash(command, working_dir)?
         };
 
-        // Take stdout for streaming. We need to lock the supervisor to access
-        // the child, but we must release the lock before awaiting.
-        let stdout = {
+        let stdout_handle = {
             let mut supervisor = sup.lock().unwrap();
             let child = supervisor
                 .get_child(&child_id)
@@ -148,73 +146,68 @@ impl BashTool {
             child.take_stdout()
         };
 
-        let mut result = String::new();
-
-        // Stream stdout lines if on_update callback is provided
-        if let (Some(on_update), Some(stdout)) = (on_update.as_ref(), stdout) {
-            let reader = tokio::io::BufReader::new(stdout);
-            let mut lines = reader.lines();
-
-            while let Ok(Some(line)) = lines.next_line().await {
-                on_update(&line);
-                result.push_str(&line);
-                result.push('\n');
-            }
-        }
-
-        // Wait for the process to finish — take stdout/stderr handles out
-        // of the supervisor lock scope so we don't hold the MutexGuard
-        // across .await (which would make the future !Send).
-        let (stdout_remaining, stderr_handle) = {
+        let stderr_handle = {
             let mut supervisor = sup.lock().unwrap();
             let child = supervisor
                 .get_child(&child_id)
-                .ok_or_else(|| anyhow::anyhow!("child disappeared during wait"))?;
-            (child.take_stdout(), child.take_stderr())
+                .ok_or_else(|| anyhow::anyhow!("child disappeared after spawn"))?;
+            child.take_stderr()
         };
 
-        // If we didn't stream, collect stdout now (outside the lock)
-        if on_update.is_none() {
-            if let Some(stdout) = stdout_remaining {
+        let stdout_fut = async {
+            let mut result = String::new();
+            if let Some(mut stdout) = stdout_handle {
+                if let Some(on_update) = on_update.as_ref() {
+                    let reader = tokio::io::BufReader::new(stdout);
+                    use tokio::io::AsyncBufReadExt;
+                    let mut lines = reader.lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        on_update(&line);
+                        result.push_str(&line);
+                        result.push('\n');
+                    }
+                } else {
+                    use tokio::io::AsyncReadExt;
+                    let mut buf = Vec::new();
+                    let _ = stdout.read_to_end(&mut buf).await;
+                    result = String::from_utf8_lossy(&buf).to_string();
+                }
+            }
+            result
+        };
+
+        let stderr_fut = async {
+            let mut result = String::new();
+            if let Some(mut stderr) = stderr_handle {
                 use tokio::io::AsyncReadExt;
                 let mut buf = Vec::new();
-                let mut reader = stdout;
-                let _ = reader.read_to_end(&mut buf).await;
-                result.push_str(&String::from_utf8_lossy(&buf));
+                let _ = stderr.read_to_end(&mut buf).await;
+                result = String::from_utf8_lossy(&buf).to_string();
             }
-        }
-
-        // Wait for the process to exit — poll with try_wait to avoid
-        // holding the MutexGuard across .await (which would make the
-        // future !Send). try_wait is non-async, so it's safe inside the lock.
-        let exit_code = loop {
-            let maybe_code = {
-                let mut supervisor = sup.lock().unwrap();
-                let child = supervisor
-                    .get_child(&child_id)
-                    .ok_or_else(|| anyhow::anyhow!("child disappeared before wait"))?;
-                child.try_exit_code()
-            };
-            if let Some(code) = maybe_code {
-                break code;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            result
         };
 
-        let stderr_output = stderr_handle;
-
-        // Collect stderr
-        let stderr = if let Some(stderr) = stderr_output {
-            use tokio::io::AsyncReadExt;
-            let mut buf = Vec::new();
-            let mut reader = stderr;
-            let _ = reader.read_to_end(&mut buf).await;
-            String::from_utf8_lossy(&buf).to_string()
-        } else {
-            String::new()
+        let sup_clone = sup.clone();
+        let child_id_clone = child_id.clone();
+        let wait_fut = async move {
+            loop {
+                let maybe_code = {
+                    let mut supervisor = sup_clone.lock().unwrap();
+                    let child = supervisor.get_child(&child_id_clone);
+                    if let Some(c) = child {
+                        c.try_exit_code()
+                    } else {
+                        Some(-1)
+                    }
+                };
+                if let Some(code) = maybe_code {
+                    return code;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
         };
 
-        let status_code = exit_code;
+        let (stdout_str, stderr_str, exit_code) = tokio::join!(stdout_fut, stderr_fut, wait_fut);
 
         // Remove the child from the supervisor (it's done)
         {
@@ -222,13 +215,13 @@ impl BashTool {
             let _ = supervisor.kill(&child_id);
         }
 
-        // Build the result string
-        if !stderr.is_empty() {
+        let mut result = stdout_str;
+        if !stderr_str.is_empty() {
             result.push_str("\n--- stderr ---\n");
-            result.push_str(&stderr);
+            result.push_str(&stderr_str);
         }
-        if status_code != 0 {
-            result.push_str(&format!("\n[exit code: {status_code}]"));
+        if exit_code != 0 {
+            result.push_str(&format!("\n[exit code: {exit_code}]"));
         }
 
         Ok(result)
@@ -251,41 +244,55 @@ impl BashTool {
             .spawn()
             .context("failed to spawn command")?;
 
-        let mut result = String::new();
+        let stdout_handle = child.stdout.take();
+        let stderr_handle = child.stderr.take();
 
-        // Stream stdout lines if on_update callback is provided
-        if let (Some(on_update), Some(stdout)) = (on_update.as_ref(), child.stdout.take()) {
-            let reader = tokio::io::BufReader::new(stdout);
-            let mut lines = reader.lines();
-
-            while let Ok(Some(line)) = lines.next_line().await {
-                on_update(&line);
-                result.push_str(&line);
-                result.push('\n');
+        let stdout_fut = async {
+            let mut result = String::new();
+            if let Some(mut stdout) = stdout_handle {
+                if let Some(on_update) = on_update.as_ref() {
+                    let reader = tokio::io::BufReader::new(stdout);
+                    use tokio::io::AsyncBufReadExt;
+                    let mut lines = reader.lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        on_update(&line);
+                        result.push_str(&line);
+                        result.push('\n');
+                    }
+                } else {
+                    use tokio::io::AsyncReadExt;
+                    let mut buf = Vec::new();
+                    let _ = stdout.read_to_end(&mut buf).await;
+                    result = String::from_utf8_lossy(&buf).to_string();
+                }
             }
-        }
+            result
+        };
 
-        // Wait for the process to finish
-        let output = child
-            .wait_with_output()
-            .await
-            .context("failed to wait for command")?;
+        let stderr_fut = async {
+            let mut result = String::new();
+            if let Some(mut stderr) = stderr_handle {
+                use tokio::io::AsyncReadExt;
+                let mut buf = Vec::new();
+                let _ = stderr.read_to_end(&mut buf).await;
+                result = String::from_utf8_lossy(&buf).to_string();
+            }
+            result
+        };
 
-        // If we didn't stream, collect stdout normally
-        if on_update.is_none() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            result.push_str(&stdout);
-        }
+        let wait_fut = async {
+            child.wait().await.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1)
+        };
 
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let status = output.status.code().unwrap_or(-1);
+        let (stdout_str, stderr_str, exit_code) = tokio::join!(stdout_fut, stderr_fut, wait_fut);
 
-        if !stderr.is_empty() {
+        let mut result = stdout_str;
+        if !stderr_str.is_empty() {
             result.push_str("\n--- stderr ---\n");
-            result.push_str(&stderr);
+            result.push_str(&stderr_str);
         }
-        if status != 0 {
-            result.push_str(&format!("\n[exit code: {status}]"));
+        if exit_code != 0 {
+            result.push_str(&format!("\n[exit code: {exit_code}]"));
         }
 
         Ok(result)
