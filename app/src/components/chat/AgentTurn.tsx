@@ -2,7 +2,6 @@ import { useState, useEffect, memo, useMemo, useCallback } from 'react';
 import { useAppDispatch } from '../../hooks/useAppDispatch';
 import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
 import ChevronRightIcon from 'lucide-react/dist/esm/icons/chevron-right.mjs';
-import ZapIcon from 'lucide-react/dist/esm/icons/zap.mjs';
 import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
 import XIcon from 'lucide-react/dist/esm/icons/x.mjs';
 import LoaderIcon from 'lucide-react/dist/esm/icons/loader.mjs';
@@ -497,7 +496,7 @@ const TurnFooter = memo(function TurnFooter({ entry }: { entry: ChatEntry }) {
   return (
     <div className="turn-footer">
       {rawOutput && (
-        <button className="copy-btn" onClick={handleCopy} title="Copy Raw Assistant Output">
+        <button className="turn-copy-btn" onClick={handleCopy} title="Copy Raw Assistant Output">
           {copied ? <CheckIcon size={11} color="var(--success)" /> : <CopyIcon size={11} />}
         </button>
       )}

@@ -62,9 +62,17 @@ async fn send_message(
 ) -> Result<String, String> {
     let manager = state.run_manager.lock().await;
 
+    // Load history if resuming a session
+    let mut history = vec![];
+    if let Some(ref sid) = session_id {
+        if let Ok(Some(sess)) = state.session_manager.resume(sid) {
+            history = sess.messages;
+        }
+    }
+
     // Create the Run
     let run_id = manager
-        .create_run(&message, session_id.clone())
+        .create_run(&message, session_id.clone(), history)
         .await
         .map_err(|e| e.to_string())?;
 

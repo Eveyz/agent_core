@@ -116,8 +116,9 @@ impl RunManager {
         &self,
         user_input: &str,
         session_id: Option<String>,
+        history: Vec<crate::types::Message>,
     ) -> Result<RunId> {
-        self.create_run_with_workdir(user_input, session_id, None).await
+        self.create_run_with_workdir(user_input, session_id, None, history).await
     }
 
     /// Create a Run with an isolated working directory (for worktree isolation).
@@ -129,6 +130,7 @@ impl RunManager {
         user_input: &str,
         session_id: Option<String>,
         working_dir: Option<String>,
+        history: Vec<crate::types::Message>,
     ) -> Result<RunId> {
         let run_id = uuid::Uuid::new_v4().to_string();
 
@@ -151,6 +153,7 @@ impl RunManager {
             cmd_rx,
             event_tx.clone(),
             working_dir,
+            history,
         )?;
 
         // Emit RunCreated event
@@ -305,13 +308,14 @@ impl RunManager {
         session_id: Option<String>,
         repo_root: &str,
         branch_name: &str,
+        history: Vec<crate::types::Message>,
     ) -> Result<(RunId, String)> {
         let mut wt = WorktreeManager::new(std::path::PathBuf::from(repo_root));
         let record = wt.create(&uuid::Uuid::new_v4().to_string(), branch_name)?;
         let worktree_path = record.path.to_string_lossy().to_string();
 
         let run_id = self
-            .create_run_with_workdir(user_input, session_id, Some(worktree_path.clone()))
+            .create_run_with_workdir(user_input, session_id, Some(worktree_path.clone()), history)
             .await?;
 
         Ok((run_id, worktree_path))
@@ -371,7 +375,7 @@ default = { model_id = "mock" }
     async fn create_run_returns_id() {
         let brain = Brain::from_config(test_config()).unwrap();
         let manager = RunManager::new(brain);
-        let run_id = manager.create_run("hello", None).await.unwrap();
+        let run_id = manager.create_run("hello", None, vec![]).await.unwrap();
         assert!(!run_id.is_empty());
     }
 
@@ -379,7 +383,7 @@ default = { model_id = "mock" }
     async fn list_runs_shows_created_run() {
         let brain = Brain::from_config(test_config()).unwrap();
         let manager = RunManager::new(brain);
-        let _id = manager.create_run("hello", None).await.unwrap();
+        let _id = manager.create_run("hello", None, vec![]).await.unwrap();
         let runs = manager.list_runs().await;
         assert_eq!(runs.len(), 1);
     }
@@ -388,7 +392,7 @@ default = { model_id = "mock" }
     async fn cancel_run_sends_command() {
         let brain = Brain::from_config(test_config()).unwrap();
         let manager = RunManager::new(brain);
-        let run_id = manager.create_run("hello", None).await.unwrap();
+        let run_id = manager.create_run("hello", None, vec![]).await.unwrap();
         // Cancel before start should work
         manager.cancel_run(&run_id).await.unwrap();
     }
@@ -406,7 +410,7 @@ default = { model_id = "mock" }
         let brain = Brain::from_config(test_config()).unwrap();
         let manager = RunManager::new(brain);
         let run_id = manager
-            .create_run_with_workdir("hello", None, Some("/tmp".to_string()))
+            .create_run_with_workdir("hello", None, Some("/tmp".to_string()), vec![])
             .await
             .unwrap();
         assert!(!run_id.is_empty());
@@ -418,8 +422,8 @@ default = { model_id = "mock" }
         let manager = RunManager::new(brain);
 
         // Create two runs — they should coexist
-        let id1 = manager.create_run("task 1", None).await.unwrap();
-        let id2 = manager.create_run("task 2", None).await.unwrap();
+        let id1 = manager.create_run("task 1", None, vec![]).await.unwrap();
+        let id2 = manager.create_run("task 2", None, vec![]).await.unwrap();
 
         let runs = manager.list_runs().await;
         assert_eq!(runs.len(), 2);
@@ -432,8 +436,8 @@ default = { model_id = "mock" }
         let brain = Brain::from_config(test_config()).unwrap();
         let manager = RunManager::new(brain);
 
-        let _id1 = manager.create_run("task 1", None).await.unwrap();
-        let _id2 = manager.create_run("task 2", None).await.unwrap();
+        let _id1 = manager.create_run("task 1", None, vec![]).await.unwrap();
+        let _id2 = manager.create_run("task 2", None, vec![]).await.unwrap();
         assert_eq!(manager.list_runs().await.len(), 2);
 
         manager.cancel_all().await;

@@ -123,6 +123,7 @@ impl Run {
         cmd_rx: mpsc::Receiver<RunCommand>,
         event_tx: broadcast::Sender<RunEvent>,
         working_dir: Option<String>,
+        history: Vec<crate::types::Message>,
     ) -> Result<Self> {
         let client = brain.build_client()?;
         let permission_policy = brain.build_permission_policy();
@@ -181,6 +182,12 @@ impl Run {
 
         let recovery_ctx = RecoveryContext::new(&model_config.model_id, max_context_tokens);
         let hooks = brain.build_hooks();
+
+        // Populate history
+        for msg in history {
+            context.add(msg);
+        }
+
         let event_log = EventLog::new(&id, &default_runs_dir());
 
         Ok(Self {
