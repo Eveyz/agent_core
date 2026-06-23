@@ -163,13 +163,21 @@ impl ToolCallAccumulator {
         let mut sorted: Vec<_> = self.calls.into_iter().collect();
         sorted.sort_by_key(|(i, _)| *i);
 
+        let mut seen_ids = std::collections::HashSet::new();
+
         sorted
             .into_iter()
-            .filter_map(|(_, partial)| {
+            .filter_map(|(i, partial)| {
+                let mut id = partial
+                    .id
+                    .unwrap_or_else(|| format!("call_{}", uuid::Uuid::new_v4()));
+                    
+                while !seen_ids.insert(id.clone()) {
+                    id = format!("{}_{}", id, i);
+                }
+
                 Some(crate::types::ToolCall {
-                    id: partial
-                        .id
-                        .unwrap_or_else(|| format!("call_{}", uuid::Uuid::new_v4())),
+                    id,
                     call_type: "function".to_string(),
                     function: crate::types::FunctionCall {
                         name: partial.function_name?,

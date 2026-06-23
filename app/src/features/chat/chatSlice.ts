@@ -450,6 +450,12 @@ function handleAgentEnd(state: ChatState): void {
         if (sa.status === 'working') {
           sa.status = 'error';
           sa.endTime = Date.now();
+          sa.blocks.forEach(b => {
+            if (b.isStreaming) {
+              b.isStreaming = false;
+              if (b.type === 'thinking') b.endTime = Date.now();
+            }
+          });
         }
       });
     }
@@ -461,6 +467,22 @@ function handleError(state: ChatState, errorText: string): void {
   const lastEntry = state.entries[state.entries.length - 1];
   if (lastEntry && lastEntry.type === 'turn' && lastEntry.blocks) {
     closeStreamingBlock(lastEntry.blocks);
+    
+    // Stop any dangling subagents
+    if (lastEntry.subagents) {
+      Object.values(lastEntry.subagents).forEach(sa => {
+        if (sa.status === 'working') {
+          sa.status = 'error';
+          sa.endTime = Date.now();
+          sa.blocks.forEach(b => {
+            if (b.isStreaming) {
+              b.isStreaming = false;
+              if (b.type === 'thinking') b.endTime = Date.now();
+            }
+          });
+        }
+      });
+    }
     
     const lastBlock = lastEntry.blocks[lastEntry.blocks.length - 1];
     const isRetryError = errorText.toLowerCase().includes('retrying model call');

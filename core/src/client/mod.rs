@@ -119,11 +119,21 @@ impl OpenAIClient {
         let message = &choice["message"];
         let content = message["content"].as_str().unwrap_or("").to_string();
 
-        let tool_calls: Vec<crate::types::ToolCall> = if message["tool_calls"].is_array() {
+        let mut tool_calls: Vec<crate::types::ToolCall> = if message["tool_calls"].is_array() {
             serde_json::from_value(message["tool_calls"].clone())?
         } else {
             vec![]
         };
+
+        let mut seen = std::collections::HashSet::new();
+        for (i, tc) in tool_calls.iter_mut().enumerate() {
+            if tc.id.is_empty() {
+                tc.id = format!("call_{}", uuid::Uuid::new_v4());
+            }
+            while !seen.insert(tc.id.clone()) {
+                tc.id = format!("{}_{}", tc.id, i);
+            }
+        }
 
         Ok((content, tool_calls))
     }

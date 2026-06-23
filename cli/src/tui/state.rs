@@ -759,6 +759,9 @@ impl AppState {
                 );
                 self.mark_dirty();
             }
+            AgentEvent::SubagentToolUpdate { .. } => {
+                // Updates are intermediate; final results are provided by SubagentToolEnd
+            }
             AgentEvent::SubagentToolEnd {
                 subagent_id,
                 tool_call_id,
