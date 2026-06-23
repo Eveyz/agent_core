@@ -57,6 +57,7 @@ function App() {
   const entriesLength = useSelector((state: RootState) => state.chat.entries.length);
   const isProcessing = useSelector((state: RootState) => state.chat.isProcessing);
   const defaultModel = useSelector((state: RootState) => state.settings.config?.default_model || '');
+  const appearance = useSelector((state: RootState) => state.settings.appearance);
 
   const activeProjectId = useSelector((state: RootState) => state.project.activeProjectId);
   const activeSessionId = useSelector((state: RootState) => state.project.activeSessionId);
@@ -75,6 +76,26 @@ function App() {
     activeProjectPath: activeProject?.path ?? null,
     defaultModel,
   });
+
+  // Appearance (Theme) handling
+  useEffect(() => {
+    const root = document.documentElement;
+    const applyTheme = (theme: 'dark' | 'light') => {
+      root.setAttribute('data-theme', theme);
+    };
+
+    if (appearance === 'system') {
+      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+      applyTheme(mediaQuery.matches ? 'dark' : 'light');
+      const handler = (e: MediaQueryListEvent) => {
+        applyTheme(e.matches ? 'dark' : 'light');
+      };
+      mediaQuery.addEventListener('change', handler);
+      return () => mediaQuery.removeEventListener('change', handler);
+    } else {
+      applyTheme(appearance);
+    }
+  }, [appearance]);
 
   // Track pending approvals — scroll to bottom when a new one appears
   const pendingApprovalCount = useSelector(selectPendingApprovalCount);

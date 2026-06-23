@@ -197,8 +197,6 @@ function runEventToAgentEvent(ev: RunEventPayload): AgentEvent {
       return { ToolExecutionEnd: { tool_call_id: ev.call_id ?? '', result: ev.result ?? '', is_error: ev.is_error ?? false } };
     case 'approval_required':
       return { ApprovalRequired: { prompt_id: ev.prompt_id ?? '', tool_name: ev.tool_name ?? '', tool_input: ev.tool_input, danger_level: ev.danger_level ?? '', explanation: ev.explanation ?? '' } };
-    case 'error':
-      return { Error: ((ev as unknown as Record<string, unknown>).message as string) ?? 'unknown error' };
     case 'subagent_started':
       return { SubagentStart: { subagent_id: ev.subagent_id ?? '', role_name: ev.role_name, task: ev.task ?? '' } };
     case 'subagent_ended':
@@ -227,25 +225,56 @@ function appendDeltaToBlocks(
   blocks: AnyBlock[],
   delta: DeltaPayload
 ): void {
-  if (typeof delta.Text === 'string') {
+  const appendToCurrent = (text: string, defaultType: 'assistant' | 'thinking') => {
     let block = blocks[blocks.length - 1];
-    if (!block || block.type !== 'assistant' || !block.isStreaming) {
-      if (block && 'isStreaming' in block && block.isStreaming) {
-        block.isStreaming = false;
-        if (block.type === 'thinking') block.endTime = Date.now();
+    if (!block || !('isStreaming' in block) || !block.isStreaming || block.type !== defaultType) {
+      closeStreamingBlock(blocks);
+      if (defaultType === 'thinking') {
+        blocks.push({ type: 'thinking', text: '', isStreaming: true, startTime: Date.now() });
+      } else {
+        blocks.push({ type: 'assistant', text: '', isStreaming: true });
       }
-      blocks.push({ type: 'assistant', text: '', isStreaming: true });
       block = blocks[blocks.length - 1];
     }
-    if (block.type === 'assistant') {
-      block.text += delta.Text;
+    if (block.type === 'assistant' || block.type === 'thinking') {
+      block.text += text;
+    }
+  };
+
+  if (typeof delta.Text === 'string') {
+    let textChunk = delta.Text;
+    
+    // Support DeepSeek <think> tags natively parsed from stream
+    while (textChunk.includes('<think>') || textChunk.includes('</think>')) {
+      const thinkStartIdx = textChunk.indexOf('<think>');
+      const thinkEndIdx = textChunk.indexOf('</think>');
+      
+      if (thinkStartIdx !== -1 && (thinkEndIdx === -1 || thinkStartIdx < thinkEndIdx)) {
+        // Handle <think>
+        const before = textChunk.substring(0, thinkStartIdx);
+        if (before) appendToCurrent(before, 'assistant');
+        
+        closeStreamingBlock(blocks);
+        blocks.push({ type: 'thinking', text: '', isStreaming: true, startTime: Date.now() });
+        textChunk = textChunk.substring(thinkStartIdx + 7);
+      } else if (thinkEndIdx !== -1) {
+        // Handle </think>
+        const before = textChunk.substring(0, thinkEndIdx);
+        if (before) appendToCurrent(before, 'thinking');
+        
+        closeStreamingBlock(blocks);
+        blocks.push({ type: 'assistant', text: '', isStreaming: true });
+        textChunk = textChunk.substring(thinkEndIdx + 8);
+      }
+    }
+
+    if (textChunk) {
+      appendToCurrent(textChunk, 'assistant');
     }
   } else if (typeof delta.Thinking === 'string') {
     let block = blocks[blocks.length - 1];
     if (!block || block.type !== 'thinking' || !block.isStreaming) {
-      if (block && 'isStreaming' in block && block.isStreaming) {
-        block.isStreaming = false;
-      }
+      closeStreamingBlock(blocks);
       blocks.push({ type: 'thinking', text: '', isStreaming: true, startTime: Date.now() });
       block = blocks[blocks.length - 1];
     }
@@ -412,6 +441,19 @@ function handleError(state: ChatState, errorText: string): void {
   state.isProcessing = false;
   const lastEntry = state.entries[state.entries.length - 1];
   if (lastEntry && lastEntry.type === 'turn' && lastEntry.blocks) {
+    closeStreamingBlock(lastEntry.blocks);
+    
+    const lastBlock = lastEntry.blocks[lastEntry.blocks.length - 1];
+    const isRetryError = errorText.toLowerCase().includes('retrying model call');
+    
+    if (lastBlock && lastBlock.type === 'error') {
+      const lastText = typeof lastBlock.text === 'string' ? lastBlock.text : '';
+      if (isRetryError && lastText.toLowerCase().includes('retrying model call')) {
+        lastBlock.text = errorText;
+        return;
+      }
+    }
+    
     lastEntry.blocks.push({ type: 'error', text: errorText });
   } else {
     state.entries.push({

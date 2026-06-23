@@ -1,9 +1,12 @@
-import { useSelector } from 'react-redux';
+import { useSelector, useDispatch } from 'react-redux';
 import { RootState } from '../../store';
 import InfoIcon from 'lucide-react/dist/esm/icons/info.mjs';
+import { setAppearance } from '../../features/settings/settingsSlice';
 
 export default function GeneralTab() {
   const config = useSelector((state: RootState) => state.settings.config);
+  const appearance = useSelector((state: RootState) => state.settings.appearance);
+  const dispatch = useDispatch();
 
   if (!config) {
     return (
@@ -17,6 +20,21 @@ export default function GeneralTab() {
     <div className="settings-tab-content">
       <div className="settings-section">
         <h3 className="settings-section-title">Application</h3>
+        <div className="settings-field">
+          <label className="settings-label">Appearance</label>
+          <div className="settings-value">
+            <select
+              className="settings-input"
+              style={{ width: '150px' }}
+              value={appearance}
+              onChange={(e) => dispatch(setAppearance(e.target.value as 'system' | 'dark' | 'light'))}
+            >
+              <option value="system">System</option>
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+            </select>
+          </div>
+        </div>
         <div className="settings-field">
           <label className="settings-label">Default Model</label>
           <div className="settings-value">{config.default_model}</div>

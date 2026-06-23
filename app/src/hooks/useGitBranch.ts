@@ -1,6 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 
+interface GitBranchInfo {
+  branches: string[];
+  active: string;
+}
+
 export function useGitBranch(projectPath: string | undefined) {
   const [branches, setBranches] = useState<string[]>([]);
   const [activeBranch, setActiveBranch] = useState<string>('');
@@ -10,13 +15,11 @@ export function useGitBranch(projectPath: string | undefined) {
 
   useEffect(() => {
     if (!projectPath) return;
-    invoke<string[]>('list_git_branches', { path: projectPath })
-      .then((b) => {
-        setBranches(b);
+    invoke<GitBranchInfo>('list_git_branches', { path: projectPath })
+      .then((info) => {
+        setBranches(info.branches);
+        setActiveBranch(info.active);
         setBranchError('');
-        if (b.length > 0 && !activeBranch) {
-          setActiveBranch(b[0]);
-        }
       })
       .catch((e) => {
         setBranches([]);
@@ -47,7 +50,9 @@ export function useGitBranch(projectPath: string | undefined) {
         setActiveBranch(branch);
         setBranchError('');
       } catch (e) {
-        setBranchError(String(e));
+        window.alert(String(e));
+        // Note: we don't setBranchError here because the local branch hasn't changed.
+        // It's just a failed action, the current branch is still active and valid.
       }
       setShowBranchDropdown(false);
     },

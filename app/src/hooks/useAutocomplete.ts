@@ -2,10 +2,48 @@ import { useState, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { parseMentions, findMentionBoundaries } from '../utils/mentions';
 
+export type IconType = 'folder' | 'file' | 'command' | 'file-code' | 'file-json' | 'file-image' | 'file-text'
+  | 'lang-js' | 'lang-ts' | 'lang-jsx' | 'lang-tsx' | 'lang-py' | 'lang-go' | 'lang-css' | 'lang-rs' | 'lang-html';
+
 export interface AutocompleteItem {
   label: string;
   value: string;
-  icon: 'folder' | 'file' | 'command';
+  icon: IconType;
+}
+
+function getFileIcon(filename: string): IconType {
+  const ext = filename.split('.').pop()?.toLowerCase();
+  switch (ext) {
+    case 'js': return 'lang-js';
+    case 'jsx': return 'lang-jsx';
+    case 'ts': return 'lang-ts';
+    case 'tsx': return 'lang-tsx';
+    case 'py': return 'lang-py';
+    case 'go': return 'lang-go';
+    case 'css': return 'lang-css';
+    case 'rs': return 'lang-rs';
+    case 'html': return 'lang-html';
+    case 'java':
+    case 'c':
+    case 'cpp':
+    case 'h':
+    case 'php':
+    case 'rb':
+      return 'file-code';
+    case 'json':
+      return 'file-json';
+    case 'md':
+    case 'txt':
+      return 'file-text';
+    case 'png':
+    case 'jpg':
+    case 'jpeg':
+    case 'gif':
+    case 'svg':
+      return 'file-image';
+    default:
+      return 'file';
+  }
 }
 
 const COMMANDS: AutocompleteItem[] = [
@@ -18,7 +56,8 @@ const COMMANDS: AutocompleteItem[] = [
 export function useAutocomplete(
   input: string,
   setInput: (v: string) => void,
-  textareaRef: React.RefObject<HTMLTextAreaElement | null>
+  textareaRef: React.RefObject<HTMLTextAreaElement | null>,
+  projectPath?: string
 ) {
   const [showAutocomplete, setShowAutocomplete] = useState(false);
   const [autocompleteItems, setAutocompleteItems] = useState<AutocompleteItem[]>([]);
@@ -27,20 +66,24 @@ export function useAutocomplete(
 
   const fetchDirectoryEntries = useCallback(async (query: string) => {
     try {
-      const entries = await invoke<Array<{ name: string; type: string }>>('list_directory', { path: null });
-      const filtered = entries
-        .filter((e) => e.name.toLowerCase().includes(query.toLowerCase()))
-        .map((e) => ({
+      const entries = await invoke<Array<{ name: string; type: string }>>('search_files', { 
+        query, 
+        path: projectPath || null 
+      });
+      const mapped = entries.map((e) => {
+        const basename = e.name.split('/').pop() || e.name;
+        return {
           label: e.name,
-          value: e.name,
-          icon: (e.type === 'directory' ? 'folder' : 'file') as 'folder' | 'file',
-        }));
-      setAutocompleteItems(filtered);
+          value: basename,
+          icon: e.type === 'dir' ? 'folder' : getFileIcon(e.name),
+        };
+      });
+      setAutocompleteItems(mapped);
       setSelectedIndex(0);
     } catch {
       setAutocompleteItems([]);
     }
-  }, []);
+  }, [projectPath]);
 
   const closeAutocomplete = useCallback(() => {
     setShowAutocomplete(false);
@@ -111,6 +154,7 @@ export function useAutocomplete(
           const [start, end] = boundaries;
           const newValue = input.slice(0, start) + input.slice(end);
           setInput(newValue);
+          closeAutocomplete();
           setTimeout(() => {
             el.setSelectionRange(start, start);
             el.focus();
@@ -126,6 +170,7 @@ export function useAutocomplete(
           const [start, end] = boundaries;
           const newValue = input.slice(0, start) + input.slice(end);
           setInput(newValue);
+          closeAutocomplete();
           setTimeout(() => {
             el.setSelectionRange(start, start);
             el.focus();

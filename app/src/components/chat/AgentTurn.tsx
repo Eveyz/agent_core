@@ -9,9 +9,10 @@ import LoaderIcon from 'lucide-react/dist/esm/icons/loader.mjs';
 import CheckCircle2Icon from 'lucide-react/dist/esm/icons/check-circle-2.mjs';
 import XCircleIcon from 'lucide-react/dist/esm/icons/x-circle.mjs';
 import CopyIcon from 'lucide-react/dist/esm/icons/copy.mjs';
+import BrainIcon from 'lucide-react/dist/esm/icons/brain.mjs';
 import { invoke } from '@tauri-apps/api/core';
 import { toolApprovalResponded } from '../../features/chat/chatSlice';
-import type { ChatEntry, TurnBlock, SubagentEntry, SubagentBlock } from '../../features/chat/chatSlice';
+import type { ChatEntry, TurnBlock, SubagentEntry } from '../../features/chat/chatSlice';
 import { MarkdownContent, formatTime, parseMarkdown } from './MarkdownContent';
 
 export { formatTime, parseMarkdown };
@@ -39,45 +40,135 @@ const ProcessingTimer = memo(function ProcessingTimer({
   return <span>Processed {formatTime(diff)}</span>;
 });
 
-const ThinkingBlockUI = memo(function ThinkingBlockUI({
-  text,
-  isStreaming,
-  startTime,
-  endTime,
+
+interface TurnIteration {
+  id: string;
+  thinkingBlock?: TurnBlock;
+  toolBlocks: TurnBlock[];
+  errorBlocks: TurnBlock[];
+  isLast: boolean;
+}
+
+function groupBlocksIntoIterations(blocks: TurnBlock[]): TurnIteration[] {
+  const iterations: TurnIteration[] = [];
+  let current: TurnIteration | null = null;
+  
+  blocks.forEach((b, idx) => {
+    if (b.type === 'assistant') return;
+    
+    if (b.type === 'thinking') {
+      if (current) iterations.push(current);
+      current = { id: `iter-${idx}`, thinkingBlock: b, toolBlocks: [], errorBlocks: [], isLast: false };
+    } else if (b.type === 'error') {
+      if (!current) current = { id: `iter-init-${idx}`, toolBlocks: [], errorBlocks: [], isLast: false };
+      current.errorBlocks.push(b);
+    } else {
+      if (!current) current = { id: `iter-init-${idx}`, toolBlocks: [], errorBlocks: [], isLast: false };
+      current.toolBlocks.push(b);
+    }
+  });
+  
+  if (current) iterations.push(current);
+  if (iterations.length > 0) {
+    iterations[iterations.length - 1].isLast = true;
+  }
+  return iterations;
+}
+
+const TurnIterationUI = memo(function TurnIterationUI({
+  iteration,
+  entry,
 }: {
-  text: string;
-  isStreaming: boolean;
-  startTime?: number;
-  endTime?: number;
+  iteration: TurnIteration;
+  entry?: ChatEntry | null;
 }) {
-  const [collapsed, setCollapsed] = useState(false);
+  const isStreaming = !!(iteration.thinkingBlock as any)?.isStreaming;
+  const [collapsed, setCollapsed] = useState(!isStreaming && !iteration.isLast);
+
+  useEffect(() => {
+    if (!isStreaming && !iteration.isLast) setCollapsed(true);
+    else setCollapsed(false);
+  }, [isStreaming, iteration.isLast]);
+
+  const toolCount = useMemo(() => {
+    return iteration.toolBlocks.filter(b => b.type === 'tool' && b.name !== 'invoke_subagent' && b.name !== 'subagent' && b.name !== 'subagents').length;
+  }, [iteration.toolBlocks]);
 
   const durationText = useMemo(() => {
-    if (isStreaming) return 'Thinking...';
-    if (startTime && endTime) {
-      return `Thought for ${formatTime(endTime - startTime)}`;
+    let text = 'Thought';
+    if (isStreaming) {
+      text = 'Thinking...';
+    } else if ((iteration.thinkingBlock as any)?.startTime && (iteration.thinkingBlock as any)?.endTime) {
+      text = `Thought for ${formatTime((iteration.thinkingBlock as any).endTime - (iteration.thinkingBlock as any).startTime)}`;
     }
-    return 'Thought';
-  }, [isStreaming, startTime, endTime]);
+    if (toolCount > 0) {
+      text += ` · ${toolCount} tool${toolCount > 1 ? 's' : ''}`;
+    }
+    return text;
+  }, [isStreaming, iteration.thinkingBlock, toolCount]);
+
+  const hasErrors = iteration.errorBlocks.length > 0;
 
   return (
-    <div className="block-wrapper">
+    <div className="step-block">
       <div
-        className={`thinking-toggle ${isStreaming ? 'thinking-pulse' : ''} ${!collapsed ? 'expanded' : ''}`}
+        className={`step-row ${isStreaming ? 'step-row-active' : ''} ${hasErrors ? 'step-row-error' : ''}`}
         onClick={() => setCollapsed(!collapsed)}
-        style={{ cursor: 'pointer' }}
       >
-        {durationText} {collapsed ? <ChevronRightIcon size={12} style={ml4} /> : <ChevronDownIcon size={12} style={ml4} />}
+        <BrainIcon size={13} className={`step-icon ${isStreaming ? 'step-icon-thinking' : ''}`} color={isStreaming ? undefined : "#888"} />
+        <span className="step-label" style={{ fontWeight: 500 }}>{durationText}</span>
+        {collapsed ? <ChevronRightIcon size={12} className="step-chevron" /> : <ChevronDownIcon size={12} className="step-chevron" />}
       </div>
-      {!collapsed ? (
-        <div className="thinking-block">
-          {text}
-          {isStreaming ? <span className="typing-dot" style={{ display: 'inline-block', marginLeft: '4px' }}>...</span> : null}
+      {!collapsed && (
+        <div className="iteration-body" style={{ marginLeft: '6px', paddingLeft: '12px', borderLeft: '1px solid var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '6px', paddingBottom: '4px' }}>
+          {iteration.thinkingBlock && (
+            <div className="thinking-block">
+              {typeof (iteration.thinkingBlock as any).text === 'string' ? (iteration.thinkingBlock as any).text : JSON.stringify((iteration.thinkingBlock as any).text)}
+              {isStreaming ? <span className="typing-dot" style={{ display: 'inline-block', marginLeft: '4px' }}>...</span> : null}
+            </div>
+          )}
+          {iteration.toolBlocks.map((b: TurnBlock, idx: number) => {
+            if (b.type === 'tool') {
+              const name = typeof b.name === 'string' ? b.name : JSON.stringify(b.name);
+              if (name === 'invoke_subagent' || name === 'subagent' || name === 'subagents') {
+                return null;
+              }
+              const result = typeof b.result === 'string' ? b.result : JSON.stringify(b.result);
+              return (
+                <ToolBlockUI
+                  key={`tool-${b.call_id}-${idx}`}
+                  name={name}
+                  args={b.args}
+                  result={result}
+                  active={b.active}
+                  is_error={b.is_error}
+                />
+              );
+            } else if (b.type === 'approval') {
+              return <ApprovalBlockUI key={`approval-${b.prompt_id}-${idx}`} block={b as ApprovalBlock} />;
+            } else if (b.type === 'subagent_ref') {
+              const sa = entry?.subagents?.[b.subagent_id!];
+              if (!sa) return null;
+              return (
+                <div key={`subagent-${b.subagent_id}-${idx}`} className="subagents-section">
+                  <SubagentCard subagent={sa} entry={entry} />
+                </div>
+              );
+            }
+            return null;
+          })}
+          {iteration.errorBlocks.map((b: TurnBlock, idx: number) => {
+             const text = typeof (b as any).text === 'string' ? (b as any).text : JSON.stringify((b as any).text);
+             return <div key={`error-${idx}`} className="error-msg">{text}</div>;
+          })}
         </div>
-      ) : null}
+      )}
     </div>
   );
 });
+
+
+
 
 const ToolBlockUI = memo(function ToolBlockUI({
   name,
@@ -93,6 +184,7 @@ const ToolBlockUI = memo(function ToolBlockUI({
   is_error?: boolean;
 }) {
   const [collapsed, setCollapsed] = useState(!active);
+  const [showMore, setShowMore] = useState(false);
 
   useEffect(() => {
     if (active === false) setCollapsed(true);
@@ -100,9 +192,9 @@ const ToolBlockUI = memo(function ToolBlockUI({
   }, [active]);
 
   const statusIcon = useMemo(() => {
-    if (active) return <LoaderIcon className="tool-loader-icon" size={14} />;
-    if (is_error) return <XCircleIcon color="#f87171" size={14} />;
-    return <CheckCircle2Icon color="#4ade80" size={14} />;
+    if (active) return <LoaderIcon className="tool-loader-icon" size={13} color="var(--text-muted)" />;
+    if (is_error) return <XCircleIcon color="#f87171" size={13} />;
+    return <CheckCircle2Icon color="var(--success)" size={13} />;
   }, [active, is_error]);
 
   const formattedArgs = useMemo(() => {
@@ -115,18 +207,26 @@ const ToolBlockUI = memo(function ToolBlockUI({
     }
   }, [args]);
 
+  const displayResult = useMemo(() => {
+    if (!result) return '';
+    if (!showMore && result.length > 500) {
+      return result.substring(0, 500) + '...\n\n*(Truncated. Click Show More to see full output)*';
+    }
+    return result;
+  }, [result, showMore]);
+
   return (
-    <div className={`tool-block-wrapper ${active ? 'active' : ''} ${is_error ? 'error' : ''}`}>
+    <div className="step-block">
       <div
-        className={`tool-block-header ${!collapsed ? 'expanded' : ''}`}
+        className={`step-row ${active ? 'step-row-active' : ''} ${is_error ? 'step-row-error' : ''}`}
         onClick={() => setCollapsed(!collapsed)}
       >
-        <span className="tool-status-icon">{statusIcon}</span>
-        <span className="tool-name">{name}</span>
-        {collapsed ? <ChevronRightIcon size={14} className="ml-auto" /> : <ChevronDownIcon size={14} className="ml-auto" />}
+        <span className="step-icon">{statusIcon}</span>
+        <span className="step-label tool-name">{name}</span>
+        {collapsed ? <ChevronRightIcon size={12} className="step-chevron" /> : <ChevronDownIcon size={12} className="step-chevron" />}
       </div>
       {!collapsed && (
-        <div className="tool-block-body">
+        <div className="step-body">
           {formattedArgs && (
             <div className="tool-section">
               <div className="tool-section-label">INPUT</div>
@@ -136,7 +236,29 @@ const ToolBlockUI = memo(function ToolBlockUI({
           {result && !active && (
             <div className="tool-section">
               <div className="tool-section-label">OUTPUT</div>
-              <MarkdownContent content={result} className="tool-result-content assistant-msg" />
+              <MarkdownContent content={displayResult} className="tool-result-content assistant-msg" />
+              {!showMore && result.length > 500 && (
+                <div 
+                  className="tool-show-more-btn"
+                  onClick={(e) => { e.stopPropagation(); setShowMore(true); }}
+                  style={{
+                    color: 'var(--accent)',
+                    cursor: 'pointer',
+                    fontSize: '12px',
+                    textAlign: 'center',
+                    padding: '6px 0',
+                    marginTop: '8px',
+                    borderRadius: '6px',
+                    background: 'var(--overlay-0_04)',
+                    border: '1px solid var(--overlay-0_06)',
+                    transition: 'background 0.2s ease',
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--overlay-0_06)')}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--overlay-0_04)')}
+                >
+                  Show More
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -220,45 +342,7 @@ const ApprovalBlockUI = memo(function ApprovalBlockUI({ block }: { block: Approv
     </div>
   );
 });
-
-const SubagentBlockUI = memo(function SubagentBlockUI({ block }: { block: SubagentBlock }) {
-  if (block.type === 'thinking') {
-    const text = typeof block.text === 'string' ? block.text : JSON.stringify(block.text);
-    return (
-      <ThinkingBlockUI
-        text={text}
-        isStreaming={!!block.isStreaming}
-        startTime={block.startTime}
-        endTime={block.endTime}
-      />
-    );
-  }
-  if (block.type === 'assistant') {
-    const text = typeof block.text === 'string' ? block.text : JSON.stringify(block.text);
-    return (
-      <MarkdownContent
-        content={text}
-        className="assistant-msg"
-        isStreaming={!!block.isStreaming}
-      />
-    );
-  }
-  if (block.type === 'tool') {
-    const name = typeof block.name === 'string' ? block.name : JSON.stringify(block.name);
-    const result = typeof block.result === 'string' ? block.result : JSON.stringify(block.result);
-    return <ToolBlockUI name={name || ''} result={result} active={!!block.active} />;
-  }
-  if (block.type === 'error') {
-    const text = typeof block.text === 'string' ? block.text : JSON.stringify(block.text);
-    return <div className="error-msg">{text}</div>;
-  }
-  if (block.type === 'approval') {
-    return <ApprovalBlockUI block={block} />;
-  }
-  return null;
-});
-
-const SubagentCard = memo(function SubagentCard({ subagent }: { subagent: SubagentEntry }) {
+const SubagentCard = memo(function SubagentCard({ subagent, entry }: { subagent: SubagentEntry; entry?: ChatEntry | null }) {
   const isDone = subagent.status === 'done' || subagent.status === 'error';
   const [collapsed, setCollapsed] = useState(isDone);
 
@@ -269,9 +353,10 @@ const SubagentCard = memo(function SubagentCard({ subagent }: { subagent: Subage
   }, [isDone]);
 
   const statusIcon = useMemo(() => {
-    if (subagent.status === 'working') return <ZapIcon size={12} color="#facc15" />;
-    if (subagent.status === 'done') return <CheckIcon size={12} color="#4ade80" />;
-    return <XIcon size={12} color="#f87171" />;
+    if (subagent.status === 'working') return <div className="black-hole-spinner" style={{ width: 12, height: 12 }} />;
+    if (subagent.status === 'done') return <CheckIcon size={12} color="var(--success)" />;
+    if (subagent.status === 'error') return <XIcon size={12} color="#f87171" />;
+    return null;
   }, [subagent.status]);
 
   const toolCount = useMemo(() => {
@@ -319,8 +404,8 @@ const SubagentCard = memo(function SubagentCard({ subagent }: { subagent: Subage
           <div className="subagent-task">
             {typeof subagent.task === 'string' ? subagent.task : JSON.stringify(subagent.task)}
           </div>
-          {subagent.blocks?.map((b, idx) => (
-            <SubagentBlockUI key={`${b.type}-${idx}`} block={b} />
+          {groupBlocksIntoIterations((subagent.blocks as any) || []).map((iter) => (
+             <TurnIterationUI key={iter.id} iteration={iter} entry={entry} />
           ))}
         </div>
       )}
@@ -368,7 +453,7 @@ const DynamicWorkingIndicator = memo(function DynamicWorkingIndicator({ entry }:
       return 'Transmitting response...';
     }
 
-    return 'Processing data...';
+    return 'Working...';
   }, [entry.blocks, phraseIndex]);
 
   return (
@@ -412,8 +497,8 @@ const TurnFooter = memo(function TurnFooter({ entry }: { entry: ChatEntry }) {
   return (
     <div className="turn-footer">
       {rawOutput && (
-        <button className="turn-copy-btn" onClick={handleCopy} title="Copy raw output">
-          {copied ? <CheckIcon size={11} color="#4ade80" /> : <CopyIcon size={11} />}
+        <button className="copy-btn" onClick={handleCopy} title="Copy Raw Assistant Output">
+          {copied ? <CheckIcon size={11} color="var(--success)" /> : <CopyIcon size={11} />}
         </button>
       )}
       {endTimeText && <span className="turn-end-time">{endTimeText}</span>}
@@ -422,82 +507,82 @@ const TurnFooter = memo(function TurnFooter({ entry }: { entry: ChatEntry }) {
 });
 
 export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: ChatEntry }) {
-  const [collapsed, setCollapsed] = useState(false);
+  const isProcessing = !!(entry.startTime && !entry.endTime);
+  const isDone = !!(entry.endTime);
 
-  const thoughtDuration = useMemo(() => {
-    let totalMs = 0;
+  // Auto-collapse intermediate steps when turn is done
+  const [collapsed, setCollapsed] = useState(false);
+  useEffect(() => {
+    if (isDone) setCollapsed(true);
+  }, [isDone]);
+
+  const { toolCount, thoughtCount } = useMemo(() => {
+    let tools = 0, thoughts = 0, errors = 0;
     entry.blocks?.forEach((b: TurnBlock) => {
-      if (b.type === 'thinking' && b.startTime && b.endTime) {
-        totalMs += b.endTime - b.startTime;
+      if (b.type === 'tool') {
+        const name = typeof b.name === 'string' ? b.name : '';
+        if (name !== 'invoke_subagent' && name !== 'subagent' && name !== 'subagents') tools++;
       }
+      if (b.type === 'thinking') thoughts++;
+      if (b.type === 'error') errors++;
     });
-    if (totalMs === 0) return null;
-    return `Thought for ${formatTime(totalMs)}`;
+    return { toolCount: tools, thoughtCount: thoughts, errorCount: errors };
   }, [entry.blocks]);
 
-  const isProcessing = !!(entry.startTime && !entry.endTime);
+  const totalTimeText = useMemo(() => {
+    if (!entry.startTime || !entry.endTime) return null;
+    return formatTime(entry.endTime - entry.startTime);
+  }, [entry.startTime, entry.endTime]);
 
-  const totalTime =
-    entry.startTime && entry.endTime ? `Processed ${formatTime(entry.endTime - entry.startTime)}` : null;
+  const summaryParts = useMemo(() => {
+    const parts: string[] = [];
+    if (totalTimeText) parts.push(totalTimeText);
+    if (toolCount > 0) parts.push(`${toolCount} tool${toolCount > 1 ? 's' : ''}`);
+    if (thoughtCount > 0) parts.push(`${thoughtCount} thought${thoughtCount > 1 ? 's' : ''}`);
+    return parts;
+  }, [totalTimeText, toolCount, thoughtCount]);
+
+  // Check if there are any intermediate blocks at all
+  const hasIntermediateSteps = toolCount > 0 || thoughtCount > 0;
 
   return (
     <div className="agent-turn">
-      <div
-        className={`turn-header ${isProcessing ? 'processing-pulse' : ''}`}
-        style={{ cursor: !isProcessing ? 'pointer' : 'default' }}
-        onClick={() => {
-          if (!isProcessing) setCollapsed(!collapsed);
-        }}
-      >
-        {isProcessing ? (
-          <>
-            <ProcessingTimer startTime={entry.startTime} endTime={entry.endTime} />
-            <ChevronDownIcon size={12} style={ml4} />
-          </>
-        ) : (
-          <>
-            {collapsed ? (thoughtDuration ? `${totalTime} · ${thoughtDuration}` : totalTime) : totalTime}
-            {collapsed ? <ChevronRightIcon size={12} style={ml4} /> : <ChevronDownIcon size={12} style={ml4} />}
-          </>
-        )}
-      </div>
+      {/* Turn Header — only show if there are intermediate steps */}
+      {(hasIntermediateSteps || isProcessing) && (
+        <>
+          <div
+            className={`turn-header ${isProcessing ? 'processing-pulse' : ''}`}
+            style={{ cursor: !isProcessing ? 'pointer' : 'default' }}
+            onClick={() => {
+              if (!isProcessing) setCollapsed(!collapsed);
+            }}
+          >
+            {isProcessing ? (
+              <>
+                <LoaderIcon className="tool-loader-icon" size={12} />
+                <ProcessingTimer startTime={entry.startTime} endTime={entry.endTime} />
+                <ChevronDownIcon size={12} style={ml4} />
+              </>
+            ) : (
+              <>
+                <span>Worked {summaryParts.join(' · ')}</span>
+                {collapsed ? <ChevronRightIcon size={12} style={ml4} /> : <ChevronDownIcon size={12} style={ml4} />}
+              </>
+            )}
+          </div>
+          <div className="turn-divider" />
+        </>
+      )}
 
+      {/* Intermediate steps — collapsible iterations */}
+      {!collapsed && groupBlocksIntoIterations(entry.blocks || []).map((iter) => (
+        <TurnIterationUI key={iter.id} iteration={iter} entry={entry} />
+      ))}
+
+      {/* Assistant text — always visible regardless of collapse */}
       {entry.blocks?.map((b: TurnBlock, idx: number) => {
-        if (collapsed && b.type !== 'assistant' && b.type !== 'error') {
-          return null;
-        }
-
-        if (b.type === 'thinking') {
-          const text = typeof b.text === 'string' ? b.text : JSON.stringify(b.text);
-          return (
-            <ThinkingBlockUI
-              key={`thinking-${idx}`}
-              text={text}
-              isStreaming={b.isStreaming}
-              startTime={b.startTime}
-              endTime={b.endTime}
-            />
-          );
-        } else if (b.type === 'tool') {
-          const name = typeof b.name === 'string' ? b.name : JSON.stringify(b.name);
-          if (name === 'invoke_subagent' || name === 'subagent' || name === 'subagents') {
-            return null;
-          }
-          const result = typeof b.result === 'string' ? b.result : JSON.stringify(b.result);
-          return (
-            <ToolBlockUI
-              key={`tool-${b.call_id}-${idx}`}
-              name={name}
-              args={b.args}
-              result={result}
-              active={b.active}
-              is_error={b.is_error}
-            />
-          );
-        } else if (b.type === 'approval') {
-          return <ApprovalBlockUI key={`approval-${b.prompt_id}-${idx}`} block={b} />;
-        } else if (b.type === 'assistant') {
-          const text = typeof b.text === 'string' ? b.text : JSON.stringify(b.text);
+        if (b.type === 'assistant') {
+          const text = typeof (b as any).text === 'string' ? (b as any).text : JSON.stringify((b as any).text);
           return (
             <MarkdownContent
               key={`assistant-${idx}`}
@@ -505,17 +590,6 @@ export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: ChatEnt
               className="assistant-msg"
               isStreaming={!!b.isStreaming}
             />
-          );
-        } else if (b.type === 'error') {
-          const text = typeof b.text === 'string' ? b.text : JSON.stringify(b.text);
-          return <div key={`error-${idx}`} className="error-msg">{text}</div>;
-        } else if (b.type === 'subagent_ref') {
-          const sa = entry.subagents?.[b.subagent_id];
-          if (!sa) return null;
-          return (
-            <div key={`subagent-${b.subagent_id}-${idx}`} className="subagents-section">
-              <SubagentCard subagent={sa} />
-            </div>
           );
         }
         return null;

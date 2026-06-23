@@ -8,8 +8,16 @@ import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
 import ChevronUpIcon from 'lucide-react/dist/esm/icons/chevron-up.mjs';
 import FolderIcon from 'lucide-react/dist/esm/icons/folder.mjs';
 import FileIcon from 'lucide-react/dist/esm/icons/file.mjs';
+import FileCodeIcon from 'lucide-react/dist/esm/icons/file-code.mjs';
+import FileJsonIcon from 'lucide-react/dist/esm/icons/file-json.mjs';
+import FileTextIcon from 'lucide-react/dist/esm/icons/file-text.mjs';
+import ImageIcon from 'lucide-react/dist/esm/icons/image.mjs';
 import GitBranchIcon from 'lucide-react/dist/esm/icons/git-branch.mjs';
 import SquareIcon from 'lucide-react/dist/esm/icons/square.mjs';
+
+import { 
+  SiJavascript, SiTypescript, SiReact, SiPython, SiGo, SiCss, SiHtml5, SiRust 
+} from 'react-icons/si';
 
 import { ModelSelector } from './ModelSelector';
 import { useAutocomplete } from '../../hooks/useAutocomplete';
@@ -33,6 +41,7 @@ export const ChatInput = memo(function ChatInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const overlayRef = useRef<HTMLPreElement>(null);
   const isComposingRef = useRef(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
   const activeProjectId = useSelector((state: RootState) => state.project.activeProjectId);
   const activeSessionId = useSelector((state: RootState) => state.project.activeSessionId);
@@ -53,7 +62,7 @@ export const ChatInput = memo(function ChatInput({
     handleMentionBackspace,
     handleChange,
     highlightedHTML,
-  } = useAutocomplete(input, setInput, textareaRef);
+  } = useAutocomplete(input, setInput, textareaRef, activeProject?.path);
 
   const {
     branches,
@@ -118,7 +127,12 @@ export const ChatInput = memo(function ChatInput({
   }, []);
 
   const onCompositionEnd = useCallback(() => {
-    isComposingRef.current = false;
+    // Delay clearing the composing flag because some browsers (e.g., Safari/Chrome on macOS)
+    // fire `compositionend` immediately BEFORE the `keydown` event for Enter.
+    // If we clear it synchronously, the Enter keydown will incorrectly send the message.
+    setTimeout(() => {
+      isComposingRef.current = false;
+    }, 50);
   }, []);
 
   useEffect(() => {
@@ -127,6 +141,15 @@ export const ChatInput = memo(function ChatInput({
     el.style.height = 'auto';
     el.style.height = Math.min(el.scrollHeight, 200) + 'px';
   }, [input]);
+
+  useEffect(() => {
+    if (showAutocomplete && dropdownRef.current) {
+      const selected = dropdownRef.current.querySelector('.autocomplete-item.selected') as HTMLElement;
+      if (selected) {
+        selected.scrollIntoView({ block: 'nearest' });
+      }
+    }
+  }, [selectedIndex, showAutocomplete]);
 
   const handleScroll = useCallback(() => {
     if (overlayRef.current && textareaRef.current) {
@@ -139,7 +162,7 @@ export const ChatInput = memo(function ChatInput({
     <div className="input-area">
       <div className="input-container" style={{ position: 'relative' }}>
         {showAutocomplete && autocompleteItems.length > 0 && (
-          <div className="autocomplete-dropdown">
+          <div className="autocomplete-dropdown" ref={dropdownRef}>
             {autocompleteItems.map((item, idx) => (
               <div
                 key={item.value + idx}
@@ -149,6 +172,19 @@ export const ChatInput = memo(function ChatInput({
               >
                 {item.icon === 'folder' && <FolderIcon size={14} color="#808080" />}
                 {item.icon === 'file' && <FileIcon size={14} color="#808080" />}
+                {item.icon === 'file-code' && <FileCodeIcon size={14} color="#808080" />}
+                {item.icon === 'file-json' && <FileJsonIcon size={14} color="#808080" />}
+                {item.icon === 'file-text' && <FileTextIcon size={14} color="#808080" />}
+                {item.icon === 'file-image' && <ImageIcon size={14} color="#808080" />}
+                {item.icon === 'lang-js' && <SiJavascript size={14} color="#f7df1e" />}
+                {item.icon === 'lang-ts' && <SiTypescript size={14} color="#3178c6" />}
+                {item.icon === 'lang-jsx' && <SiReact size={14} color="#61dafb" />}
+                {item.icon === 'lang-tsx' && <SiReact size={14} color="#61dafb" />}
+                {item.icon === 'lang-py' && <SiPython size={14} color="#3776ab" />}
+                {item.icon === 'lang-go' && <SiGo size={14} color="#00add8" />}
+                {item.icon === 'lang-css' && <SiCss size={14} color="#1572b6" />}
+                {item.icon === 'lang-rs' && <SiRust size={14} color="#dea584" />}
+                {item.icon === 'lang-html' && <SiHtml5 size={14} color="#e34f26" />}
                 {item.icon === 'command' && <TerminalSquareIcon size={14} color="#52A8FF" />}
                 <span className="autocomplete-label">{item.label}</span>
               </div>

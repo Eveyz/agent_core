@@ -252,6 +252,81 @@ async fn list_directory(path: Option<String>) -> Result<Vec<std::collections::Ha
     .map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+async fn search_files(query: String, path: Option<String>) -> Result<Vec<std::collections::HashMap<String, String>>, String> {
+    tokio::task::spawn_blocking(move || {
+        let target_path = match path {
+            Some(p) => std::path::PathBuf::from(p),
+            None => std::env::current_dir().map_err(|e| e.to_string())?,
+        };
+
+        let mut entries = Vec::new();
+        let mut stack = vec![target_path.clone()];
+        let query_lower = query.to_lowercase();
+        
+        let ignore_dirs = vec![
+            ".git", "node_modules", "target", "dist", "build", ".svelte-kit", ".next", ".vscode"
+        ];
+
+        while let Some(current) = stack.pop() {
+            if entries.len() >= 50 {
+                break;
+            }
+
+            if let Ok(dir_entries) = std::fs::read_dir(&current) {
+                for entry in dir_entries.flatten() {
+                    let file_name = entry.file_name().to_string_lossy().to_string();
+                    
+                    if let Ok(metadata) = entry.metadata() {
+                        let is_dir = metadata.is_dir();
+                        
+                        if is_dir && (file_name.starts_with('.') && file_name != ".agent_core" || ignore_dirs.contains(&file_name.as_str())) {
+                            continue;
+                        }
+
+                        if !is_dir && file_name == ".DS_Store" {
+                            continue;
+                        }
+
+                        let rel_path = entry.path().strip_prefix(&target_path)
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or(file_name.clone());
+
+                        if query.is_empty() || file_name.to_lowercase().contains(&query_lower) || rel_path.to_lowercase().contains(&query_lower) {
+                            let mut info = std::collections::HashMap::new();
+                            info.insert("name".to_string(), rel_path);
+                            info.insert("type".to_string(), if is_dir { "dir".to_string() } else { "file".to_string() });
+                            entries.push(info);
+                            
+                            if entries.len() >= 50 {
+                                break;
+                            }
+                        }
+
+                        if is_dir {
+                            stack.push(entry.path());
+                        }
+                    }
+                }
+            }
+        }
+
+        entries.sort_by(|a, b| {
+            let a_is_dir = a.get("type").map(|t| t == "dir").unwrap_or(false);
+            let b_is_dir = b.get("type").map(|t| t == "dir").unwrap_or(false);
+            match (a_is_dir, b_is_dir) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.get("name").cmp(&b.get("name")),
+            }
+        });
+
+        Ok(entries)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // ── Config commands ──────────────────────────────────────────────────
 
 #[tauri::command]
@@ -461,11 +536,17 @@ fn open_in_explorer(path: String) -> Result<(), String> {
     tauri_plugin_opener::open_path(path, None::<&str>).map_err(|e| e.to_string())
 }
 
+#[derive(serde::Serialize)]
+struct GitBranchInfo {
+    branches: Vec<String>,
+    active: String,
+}
+
 #[tauri::command]
-async fn list_git_branches(path: String) -> Result<Vec<String>, String> {
+async fn list_git_branches(path: String) -> Result<GitBranchInfo, String> {
     tokio::task::spawn_blocking(move || {
         let output = std::process::Command::new("git")
-            .args(["branch", "--format=%(refname:short)"])
+            .args(["branch"])
             .current_dir(&path)
             .output()
             .map_err(|e| format!("Failed to run git branch: {}", e))?;
@@ -473,12 +554,20 @@ async fn list_git_branches(path: String) -> Result<Vec<String>, String> {
             return Err(format!("git branch failed: {}", String::from_utf8_lossy(&output.stderr)));
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let branches: Vec<String> = stdout
-            .lines()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-        Ok(branches)
+        let mut branches = Vec::new();
+        let mut active = String::new();
+        for line in stdout.lines() {
+            let line = line.trim();
+            if line.is_empty() { continue; }
+            if let Some(b) = line.strip_prefix("* ") {
+                let name = b.to_string();
+                active = name.clone();
+                branches.push(name);
+            } else {
+                branches.push(line.to_string());
+            }
+        }
+        Ok(GitBranchInfo { branches, active })
     })
     .await
     .map_err(|e| format!("list_git_branches task failed: {e}"))?
@@ -611,7 +700,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             send_message, approve_tool, abort_agent,
             pause_run, resume_run, steer_run, get_run_state,
-            list_directory,
+            list_directory, search_files,
             get_config, save_config, switch_model,
             create_session, delete_session, rename_session,
             save_session_messages, resume_session,

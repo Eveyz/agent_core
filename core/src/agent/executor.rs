@@ -369,20 +369,23 @@ impl<'a> ToolOrchestrator<'a> {
             }
         };
 
-        // Collect streaming updates from the tool into a shared buffer.
-        let updates: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let updates_clone = updates.clone();
+        // Create event channel for tools that emit structured events (e.g. subagent) and streaming updates.
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+
+        let event_tx_clone = event_tx.clone();
+        let tool_call_id_clone = tool_call_id.to_string();
+        let tool_name_clone = tool_name.to_string();
         let cancel_clone = cancel_token.clone();
+        
         let on_update: ToolUpdateFn = Arc::new(move |partial: &str| {
-            if !cancel_clone.is_cancelled()
-                && let Ok(mut buf) = updates_clone.lock()
-            {
-                buf.push(partial.to_string());
+            if !cancel_clone.is_cancelled() {
+                let _ = event_tx_clone.send(AgentEvent::ToolExecutionUpdate {
+                    tool_call_id: tool_call_id_clone.clone(),
+                    tool_name: tool_name_clone.clone(),
+                    partial_result: partial.to_string(),
+                });
             }
         });
-
-        // Create event channel for tools that emit structured events (e.g. subagent).
-        let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
 
         // Forward tool-internal events to the main event stream in real
         // time so the TUI can render them as they happen.
@@ -403,17 +406,6 @@ impl<'a> ToolOrchestrator<'a> {
         // Drain any remaining events.
         while let Ok(event) = event_rx.try_recv() {
             on_event(event);
-        }
-
-        // Flush buffered streaming updates as ToolExecutionUpdate events
-        if let Ok(buf) = updates.lock() {
-            for partial in buf.iter() {
-                on_event(AgentEvent::ToolExecutionUpdate {
-                    tool_call_id: tool_call_id.to_string(),
-                    tool_name: tool_name.to_string(),
-                    partial_result: partial.clone(),
-                });
-            }
         }
 
         match result {

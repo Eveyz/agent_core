@@ -82,6 +82,7 @@ interface SettingsState {
   loading: boolean;
   saving: boolean;
   error: string | null;
+  appearance: 'system' | 'dark' | 'light';
 }
 
 const initialState: SettingsState = {
@@ -91,6 +92,7 @@ const initialState: SettingsState = {
   loading: false,
   saving: false,
   error: null,
+  appearance: (localStorage.getItem('agent_core_appearance') as 'system' | 'dark' | 'light') || 'system',
 };
 
 function normalizeProviderModel(raw: Record<string, unknown>): ProviderModelEntry {
@@ -203,6 +205,10 @@ export const settingsSlice = createSlice({
   name: 'settings',
   initialState,
   reducers: {
+    setAppearance: (state, action: PayloadAction<'system' | 'dark' | 'light'>) => {
+      state.appearance = action.payload;
+      localStorage.setItem('agent_core_appearance', action.payload);
+    },
     openSettings: (state) => {
       state.isOpen = true;
     },
@@ -279,5 +285,5 @@ export const settingsSlice = createSlice({
   },
 });
 
-export const { openSettings, closeSettings, setActiveTab, upsertProvider, deleteProvider, setDefaultModel, updateProvider } = settingsSlice.actions;
+export const { setAppearance, openSettings, closeSettings, setActiveTab, upsertProvider, deleteProvider, setDefaultModel, updateProvider } = settingsSlice.actions;
 export default settingsSlice.reducer;
