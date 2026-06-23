@@ -192,7 +192,7 @@ export const Sidebar = memo(function Sidebar({
     if (msgs.length > 0) {
       const project = projects.find((p) => p.id === activeProjectId);
       if (project) {
-        const { eventLog, processTimeMs, thoughtTimeMs } = entriesToEventLog(chatState.entries);
+        const { eventLog, processTimeMs, thoughtTimeMs } = entriesToEventLog(chatState.entries, chatState.subagents);
         dispatch(saveSessionMessages({
           sessionId: activeSessionId,
           messages: msgs,

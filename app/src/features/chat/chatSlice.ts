@@ -1,4 +1,5 @@
-import { createSlice, PayloadAction } from '@reduxjs/toolkit';
+import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
+import { invoke } from '@tauri-apps/api/core';
 import { resumeSession } from '../project/projectSlice';
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -45,12 +46,14 @@ export interface SubagentEntry {
 export interface ChatEntry {
   id: string;
   type: 'user' | 'turn';
+  /** Backend-assigned turn id (R7). Events carrying this id route here. */
+  turnId?: string;
   turnIndex?: number;
   text?: string;
   blocks?: TurnBlock[];
   startTime?: number;
   endTime?: number;
-  subagents?: Record<string, SubagentEntry>;
+  subagentIds?: string[];
 }
 
 interface ChatState {
@@ -60,8 +63,19 @@ interface ChatState {
   runId: string | null;
   /** Current lifecycle state of the active Run. */
   runState: RunState | null;
+  /** Per-Run last seen event seq (Stage 0 gap detection). */
+  lastSeqByRun: Record<string, number>;
+  /** Global dictionary of all subagents, decoupled from the turn tree (R8). */
+  subagents: Record<string, SubagentEntry>;
+  /** Drill-down navigation stack for the subagent detail page (Stage 2). */
+  viewingSubagentPath: { id: string; name: string }[];
+  /** True while a gap-resync is in flight (prevents re-entrancy). */
+  resyncing: boolean;
+  /** Transient: turn_id from the event currently being processed (R7). */
+  _pendingTurnId?: string;
   entriesBySession: Record<string, ChatEntry[]>;
   processingBySession: Record<string, boolean>;
+  subagentsBySession: Record<string, Record<string, SubagentEntry>>;
   _resumedFromBackend: boolean;
 }
 
@@ -70,8 +84,13 @@ const initialState: ChatState = {
   isProcessing: false,
   runId: null,
   runState: null,
+  lastSeqByRun: {},
+  subagents: {},
+  viewingSubagentPath: [],
+  resyncing: false,
   entriesBySession: {},
   processingBySession: {},
+  subagentsBySession: {},
   _resumedFromBackend: false,
 };
 
@@ -80,29 +99,6 @@ const initialState: ChatState = {
 interface DeltaPayload {
   Text?: string;
   Thinking?: string;
-}
-
-export interface AgentEvent {
-  // Legacy AgentEvent format (inline tagged)
-  TurnStart?: { turn_index: number };
-  TurnEnd?: unknown;
-  MessageUpdate?: { delta: DeltaPayload };
-  MessageEnd?: unknown;
-  ToolExecutionStart?: { tool_call_id: string; tool_name: string; args?: unknown };
-  ToolExecutionUpdate?: { tool_call_id: string; partial_result: unknown };
-  ToolExecutionEnd?: { tool_call_id: string; result: unknown; is_error: boolean };
-  ApprovalRequired?: { prompt_id: string; tool_name: string; tool_input: unknown; danger_level: string; explanation: string };
-  AgentEnd?: unknown;
-  AgentStart?: unknown;
-  Aborted?: { reason: string };
-  Error?: string;
-  SubagentStart?: { subagent_id: string; role_name?: string; task: string | unknown };
-  SubagentMessageUpdate?: { subagent_id: string; delta: DeltaPayload };
-  SubagentToolStart?: { subagent_id: string; tool_call_id: string; tool_name: string; args?: unknown };
-  SubagentToolUpdate?: { subagent_id: string; tool_call_id: string; partial_result: unknown };
-  SubagentToolEnd?: { subagent_id: string; tool_call_id: string; result: unknown; is_error: boolean };
-  SubagentApprovalRequired?: { subagent_id: string; prompt_id: string; tool_name: string; tool_input: unknown; danger_level: string; explanation: string };
-  SubagentEnd?: { subagent_id: string; success: boolean; iterations_used?: number };
 }
 
 // New RunEvent format (externally tagged: { "event": "snake_case", ...fields })
@@ -121,6 +117,12 @@ export type RunEventType =
 
 export interface RunEventPayload {
   event: RunEventType;
+  // Identity + ordering (Stage 0 envelope)
+  seq?: number;
+  event_id?: string;
+  run_id?: string;
+  turn_id?: string;
+  parent_call_id?: string;
   // Lifecycle
   id?: string;
   session_id?: string;
@@ -152,6 +154,8 @@ export interface RunEventPayload {
   explanation?: string;
   // Error
   error?: string;
+  // Approval resolution (approval_resolved event)
+  choice?: string;
   // Subagent
   subagent_id?: string;
   role_name?: string;
@@ -167,52 +171,6 @@ export type RunState = 'created' | 'running' | 'awaiting_approval' | 'awaiting_i
 
 
 // ── RunEvent → AgentEvent converter ──────────────────────────────────
-
-function runEventToAgentEvent(ev: RunEventPayload): AgentEvent {
-  switch (ev.event) {
-    case 'run_started':
-      return {}; // no-op, like AgentStart
-    case 'run_completed':
-      return { AgentEnd: {} };
-    case 'run_cancelled':
-      return { Aborted: { reason: ev.reason ?? 'cancelled' } };
-    case 'run_failed':
-      return { Error: ev.error ?? 'run failed' };
-    case 'error':
-      return { Error: ((ev as unknown as Record<string, unknown>).message as string) ?? 'unknown error' };
-    case 'turn_started':
-      return { TurnStart: { turn_index: ev.index ?? 0 } };
-    case 'turn_ended':
-      return { TurnEnd: {} };
-    case 'message_update':
-      if (ev.subagent_id) return { SubagentMessageUpdate: { subagent_id: ev.subagent_id, delta: ev.delta ?? {} } };
-      return { MessageUpdate: { delta: ev.delta ?? {} } };
-    case 'message_end':
-      if (ev.subagent_id) return {};
-      return { MessageEnd: {} };
-    case 'model_streaming':
-      if (ev.subagent_id) return { SubagentMessageUpdate: { subagent_id: ev.subagent_id, delta: ev.delta ?? {} } };
-      return { MessageUpdate: { delta: ev.delta ?? {} } };
-    case 'tool_started':
-      if (ev.subagent_id) return { SubagentToolStart: { subagent_id: ev.subagent_id, tool_call_id: ev.call_id ?? '', tool_name: ev.name ?? '', args: ev.args } };
-      return { ToolExecutionStart: { tool_call_id: ev.call_id ?? '', tool_name: ev.name ?? '', args: ev.args } };
-    case 'tool_update':
-      if (ev.subagent_id) return { SubagentToolUpdate: { subagent_id: ev.subagent_id, tool_call_id: ev.call_id ?? '', partial_result: ev.partial ?? '' } };
-      return { ToolExecutionUpdate: { tool_call_id: ev.call_id ?? '', partial_result: ev.partial ?? '' } };
-    case 'tool_ended':
-      if (ev.subagent_id) return { SubagentToolEnd: { subagent_id: ev.subagent_id, tool_call_id: ev.call_id ?? '', result: ev.result ?? '', is_error: ev.is_error ?? false } };
-      return { ToolExecutionEnd: { tool_call_id: ev.call_id ?? '', result: ev.result ?? '', is_error: ev.is_error ?? false } };
-    case 'approval_required':
-      if (ev.subagent_id) return { SubagentApprovalRequired: { subagent_id: ev.subagent_id, prompt_id: ev.prompt_id ?? '', tool_name: ev.tool_name ?? '', tool_input: ev.tool_input, danger_level: ev.danger_level ?? '', explanation: ev.explanation ?? '' } };
-      return { ApprovalRequired: { prompt_id: ev.prompt_id ?? '', tool_name: ev.tool_name ?? '', tool_input: ev.tool_input, danger_level: ev.danger_level ?? '', explanation: ev.explanation ?? '' } };
-    case 'subagent_started':
-      return { SubagentStart: { subagent_id: ev.subagent_id ?? '', role_name: ev.role_name, task: ev.task ?? '' } };
-    case 'subagent_ended':
-      return { SubagentEnd: { subagent_id: ev.subagent_id ?? '', success: ev.success ?? false, iterations_used: ev.iterations_used } };
-    default:
-      return {};
-  }
-}
 
 // ── Block helpers (shared between main agent + subagent) ─────────────
 
@@ -306,6 +264,13 @@ function stringifyResult(result: unknown): string {
 }
 
 function getActiveTurn(state: ChatState): ChatEntry | undefined {
+  // R7: if the current event carries a turn_id, route by it.
+  if (state._pendingTurnId) {
+    const byId = state.entries.find(
+      (e) => e.type === 'turn' && e.turnId === state._pendingTurnId
+    );
+    if (byId && byId.type === 'turn') return byId;
+  }
   for (let i = state.entries.length - 1; i >= 0; i--) {
     const entry = state.entries[i];
     if (entry.type === 'turn' && !entry.endTime) {
@@ -316,14 +281,13 @@ function getActiveTurn(state: ChatState): ChatEntry | undefined {
 }
 
 function getOrCreateSubagent(
-  entry: ChatEntry,
+  state: ChatState,
   subagentId: string,
   roleName: string,
   task: string
 ): SubagentEntry {
-  if (!entry.subagents) entry.subagents = {};
-  if (!entry.subagents[subagentId]) {
-    entry.subagents[subagentId] = {
+  if (!state.subagents[subagentId]) {
+    state.subagents[subagentId] = {
       id: subagentId,
       role_name: roleName,
       task,
@@ -332,19 +296,32 @@ function getOrCreateSubagent(
       startTime: Date.now(),
     };
   }
-  return entry.subagents[subagentId];
+  return state.subagents[subagentId];
 }
 
 // ── Event handlers ───────────────────────────────────────────────────
 
-function handleTurnStart(state: ChatState, turnIndex: number): void {
+function handleTurnStart(state: ChatState, turnIndex: number, turnId?: string): void {
+  // If we have a turn_id and an open turn already uses it, just update its index.
+  if (turnId) {
+    const existing = state.entries.find(
+      (e) => e.type === 'turn' && e.turnId === turnId
+    );
+    if (existing && existing.type === 'turn') {
+      existing.turnIndex = turnIndex;
+      return;
+    }
+  }
   const last = state.entries[state.entries.length - 1];
-  if (last && last.type === 'turn' && !last.endTime) {
+  if (last && last.type === 'turn' && !last.endTime && !last.turnId) {
+    // Adopt the last open unassigned turn (first turn_started after creation).
     last.turnIndex = turnIndex;
+    if (turnId) last.turnId = turnId;
   } else {
     state.entries.push({
       id: `turn-${turnIndex}-${Date.now()}`,
       type: 'turn',
+      turnId,
       turnIndex,
       blocks: [],
       startTime: Date.now(),
@@ -444,21 +421,8 @@ function handleAgentEnd(state: ChatState): void {
   const last = state.entries[state.entries.length - 1];
   if (last && last.type === 'turn' && !last.endTime) {
     last.endTime = Date.now();
-    // Stop any dangling subagents
-    if (last.subagents) {
-      Object.values(last.subagents).forEach(sa => {
-        if (sa.status === 'working') {
-          sa.status = 'error';
-          sa.endTime = Date.now();
-          sa.blocks.forEach(b => {
-            if (b.isStreaming) {
-              b.isStreaming = false;
-              if (b.type === 'thinking') b.endTime = Date.now();
-            }
-          });
-        }
-      });
-    }
+    // Stop any dangling subagents owned by this turn
+    stopDanglingSubagents(state, last);
   }
 }
 
@@ -468,21 +432,8 @@ function handleError(state: ChatState, errorText: string): void {
   if (lastEntry && lastEntry.type === 'turn' && lastEntry.blocks) {
     closeStreamingBlock(lastEntry.blocks);
     
-    // Stop any dangling subagents
-    if (lastEntry.subagents) {
-      Object.values(lastEntry.subagents).forEach(sa => {
-        if (sa.status === 'working') {
-          sa.status = 'error';
-          sa.endTime = Date.now();
-          sa.blocks.forEach(b => {
-            if (b.isStreaming) {
-              b.isStreaming = false;
-              if (b.type === 'thinking') b.endTime = Date.now();
-            }
-          });
-        }
-      });
-    }
+    // Stop any dangling subagents owned by this turn
+    stopDanglingSubagents(state, lastEntry);
     
     const lastBlock = lastEntry.blocks[lastEntry.blocks.length - 1];
     const isRetryError = errorText.toLowerCase().includes('retrying model call');
@@ -520,7 +471,9 @@ function handleSubagentStart(
   const safeRoleName = typeof roleName === 'string' ? roleName : String(subagentId);
   const turn = getActiveTurn(state);
   if (turn) {
-    getOrCreateSubagent(turn, subagentId, safeRoleName, safeTask);
+    getOrCreateSubagent(state, subagentId, safeRoleName, safeTask);
+    if (!turn.subagentIds) turn.subagentIds = [];
+    if (!turn.subagentIds.includes(subagentId)) turn.subagentIds.push(subagentId);
     if (turn.blocks) {
       turn.blocks.push({ type: 'subagent_ref', subagent_id: subagentId });
     }
@@ -532,9 +485,9 @@ function handleSubagentMessageUpdate(
   subagentId: string,
   delta: DeltaPayload
 ): void {
-  const turn = getActiveTurn(state);
-  if (turn && turn.subagents && turn.subagents[subagentId]) {
-    appendDeltaToBlocks(turn.subagents[subagentId].blocks, delta);
+  const sa = state.subagents[subagentId];
+  if (sa) {
+    appendDeltaToBlocks(sa.blocks, delta);
   }
 }
 
@@ -545,9 +498,8 @@ function handleSubagentToolStart(
   toolName: string,
   args?: unknown
 ): void {
-  const turn = getActiveTurn(state);
-  if (turn && turn.subagents && turn.subagents[subagentId]) {
-    const sa = turn.subagents[subagentId];
+  const sa = state.subagents[subagentId];
+  if (sa) {
     closeStreamingBlock(sa.blocks);
     sa.blocks.push({
       type: 'tool',
@@ -562,9 +514,8 @@ function handleSubagentToolStart(
 }
 
 function handleSubagentToolUpdate(state: ChatState, subagentId: string, toolCallId: string, partialResult: unknown): void {
-  const turn = getActiveTurn(state);
-  if (turn && turn.subagents && turn.subagents[subagentId]) {
-    const sa = turn.subagents[subagentId];
+  const sa = state.subagents[subagentId];
+  if (sa) {
     const block = sa.blocks.find((b) => b.type === 'tool' && b.call_id === toolCallId);
     if (block && block.type === 'tool') {
       block.result += typeof partialResult === 'string' ? partialResult : JSON.stringify(partialResult);
@@ -579,9 +530,8 @@ function handleSubagentToolEnd(
   result: unknown,
   isError: boolean
 ): void {
-  const turn = getActiveTurn(state);
-  if (turn && turn.subagents && turn.subagents[subagentId]) {
-    const sa = turn.subagents[subagentId];
+  const sa = state.subagents[subagentId];
+  if (sa) {
     const block = sa.blocks.find((b) => b.type === 'tool' && b.call_id === toolCallId);
     if (block && block.type === 'tool') {
       block.result = truncateResult(stringifyResult(result));
@@ -600,9 +550,8 @@ function handleSubagentApprovalRequired(
   dangerLevel: string,
   explanation: string
 ): void {
-  const turn = getActiveTurn(state);
-  if (turn && turn.subagents && turn.subagents[subagentId]) {
-    const sa = turn.subagents[subagentId];
+  const sa = state.subagents[subagentId];
+  if (sa) {
     closeStreamingBlock(sa.blocks);
     sa.blocks.push({
       type: 'approval',
@@ -622,9 +571,8 @@ function handleSubagentEnd(
   success: boolean,
   iterationsUsed?: number
 ): void {
-  const turn = getActiveTurn(state);
-  if (turn && turn.subagents && turn.subagents[subagentId]) {
-    const sa = turn.subagents[subagentId];
+  const sa = state.subagents[subagentId];
+  if (sa) {
     sa.status = success ? 'done' : 'error';
     sa.iterations_used = iterationsUsed;
     sa.endTime = Date.now();
@@ -637,6 +585,94 @@ function handleSubagentEnd(
   }
 }
 
+function handleTurnEnded(state: ChatState): void {
+  // An iteration ended: finalize any still-streaming block on the active turn
+  // so it doesn't bleed into the next iteration. (Previously a no-op black hole.)
+  const lastEntry = state.entries[state.entries.length - 1];
+  if (lastEntry && lastEntry.type === 'turn' && lastEntry.blocks) {
+    closeStreamingBlock(lastEntry.blocks);
+  }
+}
+
+function stopDanglingSubagents(state: ChatState, turn: ChatEntry): void {
+  const ids = turn.subagentIds;
+  if (!ids) return;
+  for (const id of ids) {
+    const sa = state.subagents[id];
+    if (sa && sa.status === 'working') {
+      sa.status = 'error';
+      sa.endTime = Date.now();
+      sa.blocks.forEach((b) => {
+        if (b.isStreaming) {
+          b.isStreaming = false;
+          if (b.type === 'thinking') b.endTime = Date.now();
+        }
+      });
+    }
+  }
+}
+
+function resolveApprovalBlock(state: ChatState, promptId: string, choice?: string): void {
+  if (!promptId) return;
+  // The backend's ApprovalChoice serializes to a string for the variants the
+  // UI emits (AllowOnce/AllowSession/AllowPersistent/Deny/DenyPersistent).
+  // AllowFor(Duration) would serialize to an object — guard against that so a
+  // non-string choice never crashes here. Treat anything containing "deny" as
+  // a denial, everything else as approval.
+  const choiceStr = typeof choice === 'string' ? choice : '';
+  const approved = !choiceStr.toLowerCase().includes('deny');
+  for (const entry of state.entries) {
+    if (entry.type !== 'turn' || !entry.blocks) continue;
+    for (const b of entry.blocks) {
+      if (b.type === 'approval' && b.prompt_id === promptId) {
+        b.status = approved ? 'approved' : 'denied';
+        return;
+      }
+    }
+  }
+  for (const sa of Object.values(state.subagents)) {
+    for (const b of sa.blocks) {
+      if (b.type === 'approval' && b.prompt_id === promptId) {
+        b.status = approved ? 'approved' : 'denied';
+        return;
+      }
+    }
+  }
+}
+
+/**
+ * Resync a Run's event stream after a gap (B2 self-heal, Stage 3).
+ *
+ * When the frontend detects a missing seq (broadcast lag), it dispatches this
+ * thunk with the last seen seq. The backend replays all envelopes with
+ * seq > fromSeq from its persisted JSONL log, and we re-dispatch each one
+ * through `agentEventReceived`.
+ */
+export const resyncRun = createAsyncThunk<
+  void,
+  { runId: string; fromSeq: number },
+  { state: { chat: ChatState } }
+>('chat/resyncRun', async ({ runId, fromSeq }, { dispatch, getState }) => {
+  if (getState().chat.resyncing) return;
+  dispatch(setResyncing(true));
+  try {
+    const lines = await invoke<string[]>('replay_since', { runId, fromSeq });
+    for (const line of lines) {
+      let payload: Record<string, unknown>;
+      try {
+        payload = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      dispatch(agentEventReceived(payload));
+    }
+  } catch (e) {
+    console.error('[resyncRun] failed to replay events:', e);
+  } finally {
+    dispatch(setResyncing(false));
+  }
+});
+
 // ── Slice ────────────────────────────────────────────────────────────
 
 export const chatSlice = createSlice({
@@ -647,6 +683,7 @@ export const chatSlice = createSlice({
       const sessionId = action.payload;
       state.entriesBySession[sessionId] = state.entries;
       state.processingBySession[sessionId] = state.isProcessing;
+      state.subagentsBySession[sessionId] = state.subagents;
     },
     restoreOrClearSession: (state, action: PayloadAction<string>) => {
       const sessionId = action.payload;
@@ -654,10 +691,13 @@ export const chatSlice = createSlice({
       if (cached) {
         state.entries = cached;
         state.isProcessing = state.processingBySession[sessionId] ?? false;
+        state.subagents = state.subagentsBySession[sessionId] ?? {};
       } else {
         state.entries = [];
         state.isProcessing = false;
+        state.subagents = {};
       }
+      state.viewingSubagentPath = [];
       state._resumedFromBackend = false;
     },
     userMessageSent: (state, action: PayloadAction<string>) => {
@@ -680,10 +720,8 @@ export const chatSlice = createSlice({
       }
     },
     agentEventReceived: (state, action: PayloadAction<string | Record<string, unknown>>) => {
-      let event: AgentEvent;
       let raw: Record<string, unknown>;
       if (typeof action.payload === 'string') {
-        if (action.payload === 'AgentStart') return;
         try {
           raw = JSON.parse(action.payload);
         } catch {
@@ -693,118 +731,116 @@ export const chatSlice = createSlice({
         raw = action.payload as Record<string, unknown>;
       }
 
-      // Detect new RunEvent format: { "event": "snake_case", ... }
-      if (raw && typeof raw.event === 'string') {
-        const runEv = raw as unknown as RunEventPayload;
-        // Handle lifecycle events directly (don't convert to AgentEvent)
-        if (runEv.event === 'state_changed' && runEv.to) {
-          state.runState = runEv.to as RunState;
-          if (runEv.to === 'completed' || runEv.to === 'cancelled' || runEv.to === 'failed') {
-            state.isProcessing = false;
-          }
+      // Every event now arrives as a stamped RunEvent envelope
+      // ({ event, seq, event_id, run_id, ... }). The legacy AgentEvent
+      // format is no longer produced by the backend (Stage 1, R4).
+      if (!raw || typeof raw.event !== 'string') return;
+      const ev = raw as unknown as RunEventPayload;
+
+      // Gap detection (Stage 0/3): every event carries a per-Run monotonic seq.
+      // A gap means events were lost in transit (e.g. broadcast lag). We warn
+      // and signal the listener to trigger a resync from the persisted log.
+      if (typeof ev.seq === 'number' && typeof ev.run_id === 'string') {
+        const prev = state.lastSeqByRun[ev.run_id];
+        if (prev !== undefined && ev.seq > prev + 1) {
+          console.warn(
+            `[agent-event] gap detected for run ${ev.run_id}: expected ${prev + 1}, got ${ev.seq} (${ev.seq - prev - 1} missing); triggering resync`
+          );
+          // Self-heal (B2): dispatch a window event the listener picks up to
+          // replay missing envelopes from the backend's persisted log. We
+          // can't dispatch a thunk from inside a reducer, so we defer it.
+          Promise.resolve().then(() => {
+            window.dispatchEvent(new CustomEvent('agent-event-gap', {
+              detail: { runId: ev.run_id, fromSeq: prev },
+            }));
+          });
         }
-        if (runEv.event === 'run_started') {
-          state.runState = 'running';
-        }
-        if (runEv.event === 'run_completed' || runEv.event === 'run_cancelled' || runEv.event === 'run_failed') {
-          state.isProcessing = false;
-          state.runId = null;
-        }
-        if (runEv.event === 'run_paused') {
-          state.runState = 'paused';
-        }
-        if (runEv.event === 'run_resumed') {
-          state.runState = 'running';
-        }
-        event = runEventToAgentEvent(runEv);
-      } else {
-        event = raw as unknown as AgentEvent;
+        state.lastSeqByRun[ev.run_id] = ev.seq;
       }
 
-      if (event.TurnStart) {
-        handleTurnStart(state, event.TurnStart.turn_index);
-      } else if (event.MessageUpdate) {
-        handleMessageUpdate(state, event.MessageUpdate.delta);
-      } else if (event.MessageEnd) {
-        handleMessageEnd(state);
-      } else if (event.ToolExecutionStart) {
-        handleToolStart(
-          state,
-          event.ToolExecutionStart.tool_call_id,
-          event.ToolExecutionStart.tool_name,
-          event.ToolExecutionStart.args
-        );
-      } else if (event.ToolExecutionUpdate) {
-        handleToolUpdate(state, event.ToolExecutionUpdate.tool_call_id, event.ToolExecutionUpdate.partial_result);
-      } else if (event.ToolExecutionEnd) {
-        handleToolEnd(
-          state,
-          event.ToolExecutionEnd.tool_call_id,
-          event.ToolExecutionEnd.result,
-          event.ToolExecutionEnd.is_error
-        );
-      } else if (event.ApprovalRequired) {
-        handleApprovalRequired(
-          state,
-          event.ApprovalRequired.prompt_id,
-          event.ApprovalRequired.tool_name,
-          event.ApprovalRequired.tool_input,
-          event.ApprovalRequired.danger_level,
-          event.ApprovalRequired.explanation
-        );
-      } else if (event.AgentEnd) {
+      // Lifecycle (handled directly; not routed through block handlers)
+      if (ev.event === 'state_changed' && ev.to) {
+        state.runState = ev.to as RunState;
+        if (ev.to === 'completed' || ev.to === 'cancelled' || ev.to === 'failed') {
+          state.isProcessing = false;
+        }
+      } else if (ev.event === 'run_started') {
+        state.runState = 'running';
+      } else if (ev.event === 'run_paused') {
+        state.runState = 'paused';
+      } else if (ev.event === 'run_resumed') {
+        state.runState = 'running';
+      } else if (ev.event === 'run_completed' || ev.event === 'run_cancelled') {
+        state.isProcessing = false;
+        state.runId = null;
+        // Close the active turn + stop any dangling subagents.
         handleAgentEnd(state);
-      } else if (event.Error) {
-        handleError(state, event.Error);
-      } else if (event.SubagentStart) {
-        handleSubagentStart(
-          state,
-          event.SubagentStart.subagent_id,
-          event.SubagentStart.role_name,
-          event.SubagentStart.task
-        );
-      } else if (event.SubagentMessageUpdate) {
-        handleSubagentMessageUpdate(state, event.SubagentMessageUpdate.subagent_id, event.SubagentMessageUpdate.delta);
-      } else if (event.SubagentToolStart) {
-        handleSubagentToolStart(
-          state,
-          event.SubagentToolStart.subagent_id,
-          event.SubagentToolStart.tool_call_id,
-          event.SubagentToolStart.tool_name,
-          event.SubagentToolStart.args
-        );
-      } else if (event.SubagentToolUpdate) {
-        handleSubagentToolUpdate(
-          state,
-          event.SubagentToolUpdate.subagent_id,
-          event.SubagentToolUpdate.tool_call_id,
-          event.SubagentToolUpdate.partial_result
-        );
-      } else if (event.SubagentToolEnd) {
-        handleSubagentToolEnd(
-          state,
-          event.SubagentToolEnd.subagent_id,
-          event.SubagentToolEnd.tool_call_id,
-          event.SubagentToolEnd.result,
-          event.SubagentToolEnd.is_error
-        );
-      } else if (event.SubagentApprovalRequired) {
-        handleSubagentApprovalRequired(
-          state,
-          event.SubagentApprovalRequired.subagent_id,
-          event.SubagentApprovalRequired.prompt_id,
-          event.SubagentApprovalRequired.tool_name,
-          event.SubagentApprovalRequired.tool_input,
-          event.SubagentApprovalRequired.danger_level,
-          event.SubagentApprovalRequired.explanation
-        );
-      } else if (event.SubagentEnd) {
-        handleSubagentEnd(
-          state,
-          event.SubagentEnd.subagent_id,
-          event.SubagentEnd.success,
-          event.SubagentEnd.iterations_used
-        );
+      } else if (ev.event === 'run_failed') {
+        state.isProcessing = false;
+        state.runId = null;
+        // Display the failure reason (pushes an error block).
+        handleError(state, ev.error ?? 'run failed');
+        // B9: close the failed turn so getActiveTurn doesn't misattach later
+        // subagent events to a perpetually-open failed turn. (handleError
+        // already stopped dangling subagents owned by the turn.)
+        const last = state.entries[state.entries.length - 1];
+        if (last && last.type === 'turn' && !last.endTime) {
+          last.endTime = Date.now();
+        }
+      }
+
+      // Set the pending turn_id so main-agent handlers (which use
+      // getActiveTurn) route to the correct turn by id (R7).
+      state._pendingTurnId = ev.turn_id;
+
+      // Block-routing: direct RunEvent -> handler (no legacy shim, R4)
+      switch (ev.event) {
+        case 'turn_started':
+          handleTurnStart(state, ev.index ?? 0, ev.turn_id);
+          break;
+        case 'turn_ended':
+          handleTurnEnded(state);
+          break;
+        case 'message_update':
+        case 'model_streaming':
+          if (ev.subagent_id) handleSubagentMessageUpdate(state, ev.subagent_id, ev.delta ?? {});
+          else handleMessageUpdate(state, ev.delta ?? {});
+          break;
+        case 'message_end':
+          if (!ev.subagent_id) handleMessageEnd(state);
+          break;
+        case 'tool_started':
+          if (ev.subagent_id) handleSubagentToolStart(state, ev.subagent_id, ev.call_id ?? '', ev.name ?? '', ev.args);
+          else handleToolStart(state, ev.call_id ?? '', ev.name ?? '', ev.args);
+          break;
+        case 'tool_update':
+          if (ev.subagent_id) handleSubagentToolUpdate(state, ev.subagent_id, ev.call_id ?? '', ev.partial ?? '');
+          else handleToolUpdate(state, ev.call_id ?? '', ev.partial ?? '');
+          break;
+        case 'tool_ended':
+          if (ev.subagent_id) handleSubagentToolEnd(state, ev.subagent_id, ev.call_id ?? '', ev.result ?? '', ev.is_error ?? false);
+          else handleToolEnd(state, ev.call_id ?? '', ev.result ?? '', ev.is_error ?? false);
+          break;
+        case 'approval_required':
+          if (ev.subagent_id) handleSubagentApprovalRequired(state, ev.subagent_id, ev.prompt_id ?? '', ev.tool_name ?? '', ev.tool_input, ev.danger_level ?? '', ev.explanation ?? '');
+          else handleApprovalRequired(state, ev.prompt_id ?? '', ev.tool_name ?? '', ev.tool_input, ev.danger_level ?? '', ev.explanation ?? '');
+          break;
+        case 'approval_resolved':
+          resolveApprovalBlock(state, ev.prompt_id ?? '', ev.choice);
+          break;
+        case 'error':
+          handleError(state, ((ev as unknown as Record<string, unknown>).message as string | undefined) ?? 'unknown error');
+          break;
+        case 'subagent_started':
+          handleSubagentStart(state, ev.subagent_id ?? '', ev.role_name, ev.task ?? '');
+          break;
+        case 'subagent_ended':
+          handleSubagentEnd(state, ev.subagent_id ?? '', ev.success ?? false, ev.iterations_used);
+          break;
+        // run_created / message_start / model_call_* / input_requested /
+        // context_compacted / process_spawned / process_killed: not routed yet.
+        default:
+          break;
       }
     },
     toolApprovalResponded: (state, action: PayloadAction<{ promptId: string; approved: boolean }>) => {
@@ -817,14 +853,13 @@ export const chatSlice = createSlice({
             return;
           }
         }
-        if (lastEntry.subagents) {
-          for (const sa of Object.values(lastEntry.subagents)) {
-            if (sa.blocks) {
-              const saBlock = sa.blocks.find((b) => b.type === 'approval' && b.prompt_id === action.payload.promptId);
-              if (saBlock && saBlock.type === 'approval') {
-                saBlock.status = action.payload.approved ? 'approved' : 'denied';
-                return;
-              }
+        // Subagent approvals live in the global dict now (R8)
+        for (const sa of Object.values(state.subagents)) {
+          if (sa.blocks) {
+            const saBlock = sa.blocks.find((b) => b.type === 'approval' && b.prompt_id === action.payload.promptId);
+            if (saBlock && saBlock.type === 'approval') {
+              saBlock.status = action.payload.approved ? 'approved' : 'denied';
+              return;
             }
           }
         }
@@ -832,6 +867,8 @@ export const chatSlice = createSlice({
     },
     clearChat: (state) => {
       state.entries = [];
+      state.subagents = {};
+      state.viewingSubagentPath = [];
       state.isProcessing = false;
     },
     agentAborted: (state) => {
@@ -839,6 +876,7 @@ export const chatSlice = createSlice({
       const last = state.entries[state.entries.length - 1];
       if (last && last.type === 'turn' && !last.endTime) {
         last.endTime = Date.now();
+        stopDanglingSubagents(state, last);
         if (last.blocks) {
           last.blocks.push({ type: 'error', text: '— Interrupted —' });
         }
@@ -857,6 +895,18 @@ export const chatSlice = createSlice({
       });
       state.isProcessing = true;
       state._resumedFromBackend = false;
+    },
+    viewSubagent: (state, action: PayloadAction<{ id: string; name: string }>) => {
+      state.viewingSubagentPath.push(action.payload);
+    },
+    popSubagentView: (state) => {
+      state.viewingSubagentPath.pop();
+    },
+    clearSubagentView: (state) => {
+      state.viewingSubagentPath = [];
+    },
+    setResyncing: (state, action: PayloadAction<boolean>) => {
+      state.resyncing = action.payload;
     },
   },
   extraReducers: (builder) => {
@@ -940,11 +990,11 @@ export const chatSlice = createSlice({
             }
           }
 
-          let subagents: Record<string, SubagentEntry> | undefined = undefined;
+          let subagentIds: string[] | undefined = undefined;
           if (event_log && Array.isArray(event_log)) {
             const subEvents = event_log.filter((e: EventLogEntry) => e.turn_index === turnIdx && e.event_type === 'subagent');
             if (subEvents.length > 0) {
-              subagents = {};
+              subagentIds = [];
               for (const ev of subEvents) {
                 const payload: Record<string, unknown> =
                   ev.payload && typeof ev.payload === 'object' && !Array.isArray(ev.payload)
@@ -952,7 +1002,8 @@ export const chatSlice = createSlice({
                     : {};
                 const subId = payload.id as string | undefined;
                 if (subId) {
-                  subagents[subId] = payload as unknown as SubagentEntry;
+                  subagentIds.push(subId);
+                  state.subagents[subId] = payload as unknown as SubagentEntry;
                 }
               }
             }
@@ -963,7 +1014,7 @@ export const chatSlice = createSlice({
             type: 'turn',
             turnIndex: turnIdx,
             blocks,
-            subagents,
+            subagentIds,
             startTime,
             endTime,
           });
@@ -996,6 +1047,10 @@ export const {
   retryFromEntry,
   runIdSet,
   runStateChanged,
+  viewSubagent,
+  popSubagentView,
+  clearSubagentView,
+  setResyncing,
 } = chatSlice.actions;
 export default chatSlice.reducer;
 
@@ -1014,6 +1069,10 @@ export function selectEntryById(state: { chat: ChatState }, entryId: string): Ch
   return map[entryId];
 }
 
+export function selectSubagentById(state: { chat: ChatState }, subagentId: string): SubagentEntry | undefined {
+  return state.chat.subagents[subagentId];
+}
+
 export function selectPendingApprovalCount(state: { chat: ChatState }): number {
   let count = 0;
   for (const entry of state.chat.entries) {
@@ -1023,12 +1082,11 @@ export function selectPendingApprovalCount(state: { chat: ChatState }): number {
         if (b.type === 'approval' && b.status === 'pending') count++;
       }
     }
-    if (entry.subagents) {
-      for (const sa of Object.values(entry.subagents)) {
-        for (const b of sa.blocks) {
-          if (b.type === 'approval' && b.status === 'pending') count++;
-        }
-      }
+  }
+  // Subagent approvals live in the global dict (R8)
+  for (const sa of Object.values(state.chat.subagents)) {
+    for (const b of sa.blocks) {
+      if (b.type === 'approval' && b.status === 'pending') count++;
     }
   }
   return count;
@@ -1056,7 +1114,10 @@ export function entriesToMessages(entries: ChatEntry[]): import('../project/proj
   return msgs;
 }
 
-export function entriesToEventLog(entries: ChatEntry[]): {
+export function entriesToEventLog(
+  entries: ChatEntry[],
+  subagents: Record<string, SubagentEntry>
+): {
   eventLog: unknown[];
   processTimeMs: number;
   thoughtTimeMs: number;
@@ -1101,7 +1162,7 @@ export function entriesToEventLog(entries: ChatEntry[]): {
             payload: { name: b.name, args: b.args, args_summary: b.result?.slice(0, 1000), is_error: b.is_error },
           });
         } else if (b.type === 'subagent_ref') {
-          const sa = entry.subagents?.[b.subagent_id];
+          const sa = subagents[b.subagent_id];
           if (sa) {
             eventLog.push({
               turn_index: assistantIdx,

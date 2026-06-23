@@ -32,7 +32,7 @@ impl<'a> ToolOrchestrator<'a> {
         on_event: &F,
     ) -> Vec<String> 
     where
-        F: Fn(AgentEvent) + Send + Sync,
+        F: Fn(AgentEvent, &str) + Send + Sync,
     {
         // Resolve execution mode (per-tool override wins)
         let mode = self
@@ -90,7 +90,7 @@ impl<'a> ToolOrchestrator<'a> {
                         tool_input: prompt.tool_input.clone(),
                         danger_level: format!("{:?}", prompt.danger_level),
                         explanation: prompt.explanation.clone(),
-                    });
+                    }, &call.id);
 
                     // Wait for user response, but also listen for cancellation so
                     // that an agent stuck on `ApprovalRequired` can be stopped
@@ -226,7 +226,7 @@ impl<'a> ToolOrchestrator<'a> {
                         tool_call_id: call.id.clone(),
                         tool_name: call.function.name.clone(),
                         args: modified_args.clone(),
-                    });
+                    }, &call.id);
                     allowed.push((i, call.clone(), modified_args));
                 }
             }
@@ -330,7 +330,7 @@ impl<'a> ToolOrchestrator<'a> {
     /// right slot without a separate index map.
     async fn run_node<F>(&self, node_idx: usize, node: &SchedNode, on_event: &F) -> (usize, String)
     where
-        F: Fn(AgentEvent) + Send + Sync,
+        F: Fn(AgentEvent, &str) + Send + Sync,
     {
         let cancel = self.cancel_token.clone();
         let out = tokio::select! {
@@ -356,7 +356,7 @@ impl<'a> ToolOrchestrator<'a> {
         on_event: &F,
     ) -> String 
     where
-        F: Fn(AgentEvent) + Send + Sync,
+        F: Fn(AgentEvent, &str) + Send + Sync,
     {
         let tool = match self.registry.get(tool_name) {
             Some(t) => t,
@@ -392,7 +392,7 @@ impl<'a> ToolOrchestrator<'a> {
         let tool_fut = tool.execute_with_stream(args, Some(on_update), Some(event_tx));
         let drain_fut = async {
             while let Some(event) = event_rx.recv().await {
-                on_event(event);
+                on_event(event, tool_call_id);
             }
         };
 
@@ -405,7 +405,7 @@ impl<'a> ToolOrchestrator<'a> {
 
         // Drain any remaining events.
         while let Ok(event) = event_rx.try_recv() {
-            on_event(event);
+            on_event(event, tool_call_id);
         }
 
         match result {

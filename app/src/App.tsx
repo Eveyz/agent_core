@@ -19,7 +19,11 @@ import {
   runIdSet,
   selectEntryById,
   selectPendingApprovalCount,
+  selectSubagentById,
+  popSubagentView,
+  clearSubagentView,
 } from './features/chat/chatSlice';
+import type { ChatEntry, SubagentEntry, TurnBlock } from './features/chat/chatSlice';
 import { openSettings, fetchConfig } from './features/settings/settingsSlice';
 import {
   fetchProjects,
@@ -100,6 +104,11 @@ function App() {
   // Track pending approvals — scroll to bottom when a new one appears
   const pendingApprovalCount = useSelector(selectPendingApprovalCount);
   const runId = useSelector((state: RootState) => state.chat.runId);
+  const viewingSubagentPath = useSelector((state: RootState) => state.chat.viewingSubagentPath, shallowEqual);
+  const activeSubagentId = viewingSubagentPath.length > 0 ? viewingSubagentPath[viewingSubagentPath.length - 1].id : null;
+  const activeSubagent = useSelector((state: RootState) =>
+    activeSubagentId ? selectSubagentById(state, activeSubagentId) : undefined
+  );
 
   const prevPendingRef = useRef(0);
   useEffect(() => {
@@ -261,7 +270,7 @@ function App() {
         <CosmicBackground />
         <header className="main-header">
           <div className="header-title">
-            {isEditingTitle ? (
+            {isEditingTitle && viewingSubagentPath.length === 0 ? (
               <>
                 <input
                   className="header-title-input"
@@ -282,10 +291,33 @@ function App() {
               </>
             ) : (
               <>
-                <span className="header-session-name">{sessionTitle || 'New Session'}</span>
-                <button className="icon-btn header-edit-btn" onClick={startEditingTitle} title="Edit session title">
-                  <PencilIcon size={12} />
-                </button>
+                <span
+                  className="header-session-name"
+                  style={viewingSubagentPath.length > 0 ? { cursor: 'pointer' } : undefined}
+                  onClick={viewingSubagentPath.length > 0 ? () => dispatch(clearSubagentView()) : undefined}
+                >
+                  {sessionTitle || 'New Session'}
+                </span>
+                {viewingSubagentPath.map((seg, i) => (
+                  <span key={seg.id} className="header-breadcrumb">
+                    <span className="header-breadcrumb-sep">›</span>
+                    <span
+                      className="header-breadcrumb-name"
+                      style={{ cursor: i < viewingSubagentPath.length - 1 ? 'pointer' : 'default' }}
+                      onClick={i < viewingSubagentPath.length - 1 ? () => {
+                        const pops = viewingSubagentPath.length - 1 - i;
+                        for (let k = 0; k < pops; k++) dispatch(popSubagentView());
+                      } : undefined}
+                    >
+                      {seg.name}
+                    </span>
+                  </span>
+                ))}
+                {viewingSubagentPath.length === 0 && (
+                  <button className="icon-btn header-edit-btn" onClick={startEditingTitle} title="Edit session title">
+                    <PencilIcon size={12} />
+                  </button>
+                )}
               </>
             )}
           </div>
@@ -298,7 +330,15 @@ function App() {
           </div>
         </header>
 
-        {entriesLength === 0 ? (
+        {viewingSubagentPath.length > 0 && activeSubagent ? (
+          <SubagentDetailPage
+            subagent={activeSubagent}
+            onBack={() => dispatch(popSubagentView())}
+            onAbort={handleAbort}
+            isProcessing={isProcessing}
+            defaultModel={defaultModel}
+          />
+        ) : entriesLength === 0 ? (
           <EmptyState onSend={handleSend} />
         ) : (
           <>
@@ -321,11 +361,59 @@ function App() {
           </>
         )}
 
-        <ChatInput isProcessing={isProcessing} onSend={handleSend} currentModel={defaultModel} onAbort={handleAbort} onSteer={handleSteer} />
+        {viewingSubagentPath.length === 0 && (
+          <ChatInput isProcessing={isProcessing} onSend={handleSend} currentModel={defaultModel} onAbort={handleAbort} onSteer={handleSteer} />
+        )}
       </main>
     </div>
   );
 }
+
+const SubagentDetailPage = memo(function SubagentDetailPage({
+  subagent,
+  onBack,
+  onAbort,
+  isProcessing,
+  defaultModel,
+}: {
+  subagent: SubagentEntry;
+  onBack: () => void;
+  onAbort: () => void;
+  isProcessing: boolean;
+  defaultModel: string;
+}) {
+  const taskText = typeof subagent.task === 'string' ? subagent.task : JSON.stringify(subagent.task);
+  const syntheticEntry: ChatEntry = {
+    id: `subagent-detail-${subagent.id}`,
+    type: 'turn',
+    blocks: subagent.blocks as unknown as TurnBlock[],
+    startTime: subagent.startTime,
+    endTime: subagent.endTime,
+  };
+  return (
+    <>
+      <div className="subagent-detail-bar">
+        <button className="icon-btn" onClick={onBack} title="Back to conversation">
+          ‹ Back
+        </button>
+        <span className="subagent-detail-title">{subagent.role_name || subagent.id}</span>
+        {isProcessing && (
+          <button className="btn-deny" onClick={onAbort} title="Stop the run">
+            Stop
+          </button>
+        )}
+      </div>
+      <div className="chat-history">
+        <UserRow
+          entry={{ id: `${subagent.id}-task`, type: 'user', text: taskText }}
+          modelName={defaultModel}
+          isProcessing={isProcessing}
+        />
+        <AgentRow entry={syntheticEntry} />
+      </div>
+    </>
+  );
+});
 
 const EntryRow = memo(function EntryRow({
   entryId,

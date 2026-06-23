@@ -16,15 +16,16 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::task::JoinHandle;
 
 use crate::runtime::brain::Brain;
 use crate::runtime::command::RunCommand;
-use crate::runtime::event::{RunEvent, RunId};
+use crate::runtime::event::{Envelope, RunEvent, RunId};
 use crate::runtime::event_log::EventLog;
 use crate::worktree::WorktreeManager;
-use crate::runtime::run::Run;
+use crate::runtime::run::{Run, default_runs_dir};
 use crate::runtime::state::RunState;
 
 /// Capacity for the event broadcast channel per Run.
@@ -40,7 +41,7 @@ pub struct RunHandle {
     /// Sender for commands (Start, Pause, Cancel, Steer, Approve, etc.)
     cmd_tx: mpsc::Sender<RunCommand>,
     /// Broadcast sender for events. Subscribers call `.subscribe()` on this.
-    pub event_tx: broadcast::Sender<RunEvent>,
+    pub event_tx: broadcast::Sender<Envelope>,
     /// The tokio task running the Run's loop.
     join_handle: Option<JoinHandle<()>>,
     /// Shared state for querying (read-only, updated by the Run task).
@@ -56,7 +57,7 @@ impl RunHandle {
     }
 
     /// Subscribe to the Run's event stream.
-    pub fn subscribe(&self) -> broadcast::Receiver<RunEvent> {
+    pub fn subscribe(&self) -> broadcast::Receiver<Envelope> {
         self.event_tx.subscribe()
     }
 
@@ -144,6 +145,10 @@ impl RunManager {
         // Shared state for external querying
         let shared_state = Arc::new(std::sync::RwLock::new(RunState::Created));
 
+        // Monotonic per-Run sequence counter. Shared with the Run so that
+        // RunCreated (seq 0) and the Run's own events form one sequence.
+        let seq = Arc::new(AtomicU64::new(0));
+
         // Create the Run
         let run = Run::new(
             run_id.clone(),
@@ -152,34 +157,61 @@ impl RunManager {
             model_config,
             cmd_rx,
             event_tx.clone(),
+            seq.clone(),
             working_dir,
             history,
         )?;
 
-        // Emit RunCreated event
-        let _ = event_tx.send(RunEvent::RunCreated {
-            id: run_id.clone(),
-            session_id: session_id.clone(),
+        // Emit RunCreated event (seq 0 — the bootstrap event).
+        let _ = event_tx.send(Envelope {
+            seq: seq.fetch_add(1, Ordering::Relaxed),
+            event_id: uuid::Uuid::new_v4().to_string(),
+            run_id: run_id.clone(),
+            turn_id: None,
+            parent_call_id: None,
+            event: RunEvent::RunCreated {
+                id: run_id.clone(),
+                session_id: session_id.clone(),
+            },
         });
 
         // Spawn the Run's task
         let user_input_owned = user_input.to_string();
         let state_clone = shared_state.clone();
         let event_tx_clone = event_tx.clone();
+        let log_run_id = run_id.clone();
+        let event_tx_for_log = event_tx.clone();
         let join_handle = tokio::spawn(async move {
+            // Logging subscriber: persists every Envelope to JSONL so that
+            // replay/resync works. Runs independently of the Run task, ensuring
+            // streaming events (which bypass Run::emit) are also logged (B3).
+            let mut log_rx = event_tx_for_log.subscribe();
+            let mut event_log = EventLog::new(&log_run_id, &default_runs_dir());
+            let log_task = tokio::spawn(async move {
+                loop {
+                    match log_rx.recv().await {
+                        Ok(env) => { event_log.append(env); }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!(run_id = %log_run_id, lagged = n, "event log subscriber lagged");
+                            continue;
+                        }
+                    }
+                }
+            });
             // We need to update shared_state as the Run progresses.
             // The Run owns its state internally, so we use a wrapper that
             // mirrors state changes via events.
             let mut rx = event_tx_clone.subscribe();
             let state_task = tokio::spawn(async move {
                 while let Ok(ev) = rx.recv().await {
-                    if let RunEvent::StateChanged { to, .. } = &ev {
+                    if let RunEvent::StateChanged { to, .. } = &ev.event {
                         if let Ok(mut g) = state_clone.write() {
                             *g = *to;
                         }
                     }
                     if matches!(
-                        ev,
+                        ev.event,
                         RunEvent::RunCompleted { .. }
                             | RunEvent::RunCancelled { .. }
                             | RunEvent::RunFailed { .. }
@@ -193,6 +225,8 @@ impl RunManager {
             // The state mirror task will exit when it sees the terminal event.
             // Give it a moment to process the last event.
             let _ = state_task.await;
+            // Wait for the logging subscriber to flush remaining events.
+            let _ = log_task.await;
         });
 
         // Store the handle
@@ -220,7 +254,7 @@ impl RunManager {
     }
 
     /// Subscribe to a Run's event stream.
-    pub async fn subscribe(&self, run_id: &str) -> Result<broadcast::Receiver<RunEvent>> {
+    pub async fn subscribe(&self, run_id: &str) -> Result<broadcast::Receiver<Envelope>> {
         let runs = self.runs.lock().await;
         let handle = runs
             .get(run_id)
@@ -283,7 +317,7 @@ impl RunManager {
     }
 
     /// Load a persisted Run's event log for replay.
-    pub fn load_run_log(&self, run_id: &str) -> Result<Vec<RunEvent>> {
+    pub fn load_run_log(&self, run_id: &str) -> Result<Vec<Envelope>> {
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
             .unwrap_or_else(|_| ".".to_string());
@@ -291,6 +325,19 @@ impl RunManager {
             .join(".agent_core/runs")
             .join(format!("{run_id}.jsonl"));
         EventLog::load(&path)
+    }
+
+    /// Replay envelopes with `seq > from_seq` from a Run's log (resync).
+    ///
+    /// Used by the frontend to recover events lost to broadcast lag (B2).
+    pub fn replay_since(&self, run_id: &str, from_seq: u64) -> Result<Vec<Envelope>> {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| ".".to_string());
+        let path = std::path::PathBuf::from(&home)
+            .join(".agent_core/runs")
+            .join(format!("{run_id}.jsonl"));
+        EventLog::replay_since(&path, from_seq)
     }
 
     /// Create a Run in an isolated git worktree.

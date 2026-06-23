@@ -106,6 +106,43 @@ pub enum RunEvent {
     ProcessKilled { child_id: ChildId, reason: String },
 }
 
+/// A stamped envelope wrapping a [`RunEvent`] with identity + ordering.
+///
+/// Every event emitted by a Run (and the `RunCreated` event emitted by the
+/// [`RunManager`]) is wrapped in an `Envelope` before it crosses the
+/// broadcast channel. The `seq` counter is monotonic per Run — shared
+/// between the manager and the Run via an `Arc<AtomicU64>` — so every event
+/// has a stable, gap-detectable id.
+///
+/// `event_id` is a UUID stable across transport, log, and replay.
+///
+/// Serialization flattens the [`RunEvent`] so the on-the-wire JSON is
+/// `{ "seq": 0, "event_id": "...", "run_id": "...", "event": "run_started", ... }`
+/// — the `RunEvent` tag and fields sit alongside the envelope fields. This
+/// keeps the existing frontend `raw.event` string check working while
+/// exposing `seq` / `event_id` / `run_id`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Envelope {
+    /// Monotonic per-Run sequence number (the global event id).
+    pub seq: u64,
+    /// Stable UUID for this event across transport / log / replay.
+    pub event_id: String,
+    /// The Run this event belongs to.
+    pub run_id: RunId,
+    /// The turn this event belongs to (R7). `None` for lifecycle events that
+    /// are not scoped to a turn (e.g. RunCreated, RunStarted, RunCompleted).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
+    /// The wrapper tool call that spawned a subagent (R5). `None` for main-agent
+    /// events; set on subagent events so the UI can link them to the wrapper
+    /// tool block.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_call_id: Option<String>,
+    /// The actual event payload.
+    #[serde(flatten)]
+    pub event: RunEvent,
+}
+
 /// Convert a legacy `AgentEvent` into a `RunEvent`.
 ///
 /// This bridge lets us migrate incrementally: existing tool/subagent code
@@ -252,5 +289,48 @@ mod tests {
             AgentEvent::AgentEnd { messages: vec![] },
         );
         assert!(ev.is_none());
+    }
+
+    #[test]
+    fn envelope_flattens_event_tag_alongside_envelope_fields() {
+        // The envelope must serialize so that the RunEvent tag (`event`) and
+        // the envelope fields (`seq`, `event_id`, `run_id`) all sit at the top
+        // level. This is what keeps the frontend's `raw.event` string check
+        // working while exposing the new identity fields.
+        let env = Envelope {
+            seq: 7,
+            event_id: "evt-1".to_string(),
+            run_id: "run-1".to_string(),
+            turn_id: None,
+            parent_call_id: None,
+            event: RunEvent::RunStarted,
+        };
+        let json = serde_json::to_value(&env).unwrap();
+        assert_eq!(json["seq"], 7);
+        assert_eq!(json["event_id"], "evt-1");
+        assert_eq!(json["run_id"], "run-1");
+        assert_eq!(json["event"], "run_started");
+    }
+
+    #[test]
+    fn envelope_flattens_variant_fields() {
+        use crate::types::MessageDelta;
+        let env = Envelope {
+            seq: 1,
+            event_id: "e".to_string(),
+            run_id: "r".to_string(),
+            turn_id: Some("turn-1".to_string()),
+            parent_call_id: None,
+            event: RunEvent::ModelStreaming {
+                subagent_id: Some("sa-1".to_string()),
+                delta: MessageDelta::Text("hi".to_string()),
+            },
+        };
+        let json = serde_json::to_value(&env).unwrap();
+        assert_eq!(json["event"], "model_streaming");
+        assert_eq!(json["seq"], 1);
+        assert_eq!(json["subagent_id"], "sa-1");
+        assert_eq!(json["delta"]["Text"], "hi");
+        assert_eq!(json["turn_id"], "turn-1");
     }
 }

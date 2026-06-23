@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 use std::io::Write;
 use std::path::PathBuf;
 
-use crate::runtime::event::RunEvent;
+use crate::runtime::event::Envelope;
 use crate::runtime::event::RunId;
 
 /// Append-only event log for a single Run.
@@ -21,7 +21,7 @@ pub struct EventLog {
     run_id: RunId,
     path: PathBuf,
     /// In-memory copy for fast queries (also serves as backup if file write fails).
-    entries: Vec<RunEvent>,
+    entries: Vec<Envelope>,
     /// Whether writes are enabled (false if the file couldn't be opened).
     writable: bool,
 }
@@ -44,16 +44,16 @@ impl EventLog {
         }
     }
 
-    /// Append an event to the log (best-effort persistence).
-    pub fn append(&mut self, event: RunEvent) {
-        self.entries.push(event.clone());
+    /// Append an envelope to the log (best-effort persistence).
+    pub fn append(&mut self, env: Envelope) {
+        self.entries.push(env.clone());
 
         if !self.writable {
             return;
         }
 
         // Serialize and append to file
-        match serde_json::to_string(&event) {
+        match serde_json::to_string(&env) {
             Ok(line) => {
                 // Open in append mode — if this fails, we just skip (best-effort)
                 if let Ok(mut file) = std::fs::OpenOptions::new()
@@ -81,7 +81,7 @@ impl EventLog {
     }
 
     /// Get a reference to all entries.
-    pub fn entries(&self) -> &[RunEvent] {
+    pub fn entries(&self) -> &[Envelope] {
         &self.entries
     }
 
@@ -96,7 +96,7 @@ impl EventLog {
     }
 
     /// Load a trace from a JSONL file (for replay).
-    pub fn load(path: &std::path::Path) -> Result<Vec<RunEvent>> {
+    pub fn load(path: &std::path::Path) -> Result<Vec<Envelope>> {
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read event log: {path:?}"))?;
 
@@ -105,9 +105,30 @@ impl EventLog {
             if line.trim().is_empty() {
                 continue;
             }
-            let event: RunEvent = serde_json::from_str(line)
+            let env: Envelope = serde_json::from_str(line)
                 .with_context(|| format!("failed to parse event log line {}: {line}", i + 1))?;
-            events.push(event);
+            events.push(env);
+        }
+        Ok(events)
+    }
+
+    /// Load envelopes with `seq > from_seq` from a JSONL log (for resync).
+    ///
+    /// Used by the frontend to recover events lost to broadcast lag (B2).
+    pub fn replay_since(path: &std::path::Path, from_seq: u64) -> Result<Vec<Envelope>> {
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read event log: {path:?}"))?;
+
+        let mut events = Vec::new();
+        for line in content.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<Envelope>(line) {
+                Ok(env) if env.seq > from_seq => events.push(env),
+                Ok(_) => {}
+                Err(_) => continue,
+            }
         }
         Ok(events)
     }
@@ -139,6 +160,7 @@ impl EventLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::event::{Envelope, RunEvent};
     use crate::runtime::state::RunState;
     use tempfile::TempDir;
 
@@ -147,11 +169,16 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let mut log = EventLog::new("run-1", dir.path().to_str().unwrap());
 
-        log.append(RunEvent::RunCreated {
-            id: "run-1".into(),
-            session_id: None,
+        log.append(Envelope {
+            seq: 0, event_id: "e0".into(), run_id: "run-1".into(),
+            turn_id: None, parent_call_id: None,
+            event: RunEvent::RunCreated { id: "run-1".into(), session_id: None },
         });
-        log.append(RunEvent::RunStarted);
+        log.append(Envelope {
+            seq: 1, event_id: "e1".into(), run_id: "run-1".into(),
+            turn_id: None, parent_call_id: None,
+            event: RunEvent::RunStarted,
+        });
 
         assert_eq!(log.len(), 2);
 
@@ -168,24 +195,28 @@ mod tests {
         // Write some events
         {
             let mut log = EventLog::new("run-2", dir.path().to_str().unwrap());
-            log.append(RunEvent::RunCreated {
-                id: "run-2".into(),
-                session_id: None,
+            log.append(Envelope {
+                seq: 0, event_id: "e0".into(), run_id: "run-2".into(),
+                turn_id: None, parent_call_id: None,
+                event: RunEvent::RunCreated { id: "run-2".into(), session_id: None },
             });
-            log.append(RunEvent::StateChanged {
-                from: RunState::Created,
-                to: RunState::Running,
+            log.append(Envelope {
+                seq: 1, event_id: "e1".into(), run_id: "run-2".into(),
+                turn_id: None, parent_call_id: None,
+                event: RunEvent::StateChanged { from: RunState::Created, to: RunState::Running },
             });
-            log.append(RunEvent::RunCompleted {
-                final_text: "done".into(),
+            log.append(Envelope {
+                seq: 2, event_id: "e2".into(), run_id: "run-2".into(),
+                turn_id: None, parent_call_id: None,
+                event: RunEvent::RunCompleted { final_text: "done".into() },
             });
         }
 
         // Load them back
         let events = EventLog::load(&path).unwrap();
         assert_eq!(events.len(), 3);
-        assert!(matches!(events[0], RunEvent::RunCreated { .. }));
-        assert!(matches!(events[2], RunEvent::RunCompleted { .. }));
+        assert!(matches!(events[0].event, RunEvent::RunCreated { .. }));
+        assert!(matches!(events[2].event, RunEvent::RunCompleted { .. }));
     }
 
     #[test]
@@ -194,9 +225,17 @@ mod tests {
 
         {
             let mut log1 = EventLog::new("run-a", dir.path().to_str().unwrap());
-            log1.append(RunEvent::RunStarted); // triggers file creation
+            log1.append(Envelope {
+                seq: 0, event_id: "e0".into(), run_id: "run-a".into(),
+                turn_id: None, parent_call_id: None,
+                event: RunEvent::RunStarted,
+            });
             let mut log2 = EventLog::new("run-b", dir.path().to_str().unwrap());
-            log2.append(RunEvent::RunStarted);
+            log2.append(Envelope {
+                seq: 0, event_id: "e0".into(), run_id: "run-b".into(),
+                turn_id: None, parent_call_id: None,
+                event: RunEvent::RunStarted,
+            });
         }
 
         let runs = EventLog::list_runs(dir.path().to_str().unwrap()).unwrap();

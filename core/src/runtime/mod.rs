@@ -33,6 +33,7 @@
 pub mod approval;
 pub mod brain;
 pub mod event_log;
+pub mod guard;
 pub mod command;
 pub mod event;
 pub mod manager;
@@ -44,7 +45,8 @@ pub use approval::ApprovalResolver;
 pub use brain::Brain;
 pub use event_log::EventLog;
 pub use command::RunCommand;
-pub use event::{ChildId, RunEvent, RunId};
+pub use guard::EventGuard;
+pub use event::{ChildId, Envelope, RunEvent, RunId};
 pub use manager::{RunHandle, RunManager};
 pub use run::Run;
 pub use state::RunState;

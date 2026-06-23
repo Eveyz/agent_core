@@ -6,6 +6,7 @@ use crate::client::OpenAIClient;
 use crate::config::ModelConfig;
 use crate::context::Context;
 use crate::tools::ToolRegistry;
+use crate::runtime::EventGuard;
 use crate::types::{AgentEvent, EventSender, Message, MessageDelta, StreamEvent, ToolCall};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +98,24 @@ impl Subagent {
             });
         }
 
+        // RAII guard: if run_with_sender returns Err(?) early (e.g. stream
+        // error) or panics, Drop emits SubagentEnd{success:false} so the
+        // frontend never sees an orphaned spinner. On success paths we call
+        // guard.complete() before the explicit SubagentEnd emit.
+        let sa_id = self.id.clone();
+        let sa_role = self.role_name.clone();
+        let guard_tx = event_sender.clone();
+        let mut guard = EventGuard::new(move || {
+            if let Some(ref tx) = guard_tx {
+                let _ = tx.send(AgentEvent::SubagentEnd {
+                    subagent_id: sa_id.clone(),
+                    role_name: sa_role.clone(),
+                    success: false,
+                    iterations_used: 0,
+                });
+            }
+        });
+
         for iteration in 0..self.config.max_iterations {
             // Emit SubagentTurnStart
             if let Some(ref tx) = event_sender {
@@ -119,6 +138,7 @@ impl Subagent {
             let (text, tool_calls) = self.collect_stream(stream, event_sender.as_ref()).await?;
 
             if tool_calls.is_empty() {
+                guard.complete();
                 // Emit SubagentEnd
                 if let Some(ref tx) = event_sender {
                     let _ = tx.send(AgentEvent::SubagentEnd {
@@ -156,7 +176,7 @@ impl Subagent {
                 
                 let sender_clone = event_sender.clone();
                 let subagent_id = self.id.clone();
-                orchestrator.execute_tools(&tool_calls, &move |e| {
+                orchestrator.execute_tools(&tool_calls, &move |e, _call_id: &str| {
                     if let Some(ref tx) = sender_clone {
                         let mapped = match e {
                             AgentEvent::ToolExecutionStart { tool_call_id, tool_name, args } => {
@@ -217,6 +237,7 @@ impl Subagent {
             }
         }
 
+        guard.complete();
         // Emit SubagentEnd (max iterations reached)
         if let Some(ref tx) = event_sender {
             let _ = tx.send(AgentEvent::SubagentEnd {
@@ -244,33 +265,78 @@ impl Subagent {
         stream: impl futures::Stream<Item = Result<StreamEvent>>,
         event_sender: Option<&EventSender>,
     ) -> Result<(String, Vec<ToolCall>)> {
-        use crate::client::streaming::ToolCallAccumulator;
+        use crate::client::streaming::{TokenAccumulator, ToolCallAccumulator};
         use futures::StreamExt;
 
         let mut text_buffer = String::new();
         let mut accumulator = ToolCallAccumulator::new();
         let mut has_tool_calls = false;
+        let mut tokens = TokenAccumulator::new();
+
+        let flush_tokens = |tokens: &mut TokenAccumulator, tx: Option<&EventSender>, id: &str| {
+            if let Some((text, thinking)) = tokens.force_flush() {
+                if let Some(tx) = tx {
+                    if !text.is_empty() {
+                        let _ = tx.send(AgentEvent::SubagentMessageUpdate {
+                            subagent_id: id.to_string(),
+                            delta: MessageDelta::Text(text),
+                        });
+                    }
+                    if !thinking.is_empty() {
+                        let _ = tx.send(AgentEvent::SubagentMessageUpdate {
+                            subagent_id: id.to_string(),
+                            delta: MessageDelta::Thinking(thinking),
+                        });
+                    }
+                }
+            }
+        };
 
         tokio::pin!(stream);
         while let Some(event) = stream.next().await {
             let event = event?;
             match event {
                 StreamEvent::TextDelta(delta) => {
-                    // Emit SubagentMessageUpdate
-                    if let Some(tx) = event_sender {
-                        let _ = tx.send(AgentEvent::SubagentMessageUpdate {
-                            subagent_id: self.id.clone(),
-                            delta: MessageDelta::Text(delta.clone()),
-                        });
-                    }
+                    tokens.push_text(&delta);
                     text_buffer.push_str(&delta);
+                    if tokens.should_flush() {
+                        if let Some((text, thinking)) = tokens.flush() {
+                            if let Some(tx) = event_sender {
+                                if !text.is_empty() {
+                                    let _ = tx.send(AgentEvent::SubagentMessageUpdate {
+                                        subagent_id: self.id.clone(),
+                                        delta: MessageDelta::Text(text),
+                                    });
+                                }
+                                if !thinking.is_empty() {
+                                    let _ = tx.send(AgentEvent::SubagentMessageUpdate {
+                                        subagent_id: self.id.clone(),
+                                        delta: MessageDelta::Thinking(thinking),
+                                    });
+                                }
+                            }
+                        }
+                    }
                 }
                 StreamEvent::ThinkingDelta(delta) => {
-                    if let Some(tx) = event_sender {
-                        let _ = tx.send(AgentEvent::SubagentMessageUpdate {
-                            subagent_id: self.id.clone(),
-                            delta: MessageDelta::Thinking(delta),
-                        });
+                    tokens.push_thinking(&delta);
+                    if tokens.should_flush() {
+                        if let Some((text, thinking)) = tokens.flush() {
+                            if let Some(tx) = event_sender {
+                                if !text.is_empty() {
+                                    let _ = tx.send(AgentEvent::SubagentMessageUpdate {
+                                        subagent_id: self.id.clone(),
+                                        delta: MessageDelta::Text(text),
+                                    });
+                                }
+                                if !thinking.is_empty() {
+                                    let _ = tx.send(AgentEvent::SubagentMessageUpdate {
+                                        subagent_id: self.id.clone(),
+                                        delta: MessageDelta::Thinking(thinking),
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
                 StreamEvent::ToolCallDelta { .. } => {
@@ -280,6 +346,9 @@ impl Subagent {
                 StreamEvent::Done => break,
             }
         }
+
+        // Final flush: emit any remaining buffered text/thinking.
+        flush_tokens(&mut tokens, event_sender, &self.id);
 
         let tool_calls = if has_tool_calls {
             accumulator.into_tool_calls()

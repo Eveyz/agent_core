@@ -686,7 +686,7 @@ impl Agent {
                 cancel_token: self.cancel_token.clone(),
                 approval_resolver: None,
             };
-            orchestrator.execute_tools(&tool_calls, &on_event).await
+            orchestrator.execute_tools(&tool_calls, &|ev, _call_id: &str| on_event(ev)).await
         };
         self.state = AgentState::Streaming;
 

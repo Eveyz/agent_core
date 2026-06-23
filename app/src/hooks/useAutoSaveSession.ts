@@ -34,13 +34,14 @@ export function useAutoSaveSession({
 
     const state = store.getState();
     const entries = state.chat.entries;
+    const subagents = state.chat.subagents;
 
     if (!lastAgentEndRef.current && entries.length > 0) {
       lastAgentEndRef.current = true;
       if (activeSessionId && activeProjectPath) {
         const msgs = entriesToMessages(entries);
         if (msgs.length > 0) {
-          const { eventLog, processTimeMs, thoughtTimeMs } = entriesToEventLog(entries);
+          const { eventLog, processTimeMs, thoughtTimeMs } = entriesToEventLog(entries, subagents);
           dispatch(
             saveSessionMessages({
               sessionId: activeSessionId,

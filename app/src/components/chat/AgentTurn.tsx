@@ -1,5 +1,7 @@
-import React, { useState, useEffect, memo, useMemo, useRef, useCallback } from 'react';
+import React, { useState, useEffect, memo, useMemo, useCallback } from 'react';
 import { useAppDispatch } from '../../hooks/useAppDispatch';
+import { useSelector } from 'react-redux';
+import type { RootState } from '../../store';
 import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
 import ChevronRightIcon from 'lucide-react/dist/esm/icons/chevron-right.mjs';
 import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
@@ -11,7 +13,7 @@ import CopyIcon from 'lucide-react/dist/esm/icons/copy.mjs';
 import BrainIcon from 'lucide-react/dist/esm/icons/brain.mjs';
 import WrenchIcon from 'lucide-react/dist/esm/icons/wrench.mjs';
 import { invoke } from '@tauri-apps/api/core';
-import { toolApprovalResponded } from '../../features/chat/chatSlice';
+import { toolApprovalResponded, viewSubagent } from '../../features/chat/chatSlice';
 import type { ChatEntry, TurnBlock, SubagentEntry } from '../../features/chat/chatSlice';
 import { MarkdownContent, formatTime, parseMarkdown } from './MarkdownContent';
 
@@ -95,10 +97,10 @@ function groupBlocksIntoItems(blocks: TurnBlock[]): TurnRenderItem[] {
 
 const TurnIterationUI = memo(function TurnIterationUI({
   iteration,
-  entry,
+  subagents,
 }: {
   iteration: TurnIteration;
-  entry?: ChatEntry | null;
+  subagents?: Record<string, SubagentEntry>;
 }) {
   const isStreaming = !!(iteration.thinkingBlock as any)?.isStreaming;
   
@@ -196,11 +198,11 @@ const TurnIterationUI = memo(function TurnIterationUI({
                 } else if (b.type === 'approval') {
                   return <ApprovalBlockUI key={`approval-${b.prompt_id}-${idx}`} block={b as ApprovalBlock} />;
                 } else if (b.type === 'subagent_ref') {
-                  const sa = entry?.subagents?.[b.subagent_id!];
+                  const sa = subagents?.[b.subagent_id!];
                   if (!sa) return null;
                   return (
                     <div key={`subagent-${b.subagent_id}-${idx}`} className="subagents-section">
-                      <SubagentCard subagent={sa} entry={entry} />
+                      <SubagentCard subagent={sa} />
                     </div>
                   );
                 }
@@ -408,15 +410,8 @@ const ApprovalBlockUI = memo(function ApprovalBlockUI({ block }: { block: Approv
     </div>
   );
 });
-const SubagentCard = memo(function SubagentCard({ subagent, entry }: { subagent: SubagentEntry; entry?: ChatEntry | null }) {
-  const isDone = subagent.status === 'done' || subagent.status === 'error';
-  const [collapsed, setCollapsed] = useState(isDone);
-
-  useEffect(() => {
-    if (isDone) {
-      setCollapsed(true);
-    }
-  }, [isDone]);
+const SubagentCard = memo(function SubagentCard({ subagent }: { subagent: SubagentEntry }) {
+  const dispatch = useAppDispatch();
 
   const statusIcon = useMemo(() => {
     if (subagent.status === 'working') return <div className="black-hole-spinner" style={{ width: 12, height: 12 }} />;
@@ -425,9 +420,7 @@ const SubagentCard = memo(function SubagentCard({ subagent, entry }: { subagent:
     return null;
   }, [subagent.status]);
 
-  const toolCount = useMemo(() => {
-    return subagent.blocks?.filter((b) => b.type === 'tool').length || 0;
-  }, [subagent.blocks]);
+  const toolCount = useMemo(() => subagent.blocks?.filter((b) => b.type === 'tool').length || 0, [subagent.blocks]);
 
   const statusText = useMemo(() => {
     if (subagent.status === 'working') {
@@ -450,40 +443,28 @@ const SubagentCard = memo(function SubagentCard({ subagent, entry }: { subagent:
   const displayStr = subagent.role_name || subagent.id;
   const idText = typeof displayStr === 'string' ? displayStr : JSON.stringify(displayStr);
 
-  const hasPendingApproval = useMemo(() => {
-    return subagent.blocks?.some((b) => b.type === 'approval' && b.status === 'pending');
-  }, [subagent.blocks]);
+  const hasPendingApproval = useMemo(
+    () => subagent.blocks?.some((b) => b.type === 'approval' && b.status === 'pending'),
+    [subagent.blocks]
+  );
+
+  const handleViewDetails = useCallback(() => {
+    dispatch(viewSubagent({ id: subagent.id, name: idText }));
+  }, [dispatch, subagent.id, idText]);
 
   return (
     <div
       className={`subagent-card ${subagent.status === 'working' ? 'subagent-working' : ''} ${hasPendingApproval ? 'subagent-needs-approval' : ''}`}
     >
-      <div className="subagent-header" onClick={() => setCollapsed(!collapsed)}>
+      <div className="subagent-header">
         <span className="subagent-icon">{statusIcon}</span>
         <span className="subagent-id">{idText}</span>
         {hasPendingApproval && <span className="subagent-badge-pending">Approval Required</span>}
         <span className="subagent-status">{statusText}</span>
-        {collapsed ? <ChevronRightIcon size={12} /> : <ChevronDownIcon size={12} />}
+        <button className="subagent-view-btn" onClick={handleViewDetails} title="View details">
+          View Details <ChevronRightIcon size={12} />
+        </button>
       </div>
-      {!collapsed && (
-        <div className="subagent-body">
-          <div className="subagent-task">
-            {typeof subagent.task === 'string' ? subagent.task : JSON.stringify(subagent.task)}
-          </div>
-          <div style={{ marginTop: '8px' }}>
-            <AgentTurnUI 
-              entry={{
-                id: subagent.id,
-                type: 'turn',
-                blocks: subagent.blocks as any,
-                startTime: subagent.startTime,
-                endTime: subagent.endTime,
-                subagents: entry?.subagents
-              }} 
-            />
-          </div>
-        </div>
-      )}
     </div>
   );
 });
@@ -582,6 +563,7 @@ const TurnFooter = memo(function TurnFooter({ entry }: { entry: ChatEntry }) {
 });
 
 export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: ChatEntry }) {
+  const subagents = useSelector((state: RootState) => state.chat.subagents);
   const isProcessing = !!(entry.startTime && !entry.endTime);
   const isDone = !!(entry.endTime);
 
@@ -672,7 +654,7 @@ export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: ChatEnt
                 />
               )
             ) : (
-              !collapsed && <TurnIterationUI iteration={item.data} entry={entry} />
+              !collapsed && <TurnIterationUI iteration={item.data} subagents={subagents} />
             )}
           </React.Fragment>
         );

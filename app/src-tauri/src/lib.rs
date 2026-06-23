@@ -102,7 +102,7 @@ async fn send_message(
                     }
                     // Check if this is a terminal event
                     if matches!(
-                        event,
+                        event.event,
                         RunEvent::RunCompleted { .. }
                             | RunEvent::RunCancelled { .. }
                             | RunEvent::RunFailed { .. }
@@ -120,6 +120,22 @@ async fn send_message(
     });
 
     Ok(run_id)
+}
+
+/// Replay events from a Run's persisted log that the frontend missed (resync).
+/// Returns envelopes with seq > from_seq, serialized as JSON strings.
+#[tauri::command]
+async fn replay_since(
+    state: State<'_, AppState>,
+    run_id: String,
+    from_seq: u64,
+) -> Result<Vec<String>, String> {
+    let manager = state.run_manager.lock().await;
+    let envelopes = manager.replay_since(&run_id, from_seq).map_err(|e| e.to_string())?;
+    Ok(envelopes
+        .into_iter()
+        .map(|env| serde_json::to_string(&env).unwrap_or_default())
+        .collect())
 }
 
 /// Cancel a running Run. Kills all child processes and aborts all tasks.
@@ -710,7 +726,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            send_message, approve_tool, abort_agent,
+            send_message, approve_tool, abort_agent, replay_since,
             pause_run, resume_run, steer_run, get_run_state,
             list_directory, search_files,
             get_config, save_config, switch_model,

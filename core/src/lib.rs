@@ -67,6 +67,6 @@ pub use worktree::{WorktreeManager, WorktreeRecord, WorktreeStatus};
 pub use trace::TraceCollector;
 pub use reflector::{Digester, Reflector, Suggestion, SuggestionAction, SuggestionKind};
 pub use runtime::{
-    ApprovalResolver, Brain, ChildId, EventLog, ProcessSupervisor, Run, RunCommand, RunEvent,
-    RunHandle, RunId, RunManager, RunState, SupervisedChild,
+    ApprovalResolver, Brain, ChildId, Envelope, EventGuard, EventLog, ProcessSupervisor, Run, RunCommand,
+    RunEvent, RunHandle, RunId, RunManager, RunState, SupervisedChild,
 };

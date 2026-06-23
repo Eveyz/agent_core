@@ -22,6 +22,7 @@ use futures::StreamExt;
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -29,7 +30,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::executor::ToolOrchestrator;
 use crate::agent::ContextProcessor;
 use crate::client::OpenAIClient;
-use crate::client::streaming::ToolCallAccumulator;
+use crate::client::streaming::{TokenAccumulator, ToolCallAccumulator};
 use crate::config::ModelConfig;
 use crate::context::ContextEngine as Context;
 use crate::error_recovery::{RecoveryAction, RecoveryContext, RecoveryEngine};
@@ -37,10 +38,10 @@ use crate::hooks::HookRegistry;
 use crate::permission::PermissionPolicy;
 use crate::runtime::brain::Brain;
 use crate::runtime::command::RunCommand;
-use crate::runtime::event::{RunEvent, RunId};
+use crate::runtime::event::{Envelope, RunEvent, RunId};
 use crate::runtime::state::RunState;
 use crate::runtime::approval::ApprovalResolver;
-use crate::runtime::event_log::EventLog;
+use crate::runtime::guard::EventGuard;
 use crate::runtime::supervisor::ProcessSupervisor;
 use crate::tools::ToolRegistry;
 use crate::types::{
@@ -88,7 +89,13 @@ pub struct Run {
 
     // ── Communication channels ────────────────────────────────────
     cmd_rx: mpsc::Receiver<RunCommand>,
-    event_tx: broadcast::Sender<RunEvent>,
+    event_tx: broadcast::Sender<Envelope>,
+    /// Monotonic per-Run sequence counter (shared with RunManager).
+    seq: Arc<AtomicU64>,
+    /// The active turn's id (R7). Set when a turn starts, cleared on Run end.
+    /// Events emitted during a turn carry this so the frontend can route by id
+    /// instead of guessing the "active turn".
+    current_turn_id: Option<String>,
 
     // ── Cancellation & process management ─────────────────────────
     cancel: CancellationToken,
@@ -100,9 +107,6 @@ pub struct Run {
 
     // ── Pending approvals (per-Run, not global) ───────────────────
     approval_resolver: ApprovalResolver,
-
-    // ── Event log (append-only JSONL persistence) ─────────────────
-    event_log: EventLog,
 
     // ── Configuration ─────────────────────────────────────────────
     max_iterations: usize,
@@ -121,7 +125,8 @@ impl Run {
         brain: Arc<Brain>,
         model_config: ModelConfig,
         cmd_rx: mpsc::Receiver<RunCommand>,
-        event_tx: broadcast::Sender<RunEvent>,
+        event_tx: broadcast::Sender<Envelope>,
+        seq: Arc<AtomicU64>,
         working_dir: Option<String>,
         history: Vec<crate::types::Message>,
     ) -> Result<Self> {
@@ -188,8 +193,6 @@ impl Run {
             context.add(msg);
         }
 
-        let event_log = EventLog::new(&id, &default_runs_dir());
-
         Ok(Self {
             id,
             session_id,
@@ -206,12 +209,13 @@ impl Run {
             tool_execution_mode: ToolExecutionMode::Parallel,
             cmd_rx,
             event_tx,
+            seq,
+            current_turn_id: None,
             cancel: CancellationToken::new(),
             supervisor,
             join_set: JoinSet::new(),
             steering_queue: VecDeque::new(),
             approval_resolver: ApprovalResolver::new(),
-            event_log,
             working_dir,
             max_iterations,
         })
@@ -249,14 +253,29 @@ impl Run {
     fn transition(&mut self, to: RunState) {
         let from = self.state;
         self.state = to;
-        let _ = self.event_tx.send(RunEvent::StateChanged { from, to });
+        let _ = self.event_tx.send(self.wrap(RunEvent::StateChanged { from, to }));
     }
 
     fn emit(&mut self, event: RunEvent) {
-        // Append to persistent log (best-effort)
-        self.event_log.append(event.clone());
-        // Broadcast to subscribers
-        let _ = self.event_tx.send(event);
+        // Broadcast to subscribers (stamped with seq + event_id).
+        // Persistence is handled by a subscriber task in RunManager, so that
+        // streaming events (which bypass emit()) are also logged.
+        let _ = self.event_tx.send(self.wrap(event));
+    }
+
+    /// Stamp a [`RunEvent`] with a fresh `seq` + `event_id`, producing an
+    /// [`Envelope`]. Safe to call from `&self` contexts (e.g. streaming)
+    /// because `seq` is an `Arc<AtomicU64>`.
+    fn wrap(&self, event: RunEvent) -> Envelope {
+        let seq = self.seq.fetch_add(1, Ordering::Relaxed);
+        Envelope {
+            seq,
+            event_id: uuid::Uuid::new_v4().to_string(),
+            run_id: self.id.clone(),
+            turn_id: self.current_turn_id.clone(),
+            parent_call_id: None,
+            event,
+        }
     }
 
     // ── The main entry point ──────────────────────────────────────
@@ -338,6 +357,8 @@ impl Run {
                 }
             }
 
+            let turn_id = uuid::Uuid::new_v4().to_string();
+            self.current_turn_id = Some(turn_id.clone());
             self.emit(RunEvent::TurnStarted { index: turn_index });
             self.hook_registry.fire_turn_start(turn_index);
 
@@ -348,6 +369,8 @@ impl Run {
                 Err(RunError::Cancelled) => return Err(RunError::Cancelled),
                 Err(RunError::Failed(e)) => return Err(RunError::Failed(e)),
             }
+            // Turn ended — clear the active turn id.
+            self.current_turn_id = None;
         }
 
         let summary = build_iteration_limit_summary(&self.context, self.max_iterations);
@@ -486,8 +509,40 @@ impl Run {
         // Clone the event sender and run id out of self so the bridge
         // closure doesn't borrow self (which would conflict with the
         // &mut borrows the orchestrator needs).
+        // RAII tool guards: if execute_tools panics (or the task is aborted
+        // mid-execution), the ToolEnded loop below is skipped, leaving the
+        // frontend with orphaned spinning tool blocks. Each guard emits a
+        // ToolEnded{is_error:true} on drop unless completed.
+        let tool_call_ids: Vec<String> = tool_calls.iter().map(|c| c.id.clone()).collect();
+        let mut tool_guards: Vec<EventGuard<()>> = Vec::new();
+        for call_id in &tool_call_ids {
+            let tx = self.event_tx.clone();
+            let seq = self.seq.clone();
+            let run_id = self.id.clone();
+            let turn_id = self.current_turn_id.clone();
+            let cid = call_id.clone();
+            tool_guards.push(EventGuard::new(move || {
+                let _ = tx.send(Envelope {
+                    seq: seq.fetch_add(1, Ordering::Relaxed),
+                    event_id: uuid::Uuid::new_v4().to_string(),
+                    run_id: run_id.clone(),
+                    turn_id: turn_id.clone(),
+                    parent_call_id: None,
+                    event: RunEvent::ToolEnded {
+                        subagent_id: None,
+                        call_id: cid.clone(),
+                        name: String::new(),
+                        result: "Tool execution aborted (guard cleanup)".to_string(),
+                        is_error: true,
+                    },
+                });
+            }));
+        }
+
         let event_tx = self.event_tx.clone();
         let run_id = self.id.clone();
+        let seq = self.seq.clone();
+        let turn_id = self.current_turn_id.clone();
         let tool_results = {
             let mut orchestrator = ToolOrchestrator {
                 registry: &self.registry,
@@ -498,9 +553,16 @@ impl Run {
                 approval_resolver: None, // Use global map to avoid actor deadlock
             };
             orchestrator
-                .execute_tools(&tool_calls, &move |ev| {
+                .execute_tools(&tool_calls, &move |ev, parent_call_id: &str| {
                     if let Some(run_ev) = RunEvent::from_agent_event(&run_id, ev) {
-                        let _ = event_tx.send(run_ev);
+                        let _ = event_tx.send(Envelope {
+                            seq: seq.fetch_add(1, Ordering::Relaxed),
+                            event_id: uuid::Uuid::new_v4().to_string(),
+                            run_id: run_id.clone(),
+                            turn_id: turn_id.clone(),
+                            parent_call_id: Some(parent_call_id.to_string()),
+                            event: run_ev,
+                        });
                     }
                 })
                 .await
@@ -522,6 +584,11 @@ impl Run {
 
             self.context
                 .add(Message::tool(call.id.clone(), result.clone()));
+        }
+
+        // All tools completed normally — disarm the guards.
+        for g in tool_guards.iter_mut() {
+            g.complete();
         }
 
         self.emit(RunEvent::TurnEnded { index: turn_index });
@@ -609,11 +676,13 @@ impl Run {
     async fn collect_stream(
         &self,
         stream: impl futures::Stream<Item = Result<StreamEvent>>,
-        event_tx: &broadcast::Sender<RunEvent>,
+        event_tx: &broadcast::Sender<Envelope>,
     ) -> Result<(String, Vec<ToolCall>)> {
         let mut text_buffer = String::new();
         let mut accumulator = ToolCallAccumulator::new();
         let mut has_tool_calls = false;
+        // Token accumulator: batches text/thinking deltas to cut IPC traffic.
+        let mut tokens = TokenAccumulator::new();
 
         tokio::pin!(stream);
         while let Some(event) = stream.next().await {
@@ -623,23 +692,65 @@ impl Run {
             let event = event?;
             match event {
                 StreamEvent::TextDelta(delta) => {
-                    let _ = event_tx.send(RunEvent::ModelStreaming {
-                        subagent_id: None,
-                        delta: MessageDelta::Text(delta.clone()),
-                    });
+                    tokens.push_text(&delta);
                     text_buffer.push_str(&delta);
+                    if tokens.should_flush() {
+                        if let Some((text, thinking)) = tokens.flush() {
+                            if !text.is_empty() {
+                                let _ = event_tx.send(self.wrap(RunEvent::ModelStreaming {
+                                    subagent_id: None,
+                                    delta: MessageDelta::Text(text),
+                                }));
+                            }
+                            if !thinking.is_empty() {
+                                let _ = event_tx.send(self.wrap(RunEvent::ModelStreaming {
+                                    subagent_id: None,
+                                    delta: MessageDelta::Thinking(thinking),
+                                }));
+                            }
+                        }
+                    }
                 }
                 StreamEvent::ThinkingDelta(delta) => {
-                    let _ = event_tx.send(RunEvent::ModelStreaming {
-                        subagent_id: None,
-                        delta: MessageDelta::Thinking(delta),
-                    });
+                    tokens.push_thinking(&delta);
+                    if tokens.should_flush() {
+                        if let Some((text, thinking)) = tokens.flush() {
+                            if !text.is_empty() {
+                                let _ = event_tx.send(self.wrap(RunEvent::ModelStreaming {
+                                    subagent_id: None,
+                                    delta: MessageDelta::Text(text),
+                                }));
+                            }
+                            if !thinking.is_empty() {
+                                let _ = event_tx.send(self.wrap(RunEvent::ModelStreaming {
+                                    subagent_id: None,
+                                    delta: MessageDelta::Thinking(thinking),
+                                }));
+                            }
+                        }
+                    }
                 }
                 StreamEvent::ToolCallDelta { .. } => {
                     has_tool_calls = true;
                     accumulator.push(event);
                 }
                 StreamEvent::Done => break,
+            }
+        }
+
+        // Final flush: emit any remaining buffered text/thinking.
+        if let Some((text, thinking)) = tokens.force_flush() {
+            if !text.is_empty() {
+                let _ = event_tx.send(self.wrap(RunEvent::ModelStreaming {
+                    subagent_id: None,
+                    delta: MessageDelta::Text(text),
+                }));
+            }
+            if !thinking.is_empty() {
+                let _ = event_tx.send(self.wrap(RunEvent::ModelStreaming {
+                    subagent_id: None,
+                    delta: MessageDelta::Thinking(thinking),
+                }));
             }
         }
 
@@ -837,7 +948,7 @@ enum RunError {
 }
 
 /// Default directory for Run event logs.
-fn default_runs_dir() -> String {
+pub(crate) fn default_runs_dir() -> String {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_else(|_| ".".to_string());
