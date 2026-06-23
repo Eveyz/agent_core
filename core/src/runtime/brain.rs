@@ -160,6 +160,17 @@ impl Brain {
             crate::tools::register_memory_tools(&mut registry, mem.clone());
         }
 
+        if let Ok(model_config) = self.current_model_config() {
+            let available_tools: Vec<String> = registry.list_names().into_iter().map(|s| s.to_string()).collect();
+            crate::tools::subagent::register_subagent_tools(
+                &mut registry,
+                model_config,
+                available_tools,
+                None,
+                self.config.permissions.clone(),
+            );
+        }
+
         registry
     }
 

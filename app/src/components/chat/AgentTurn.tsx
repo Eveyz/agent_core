@@ -1,4 +1,4 @@
-import { useState, useEffect, memo, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, memo, useMemo, useRef, useCallback } from 'react';
 import { useAppDispatch } from '../../hooks/useAppDispatch';
 import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
 import ChevronRightIcon from 'lucide-react/dist/esm/icons/chevron-right.mjs';
@@ -48,30 +48,48 @@ interface TurnIteration {
   isLast: boolean;
 }
 
-function groupBlocksIntoIterations(blocks: TurnBlock[]): TurnIteration[] {
-  const iterations: TurnIteration[] = [];
-  let current: TurnIteration | null = null;
+export type TurnRenderItem =
+  | { type: 'iteration'; data: TurnIteration }
+  | { type: 'assistant'; data: TurnBlock };
+
+function groupBlocksIntoItems(blocks: TurnBlock[]): TurnRenderItem[] {
+  const items: TurnRenderItem[] = [];
+  let currentIter: TurnIteration | null = null;
   
+  const pushCurrentIter = () => {
+    if (currentIter) {
+      items.push({ type: 'iteration', data: currentIter });
+      currentIter = null;
+    }
+  };
+
   blocks.forEach((b, idx) => {
-    if (b.type === 'assistant') return;
+    if (b.type === 'assistant') {
+      pushCurrentIter();
+      items.push({ type: 'assistant', data: b });
+      return;
+    }
     
     if (b.type === 'thinking') {
-      if (current) iterations.push(current);
-      current = { id: `iter-${idx}`, thinkingBlock: b, toolBlocks: [], errorBlocks: [], isLast: false };
+      pushCurrentIter();
+      currentIter = { id: `iter-${idx}`, thinkingBlock: b, toolBlocks: [], errorBlocks: [], isLast: false };
     } else if (b.type === 'error') {
-      if (!current) current = { id: `iter-init-${idx}`, toolBlocks: [], errorBlocks: [], isLast: false };
-      current.errorBlocks.push(b);
+      if (!currentIter) currentIter = { id: `iter-init-${idx}`, toolBlocks: [], errorBlocks: [], isLast: false };
+      currentIter.errorBlocks.push(b);
     } else {
-      if (!current) current = { id: `iter-init-${idx}`, toolBlocks: [], errorBlocks: [], isLast: false };
-      current.toolBlocks.push(b);
+      if (!currentIter) currentIter = { id: `iter-init-${idx}`, toolBlocks: [], errorBlocks: [], isLast: false };
+      currentIter.toolBlocks.push(b);
     }
   });
   
-  if (current) iterations.push(current);
-  if (iterations.length > 0) {
-    iterations[iterations.length - 1].isLast = true;
+  pushCurrentIter();
+  
+  const lastIter = items.slice().reverse().find(i => i.type === 'iteration');
+  if (lastIter && lastIter.type === 'iteration') {
+    lastIter.data.isLast = true;
   }
-  return iterations;
+  
+  return items;
 }
 
 const TurnIterationUI = memo(function TurnIterationUI({
@@ -403,9 +421,14 @@ const SubagentCard = memo(function SubagentCard({ subagent, entry }: { subagent:
           <div className="subagent-task">
             {typeof subagent.task === 'string' ? subagent.task : JSON.stringify(subagent.task)}
           </div>
-          {groupBlocksIntoIterations((subagent.blocks as any) || []).map((iter) => (
-             <TurnIterationUI key={iter.id} iteration={iter} entry={entry} />
-          ))}
+          {groupBlocksIntoItems((subagent.blocks as any) || []).map((item, idx) => {
+             if (item.type === 'iteration') {
+               return <TurnIterationUI key={item.data.id} iteration={item.data} entry={entry} />;
+             } else {
+               const text = typeof (item.data as any).text === 'string' ? (item.data as any).text : JSON.stringify((item.data as any).text);
+               return <MarkdownContent key={`sub-assistant-${idx}`} content={text} className="assistant-msg" isStreaming={!!(item.data as any).isStreaming} />;
+             }
+          })}
         </div>
       )}
     </div>
@@ -544,10 +567,60 @@ export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: ChatEnt
   // Check if there are any intermediate blocks at all
   const hasIntermediateSteps = toolCount > 0 || thoughtCount > 0;
 
+  const renderItems = useMemo(() => groupBlocksIntoItems(entry.blocks || []), [entry.blocks]);
+  const firstIterIdx = useMemo(() => renderItems.findIndex(i => i.type === 'iteration'), [renderItems]);
+  const lastIterIdx = useMemo(() => renderItems.findLastIndex(i => i.type === 'iteration'), [renderItems]);
+
   return (
     <div className="agent-turn">
-      {/* Turn Header — only show if there are intermediate steps */}
-      {(hasIntermediateSteps || isProcessing) && (
+      {renderItems.map((item, idx) => {
+        const isFirstIter = idx === firstIterIdx;
+        const showHeaderHere = isFirstIter || (firstIterIdx === -1 && idx === renderItems.length - 1);
+
+        return (
+          <React.Fragment key={item.type === 'iteration' ? item.data.id : `assistant-${idx}`}>
+            {showHeaderHere && (hasIntermediateSteps || isProcessing) && (
+              <>
+                <div
+                  className={`turn-header ${isProcessing ? 'processing-pulse' : ''}`}
+                  style={{ cursor: !isProcessing ? 'pointer' : 'default' }}
+                  onClick={() => {
+                    if (!isProcessing) setCollapsed(!collapsed);
+                  }}
+                >
+                  {isProcessing ? (
+                    <>
+                      <LoaderIcon className="tool-loader-icon" size={12} />
+                      <ProcessingTimer startTime={entry.startTime} endTime={entry.endTime} />
+                      <ChevronDownIcon size={12} style={ml4} />
+                    </>
+                  ) : (
+                    <>
+                      <span>Worked {summaryParts.join(' · ')}</span>
+                      {collapsed ? <ChevronRightIcon size={12} style={ml4} /> : <ChevronDownIcon size={12} style={ml4} />}
+                    </>
+                  )}
+                </div>
+                <div className="turn-divider" />
+              </>
+            )}
+
+            {item.type === 'assistant' ? (
+              (!collapsed || lastIterIdx === -1 || idx > lastIterIdx) && (
+                <MarkdownContent
+                  content={typeof (item.data as any).text === 'string' ? (item.data as any).text : JSON.stringify((item.data as any).text)}
+                  className="assistant-msg"
+                  isStreaming={!!(item.data as any).isStreaming}
+                />
+              )
+            ) : (
+              !collapsed && <TurnIterationUI iteration={item.data} entry={entry} />
+            )}
+          </React.Fragment>
+        );
+      })}
+
+      {firstIterIdx === -1 && renderItems.length === 0 && (hasIntermediateSteps || isProcessing) && (
         <>
           <div
             className={`turn-header ${isProcessing ? 'processing-pulse' : ''}`}
@@ -573,26 +646,7 @@ export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: ChatEnt
         </>
       )}
 
-      {/* Intermediate steps — collapsible iterations */}
-      {!collapsed && groupBlocksIntoIterations(entry.blocks || []).map((iter) => (
-        <TurnIterationUI key={iter.id} iteration={iter} entry={entry} />
-      ))}
 
-      {/* Assistant text — always visible regardless of collapse */}
-      {entry.blocks?.map((b: TurnBlock, idx: number) => {
-        if (b.type === 'assistant') {
-          const text = typeof (b as any).text === 'string' ? (b as any).text : JSON.stringify((b as any).text);
-          return (
-            <MarkdownContent
-              key={`assistant-${idx}`}
-              content={text}
-              className="assistant-msg"
-              isStreaming={!!b.isStreaming}
-            />
-          );
-        }
-        return null;
-      })}
 
       {isProcessing ? <DynamicWorkingIndicator entry={entry} /> : <TurnFooter entry={entry} />}
     </div>
