@@ -160,6 +160,11 @@ pub enum AgentEvent {
         tool_name: String,
         args: serde_json::Value,
     },
+    SubagentToolUpdate {
+        subagent_id: String,
+        tool_call_id: String,
+        partial_result: String,
+    },
     SubagentToolEnd {
         subagent_id: String,
         tool_call_id: String,

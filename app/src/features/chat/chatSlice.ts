@@ -99,6 +99,7 @@ export interface AgentEvent {
   SubagentStart?: { subagent_id: string; role_name?: string; task: string | unknown };
   SubagentMessageUpdate?: { subagent_id: string; delta: DeltaPayload };
   SubagentToolStart?: { subagent_id: string; tool_call_id: string; tool_name: string; args?: unknown };
+  SubagentToolUpdate?: { subagent_id: string; tool_call_id: string; partial_result: unknown };
   SubagentToolEnd?: { subagent_id: string; tool_call_id: string; result: unknown; is_error: boolean };
   SubagentApprovalRequired?: { subagent_id: string; prompt_id: string; tool_name: string; tool_input: unknown; danger_level: string; explanation: string };
   SubagentEnd?: { subagent_id: string; success: boolean; iterations_used?: number };
@@ -184,18 +185,25 @@ function runEventToAgentEvent(ev: RunEventPayload): AgentEvent {
     case 'turn_ended':
       return { TurnEnd: {} };
     case 'message_update':
+      if (ev.subagent_id) return { SubagentMessageUpdate: { subagent_id: ev.subagent_id, delta: ev.delta ?? {} } };
       return { MessageUpdate: { delta: ev.delta ?? {} } };
     case 'message_end':
+      if (ev.subagent_id) return {};
       return { MessageEnd: {} };
     case 'model_streaming':
+      if (ev.subagent_id) return { SubagentMessageUpdate: { subagent_id: ev.subagent_id, delta: ev.delta ?? {} } };
       return { MessageUpdate: { delta: ev.delta ?? {} } };
     case 'tool_started':
+      if (ev.subagent_id) return { SubagentToolStart: { subagent_id: ev.subagent_id, tool_call_id: ev.call_id ?? '', tool_name: ev.name ?? '', args: ev.args } };
       return { ToolExecutionStart: { tool_call_id: ev.call_id ?? '', tool_name: ev.name ?? '', args: ev.args } };
     case 'tool_update':
+      if (ev.subagent_id) return { SubagentToolUpdate: { subagent_id: ev.subagent_id, tool_call_id: ev.call_id ?? '', partial_result: ev.partial ?? '' } };
       return { ToolExecutionUpdate: { tool_call_id: ev.call_id ?? '', partial_result: ev.partial ?? '' } };
     case 'tool_ended':
+      if (ev.subagent_id) return { SubagentToolEnd: { subagent_id: ev.subagent_id, tool_call_id: ev.call_id ?? '', result: ev.result ?? '', is_error: ev.is_error ?? false } };
       return { ToolExecutionEnd: { tool_call_id: ev.call_id ?? '', result: ev.result ?? '', is_error: ev.is_error ?? false } };
     case 'approval_required':
+      if (ev.subagent_id) return { SubagentApprovalRequired: { subagent_id: ev.subagent_id, prompt_id: ev.prompt_id ?? '', tool_name: ev.tool_name ?? '', tool_input: ev.tool_input, danger_level: ev.danger_level ?? '', explanation: ev.explanation ?? '' } };
       return { ApprovalRequired: { prompt_id: ev.prompt_id ?? '', tool_name: ev.tool_name ?? '', tool_input: ev.tool_input, danger_level: ev.danger_level ?? '', explanation: ev.explanation ?? '' } };
     case 'subagent_started':
       return { SubagentStart: { subagent_id: ev.subagent_id ?? '', role_name: ev.role_name, task: ev.task ?? '' } };
@@ -531,6 +539,17 @@ function handleSubagentToolStart(
   }
 }
 
+function handleSubagentToolUpdate(state: ChatState, subagentId: string, toolCallId: string, partialResult: unknown): void {
+  const turn = getActiveTurn(state);
+  if (turn && turn.subagents && turn.subagents[subagentId]) {
+    const sa = turn.subagents[subagentId];
+    const block = sa.blocks.find((b) => b.type === 'tool' && b.call_id === toolCallId);
+    if (block && block.type === 'tool') {
+      block.result += typeof partialResult === 'string' ? partialResult : JSON.stringify(partialResult);
+    }
+  }
+}
+
 function handleSubagentToolEnd(
   state: ChatState,
   subagentId: string,
@@ -731,6 +750,13 @@ export const chatSlice = createSlice({
           event.SubagentToolStart.tool_call_id,
           event.SubagentToolStart.tool_name,
           event.SubagentToolStart.args
+        );
+      } else if (event.SubagentToolUpdate) {
+        handleSubagentToolUpdate(
+          state,
+          event.SubagentToolUpdate.subagent_id,
+          event.SubagentToolUpdate.tool_call_id,
+          event.SubagentToolUpdate.partial_result
         );
       } else if (event.SubagentToolEnd) {
         handleSubagentToolEnd(

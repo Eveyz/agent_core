@@ -39,25 +39,28 @@ pub enum RunEvent {
 
     // ── Model ──────────────────────────────────────────────────────
     ModelCallStarted,
-    ModelStreaming { delta: MessageDelta },
+    ModelStreaming { subagent_id: Option<String>, delta: MessageDelta },
     ModelCallEnded { text: String, tool_count: usize },
 
     // ── Messages ───────────────────────────────────────────────────
     MessageStart { message: Message },
-    MessageUpdate { delta: MessageDelta },
+    MessageUpdate { subagent_id: Option<String>, delta: MessageDelta },
     MessageEnd { message: Message },
 
     // ── Tool execution ─────────────────────────────────────────────
     ToolStarted {
+        subagent_id: Option<String>,
         call_id: String,
         name: String,
         args: Value,
     },
     ToolUpdate {
+        subagent_id: Option<String>,
         call_id: String,
         partial: String,
     },
     ToolEnded {
+        subagent_id: Option<String>,
         call_id: String,
         name: String,
         result: String,
@@ -66,6 +69,7 @@ pub enum RunEvent {
 
     // ── Interaction points ─────────────────────────────────────────
     ApprovalRequired {
+        subagent_id: Option<String>,
         prompt_id: String,
         tool_name: String,
         tool_input: Value,
@@ -116,7 +120,7 @@ impl RunEvent {
             AgentEvent::TurnStart { turn_index } => RunEvent::TurnStarted { index: turn_index },
             AgentEvent::TurnEnd { turn_index, .. } => RunEvent::TurnEnded { index: turn_index },
             AgentEvent::MessageStart { message } => RunEvent::MessageStart { message },
-            AgentEvent::MessageUpdate { delta } => RunEvent::MessageUpdate { delta },
+            AgentEvent::MessageUpdate { delta } => RunEvent::MessageUpdate { subagent_id: None, delta },
             AgentEvent::MessageEnd { message } => RunEvent::MessageEnd { message },
             // ModelCall events don't exist in AgentEvent — Run emits them directly
             AgentEvent::ToolExecutionStart {
@@ -124,6 +128,7 @@ impl RunEvent {
                 tool_name,
                 args,
             } => RunEvent::ToolStarted {
+                subagent_id: None,
                 call_id: tool_call_id,
                 name: tool_name,
                 args,
@@ -133,6 +138,7 @@ impl RunEvent {
                 partial_result,
                 ..
             } => RunEvent::ToolUpdate {
+                subagent_id: None,
                 call_id: tool_call_id,
                 partial: partial_result,
             },
@@ -142,6 +148,7 @@ impl RunEvent {
                 result,
                 is_error,
             } => RunEvent::ToolEnded {
+                subagent_id: None,
                 call_id: tool_call_id,
                 name: tool_name,
                 result,
@@ -154,6 +161,7 @@ impl RunEvent {
                 danger_level,
                 explanation,
             } => RunEvent::ApprovalRequired {
+                subagent_id: None,
                 prompt_id,
                 tool_name,
                 tool_input,
@@ -181,13 +189,34 @@ impl RunEvent {
                 iterations_used,
             },
             // Subagent streaming events map to generic streaming events.
-            AgentEvent::SubagentMessageUpdate { delta, .. } => RunEvent::ModelStreaming { delta },
-            AgentEvent::SubagentToolStart { .. } | AgentEvent::SubagentToolEnd { .. } => {
-                return None
-            }
-            AgentEvent::SubagentTurnStart { .. } | AgentEvent::SubagentApprovalRequired { .. } => {
-                return None
-            }
+            AgentEvent::SubagentMessageUpdate { subagent_id, delta } => RunEvent::ModelStreaming { subagent_id: Some(subagent_id), delta },
+            AgentEvent::SubagentToolStart { subagent_id, tool_call_id, tool_name, args } => RunEvent::ToolStarted {
+                subagent_id: Some(subagent_id),
+                call_id: tool_call_id,
+                name: tool_name,
+                args,
+            },
+            AgentEvent::SubagentToolUpdate { subagent_id, tool_call_id, partial_result } => RunEvent::ToolUpdate {
+                subagent_id: Some(subagent_id),
+                call_id: tool_call_id,
+                partial: partial_result,
+            },
+            AgentEvent::SubagentToolEnd { subagent_id, tool_call_id, tool_name, result, is_error } => RunEvent::ToolEnded {
+                subagent_id: Some(subagent_id),
+                call_id: tool_call_id,
+                name: tool_name,
+                result,
+                is_error,
+            },
+            AgentEvent::SubagentApprovalRequired { subagent_id, prompt_id, tool_name, tool_input, danger_level, explanation } => RunEvent::ApprovalRequired {
+                subagent_id: Some(subagent_id),
+                prompt_id,
+                tool_name,
+                tool_input,
+                danger_level,
+                explanation,
+            },
+            AgentEvent::SubagentTurnStart { .. } => return None,
             // ContextCompacted doesn't exist in AgentEvent — Run emits it directly
         })
     }

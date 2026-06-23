@@ -138,6 +138,7 @@ fn event_tag(event: &AgentEvent) -> &'static str {
         AgentEvent::SubagentTurnStart { .. } => "SubagentTurnStart",
         AgentEvent::SubagentMessageUpdate { .. } => "SubagentMessageUpdate",
         AgentEvent::SubagentToolStart { .. } => "SubagentToolStart",
+        AgentEvent::SubagentToolUpdate { .. } => "SubagentToolUpdate",
         AgentEvent::SubagentToolEnd { .. } => "SubagentToolEnd",
         AgentEvent::SubagentEnd { .. } => "SubagentEnd",
         AgentEvent::SubagentApprovalRequired { .. } => "SubagentApprovalRequired",

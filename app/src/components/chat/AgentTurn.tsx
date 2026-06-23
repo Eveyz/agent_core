@@ -470,14 +470,18 @@ const SubagentCard = memo(function SubagentCard({ subagent, entry }: { subagent:
           <div className="subagent-task">
             {typeof subagent.task === 'string' ? subagent.task : JSON.stringify(subagent.task)}
           </div>
-          {groupBlocksIntoItems((subagent.blocks as any) || []).map((item, idx) => {
-             if (item.type === 'iteration') {
-               return <TurnIterationUI key={item.data.id} iteration={item.data} entry={entry} />;
-             } else {
-               const text = typeof (item.data as any).text === 'string' ? (item.data as any).text : JSON.stringify((item.data as any).text);
-               return <MarkdownContent key={`sub-assistant-${idx}`} content={text} className="assistant-msg" isStreaming={!!(item.data as any).isStreaming} />;
-             }
-          })}
+          <div style={{ marginTop: '8px' }}>
+            <AgentTurnUI 
+              entry={{
+                id: subagent.id,
+                type: 'turn',
+                blocks: subagent.blocks as any,
+                startTime: subagent.startTime,
+                endTime: subagent.endTime,
+                subagents: entry?.subagents
+              }} 
+            />
+          </div>
         </div>
       )}
     </div>

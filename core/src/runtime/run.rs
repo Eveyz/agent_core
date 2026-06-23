@@ -513,6 +513,7 @@ impl Run {
                 || result.starts_with("Hook vetoed");
 
             self.emit(RunEvent::ToolEnded {
+                subagent_id: None,
                 call_id: call.id.clone(),
                 name: call.function.name.clone(),
                 result: result.clone(),
@@ -623,12 +624,14 @@ impl Run {
             match event {
                 StreamEvent::TextDelta(delta) => {
                     let _ = event_tx.send(RunEvent::ModelStreaming {
+                        subagent_id: None,
                         delta: MessageDelta::Text(delta.clone()),
                     });
                     text_buffer.push_str(&delta);
                 }
                 StreamEvent::ThinkingDelta(delta) => {
                     let _ = event_tx.send(RunEvent::ModelStreaming {
+                        subagent_id: None,
                         delta: MessageDelta::Thinking(delta),
                     });
                 }
