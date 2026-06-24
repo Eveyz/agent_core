@@ -53,9 +53,7 @@ Use when you need to retrieve and analyze web content."
         let url_to_fetch = upgrade_to_https(url);
 
         // Pick a random User-Agent
-        let ua = USER_AGENTS[
-            rand::random::<usize>() % USER_AGENTS.len()
-        ];
+        let ua = USER_AGENTS[rand::random::<usize>() % USER_AGENTS.len()];
 
         let client = reqwest::Client::builder()
             .user_agent(ua)
@@ -79,7 +77,12 @@ Use when you need to retrieve and analyze web content."
             .to_string();
 
         if !response.status().is_success() {
-            return Ok(format_http_status(url, &url_to_fetch, status_code, &response));
+            return Ok(format_http_status(
+                url,
+                &url_to_fetch,
+                status_code,
+                &response,
+            ));
         }
 
         let body = match response.text().await {
@@ -206,8 +209,13 @@ fn strip_html_tags(html: &str) -> String {
                     in_script_style = true;
                 } else if t == "/script" || t == "/style" {
                     in_script_style = false;
-                } else if t == "br" || t == "hr" || t == "p"
-                    || t.starts_with("/h") || t == "/div" || t == "/li" || t == "/tr"
+                } else if t == "br"
+                    || t == "hr"
+                    || t == "p"
+                    || t.starts_with("/h")
+                    || t == "/div"
+                    || t == "/li"
+                    || t == "/tr"
                 {
                     out.push('\n');
                 }

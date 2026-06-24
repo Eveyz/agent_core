@@ -36,7 +36,10 @@ impl RunState {
 
     /// Returns `true` if the Run is actively blocked waiting for external input.
     pub fn is_blocked(self) -> bool {
-        matches!(self, Self::AwaitingApproval | Self::AwaitingInput | Self::Paused)
+        matches!(
+            self,
+            Self::AwaitingApproval | Self::AwaitingInput | Self::Paused
+        )
     }
 
     /// Returns `true` if the Run is alive (not terminal).

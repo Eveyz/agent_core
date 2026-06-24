@@ -19,16 +19,17 @@
 
 use anyhow::{Result, bail};
 use futures::StreamExt;
+use parking_lot::{Mutex, MutexGuard};
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::executor::ToolOrchestrator;
 use crate::agent::ContextProcessor;
+use crate::agent::executor::ToolOrchestrator;
 use crate::client::OpenAIClient;
 use crate::client::streaming::{TokenAccumulator, ToolCallAccumulator};
 use crate::config::ModelConfig;
@@ -36,17 +37,15 @@ use crate::context::ContextEngine as Context;
 use crate::error_recovery::{RecoveryAction, RecoveryContext, RecoveryEngine};
 use crate::hooks::HookRegistry;
 use crate::permission::PermissionPolicy;
+use crate::runtime::approval::ApprovalResolver;
 use crate::runtime::brain::Brain;
 use crate::runtime::command::RunCommand;
 use crate::runtime::event::{Envelope, RunEvent, RunId};
-use crate::runtime::state::RunState;
-use crate::runtime::approval::ApprovalResolver;
 use crate::runtime::guard::EventGuard;
+use crate::runtime::state::RunState;
 use crate::runtime::supervisor::ProcessSupervisor;
 use crate::tools::ToolRegistry;
-use crate::types::{
-    Message, MessageDelta, Role, StreamEvent, ToolCall, ToolExecutionMode,
-};
+use crate::types::{Message, MessageDelta, Role, StreamEvent, ToolCall, ToolExecutionMode};
 
 /// Result of running a single turn.
 enum TurnOutcome {
@@ -146,12 +145,10 @@ impl Run {
 
         let mut registry = brain.build_tool_registry();
         // Replace the default BashTool with a supervised version
-        registry.register(Box::new(
-            crate::tools::bash::BashTool::with_supervisor(
-                supervisor.clone(),
-                working_dir_for_tool,
-            ),
-        ));
+        registry.register(Box::new(crate::tools::bash::BashTool::with_supervisor(
+            supervisor.clone(),
+            working_dir_for_tool,
+        )));
 
         let mut context = Context::new(&identity, max_context_tokens);
 
@@ -177,11 +174,10 @@ impl Run {
 
         // Segment 5: ACTIVE MEMORY
         if let Some(ref mem) = brain.memory {
-            if let Ok(m) = mem.lock() {
-                let core_str = m.core().to_context_string();
-                if !core_str.is_empty() {
-                    context.set_active_memory(&core_str);
-                }
+            let m = mem.lock();
+            let core_str = m.core().to_context_string();
+            if !core_str.is_empty() {
+                context.set_active_memory(&core_str);
             }
         }
 
@@ -253,7 +249,9 @@ impl Run {
     fn transition(&mut self, to: RunState) {
         let from = self.state;
         self.state = to;
-        let _ = self.event_tx.send(self.wrap(RunEvent::StateChanged { from, to }));
+        let _ = self
+            .event_tx
+            .send(self.wrap(RunEvent::StateChanged { from, to }));
     }
 
     fn emit(&mut self, event: RunEvent) {
@@ -311,9 +309,8 @@ impl Run {
 
         // Store in memory if enabled
         if let Some(ref mem) = self.brain.memory {
-            if let Ok(m) = mem.lock() {
-                let _ = m.store_conversation("user", user_input);
-            }
+            let m = mem.lock();
+            let _ = m.store_conversation("user", user_input);
         }
 
         // Run the loop
@@ -457,7 +454,7 @@ impl Run {
         self.maybe_llm_compact().await;
 
         // Stage: Model
-        let (text, tool_calls) = match self.model_turn().await {
+        let (text, tool_calls, message_id) = match self.model_turn().await {
             Ok(r) => r,
             Err(e) => {
                 if self.cancel.is_cancelled() {
@@ -476,6 +473,7 @@ impl Run {
             let assistant_msg = Message::assistant(&text);
             self.context.add(assistant_msg.clone());
             self.emit(RunEvent::MessageEnd {
+                message_id: message_id.clone(),
                 message: assistant_msg.clone(),
             });
             self.emit(RunEvent::TurnEnded { index: turn_index });
@@ -483,9 +481,8 @@ impl Run {
 
             // Store in memory
             if let Some(ref mem) = self.brain.memory {
-                if let Ok(m) = mem.lock() {
-                    let _ = m.store_conversation("assistant", &text);
-                }
+                let m = mem.lock();
+                let _ = m.store_conversation("assistant", &text);
             }
 
             // Process steering messages
@@ -502,6 +499,7 @@ impl Run {
         let assistant_msg = Message::assistant_with_tools(&text, tool_calls.clone());
         self.context.add(assistant_msg.clone());
         self.emit(RunEvent::MessageEnd {
+            message_id: message_id.clone(),
             message: assistant_msg.clone(),
         });
 
@@ -612,7 +610,7 @@ impl Run {
 
     // ── Model interaction ────────────────────────────────────────
 
-    async fn model_turn(&mut self) -> Result<(String, Vec<ToolCall>), String> {
+    async fn model_turn(&mut self) -> Result<(String, Vec<ToolCall>, String), String> {
         const MAX_RECOVERY_ATTEMPTS: u32 = 3;
 
         for _attempt in 0..MAX_RECOVERY_ATTEMPTS {
@@ -628,7 +626,7 @@ impl Run {
             if let Some(preset) = self.hook_registry.fire_before_model(&snapshot) {
                 self.recovery_ctx.record_success();
                 self.hook_registry.fire_after_model(&preset, 0);
-                return Ok((preset, Vec::new()));
+                return Ok((preset, Vec::new(), uuid::Uuid::new_v4().to_string()));
             }
 
             let stream = self
@@ -637,7 +635,7 @@ impl Run {
                 .await
                 .map_err(|e| format!("LLM request failed: {e}"))?;
 
-            let collected: Result<(String, Vec<ToolCall>), String> = {
+            let collected: Result<(String, Vec<ToolCall>, String), String> = {
                 let cancel = self.cancel.clone();
                 let event_tx = self.event_tx.clone();
                 let res = self.collect_stream(stream, &event_tx).await;
@@ -653,12 +651,11 @@ impl Run {
             };
 
             match collected {
-                Ok((text, tool_calls)) => {
+                Ok((text, tool_calls, message_id)) => {
                     self.recovery_ctx.record_success();
-                    self.hook_registry
-                        .fire_after_model(&text, tool_calls.len());
+                    self.hook_registry.fire_after_model(&text, tool_calls.len());
 
-                    return Ok((text, tool_calls));
+                    return Ok((text, tool_calls, message_id));
                 }
                 Err(msg) => {
                     self.recovery_ctx.record_error(&msg);
@@ -677,12 +674,15 @@ impl Run {
         &self,
         stream: impl futures::Stream<Item = Result<StreamEvent>>,
         event_tx: &broadcast::Sender<Envelope>,
-    ) -> Result<(String, Vec<ToolCall>)> {
+    ) -> Result<(String, Vec<ToolCall>, String)> {
         let mut text_buffer = String::new();
         let mut accumulator = ToolCallAccumulator::new();
         let mut has_tool_calls = false;
         // Token accumulator: batches text/thinking deltas to cut IPC traffic.
         let mut tokens = TokenAccumulator::new();
+        // Stable id for this model response; carried on every streaming delta
+        // so the frontend routes by identity instead of position.
+        let message_id = uuid::Uuid::new_v4().to_string();
 
         tokio::pin!(stream);
         while let Some(event) = stream.next().await {
@@ -699,12 +699,14 @@ impl Run {
                             if !text.is_empty() {
                                 let _ = event_tx.send(self.wrap(RunEvent::ModelStreaming {
                                     subagent_id: None,
+                                    message_id: message_id.clone(),
                                     delta: MessageDelta::Text(text),
                                 }));
                             }
                             if !thinking.is_empty() {
                                 let _ = event_tx.send(self.wrap(RunEvent::ModelStreaming {
                                     subagent_id: None,
+                                    message_id: message_id.clone(),
                                     delta: MessageDelta::Thinking(thinking),
                                 }));
                             }
@@ -718,12 +720,14 @@ impl Run {
                             if !text.is_empty() {
                                 let _ = event_tx.send(self.wrap(RunEvent::ModelStreaming {
                                     subagent_id: None,
+                                    message_id: message_id.clone(),
                                     delta: MessageDelta::Text(text),
                                 }));
                             }
                             if !thinking.is_empty() {
                                 let _ = event_tx.send(self.wrap(RunEvent::ModelStreaming {
                                     subagent_id: None,
+                                    message_id: message_id.clone(),
                                     delta: MessageDelta::Thinking(thinking),
                                 }));
                             }
@@ -743,12 +747,14 @@ impl Run {
             if !text.is_empty() {
                 let _ = event_tx.send(self.wrap(RunEvent::ModelStreaming {
                     subagent_id: None,
+                    message_id: message_id.clone(),
                     delta: MessageDelta::Text(text),
                 }));
             }
             if !thinking.is_empty() {
                 let _ = event_tx.send(self.wrap(RunEvent::ModelStreaming {
                     subagent_id: None,
+                    message_id: message_id.clone(),
                     delta: MessageDelta::Thinking(thinking),
                 }));
             }
@@ -760,7 +766,7 @@ impl Run {
             vec![]
         };
 
-        Ok((text_buffer, tool_calls))
+        Ok((text_buffer, tool_calls, message_id))
     }
 
     async fn try_recover(&mut self, error: &str) -> RecoveryOutcome {
@@ -849,11 +855,10 @@ impl Run {
 
         // Segment 5: ACTIVE MEMORY
         if let Some(ref mem) = self.brain.memory {
-            if let Ok(m) = mem.lock() {
-                let core_str = m.core().to_context_string();
-                if !core_str.is_empty() {
-                    self.context.set_active_memory(&core_str);
-                }
+            let m = mem.lock();
+            let core_str = m.core().to_context_string();
+            if !core_str.is_empty() {
+                self.context.set_active_memory(&core_str);
             }
         }
     }
@@ -900,7 +905,7 @@ impl Run {
 
         // 3. Kill all child processes
         {
-            let mut sup: std::sync::MutexGuard<'_, ProcessSupervisor> = self.supervisor.lock().unwrap();
+            let mut sup: MutexGuard<'_, ProcessSupervisor> = self.supervisor.lock();
             sup.kill_all();
         }
 
@@ -915,7 +920,7 @@ impl Run {
     fn cleanup_on_exit(&mut self) {
         // Kill any remaining processes (idempotent if already killed)
         {
-            let mut sup: std::sync::MutexGuard<'_, ProcessSupervisor> = self.supervisor.lock().unwrap();
+            let mut sup: MutexGuard<'_, ProcessSupervisor> = self.supervisor.lock();
             sup.kill_all();
         }
 
@@ -934,9 +939,7 @@ impl Drop for Run {
         self.cancel.cancel();
         self.join_set.abort_all();
         // Kill all supervised processes
-        if let Ok(mut sup) = self.supervisor.lock() {
-            sup.kill_all();
-        }
+        self.supervisor.lock().kill_all();
         // approval_resolver.clear() is called above (resolvers get dropped error)
     }
 }
@@ -1002,10 +1005,7 @@ fn build_iteration_limit_summary(context: &Context, max_iterations: usize) -> St
     );
 
     if !tool_summary.is_empty() {
-        msg.push_str(&format!(
-            "Tools used:\n{}\n\n",
-            tool_summary.join("\n")
-        ));
+        msg.push_str(&format!("Tools used:\n{}\n\n", tool_summary.join("\n")));
     }
 
     if total_tool_calls == 0 {

@@ -1,11 +1,12 @@
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use parking_lot::Mutex;
 use rand::Rng;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CircuitState {
-    Closed, // Normal operation
-    Open,   // Failing, blocking requests
+    Closed,   // Normal operation
+    Open,     // Failing, blocking requests
     HalfOpen, // Testing if the service is back
 }
 
@@ -47,7 +48,7 @@ impl CircuitBreaker {
     }
 
     pub fn acquire_permit(&self) -> Result<(), &'static str> {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
 
         match state.state {
             CircuitState::Closed => Ok(()),
@@ -69,13 +70,13 @@ impl CircuitBreaker {
     }
 
     pub fn record_success(&self) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         state.failure_count = 0;
         state.state = CircuitState::Closed;
     }
 
     pub fn record_failure(&self) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         state.failure_count += 1;
         state.last_failure_time = Some(Instant::now());
 
@@ -89,7 +90,7 @@ pub fn calculate_backoff(attempt: u32, base_delay: Duration, max_delay: Duration
     let factor = 2_u32.pow(attempt.min(6));
     let current_delay = base_delay.saturating_mul(factor);
     let current_delay = current_delay.min(max_delay);
-    
+
     let millis = current_delay.as_millis() as u64;
     let jitter_millis = rand::thread_rng().gen_range(0..=millis.max(1));
     Duration::from_millis(jitter_millis)

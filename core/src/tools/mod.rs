@@ -1,13 +1,13 @@
 pub mod archival_memory;
+pub mod bash;
 pub mod core_memory;
 pub mod edit;
 pub mod git;
 pub mod glob;
 pub mod grep;
 pub mod read_file;
-pub mod sed;
 pub mod recall_memory;
-pub mod bash;
+pub mod sed;
 pub mod skill;
 pub mod subagent;
 pub mod tavily_search;
@@ -19,9 +19,10 @@ use crate::memory::MemoryManager;
 use crate::types::{EventSender, FunctionSchema, ToolCall, ToolDefinition, ToolExecutionMode};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Callback for streaming tool progress updates.
 pub type ToolUpdateFn = Arc<dyn Fn(&str) + Send + Sync>;
@@ -256,8 +257,9 @@ pub fn build_tool_by_name(name: &str) -> Option<Box<dyn Tool>> {
         "glob" => Some(Box::new(glob::GlobTool)),
         "bash" => Some(Box::new(bash::BashTool::new())),
         "webfetch" => Some(Box::new(webfetch::WebFetchTool)),
-        "tavily_search" => tavily_search::TavilySearchTool::from_env()
-            .map(|t| Box::new(t) as Box<dyn Tool>),
+        "tavily_search" => {
+            tavily_search::TavilySearchTool::from_env().map(|t| Box::new(t) as Box<dyn Tool>)
+        }
         "git_status" => Some(Box::new(git::GitStatusTool)),
         "git_diff" => Some(Box::new(git::GitDiffTool)),
         "git_log" => Some(Box::new(git::GitLogTool)),

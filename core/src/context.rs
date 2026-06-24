@@ -245,8 +245,7 @@ impl ContextEngine {
             Stability::Stable,
         );
         self.stable_segment_names.push("principles".to_string());
-        self.segments
-            .insert("principles".to_string(), principles);
+        self.segments.insert("principles".to_string(), principles);
 
         // Segment 3: ENVIRONMENT — OS, CWD, git, time
         let env = ContextSegment::new(
@@ -405,10 +404,7 @@ impl ContextEngine {
                 // Truncate this segment to fit remaining budget
                 let truncated = truncate_to_token_budget(&seg.content, remaining);
                 if !truncated.is_empty() {
-                    parts.push(format!(
-                        "== {} (truncated) ==\n{}\n",
-                        seg.label, truncated
-                    ));
+                    parts.push(format!("== {} (truncated) ==\n{}\n", seg.label, truncated));
                 }
                 break;
             }
@@ -606,7 +602,12 @@ impl ContextEngine {
     }
 
     /// Apply a summary returned by the LLM (Stage 4).
-    pub fn apply_summary(&mut self, split_idx: usize, summary: &crate::compressor::TurnSummary, num_turns: usize) -> String {
+    pub fn apply_summary(
+        &mut self,
+        split_idx: usize,
+        summary: &crate::compressor::TurnSummary,
+        num_turns: usize,
+    ) -> String {
         crate::compressor::Compressor::apply_summary(
             &mut self.messages,
             split_idx,
@@ -724,7 +725,10 @@ impl ContextEngine {
         }
 
         let now = chrono::Local::now();
-        parts.push(format!("Current Time: {}", now.format("%Y-%m-%d %H:%M:%S %Z")));
+        parts.push(format!(
+            "Current Time: {}",
+            now.format("%Y-%m-%d %H:%M:%S %Z")
+        ));
 
         parts.join(" | ")
     }
@@ -986,11 +990,8 @@ mod tests {
 
     #[test]
     fn test_build_environment_string() {
-        let env = ContextEngine::build_environment_string(
-            Some("/home/user/project"),
-            None,
-            Some("main"),
-        );
+        let env =
+            ContextEngine::build_environment_string(Some("/home/user/project"), None, Some("main"));
         assert!(env.contains("/home/user/project"));
         assert!(env.contains("main"));
         // Windows or Linux should appear

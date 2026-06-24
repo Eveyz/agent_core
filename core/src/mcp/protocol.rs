@@ -59,11 +59,7 @@ impl JsonRpcResponse {
     /// Extract result, converting errors to anyhow.
     pub fn into_result(self) -> anyhow::Result<Value> {
         if let Some(err) = self.error {
-            anyhow::bail!(
-                "JSON-RPC error {}: {}",
-                err.code,
-                err.message
-            )
+            anyhow::bail!("JSON-RPC error {}: {}", err.code, err.message)
         }
         Ok(self.result.unwrap_or(Value::Null))
     }
@@ -249,7 +245,8 @@ mod tests {
 
     #[test]
     fn test_jsonrpc_response_error() {
-        let json = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
+        let json =
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
         let resp: JsonRpcResponse = serde_json::from_str(json).unwrap();
         assert!(!resp.is_ok());
         assert!(resp.error.is_some());

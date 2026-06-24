@@ -8,7 +8,8 @@ use crate::config::ModelConfig;
 use crate::permission::PermissionConfig;
 use crate::subagent::{Subagent, SubagentConfig};
 use crate::tools::{Tool, ToolRegistry};
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 pub fn register_task_tools(
     registry: &mut ToolRegistry,
@@ -69,7 +70,9 @@ fn build_dependency_context(board: &TaskBoard, task_id: &str) -> String {
             let result = dep.result().unwrap_or("(no result)");
             ctx.push_str(&format!(
                 "--- {} ({}) ---\n{}\n\n",
-                dep_id, dep.goal(), result
+                dep_id,
+                dep.goal(),
+                result
             ));
         }
     }
@@ -129,10 +132,7 @@ impl Tool for TaskCreateTool {
             })
             .unwrap_or_default();
 
-        let mut board = self
-            .board
-            .lock()
-            .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let mut board = self.board.lock();
 
         for dep in &depends_on {
             if board.get(dep).is_none() {
@@ -144,14 +144,17 @@ impl Tool for TaskCreateTool {
         // Wait, detect_cycle is a function in mod.rs. Let's see if we can use a dummy UUID to test cycle.
         // For now, since UUIDs are newly generated, a new task CANNOT create a cycle with existing tasks unless an existing task is updated to depend on it.
         // So detect_cycle on creation is actually impossible to trigger with newly minted UUIDs!
-        
+
         let new_uuid = board.create(title, description, depends_on.clone());
         let deps = if depends_on.is_empty() {
             String::new()
         } else {
             format!(" (blocked by: {})", depends_on.join(", "))
         };
-        Ok(format!("Task created! UUID: '{}' | Title: {} {}", new_uuid, title, deps))
+        Ok(format!(
+            "Task created! UUID: '{}' | Title: {} {}",
+            new_uuid, title, deps
+        ))
     }
 }
 
@@ -208,10 +211,7 @@ impl Tool for TaskUpdateTool {
             s => anyhow::bail!("invalid status: {}", s),
         };
 
-        let mut board = self
-            .board
-            .lock()
-            .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let mut board = self.board.lock();
 
         let status_str = format!("{}", status);
         board.update(id, status, result)?;
@@ -256,10 +256,7 @@ impl Tool for TaskListTool {
     }
 
     async fn execute(&self, _args: Value) -> anyhow::Result<String> {
-        let board = self
-            .board
-            .lock()
-            .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let board = self.board.lock();
         Ok(board.summary())
     }
 }
@@ -298,10 +295,7 @@ impl Tool for TaskGetTool {
         let id = args["id"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
-        let board = self
-            .board
-            .lock()
-            .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let board = self.board.lock();
         let task = board
             .get(id)
             .ok_or_else(|| anyhow::anyhow!("task '{}' not found", id))?;
@@ -316,7 +310,12 @@ impl Tool for TaskGetTool {
 
         Ok(format!(
             "Task: {}\nGoal: {}\nStatus: {}\nAssigned to: {}\nBlocked by: {}\nResult: {}",
-            task.id(), task.goal(), task.status(), assigned, deps, result
+            task.id(),
+            task.goal(),
+            task.status(),
+            assigned,
+            deps,
+            result
         ))
     }
 }
@@ -346,10 +345,7 @@ impl Tool for TaskPlanTool {
     }
 
     async fn execute(&self, _args: Value) -> anyhow::Result<String> {
-        let board = self
-            .board
-            .lock()
-            .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let board = self.board.lock();
         let tasks = board.all_tasks();
 
         if tasks.is_empty() {
@@ -439,10 +435,7 @@ impl Tool for TaskReadyTool {
     }
 
     async fn execute(&self, _args: Value) -> anyhow::Result<String> {
-        let board = self
-            .board
-            .lock()
-            .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let board = self.board.lock();
         let ready = board.ready_tasks();
 
         if ready.is_empty() {
@@ -547,10 +540,7 @@ impl Tool for TaskExecuteTool {
 
         // Check task is ready and get dependency context
         let (goal, dep_context, force_inline) = {
-            let board = self
-                .board
-                .lock()
-                .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let board = self.board.lock();
             let task = board
                 .get(id)
                 .ok_or_else(|| anyhow::anyhow!("task '{}' not found", id))?;
@@ -576,10 +566,7 @@ impl Tool for TaskExecuteTool {
 
         // Mark in-progress
         {
-            let mut board = self
-                .board
-                .lock()
-                .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let mut board = self.board.lock();
             board.update(id, TaskStatus::InProgress, None)?;
         }
 
@@ -595,10 +582,7 @@ impl Tool for TaskExecuteTool {
             // Execute inline — simple task, no subagent overhead
             let result_text = format!("[Task '{}' - inline] Goal: {}", id, goal);
 
-            let mut board = self
-                .board
-                .lock()
-                .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let mut board = self.board.lock();
             board.update(id, TaskStatus::Completed, Some(result_text.clone()))?;
 
             let ready = board.ready_tasks();
@@ -638,10 +622,7 @@ impl Tool for TaskExecuteTool {
 
         // Update task with result
         {
-            let mut board = self
-                .board
-                .lock()
-                .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+            let mut board = self.board.lock();
             if result.success {
                 board.update(id, TaskStatus::Completed, Some(result.output.clone()))?;
             } else {
@@ -693,9 +674,23 @@ fn should_use_subagent(goal: &str, board: &TaskBoard, current_id: &str) -> bool 
 
     // Count tool-related keywords in the goal
     let tool_keywords = [
-        "read", "write", "edit", "grep", "search", "find", "run",
-        "compile", "build", "test", "refactor", "implement", "fix",
-        "analyze", "check", "verify", "compare",
+        "read",
+        "write",
+        "edit",
+        "grep",
+        "search",
+        "find",
+        "run",
+        "compile",
+        "build",
+        "test",
+        "refactor",
+        "implement",
+        "fix",
+        "analyze",
+        "check",
+        "verify",
+        "compare",
     ];
     let goal_lower = goal.to_lowercase();
     let keyword_count = tool_keywords
@@ -766,7 +761,8 @@ fn topological_sort(tasks: &[&TaskRecord]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
+    use parking_lot::Mutex;
+    use std::sync::Arc;
 
     fn make_board() -> Arc<Mutex<TaskBoard>> {
         Arc::new(Mutex::new(TaskBoard::new()))
@@ -776,13 +772,13 @@ mod tests {
     fn test_cycle_detection_direct() {
         let board = make_board();
         let (id_a, id_b) = {
-            let mut b = board.lock().unwrap();
+            let mut b = board.lock();
             let a = b.create("A", "a", vec![]);
             let b_id = b.create("B", "b", vec![a.clone()]);
             (a, b_id)
         };
 
-        let b = board.lock().unwrap();
+        let b = board.lock();
         let result = detect_cycle(&b, &id_a, &[id_b.clone()]);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Circular"));
@@ -792,14 +788,14 @@ mod tests {
     fn test_cycle_detection_transitive() {
         let board = make_board();
         let (id_a, id_c) = {
-            let mut b = board.lock().unwrap();
+            let mut b = board.lock();
             let a = b.create("A", "a", vec![]);
             let b_id = b.create("B", "b", vec![a.clone()]);
             let c = b.create("C", "c", vec![b_id.clone()]);
             (a, c)
         };
 
-        let b = board.lock().unwrap();
+        let b = board.lock();
         let result = detect_cycle(&b, &id_a, &[id_c.clone()]);
         assert!(result.is_err());
     }
@@ -808,7 +804,7 @@ mod tests {
     fn test_no_cycle_valid_dag() {
         let board = make_board();
         let (id_a, id_b, id_c, id_d) = {
-            let mut b = board.lock().unwrap();
+            let mut b = board.lock();
             let a = b.create("A", "a", vec![]);
             let b_id = b.create("B", "b", vec![]);
             let c = b.create("C", "c", vec![a.clone(), b_id.clone()]);
@@ -816,7 +812,7 @@ mod tests {
             (a, b_id, c, d)
         };
 
-        let b = board.lock().unwrap();
+        let b = board.lock();
         assert!(detect_cycle(&b, "e", &[id_a.clone(), id_b.clone()]).is_ok());
         assert!(detect_cycle(&b, "f", &[id_d.clone()]).is_ok());
         assert!(detect_cycle(&b, "g", &[id_c.clone(), id_d.clone()]).is_ok());
@@ -897,10 +893,13 @@ mod tests {
         let mut b = board;
         let id1 = b.create("t1", "Read and analyze the config file", vec![]);
         // "read" + "analyze" = 2 tool keywords
-        assert!(should_use_subagent("Read and analyze the config file", &b, &id1));
+        assert!(should_use_subagent(
+            "Read and analyze the config file",
+            &b,
+            &id1
+        ));
     }
 }
-
 
 struct TaskBatchCreateTool {
     board: Arc<Mutex<TaskBoard>>,
@@ -953,26 +952,28 @@ impl Tool for TaskBatchCreateTool {
             .as_array()
             .ok_or_else(|| anyhow::anyhow!("missing or invalid 'tasks' array"))?;
 
-        let mut board = self
-            .board
-            .lock()
-            .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        let mut board = self.board.lock();
 
-        let mut local_to_uuid: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let mut local_to_uuid: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         let mut results = Vec::new();
 
         for task_val in tasks_arr {
             let local_id = task_val["local_id"].as_str().unwrap_or("").to_string();
             let title = task_val["title"].as_str().unwrap_or("").to_string();
             let description = task_val["description"].as_str().unwrap_or("").to_string();
-            
+
             if local_id.is_empty() || title.is_empty() || description.is_empty() {
                 anyhow::bail!("Each task must have local_id, title, and description");
             }
 
             let depends_on_raw: Vec<String> = task_val["depends_on"]
                 .as_array()
-                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default();
 
             // Resolve dependencies: could be an existing UUID or a local_id created in this batch
@@ -983,7 +984,11 @@ impl Tool for TaskBatchCreateTool {
                 } else if board.get(&dep).is_some() {
                     resolved_deps.push(dep);
                 } else {
-                    anyhow::bail!("Dependency '{}' for task '{}' not found in this batch or existing tasks", dep, local_id);
+                    anyhow::bail!(
+                        "Dependency '{}' for task '{}' not found in this batch or existing tasks",
+                        dep,
+                        local_id
+                    );
                 }
             }
 
@@ -992,11 +997,16 @@ impl Tool for TaskBatchCreateTool {
             results.push(format!("{} -> {} ({})", local_id, uuid, title));
         }
 
-        let mut out = String::from("Batch creation successful:
-");
+        let mut out = String::from(
+            "Batch creation successful:
+",
+        );
         for r in results {
-            out.push_str(&format!("  {}
-", r));
+            out.push_str(&format!(
+                "  {}
+",
+                r
+            ));
         }
         Ok(out)
     }

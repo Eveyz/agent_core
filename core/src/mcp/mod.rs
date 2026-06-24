@@ -35,8 +35,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 use self::protocol::{
-    ContentItem, InitializeParams, InitializeResult, ClientCapabilities, ClientInfo,
-    JsonRpcResponse, ToolsCapability, ToolCallParams, ToolCallResult, ToolsListResult,
+    ClientCapabilities, ClientInfo, ContentItem, InitializeParams, InitializeResult,
+    JsonRpcResponse, ToolCallParams, ToolCallResult, ToolsCapability, ToolsListResult,
 };
 use self::sse::SseTransport;
 use self::transport::StdioTransport;
@@ -60,7 +60,9 @@ pub struct McpConfig {
 
 impl Default for McpConfig {
     fn default() -> Self {
-        Self { servers: Vec::new() }
+        Self {
+            servers: Vec::new(),
+        }
     }
 }
 
@@ -188,10 +190,7 @@ impl McpClientManager {
                 Err(e) => {
                     let msg = format!("{}", e);
                     eprintln!("[MCP] Server '{}' failed to connect: {}", name, msg);
-                    errors
-                        .entry(name)
-                        .or_insert_with(Vec::new)
-                        .push(msg);
+                    errors.entry(name).or_insert_with(Vec::new).push(msg);
                 }
             }
         }
@@ -218,7 +217,9 @@ impl McpClientManager {
         let init_params = serde_json::to_value(InitializeParams {
             protocol_version: "2024-11-05".to_string(),
             capabilities: ClientCapabilities {
-                tools: Some(ToolsCapability { list_changed: false }),
+                tools: Some(ToolsCapability {
+                    list_changed: false,
+                }),
                 resources: None,
             },
             client_info: ClientInfo {
@@ -230,12 +231,17 @@ impl McpClientManager {
         let response = transport_request(&transport, "initialize", init_params).await?;
         let _init_result: InitializeResult = serde_json::from_value(response.into_result()?)?;
 
-        transport_notify(&transport, "notifications/initialized", serde_json::json!({})).await?;
+        transport_notify(
+            &transport,
+            "notifications/initialized",
+            serde_json::json!({}),
+        )
+        .await?;
 
         // Discover tools
-        let tools_response = transport_request(&transport, "tools/list", serde_json::json!({})).await?;
-        let tools_list: ToolsListResult =
-            serde_json::from_value(tools_response.into_result()?)?;
+        let tools_response =
+            transport_request(&transport, "tools/list", serde_json::json!({})).await?;
+        let tools_list: ToolsListResult = serde_json::from_value(tools_response.into_result()?)?;
 
         let tools: Vec<McpToolDef> = tools_list
             .tools
@@ -340,7 +346,11 @@ impl Default for McpClientManager {
 
 // ── Transport dispatch helpers ────────────────────────────────────────
 
-async fn transport_request(transport: &Transport, method: &str, params: Value) -> Result<JsonRpcResponse> {
+async fn transport_request(
+    transport: &Transport,
+    method: &str,
+    params: Value,
+) -> Result<JsonRpcResponse> {
     match transport {
         Transport::Stdio(t) => t.request(method, params).await,
         Transport::Sse(t) => t.request(method, params).await,

@@ -34,13 +34,12 @@ use std::path::{Path, PathBuf};
 use crate::client::OpenAIClient;
 use crate::types::Message;
 
-
 pub mod digester;
 pub mod suggestion;
 
 pub use digester::{Digester, DigesterRule};
 pub use suggestion::{
-    Suggestion, SuggestionAction, SuggestionKind, SAFE_AUTO_APPLY, SECURITY_FIELDS,
+    SAFE_AUTO_APPLY, SECURITY_FIELDS, Suggestion, SuggestionAction, SuggestionKind,
 };
 
 /// The reflector: reads a trace, runs the digester, and emits suggestions.
@@ -73,9 +72,8 @@ impl Reflector {
             if line.trim().is_empty() {
                 continue;
             }
-            let rec: TraceRecord = serde_json::from_str(line).with_context(|| {
-                format!("failed to parse trace line {}: {line}", i + 1)
-            })?;
+            let rec: TraceRecord = serde_json::from_str(line)
+                .with_context(|| format!("failed to parse trace line {}: {line}", i + 1))?;
             records.push(rec);
         }
         Ok(records)
@@ -123,18 +121,17 @@ impl Reflector {
     /// the deterministic digester. If the LLM call fails or returns empty text,
     /// the original rationale is kept (best-effort). The LLM cannot change the
     /// suggestion kind, target, or safety classification.
-    pub async fn enrich_with_llm(
-        &self,
-        suggestions: &mut [Suggestion],
-        client: &OpenAIClient,
-    ) {
+    pub async fn enrich_with_llm(&self, suggestions: &mut [Suggestion], client: &OpenAIClient) {
         for sug in suggestions.iter_mut() {
             let prompt = format!(
                 "You are reviewing an AI agent execution trace. A heuristic flagged this issue:\n\n                 Issue: {}\n                 Target: {}\n                 Heuristic rationale: {}\n\n                 In one or two sentences, explain concisely why this matters and what the suggested                  change should accomplish. Do not propose any config or credential changes.\n\n                 Explanation:",
                 match sug.kind {
-                    SuggestionKind::AppendSkill => "a skill should be added to prevent a recurring failure pattern",
-                    SuggestionKind::MemoryThreshold => "a memory consolidation threshold may need tuning",
-                    SuggestionKind::PermissionChange => "permission defaults may need review (manual only)",
+                    SuggestionKind::AppendSkill =>
+                        "a skill should be added to prevent a recurring failure pattern",
+                    SuggestionKind::MemoryThreshold =>
+                        "a memory consolidation threshold may need tuning",
+                    SuggestionKind::PermissionChange =>
+                        "permission defaults may need review (manual only)",
                     SuggestionKind::CredentialChange => "credentials may need review (manual only)",
                     SuggestionKind::BehaviorLimit => "an iteration/token limit may need adjustment",
                 },
@@ -158,7 +155,9 @@ impl Reflector {
         std::fs::create_dir_all(&self.skills_dir)?;
         let file_name = format!(
             "reflector-{}.md",
-            suggestion.id.replace(|c: char| !c.is_alphanumeric() && c != '-', "-")
+            suggestion
+                .id
+                .replace(|c: char| !c.is_alphanumeric() && c != '-', "-")
         );
         let path = self.skills_dir.join(&file_name);
         let body = suggestion.skill_body.as_deref().unwrap_or("");
@@ -227,7 +226,11 @@ impl TraceRecord {
         Some(ToolEndSnapshot {
             tool_name: obj.get("tool_name")?.as_str()?.to_string(),
             is_error: obj.get("is_error")?.as_bool()?,
-            result: obj.get("result").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            result: obj
+                .get("result")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
         })
     }
 
@@ -238,7 +241,11 @@ impl TraceRecord {
 
     /// If this is a `TurnStart` event, return its index.
     pub fn as_turn_start(&self) -> Option<usize> {
-        self.event.get("TurnStart")?.get("turn_index")?.as_u64().map(|n| n as usize)
+        self.event
+            .get("TurnStart")?
+            .get("turn_index")?
+            .as_u64()
+            .map(|n| n as usize)
     }
 }
 
@@ -323,7 +330,8 @@ mod guard_tests {
         assert!(matches!(action, SuggestionAction::Applied));
         // file written with reflector marker
         // file name is derived from the suggestion id ("g-bash-guide").
-        let written = std::fs::read_to_string(dir.path().join("reflector-g-bash-guide.md")).unwrap();
+        let written =
+            std::fs::read_to_string(dir.path().join("reflector-g-bash-guide.md")).unwrap();
         assert!(written.contains("generated_by: reflector"));
         assert!(written.contains("name: bash-guide"));
     }
@@ -389,7 +397,11 @@ mod guard_tests {
         let records = Reflector::load_trace(&trace_path).unwrap();
         let suggestions = reflector.analyze(&records);
 
-        assert!(suggestions.iter().any(|s| s.kind == SuggestionKind::AppendSkill));
+        assert!(
+            suggestions
+                .iter()
+                .any(|s| s.kind == SuggestionKind::AppendSkill)
+        );
         // Apply all; the skill one must be Applied, nothing forbidden.
         for sug in &suggestions {
             let action = reflector.apply(sug).unwrap();

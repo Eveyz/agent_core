@@ -16,6 +16,7 @@ dependencies = [
  "anyhow",
  "argh",
  "crossterm",
+ "parking_lot",
  "pulldown-cmark",
  "ratatui",
  "rustyline",
@@ -42,6 +43,7 @@ dependencies = [
  "htmd",
  "jsonschema",
  "libc",
+ "parking_lot",
  "rand 0.8.6",
  "readability",
  "regex",
@@ -142,6 +144,7 @@ name = "app"
 version = "0.1.0"
 dependencies = [
  "agent_core",
+ "parking_lot",
  "serde",
  "serde_json",
  "tauri",

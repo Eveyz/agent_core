@@ -1,3 +1,4 @@
+use parking_lot::Mutex;
 use serde_json::Value;
 
 #[derive(Debug, Clone)]
@@ -333,11 +334,9 @@ mod tests {
         }
         fn handle(&self, event: &HookEvent) -> Option<HookAction> {
             match event {
-                HookEvent::BeforeModel { .. } => {
-                    Some(HookAction::SkipModel {
-                        preset_text: "preset answer".to_string(),
-                    })
-                }
+                HookEvent::BeforeModel { .. } => Some(HookAction::SkipModel {
+                    preset_text: "preset answer".to_string(),
+                }),
                 _ => None,
             }
         }
@@ -364,7 +363,7 @@ mod tests {
     /// is moved into the registry.
     #[derive(Default, Clone)]
     struct RecordingHook {
-        events: Arc<std::sync::Mutex<Vec<String>>>,
+        events: Arc<Mutex<Vec<String>>>,
     }
 
     impl Hook for RecordingHook {
@@ -382,7 +381,7 @@ mod tests {
                 HookEvent::PreToolUse { .. } => "pre_tool_use",
                 HookEvent::PostToolUse { .. } => "post_tool_use",
             };
-            self.events.lock().unwrap().push(label.to_string());
+            self.events.lock().push(label.to_string());
             None
         }
     }
@@ -402,7 +401,7 @@ mod tests {
         registry.fire_session_end("s1");
 
         assert_eq!(
-            events.lock().unwrap().as_slice(),
+            events.lock().as_slice(),
             [
                 "session_start",
                 "turn_start",

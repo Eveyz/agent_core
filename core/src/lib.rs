@@ -1,5 +1,4 @@
 pub mod agent;
-pub mod runtime;
 pub mod background;
 pub mod client;
 pub mod comprehensive;
@@ -14,6 +13,8 @@ pub mod memory;
 pub mod permission;
 pub mod project;
 pub mod prompt;
+pub mod reflector;
+pub mod runtime;
 pub mod session;
 pub mod skills;
 pub mod subagent;
@@ -21,7 +22,6 @@ pub mod tasks;
 pub mod teams;
 pub mod todo;
 pub mod tools;
-pub mod reflector;
 pub mod trace;
 pub mod types;
 pub mod worktree;
@@ -29,10 +29,12 @@ pub mod worktree;
 // Legacy agent types — still used by the CLI. New code should use the
 // `runtime` module (Brain + Run + RunManager) instead.
 pub use agent::{Agent, AgentBuilder, ContextProcessor, TransformContextFn};
-pub use tokio_util::sync::CancellationToken;
-pub use config::{resolve_env_value, Config, MemoryConfig, ModelConfig, RuntimeOverrides};
+pub use config::{Config, MemoryConfig, ModelConfig, RuntimeOverrides, resolve_env_value};
 pub use context::{CacheHint, Context, ContextEngine, ContextSegment, RefreshPolicy, Stability};
-pub use memory::{MemoryCategory, MemoryManager, MemoryStats, SalienceConfig, SalienceScorer, ScoredRecord};
+pub use memory::{
+    MemoryCategory, MemoryManager, MemoryStats, SalienceConfig, SalienceScorer, ScoredRecord,
+};
+pub use tokio_util::sync::CancellationToken;
 pub use tools::{Tool, ToolRegistry, ToolUpdateFn, build_tool_by_name};
 pub use types::{
     AgentEvent, AgentState, EventReceiver, EventSender, FunctionCall, FunctionSchema, Message,
@@ -47,26 +49,27 @@ pub use cron::{CronJob, CronSchedule, CronScheduler};
 pub use error_recovery::{RecoveryAction, RecoveryContext, RecoveryEngine};
 pub use hooks::{Hook, HookAction, HookEvent, HookRegistry};
 pub use mcp::{
-    McpChannel, McpClientManager, McpConfig, McpServerConfig, McpTool, McpToolDef,
-    McpTransport,
+    McpChannel, McpClientManager, McpConfig, McpServerConfig, McpTool, McpToolDef, McpTransport,
 };
 pub use permission::{
-    ApprovalChoice, ApprovalLevel, ApprovalPrompt, ApprovalScope, AuditEntry, AuditLog,
-    AuditStats, ConfigRule, DangerLevel, PermissionConfig, PermissionDecision, PermissionMode,
+    ApprovalChoice, ApprovalLevel, ApprovalPrompt, ApprovalScope, AuditEntry, AuditLog, AuditStats,
+    ConfigRule, DangerLevel, PermissionConfig, PermissionDecision, PermissionMode,
     PermissionPolicy, PermissionRule, RuleSource, ToolPermissionPattern, WhitelistEntry,
     WhitelistManager, is_destructive_command,
 };
 pub use project::{Project, ProjectManager};
+pub use reflector::{Digester, Reflector, Suggestion, SuggestionAction, SuggestionKind};
+pub use runtime::{
+    ApprovalResolver, Brain, ChildId, Envelope, EventGuard, EventLog, ProcessSupervisor, Run,
+    RunCommand, RunEvent, RunHandle, RunId, RunManager, RunState, SupervisedChild,
+};
+pub use session::{
+    EventLogEntry, Session, SessionCounts, SessionManager, SessionMeta, SubagentResultLike,
+};
 pub use skills::{SkillLoader, SkillManager, SkillManifest};
-pub use session::{EventLogEntry, Session, SessionCounts, SessionManager, SessionMeta, SubagentResultLike};
 pub use subagent::{Subagent, SubagentConfig, SubagentManager, SubagentResult};
 pub use tasks::{TaskBoard, TaskRecord, TaskStatus};
 pub use teams::{AgentTeam, MessageBus, TeamMessage, TeamMessageType};
 pub use todo::{TodoItem, TodoList, TodoStatus};
-pub use worktree::{WorktreeManager, WorktreeRecord, WorktreeStatus};
 pub use trace::TraceCollector;
-pub use reflector::{Digester, Reflector, Suggestion, SuggestionAction, SuggestionKind};
-pub use runtime::{
-    ApprovalResolver, Brain, ChildId, Envelope, EventGuard, EventLog, ProcessSupervisor, Run, RunCommand,
-    RunEvent, RunHandle, RunId, RunManager, RunState, SupervisedChild,
-};
+pub use worktree::{WorktreeManager, WorktreeRecord, WorktreeStatus};

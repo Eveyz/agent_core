@@ -94,7 +94,7 @@ impl TraceCollector {
                     "event_tag": event_tag(event),
                     "serialize_error": true,
                 }))
-                .unwrap_or_else(|_| "{}".to_string())
+                .unwrap_or_else(|_| "{}".to_string());
             }
         };
 
@@ -255,6 +255,9 @@ mod tests {
         let path = dir.path().join("t4.jsonl");
         let lines = read_lines(&path);
         assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0]["event"]["AgentEnd"]["messages"][0]["role"], "assistant");
+        assert_eq!(
+            lines[0]["event"]["AgentEnd"]["messages"][0]["role"],
+            "assistant"
+        );
     }
 }

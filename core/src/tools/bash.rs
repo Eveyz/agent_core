@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use serde_json::{Value, json};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio::io::AsyncBufReadExt;
 
 use super::{Tool, ToolUpdateFn};
@@ -91,7 +92,10 @@ impl Tool for BashTool {
         on_update: Option<ToolUpdateFn>,
         _event_sender: Option<EventSender>,
     ) -> Result<String> {
-        let command = args["command"].as_str().context("missing 'command'")?.to_string();
+        let command = args["command"]
+            .as_str()
+            .context("missing 'command'")?
+            .to_string();
         let working_dir = args["working_dir"]
             .as_str()
             .map(|s| s.to_string())
@@ -117,7 +121,9 @@ impl BashTool {
     ) -> Result<String> {
         // ── Supervised path (runtime Run) ──────────────────────────
         if let Some(ref sup) = self.supervisor {
-            return self.run_bash_supervised(sup, command, working_dir, on_update).await;
+            return self
+                .run_bash_supervised(sup, command, working_dir, on_update)
+                .await;
         }
 
         // ── Legacy path (old Agent) ────────────────────────────────
@@ -134,12 +140,12 @@ impl BashTool {
         on_update: Option<ToolUpdateFn>,
     ) -> Result<String> {
         let child_id = {
-            let mut supervisor = sup.lock().unwrap();
+            let mut supervisor = sup.lock();
             supervisor.spawn_bash(command, working_dir)?
         };
 
         let stdout_handle = {
-            let mut supervisor = sup.lock().unwrap();
+            let mut supervisor = sup.lock();
             let child = supervisor
                 .get_child(&child_id)
                 .ok_or_else(|| anyhow::anyhow!("child disappeared after spawn"))?;
@@ -147,7 +153,7 @@ impl BashTool {
         };
 
         let stderr_handle = {
-            let mut supervisor = sup.lock().unwrap();
+            let mut supervisor = sup.lock();
             let child = supervisor
                 .get_child(&child_id)
                 .ok_or_else(|| anyhow::anyhow!("child disappeared after spawn"))?;
@@ -192,7 +198,7 @@ impl BashTool {
         let wait_fut = async move {
             loop {
                 let maybe_code = {
-                    let mut supervisor = sup_clone.lock().unwrap();
+                    let mut supervisor = sup_clone.lock();
                     let child = supervisor.get_child(&child_id_clone);
                     if let Some(c) = child {
                         c.try_exit_code()
@@ -211,7 +217,7 @@ impl BashTool {
 
         // Remove the child from the supervisor (it's done)
         {
-            let mut supervisor = sup.lock().unwrap();
+            let mut supervisor = sup.lock();
             let _ = supervisor.kill(&child_id);
         }
 
@@ -281,7 +287,11 @@ impl BashTool {
         };
 
         let wait_fut = async {
-            child.wait().await.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1)
+            child
+                .wait()
+                .await
+                .map(|s| s.code().unwrap_or(-1))
+                .unwrap_or(-1)
         };
 
         let (stdout_str, stderr_str, exit_code) = tokio::join!(stdout_fut, stderr_fut, wait_fut);

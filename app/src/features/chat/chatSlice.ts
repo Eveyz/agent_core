@@ -5,17 +5,18 @@ import { resumeSession } from '../project/projectSlice';
 // ── Types ────────────────────────────────────────────────────────────
 
 export type TurnBlock =
-  | { type: 'assistant'; text: string; isStreaming: boolean }
-  | { type: 'thinking'; text: string; isStreaming: boolean; startTime?: number; endTime?: number }
+  | { type: 'assistant'; text: string; isStreaming: boolean; message_id?: string }
+  | { type: 'thinking'; text: string; isStreaming: boolean; message_id?: string; startTime?: number; endTime?: number }
   | { type: 'tool'; call_id: string; name: string; args?: unknown; result: string; active: boolean; is_error: boolean; startTime?: number; endTime?: number }
   | { type: 'approval'; prompt_id: string; tool_name: string; tool_input: unknown; danger_level: string; explanation: string; status: 'pending' | 'approved' | 'denied' }
   | { type: 'error'; text: string }
-  | { type: 'subagent_ref'; subagent_id: string };
+  | { type: 'subagent_ref'; subagent_id: string; parent_call_id?: string };
 
 export interface SubagentBlock {
   type: 'assistant' | 'thinking' | 'tool' | 'approval' | 'error';
   text?: string;
   isStreaming?: boolean;
+  message_id?: string;
   startTime?: number;
   endTime?: number;
   call_id?: string;
@@ -137,6 +138,7 @@ export interface RunEventPayload {
   index?: number;
   // Model
   delta?: DeltaPayload;
+  message_id?: string;
   text?: string;
   tool_count?: number;
   // Messages (message_start event)
@@ -178,16 +180,27 @@ export type RunState = 'created' | 'running' | 'awaiting_approval' | 'awaiting_i
 
 type AnyBlock = TurnBlock | SubagentBlock;
 
-function closeStreamingBlock(blocks: AnyBlock[] | undefined): void {
+function blockMessageId(b: AnyBlock): string | undefined {
+  return 'message_id' in b ? (b as { message_id?: string }).message_id : undefined;
+}
+
+function closeStreamingBlock(blocks: AnyBlock[] | undefined, messageId?: string): void {
   if (!blocks || blocks.length === 0) return;
   for (let i = blocks.length - 1; i >= 0; i--) {
     const block = blocks[i];
     if ('isStreaming' in block && block.isStreaming) {
+      // When scoped to a message_id, only finalize blocks that belong to it;
+      // leave other messages' streaming blocks untouched.
+      if (messageId !== undefined && blockMessageId(block) !== messageId) {
+        continue;
+      }
       block.isStreaming = false;
       if (block.type === 'thinking') {
         block.endTime = Date.now();
       }
-    } else {
+    } else if (messageId === undefined) {
+      // Unscoped close: stop at the first finalized block (preserves the
+      // tail-close behaviour tool/approval handlers rely on).
       break;
     }
   }
@@ -195,18 +208,19 @@ function closeStreamingBlock(blocks: AnyBlock[] | undefined): void {
 
 function appendDeltaToBlocks(
   blocks: AnyBlock[],
-  delta: DeltaPayload
+  delta: DeltaPayload,
+  messageId?: string
 ): void {
   const appendToType = (text: string, targetType: 'assistant' | 'thinking') => {
-    let targetBlock = null;
+    // Route by identity: find the most recent streaming block that belongs to
+    // this message and matches the target type. When no message_id is present
+    // (e.g. restored entries), fall back to the legacy "any streaming block"
+    // match so undefined === undefined.
+    let targetBlock: AnyBlock | null = null;
     for (let i = blocks.length - 1; i >= 0; i--) {
       const b = blocks[i];
-      if ('isStreaming' in b && b.isStreaming) {
-        if (b.type === targetType) {
-          targetBlock = b;
-          break;
-        }
-      } else {
+      if ('isStreaming' in b && b.isStreaming && b.type === targetType && blockMessageId(b) === messageId) {
+        targetBlock = b;
         break;
       }
     }
@@ -214,15 +228,15 @@ function appendDeltaToBlocks(
     if (!targetBlock) {
       if (targetType === 'thinking') {
         const lastBlock = blocks[blocks.length - 1];
-        if (lastBlock && lastBlock.type === 'assistant' && 'isStreaming' in lastBlock && lastBlock.isStreaming) {
-          blocks.splice(blocks.length - 1, 0, { type: 'thinking', text: '', isStreaming: true, startTime: Date.now() });
+        if (lastBlock && lastBlock.type === 'assistant' && 'isStreaming' in lastBlock && lastBlock.isStreaming && blockMessageId(lastBlock) === messageId) {
+          blocks.splice(blocks.length - 1, 0, { type: 'thinking', text: '', isStreaming: true, message_id: messageId, startTime: Date.now() });
           targetBlock = blocks[blocks.length - 2];
         } else {
-          blocks.push({ type: 'thinking', text: '', isStreaming: true, startTime: Date.now() });
+          blocks.push({ type: 'thinking', text: '', isStreaming: true, message_id: messageId, startTime: Date.now() });
           targetBlock = blocks[blocks.length - 1];
         }
       } else {
-        blocks.push({ type: 'assistant', text: '', isStreaming: true });
+        blocks.push({ type: 'assistant', text: '', isStreaming: true, message_id: messageId });
         targetBlock = blocks[blocks.length - 1];
       }
     }
@@ -272,8 +286,15 @@ function truncateResult(result: string): string {
   return result;
 }
 
-function stringifyResult(result: unknown): string {
-  return typeof result === 'string' ? result : JSON.stringify(result);
+export function stringifyResult(result: unknown): string {
+  if (result === undefined || result === null) return '';
+  if (typeof result === 'string') return result;
+  try {
+    const s = JSON.stringify(result, null, 2);
+    return typeof s === 'string' ? s : String(result);
+  } catch {
+    return String(result);
+  }
 }
 
 function getActiveTurn(state: ChatState): ChatEntry | undefined {
@@ -336,7 +357,10 @@ function handleTurnStart(state: ChatState, turnIndex: number, turnId?: string): 
     }
   } else {
     state.entries.push({
-      id: `turn-${turnIndex}-${Date.now()}`,
+      // Use the backend-assigned turn_id as the stable identity when present
+      // (R7/Tier-3) so blocks/events can be located by id instead of by
+      // position. Falls back to a positional id only when no turn_id is known.
+      id: turnId ? `turn-${turnId}` : `turn-${turnIndex}-${Date.now()}`,
       type: 'turn',
       turnId,
       turnIds: turnId ? [turnId] : [],
@@ -347,17 +371,31 @@ function handleTurnStart(state: ChatState, turnIndex: number, turnId?: string): 
   }
 }
 
-function handleMessageUpdate(state: ChatState, delta: DeltaPayload): void {
-  const lastEntry = state.entries[state.entries.length - 1];
-  if (lastEntry && lastEntry.type === 'turn' && lastEntry.blocks) {
-    appendDeltaToBlocks(lastEntry.blocks, delta);
+function handleMessageStart(state: ChatState, messageId: string | undefined): void {
+  const turn = getActiveTurn(state);
+  if (turn && turn.type === 'turn' && turn.blocks) {
+    turn.blocks.push({
+      type: 'thinking',
+      text: '',
+      isStreaming: true,
+      message_id: messageId,
+      startTime: Date.now()
+    });
   }
 }
 
-function handleMessageEnd(state: ChatState): void {
-  const lastEntry = state.entries[state.entries.length - 1];
-  if (lastEntry && lastEntry.type === 'turn' && lastEntry.blocks) {
-    closeStreamingBlock(lastEntry.blocks);
+function handleMessageUpdate(state: ChatState, messageId: string | undefined, delta: DeltaPayload): void {
+  const turn = getActiveTurn(state);
+  if (turn && turn.type === 'turn' && turn.blocks) {
+    appendDeltaToBlocks(turn.blocks, delta, messageId);
+  }
+}
+
+
+function handleMessageEnd(state: ChatState, messageId?: string): void {
+  const turn = getActiveTurn(state);
+  if (turn && turn.type === 'turn' && turn.blocks) {
+    closeStreamingBlock(turn.blocks, messageId);
   }
 }
 
@@ -367,10 +405,10 @@ function handleToolStart(
   toolName: string,
   args?: unknown
 ): void {
-  const lastEntry = state.entries[state.entries.length - 1];
-  if (lastEntry && lastEntry.type === 'turn' && lastEntry.blocks) {
-    closeStreamingBlock(lastEntry.blocks);
-    lastEntry.blocks.push({
+  const turn = getActiveTurn(state);
+  if (turn && turn.type === 'turn' && turn.blocks) {
+    closeStreamingBlock(turn.blocks);
+    turn.blocks.push({
       type: 'tool',
       call_id: toolCallId,
       name: toolName,
@@ -384,11 +422,11 @@ function handleToolStart(
 }
 
 function handleToolUpdate(state: ChatState, toolCallId: string, partialResult: unknown): void {
-  const lastEntry = state.entries[state.entries.length - 1];
-  if (lastEntry && lastEntry.type === 'turn' && lastEntry.blocks) {
+  const turn = getActiveTurn(state);
+  if (turn && turn.type === 'turn' && turn.blocks) {
     let block = undefined;
-    for (let i = lastEntry.blocks.length - 1; i >= 0; i--) {
-      const b = lastEntry.blocks[i];
+    for (let i = turn.blocks.length - 1; i >= 0; i--) {
+      const b = turn.blocks[i];
       if (b.type === 'tool' && (toolCallId ? b.call_id === toolCallId : b.active)) {
         block = b;
         break;
@@ -406,11 +444,11 @@ function handleToolEnd(
   result: unknown,
   isError: boolean
 ): void {
-  const lastEntry = state.entries[state.entries.length - 1];
-  if (lastEntry && lastEntry.type === 'turn' && lastEntry.blocks) {
+  const turn = getActiveTurn(state);
+  if (turn && turn.type === 'turn' && turn.blocks) {
     let block = undefined;
-    for (let i = lastEntry.blocks.length - 1; i >= 0; i--) {
-      const b = lastEntry.blocks[i];
+    for (let i = turn.blocks.length - 1; i >= 0; i--) {
+      const b = turn.blocks[i];
       if (b.type === 'tool' && (toolCallId ? b.call_id === toolCallId : b.active)) {
         block = b;
         break;
@@ -433,10 +471,10 @@ function handleApprovalRequired(
   dangerLevel: string,
   explanation: string
 ): void {
-  const lastEntry = state.entries[state.entries.length - 1];
-  if (lastEntry && lastEntry.type === 'turn' && lastEntry.blocks) {
-    closeStreamingBlock(lastEntry.blocks);
-    lastEntry.blocks.push({
+  const turn = getActiveTurn(state);
+  if (turn && turn.type === 'turn' && turn.blocks) {
+    closeStreamingBlock(turn.blocks);
+    turn.blocks.push({
       type: 'approval',
       prompt_id: promptId,
       tool_name: toolName,
@@ -464,14 +502,14 @@ function handleAgentEnd(state: ChatState): void {
 
 function handleError(state: ChatState, errorText: string): void {
   state.isProcessing = false;
-  const lastEntry = state.entries[state.entries.length - 1];
-  if (lastEntry && lastEntry.type === 'turn' && lastEntry.blocks) {
-    closeStreamingBlock(lastEntry.blocks);
+  const turn = getActiveTurn(state);
+  if (turn && turn.type === 'turn' && turn.blocks) {
+    closeStreamingBlock(turn.blocks);
     
     // Stop any dangling subagents owned by this turn
-    stopDanglingSubagents(state, lastEntry);
+    stopDanglingSubagents(state, turn);
     
-    const lastBlock = lastEntry.blocks[lastEntry.blocks.length - 1];
+    const lastBlock = turn.blocks[turn.blocks.length - 1];
     const isRetryError = errorText.toLowerCase().includes('retrying model call');
     
     if (lastBlock && lastBlock.type === 'error') {
@@ -482,7 +520,7 @@ function handleError(state: ChatState, errorText: string): void {
       }
     }
     
-    lastEntry.blocks.push({ type: 'error', text: errorText });
+    turn.blocks.push({ type: 'error', text: errorText });
   } else {
     state.entries.push({
       id: `error-${Date.now()}`,
@@ -500,6 +538,7 @@ function handleError(state: ChatState, errorText: string): void {
 function handleSubagentStart(
   state: ChatState,
   subagentId: string,
+  parentCallId: string | undefined,
   roleName: string | undefined,
   task: string | unknown
 ): void {
@@ -511,19 +550,38 @@ function handleSubagentStart(
     if (!turn.subagentIds) turn.subagentIds = [];
     if (!turn.subagentIds.includes(subagentId)) turn.subagentIds.push(subagentId);
     if (turn.blocks) {
-      turn.blocks.push({ type: 'subagent_ref', subagent_id: subagentId });
+      turn.blocks.push({ type: 'subagent_ref', subagent_id: subagentId, parent_call_id: parentCallId });
     }
+  }
+}
+
+function handleSubagentMessageStart(
+  state: ChatState,
+  subagentId: string,
+  messageId: string | undefined
+): void {
+  const sa = state.subagents[subagentId];
+  if (sa) {
+    if (!sa.blocks) sa.blocks = [];
+    sa.blocks.push({
+      type: 'thinking',
+      text: '',
+      isStreaming: true,
+      message_id: messageId,
+      startTime: Date.now()
+    });
   }
 }
 
 function handleSubagentMessageUpdate(
   state: ChatState,
   subagentId: string,
+  messageId: string | undefined,
   delta: DeltaPayload
 ): void {
   const sa = state.subagents[subagentId];
   if (sa) {
-    appendDeltaToBlocks(sa.blocks, delta);
+    appendDeltaToBlocks(sa.blocks, delta, messageId);
   }
 }
 
@@ -638,9 +696,17 @@ function handleSubagentEnd(
 function handleTurnEnded(state: ChatState): void {
   // An iteration ended: finalize any still-streaming block on the active turn
   // so it doesn't bleed into the next iteration. (Previously a no-op black hole.)
-  const lastEntry = state.entries[state.entries.length - 1];
-  if (lastEntry && lastEntry.type === 'turn' && lastEntry.blocks) {
-    closeStreamingBlock(lastEntry.blocks);
+  const turn = getActiveTurn(state);
+  if (turn && turn.type === 'turn' && turn.blocks) {
+    closeStreamingBlock(turn.blocks);
+    // Force close any tools that might have missed their end events
+    for (const b of turn.blocks) {
+      if (b.type === 'tool' && b.active) {
+        b.active = false;
+        if (!b.endTime) b.endTime = Date.now();
+        if (b.result === undefined) b.result = '';
+      }
+    }
   }
 }
 
@@ -853,13 +919,17 @@ export const chatSlice = createSlice({
         case 'turn_ended':
           handleTurnEnded(state);
           break;
+        case 'message_start':
+          if (ev.subagent_id) handleSubagentMessageStart(state, ev.subagent_id, ev.message_id);
+          else handleMessageStart(state, ev.message_id);
+          break;
         case 'message_update':
         case 'model_streaming':
-          if (ev.subagent_id) handleSubagentMessageUpdate(state, ev.subagent_id, ev.delta ?? {});
-          else handleMessageUpdate(state, ev.delta ?? {});
+          if (ev.subagent_id) handleSubagentMessageUpdate(state, ev.subagent_id, ev.message_id, ev.delta ?? {});
+          else handleMessageUpdate(state, ev.message_id, ev.delta ?? {});
           break;
         case 'message_end':
-          if (!ev.subagent_id) handleMessageEnd(state);
+          if (!ev.subagent_id) handleMessageEnd(state, ev.message_id);
           break;
         case 'tool_started':
           if (ev.subagent_id) handleSubagentToolStart(state, ev.subagent_id, ev.call_id ?? '', ev.name ?? '', ev.args);
@@ -884,7 +954,7 @@ export const chatSlice = createSlice({
           handleError(state, ((ev as unknown as Record<string, unknown>).message as string | undefined) ?? 'unknown error');
           break;
         case 'subagent_started':
-          handleSubagentStart(state, ev.subagent_id ?? '', ev.role_name, ev.task ?? '');
+          handleSubagentStart(state, ev.subagent_id ?? '', ev.parent_call_id, ev.role_name, ev.task ?? '');
           break;
         case 'subagent_ended':
           handleSubagentEnd(state, ev.subagent_id ?? '', ev.success ?? false, ev.iterations_used);
@@ -896,24 +966,23 @@ export const chatSlice = createSlice({
       }
     },
     toolApprovalResponded: (state, action: PayloadAction<{ promptId: string; approved: boolean }>) => {
-      const lastEntry = state.entries[state.entries.length - 1];
-      if (lastEntry && lastEntry.type === 'turn') {
-        if (lastEntry.blocks) {
-          const block = lastEntry.blocks.find((b) => b.type === 'approval' && b.prompt_id === action.payload.promptId);
-          if (block && block.type === 'approval') {
-            block.status = action.payload.approved ? 'approved' : 'denied';
-            return;
-          }
+      // Resolve by prompt_id across every turn + subagent (prompt_id is the
+      // stable identity), not just the last entry.
+      for (const entry of state.entries) {
+        if (entry.type !== 'turn' || !entry.blocks) continue;
+        const block = entry.blocks.find((b) => b.type === 'approval' && b.prompt_id === action.payload.promptId);
+        if (block && block.type === 'approval') {
+          block.status = action.payload.approved ? 'approved' : 'denied';
+          return;
         }
-        // Subagent approvals live in the global dict now (R8)
-        for (const sa of Object.values(state.subagents)) {
-          if (sa.blocks) {
-            const saBlock = sa.blocks.find((b) => b.type === 'approval' && b.prompt_id === action.payload.promptId);
-            if (saBlock && saBlock.type === 'approval') {
-              saBlock.status = action.payload.approved ? 'approved' : 'denied';
-              return;
-            }
-          }
+      }
+      // Subagent approvals live in the global dict (R8)
+      for (const sa of Object.values(state.subagents)) {
+        if (!sa.blocks) continue;
+        const saBlock = sa.blocks.find((b) => b.type === 'approval' && b.prompt_id === action.payload.promptId);
+        if (saBlock && saBlock.type === 'approval') {
+          saBlock.status = action.payload.approved ? 'approved' : 'denied';
+          return;
         }
       }
     },
@@ -934,12 +1003,11 @@ export const chatSlice = createSlice({
         }
       }
     },
-    retryFromEntry: (state, action: PayloadAction<string>) => {
-      const entryId = action.payload;
+    retryFromEntry: (state, action: PayloadAction<{ id: string; text?: string }>) => {
+      const entryId = action.payload.id;
       const idx = state.entries.findIndex((e) => e.id === entryId);
       if (idx === -1) return;
-      const userText = state.entries[idx].text ?? '';
-      state.entries = state.entries.slice(0, idx);
+      const userText = action.payload.text ?? state.entries[idx].text ?? '';
       state.entries.push({
         id: `user-${Date.now()}`,
         type: 'user',

@@ -87,9 +87,8 @@ impl ProjectManager {
     /// Get a single project by ID.
     pub fn get(&self, project_id: &str) -> Result<Option<Project>> {
         let db = self.storage.conn();
-        let mut stmt = db.prepare(
-            "SELECT id, name, path, created_at, updated_at FROM projects WHERE id = ?1",
-        )?;
+        let mut stmt = db
+            .prepare("SELECT id, name, path, created_at, updated_at FROM projects WHERE id = ?1")?;
         let mut rows = stmt.query_map(rusqlite::params![project_id], |row| {
             Ok(Project {
                 id: row.get(0)?,
@@ -141,9 +140,14 @@ impl ProjectManager {
     /// List sessions belonging to a project.
     pub fn list_sessions(&self, project_id: &str) -> Result<Vec<crate::session::SessionMeta>> {
         let db = self.storage.conn();
-        let sql = format!("{} WHERE project_id = ?1 AND archived = 0 ORDER BY updated_at DESC LIMIT 100", crate::session::META_SELECT);
+        let sql = format!(
+            "{} WHERE project_id = ?1 AND archived = 0 ORDER BY updated_at DESC LIMIT 100",
+            crate::session::META_SELECT
+        );
         let mut stmt = db.prepare(&sql)?;
-        let rows = stmt.query_map(rusqlite::params![project_id], |row| crate::session::row_to_meta(row))?;
+        let rows = stmt.query_map(rusqlite::params![project_id], |row| {
+            crate::session::row_to_meta(row)
+        })?;
         let mut sessions = Vec::new();
         for row in rows {
             sessions.push(row?);
@@ -222,7 +226,8 @@ mod tests {
             db.execute(
                 "UPDATE sessions SET project_id = ?1 WHERE id = ?2",
                 rusqlite::params![&p.id, &sid],
-            ).unwrap();
+            )
+            .unwrap();
         }
 
         let sessions = proj_mgr.list_sessions(&p.id).unwrap();

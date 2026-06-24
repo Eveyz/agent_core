@@ -36,7 +36,11 @@ fn test_agent_builds_with_defaults() {
 
     assert_eq!(agent.current_model(), "test/default");
     let state_str = format!("{:?}", agent.state());
-    assert!(state_str.contains("Idle"), "Expected Idle, got: {}", state_str);
+    assert!(
+        state_str.contains("Idle"),
+        "Expected Idle, got: {}",
+        state_str
+    );
 }
 
 #[test]
@@ -72,8 +76,7 @@ fn test_agent_with_permission_policy() {
     let config = build_test_config();
     let agent = AgentBuilder::with_config(config)
         .with_permission_policy(
-            PermissionPolicy::with_builtin_defaults()
-                .with_mode(agent_core::PermissionMode::Yolo),
+            PermissionPolicy::with_builtin_defaults().with_mode(agent_core::PermissionMode::Yolo),
         )
         .with_memory(false)
         .build()
@@ -90,7 +93,7 @@ fn test_agent_with_skill_manager() {
     let skill_manager = agent_core::SkillManager::with_defaults();
 
     let agent = AgentBuilder::with_config(config)
-        .with_skill_manager(std::sync::Arc::new(std::sync::Mutex::new(skill_manager)))
+        .with_skill_manager(std::sync::Arc::new(parking_lot::Mutex::new(skill_manager)))
         .with_memory(false)
         .build()
         .unwrap();
@@ -121,7 +124,10 @@ fn test_agent_context_initialized() {
 
     // Context should have messages after build (system + environment segments)
     let messages = agent.context_messages();
-    assert!(!messages.is_empty(), "Context should have messages after build");
+    assert!(
+        !messages.is_empty(),
+        "Context should have messages after build"
+    );
 }
 
 #[test]
@@ -135,7 +141,12 @@ fn test_agent_from_config_file() {
         .expect("crate must have a parent dir")
         .join("config.toml");
     let result = AgentBuilder::from_config(config_path.to_str().unwrap());
-    assert!(result.is_ok(), "Failed to load {:?}: {:?}", config_path, result.err());
+    assert!(
+        result.is_ok(),
+        "Failed to load {:?}: {:?}",
+        config_path,
+        result.err()
+    );
 }
 
 #[test]
@@ -148,20 +159,24 @@ fn test_agent_tool_registry() {
         .unwrap();
 
     let tools = agent.tool_registry().list_names();
-    assert!(tools.contains(&"stub_test"), "Tool registry missing stub: {:?}", tools);
+    assert!(
+        tools.contains(&"stub_test"),
+        "Tool registry missing stub: {:?}",
+        tools
+    );
     assert!(agent.tool_registry().has("stub_test"));
 }
 
 #[test]
 fn test_permission_policy_modes() {
-    let yolo = PermissionPolicy::with_builtin_defaults()
-        .with_mode(agent_core::PermissionMode::Yolo);
-    let paranoid = PermissionPolicy::with_builtin_defaults()
-        .with_mode(agent_core::PermissionMode::Paranoid);
-    let standard = PermissionPolicy::with_builtin_defaults()
-        .with_mode(agent_core::PermissionMode::Standard);
-    let permissive = PermissionPolicy::with_builtin_defaults()
-        .with_mode(agent_core::PermissionMode::Permissive);
+    let yolo =
+        PermissionPolicy::with_builtin_defaults().with_mode(agent_core::PermissionMode::Yolo);
+    let paranoid =
+        PermissionPolicy::with_builtin_defaults().with_mode(agent_core::PermissionMode::Paranoid);
+    let standard =
+        PermissionPolicy::with_builtin_defaults().with_mode(agent_core::PermissionMode::Standard);
+    let permissive =
+        PermissionPolicy::with_builtin_defaults().with_mode(agent_core::PermissionMode::Permissive);
 
     // Just verify they build
     drop(yolo);
@@ -191,8 +206,12 @@ struct StubTool;
 
 #[async_trait::async_trait]
 impl agent_core::Tool for StubTool {
-    fn name(&self) -> &str { "stub_test" }
-    fn description(&self) -> &str { "A stub tool for testing" }
+    fn name(&self) -> &str {
+        "stub_test"
+    }
+    fn description(&self) -> &str {
+        "A stub tool for testing"
+    }
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {}})
     }

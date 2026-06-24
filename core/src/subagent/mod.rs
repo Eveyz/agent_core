@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use crate::client::OpenAIClient;
 use crate::config::ModelConfig;
 use crate::context::Context;
-use crate::tools::ToolRegistry;
 use crate::runtime::EventGuard;
+use crate::tools::ToolRegistry;
 use crate::types::{AgentEvent, EventSender, Message, MessageDelta, StreamEvent, ToolCall};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,44 +173,55 @@ impl Subagent {
                     cancel_token: tokio_util::sync::CancellationToken::new(),
                     approval_resolver: None,
                 };
-                
+
                 let sender_clone = event_sender.clone();
                 let subagent_id = self.id.clone();
-                orchestrator.execute_tools(&tool_calls, &move |e, _call_id: &str| {
-                    if let Some(ref tx) = sender_clone {
-                        let mapped = match e {
-                            AgentEvent::ToolExecutionStart { tool_call_id, tool_name, args } => {
-                                AgentEvent::SubagentToolStart {
+                orchestrator
+                    .execute_tools(&tool_calls, &move |e, _call_id: &str| {
+                        if let Some(ref tx) = sender_clone {
+                            let mapped = match e {
+                                AgentEvent::ToolExecutionStart {
+                                    tool_call_id,
+                                    tool_name,
+                                    args,
+                                } => AgentEvent::SubagentToolStart {
                                     subagent_id: subagent_id.clone(),
                                     tool_call_id,
                                     tool_name,
                                     args,
-                                }
-                            }
-                            AgentEvent::ToolExecutionEnd { tool_call_id, tool_name, result, is_error } => {
-                                AgentEvent::SubagentToolEnd {
+                                },
+                                AgentEvent::ToolExecutionEnd {
+                                    tool_call_id,
+                                    tool_name,
+                                    result,
+                                    is_error,
+                                } => AgentEvent::SubagentToolEnd {
                                     subagent_id: subagent_id.clone(),
                                     tool_call_id,
                                     tool_name,
                                     result,
                                     is_error,
-                                }
-                            }
-                            AgentEvent::ApprovalRequired { prompt_id, tool_name, tool_input, danger_level, explanation } => {
-                                AgentEvent::SubagentApprovalRequired {
+                                },
+                                AgentEvent::ApprovalRequired {
+                                    prompt_id,
+                                    tool_name,
+                                    tool_input,
+                                    danger_level,
+                                    explanation,
+                                } => AgentEvent::SubagentApprovalRequired {
                                     subagent_id: subagent_id.clone(),
                                     prompt_id,
                                     tool_name,
                                     tool_input,
                                     danger_level,
                                     explanation,
-                                }
-                            }
-                            _ => e,
-                        };
-                        let _ = tx.send(mapped);
-                    }
-                }).await
+                                },
+                                _ => e,
+                            };
+                            let _ = tx.send(mapped);
+                        }
+                    })
+                    .await
             };
 
             // The orchestrator emits SubagentToolStart during execution, but —
@@ -272,25 +283,29 @@ impl Subagent {
         let mut accumulator = ToolCallAccumulator::new();
         let mut has_tool_calls = false;
         let mut tokens = TokenAccumulator::new();
+        let message_id = uuid::Uuid::new_v4().to_string();
 
-        let flush_tokens = |tokens: &mut TokenAccumulator, tx: Option<&EventSender>, id: &str| {
-            if let Some((text, thinking)) = tokens.force_flush() {
-                if let Some(tx) = tx {
-                    if !text.is_empty() {
-                        let _ = tx.send(AgentEvent::SubagentMessageUpdate {
-                            subagent_id: id.to_string(),
-                            delta: MessageDelta::Text(text),
-                        });
-                    }
-                    if !thinking.is_empty() {
-                        let _ = tx.send(AgentEvent::SubagentMessageUpdate {
-                            subagent_id: id.to_string(),
-                            delta: MessageDelta::Thinking(thinking),
-                        });
+        let flush_tokens =
+            |tokens: &mut TokenAccumulator, tx: Option<&EventSender>, id: &str, msg_id: &str| {
+                if let Some((text, thinking)) = tokens.force_flush() {
+                    if let Some(tx) = tx {
+                        if !text.is_empty() {
+                            let _ = tx.send(AgentEvent::SubagentMessageUpdate {
+                                subagent_id: id.to_string(),
+                                message_id: msg_id.to_string(),
+                                delta: MessageDelta::Text(text),
+                            });
+                        }
+                        if !thinking.is_empty() {
+                            let _ = tx.send(AgentEvent::SubagentMessageUpdate {
+                                subagent_id: id.to_string(),
+                                message_id: msg_id.to_string(),
+                                delta: MessageDelta::Thinking(thinking),
+                            });
+                        }
                     }
                 }
-            }
-        };
+            };
 
         tokio::pin!(stream);
         while let Some(event) = stream.next().await {
@@ -305,12 +320,14 @@ impl Subagent {
                                 if !text.is_empty() {
                                     let _ = tx.send(AgentEvent::SubagentMessageUpdate {
                                         subagent_id: self.id.clone(),
+                                        message_id: message_id.clone(),
                                         delta: MessageDelta::Text(text),
                                     });
                                 }
                                 if !thinking.is_empty() {
                                     let _ = tx.send(AgentEvent::SubagentMessageUpdate {
                                         subagent_id: self.id.clone(),
+                                        message_id: message_id.clone(),
                                         delta: MessageDelta::Thinking(thinking),
                                     });
                                 }
@@ -326,12 +343,14 @@ impl Subagent {
                                 if !text.is_empty() {
                                     let _ = tx.send(AgentEvent::SubagentMessageUpdate {
                                         subagent_id: self.id.clone(),
+                                        message_id: message_id.clone(),
                                         delta: MessageDelta::Text(text),
                                     });
                                 }
                                 if !thinking.is_empty() {
                                     let _ = tx.send(AgentEvent::SubagentMessageUpdate {
                                         subagent_id: self.id.clone(),
+                                        message_id: message_id.clone(),
                                         delta: MessageDelta::Thinking(thinking),
                                     });
                                 }
@@ -348,7 +367,7 @@ impl Subagent {
         }
 
         // Final flush: emit any remaining buffered text/thinking.
-        flush_tokens(&mut tokens, event_sender, &self.id);
+        flush_tokens(&mut tokens, event_sender, &self.id, &message_id);
 
         let tool_calls = if has_tool_calls {
             accumulator.into_tool_calls()

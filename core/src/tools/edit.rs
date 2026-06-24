@@ -58,9 +58,7 @@ impl Tool for EditTool {
 
         // Compute the line range of the edited region (1-based) in the
         // *original* file, so the UI can show "Edited lines L12–L18".
-        let byte_offset = old_content
-            .find(old_string)
-            .unwrap_or(0);
+        let byte_offset = old_content.find(old_string).unwrap_or(0);
         let line_start = old_content[..byte_offset].matches('\n').count() + 1;
         let line_end = line_start + old_string.matches('\n').count();
 
@@ -88,9 +86,17 @@ impl Tool for EditTool {
             line_start,
             line_end,
             additions,
-            if additions == 1 { "addition" } else { "additions" },
+            if additions == 1 {
+                "addition"
+            } else {
+                "additions"
+            },
             deletions,
-            if deletions == 1 { "deletion" } else { "deletions" },
+            if deletions == 1 {
+                "deletion"
+            } else {
+                "deletions"
+            },
             diff_str
         ))
     }

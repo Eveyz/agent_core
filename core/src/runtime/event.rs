@@ -22,30 +22,63 @@ pub type ChildId = String;
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum RunEvent {
     // ── Lifecycle ──────────────────────────────────────────────────
-    RunCreated { id: RunId, session_id: Option<String> },
+    RunCreated {
+        id: RunId,
+        session_id: Option<String>,
+    },
     RunStarted,
     RunPaused,
     RunResumed,
-    RunCompleted { final_text: String },
-    RunCancelled { reason: String },
-    RunFailed { error: String },
+    RunCompleted {
+        final_text: String,
+    },
+    RunCancelled {
+        reason: String,
+    },
+    RunFailed {
+        error: String,
+    },
 
     // ── State transitions ──────────────────────────────────────────
-    StateChanged { from: RunState, to: RunState },
+    StateChanged {
+        from: RunState,
+        to: RunState,
+    },
 
     // ── Turn ───────────────────────────────────────────────────────
-    TurnStarted { index: usize },
-    TurnEnded { index: usize },
+    TurnStarted {
+        index: usize,
+    },
+    TurnEnded {
+        index: usize,
+    },
 
     // ── Model ──────────────────────────────────────────────────────
     ModelCallStarted,
-    ModelStreaming { subagent_id: Option<String>, delta: MessageDelta },
-    ModelCallEnded { text: String, tool_count: usize },
+    ModelStreaming {
+        subagent_id: Option<String>,
+        message_id: String,
+        delta: MessageDelta,
+    },
+    ModelCallEnded {
+        text: String,
+        tool_count: usize,
+    },
 
     // ── Messages ───────────────────────────────────────────────────
-    MessageStart { message: Message },
-    MessageUpdate { subagent_id: Option<String>, delta: MessageDelta },
-    MessageEnd { message: Message },
+    MessageStart {
+        message_id: String,
+        message: Message,
+    },
+    MessageUpdate {
+        subagent_id: Option<String>,
+        message_id: String,
+        delta: MessageDelta,
+    },
+    MessageEnd {
+        message_id: String,
+        message: Message,
+    },
 
     // ── Tool execution ─────────────────────────────────────────────
     ToolStarted {
@@ -86,8 +119,12 @@ pub enum RunEvent {
     },
 
     // ── Context ────────────────────────────────────────────────────
-    ContextCompacted { summary: String },
-    Error { message: String },
+    ContextCompacted {
+        summary: String,
+    },
+    Error {
+        message: String,
+    },
 
     // ── Subagent ───────────────────────────────────────────────────
     SubagentStarted {
@@ -102,8 +139,14 @@ pub enum RunEvent {
     },
 
     // ── Process supervision ────────────────────────────────────────
-    ProcessSpawned { child_id: ChildId, label: String },
-    ProcessKilled { child_id: ChildId, reason: String },
+    ProcessSpawned {
+        child_id: ChildId,
+        label: String,
+    },
+    ProcessKilled {
+        child_id: ChildId,
+        reason: String,
+    },
 }
 
 /// A stamped envelope wrapping a [`RunEvent`] with identity + ordering.
@@ -156,9 +199,25 @@ impl RunEvent {
             AgentEvent::Aborted { reason } => RunEvent::RunCancelled { reason },
             AgentEvent::TurnStart { turn_index } => RunEvent::TurnStarted { index: turn_index },
             AgentEvent::TurnEnd { turn_index, .. } => RunEvent::TurnEnded { index: turn_index },
-            AgentEvent::MessageStart { message } => RunEvent::MessageStart { message },
-            AgentEvent::MessageUpdate { delta } => RunEvent::MessageUpdate { subagent_id: None, delta },
-            AgentEvent::MessageEnd { message } => RunEvent::MessageEnd { message },
+            AgentEvent::MessageStart {
+                message_id,
+                message,
+            } => RunEvent::MessageStart {
+                message_id,
+                message,
+            },
+            AgentEvent::MessageUpdate { message_id, delta } => RunEvent::MessageUpdate {
+                subagent_id: None,
+                message_id,
+                delta,
+            },
+            AgentEvent::MessageEnd {
+                message_id,
+                message,
+            } => RunEvent::MessageEnd {
+                message_id,
+                message,
+            },
             // ModelCall events don't exist in AgentEvent — Run emits them directly
             AgentEvent::ToolExecutionStart {
                 tool_call_id,
@@ -226,26 +285,56 @@ impl RunEvent {
                 iterations_used,
             },
             // Subagent streaming events map to generic streaming events.
-            AgentEvent::SubagentMessageUpdate { subagent_id, delta } => RunEvent::ModelStreaming { subagent_id: Some(subagent_id), delta },
-            AgentEvent::SubagentToolStart { subagent_id, tool_call_id, tool_name, args } => RunEvent::ToolStarted {
+            AgentEvent::SubagentMessageUpdate {
+                subagent_id,
+                message_id,
+                delta,
+            } => RunEvent::ModelStreaming {
+                subagent_id: Some(subagent_id),
+                message_id,
+                delta,
+            },
+            AgentEvent::SubagentToolStart {
+                subagent_id,
+                tool_call_id,
+                tool_name,
+                args,
+            } => RunEvent::ToolStarted {
                 subagent_id: Some(subagent_id),
                 call_id: tool_call_id,
                 name: tool_name,
                 args,
             },
-            AgentEvent::SubagentToolUpdate { subagent_id, tool_call_id, partial_result } => RunEvent::ToolUpdate {
+            AgentEvent::SubagentToolUpdate {
+                subagent_id,
+                tool_call_id,
+                partial_result,
+            } => RunEvent::ToolUpdate {
                 subagent_id: Some(subagent_id),
                 call_id: tool_call_id,
                 partial: partial_result,
             },
-            AgentEvent::SubagentToolEnd { subagent_id, tool_call_id, tool_name, result, is_error } => RunEvent::ToolEnded {
+            AgentEvent::SubagentToolEnd {
+                subagent_id,
+                tool_call_id,
+                tool_name,
+                result,
+                is_error,
+            } => RunEvent::ToolEnded {
                 subagent_id: Some(subagent_id),
                 call_id: tool_call_id,
                 name: tool_name,
                 result,
                 is_error,
             },
-            AgentEvent::SubagentApprovalRequired { subagent_id, prompt_id, tool_name, tool_input, danger_level, explanation } => RunEvent::ApprovalRequired {
+            AgentEvent::SubagentApprovalRequired {
+                subagent_id,
+                prompt_id,
+                tool_name,
+                tool_input,
+                danger_level,
+                explanation,
+            } => RunEvent::ApprovalRequired {
                 subagent_id: Some(subagent_id),
                 prompt_id,
                 tool_name,
@@ -284,10 +373,7 @@ mod tests {
 
     #[test]
     fn from_agent_event_none_for_agent_end() {
-        let ev = RunEvent::from_agent_event(
-            "r1",
-            AgentEvent::AgentEnd { messages: vec![] },
-        );
+        let ev = RunEvent::from_agent_event("r1", AgentEvent::AgentEnd { messages: vec![] });
         assert!(ev.is_none());
     }
 
@@ -323,6 +409,7 @@ mod tests {
             parent_call_id: None,
             event: RunEvent::ModelStreaming {
                 subagent_id: Some("sa-1".to_string()),
+                message_id: "m-1".to_string(),
                 delta: MessageDelta::Text("hi".to_string()),
             },
         };

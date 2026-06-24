@@ -1,16 +1,17 @@
 use anyhow::{Context as _, Result};
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 use crate::agent::AgentBuilder;
 use crate::background::BackgroundPool;
 use crate::cron::CronScheduler;
 use crate::hooks::HookRegistry;
 use crate::permission::PermissionPolicy;
+use crate::reflector::{Reflector, Suggestion, SuggestionAction};
 use crate::skills::SkillManager;
 use crate::tasks::TaskBoard;
 use crate::teams::AgentTeam;
 use crate::todo::TodoList;
-use crate::reflector::{Reflector, Suggestion, SuggestionAction};
 use crate::worktree::WorktreeManager;
 use std::path::PathBuf;
 
@@ -307,10 +308,7 @@ impl ComprehensiveAgent {
         trace_path: &std::path::Path,
         enrich: bool,
     ) -> Result<ReflectionReport> {
-        let reflector = self
-            .reflector
-            .as_ref()
-            .context("reflector not enabled")?;
+        let reflector = self.reflector.as_ref().context("reflector not enabled")?;
 
         let records = Reflector::load_trace(trace_path)?;
         let mut suggestions = reflector.analyze(&records);
@@ -354,10 +352,7 @@ impl ComprehensiveAgent {
         if self.has_tasks()
             && let Some(ref board) = self.task_board
         {
-            parts.push(format!(
-                "Tasks: {} total",
-                board.lock().unwrap().all_tasks().len()
-            ));
+            parts.push(format!("Tasks: {} total", board.lock().all_tasks().len()));
         }
         if self.has_background()
             && let Some(ref pool) = self.background_pool

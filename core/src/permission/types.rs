@@ -154,7 +154,10 @@ impl ApprovalScope {
             Self::Duration(d_str) => {
                 let secs = parse_duration_str(d_str);
                 let elapsed = *now - *approved_at;
-                elapsed.to_std().map(|e| e.as_secs() < secs).unwrap_or(false)
+                elapsed
+                    .to_std()
+                    .map(|e| e.as_secs() < secs)
+                    .unwrap_or(false)
             }
             Self::Task(_) => true,
             Self::Persistent => true,
@@ -255,7 +258,9 @@ impl ToolPermissionPattern {
         match &self.commands {
             Some(allowed) => {
                 let cmd = command.trim();
-                allowed.iter().any(|prefix| cmd.starts_with(prefix.as_str()))
+                allowed
+                    .iter()
+                    .any(|prefix| cmd.starts_with(prefix.as_str()))
             }
             None => true, // no command restriction
         }
@@ -498,8 +503,8 @@ mod tests {
 
     #[test]
     fn test_tool_pattern_matches_command() {
-        let pat = ToolPermissionPattern::simple("bash")
-            .with_commands(vec!["git".into(), "cargo".into()]);
+        let pat =
+            ToolPermissionPattern::simple("bash").with_commands(vec!["git".into(), "cargo".into()]);
         assert!(pat.matches_command("git status"));
         assert!(pat.matches_command("cargo build"));
         assert!(!pat.matches_command("rm -rf /"));
@@ -516,10 +521,7 @@ mod tests {
 
     #[test]
     fn test_whitelist_entry_once_consumed() {
-        let entry = WhitelistEntry::new(
-            ToolPermissionPattern::simple("bash"),
-            ApprovalScope::Once,
-        );
+        let entry = WhitelistEntry::new(ToolPermissionPattern::simple("bash"), ApprovalScope::Once);
         // Once scope says is_valid = false (consumed), but we don't delete it.
         // The caller should check scope and decide.
         assert!(!entry.scope.is_valid(&entry.created_at, &Utc::now()));

@@ -113,12 +113,15 @@ pub enum AgentEvent {
 
     // ── Message lifecycle (user, assistant, toolResult) ─────────────
     MessageStart {
+        message_id: String,
         message: Message,
     },
     MessageUpdate {
+        message_id: String,
         delta: MessageDelta,
     },
     MessageEnd {
+        message_id: String,
         message: Message,
     },
 
@@ -152,6 +155,7 @@ pub enum AgentEvent {
     },
     SubagentMessageUpdate {
         subagent_id: String,
+        message_id: String,
         delta: MessageDelta,
     },
     SubagentToolStart {
@@ -318,15 +322,19 @@ mod tests {
                 tool_results: vec![],
             },
             AgentEvent::MessageStart {
+                message_id: "m1".to_string(),
                 message: Message::user("hello"),
             },
             AgentEvent::MessageUpdate {
+                message_id: "m1".to_string(),
                 delta: MessageDelta::Text("chunk".to_string()),
             },
             AgentEvent::MessageUpdate {
+                message_id: "m1".to_string(),
                 delta: MessageDelta::Thinking("reasoning".to_string()),
             },
             AgentEvent::MessageEnd {
+                message_id: "m1".to_string(),
                 message: Message::assistant("response"),
             },
             AgentEvent::ToolExecutionStart {
@@ -446,6 +454,7 @@ mod tests {
             },
             AgentEvent::SubagentMessageUpdate {
                 subagent_id: "researcher".to_string(),
+                message_id: "m2".to_string(),
                 delta: MessageDelta::Text("looking at files...".to_string()),
             },
             AgentEvent::SubagentToolStart {

@@ -75,9 +75,9 @@ impl SkillManifest {
         }
 
         let rest = &content[3..]; // skip first ---
-        let end = rest.find("---").ok_or_else(|| {
-            anyhow::anyhow!("Missing closing --- in frontmatter")
-        })?;
+        let end = rest
+            .find("---")
+            .ok_or_else(|| anyhow::anyhow!("Missing closing --- in frontmatter"))?;
 
         let frontmatter = &rest[..end].trim();
         let _body = rest[end + 3..].trim();
@@ -337,7 +337,11 @@ This is the skill content"#;
         assert_eq!(manifest.triggers.len(), 3);
         assert_eq!(manifest.read_when.len(), 1);
         assert!(manifest.triggers.contains(&"rust".to_string()));
-        assert!(manifest.read_when.contains(&"Editing Rust source files".to_string()));
+        assert!(
+            manifest
+                .read_when
+                .contains(&"Editing Rust source files".to_string())
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -373,7 +377,11 @@ content"#;
             name: "git-workflow".to_string(),
             description: "Git workflow patterns".to_string(),
             version: "1.0".to_string(),
-            triggers: vec!["git".to_string(), "commit".to_string(), "branch".to_string()],
+            triggers: vec![
+                "git".to_string(),
+                "commit".to_string(),
+                "branch".to_string(),
+            ],
             tags: vec![],
             read_when: vec!["working with git".to_string()],
             requires: vec![],

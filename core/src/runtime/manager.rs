@@ -14,19 +14,20 @@
 //! ```
 
 use anyhow::{Context, Result};
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio::task::JoinHandle;
 
 use crate::runtime::brain::Brain;
 use crate::runtime::command::RunCommand;
 use crate::runtime::event::{Envelope, RunEvent, RunId};
 use crate::runtime::event_log::EventLog;
-use crate::worktree::WorktreeManager;
 use crate::runtime::run::{Run, default_runs_dir};
 use crate::runtime::state::RunState;
+use crate::worktree::WorktreeManager;
 
 /// Capacity for the event broadcast channel per Run.
 const EVENT_CHANNEL_CAPACITY: usize = 1024;
@@ -45,7 +46,7 @@ pub struct RunHandle {
     /// The tokio task running the Run's loop.
     join_handle: Option<JoinHandle<()>>,
     /// Shared state for querying (read-only, updated by the Run task).
-    state: Arc<std::sync::RwLock<RunState>>,
+    state: Arc<RwLock<RunState>>,
 }
 
 impl RunHandle {
@@ -63,10 +64,7 @@ impl RunHandle {
 
     /// Current state of the Run (best-effort, may be slightly stale).
     pub fn state(&self) -> RunState {
-        self.state
-            .read()
-            .map(|g| *g)
-            .unwrap_or(RunState::Failed)
+        *self.state.read()
     }
 
     /// Whether the Run has finished (terminal state).
@@ -119,7 +117,8 @@ impl RunManager {
         session_id: Option<String>,
         history: Vec<crate::types::Message>,
     ) -> Result<RunId> {
-        self.create_run_with_workdir(user_input, session_id, None, history).await
+        self.create_run_with_workdir(user_input, session_id, None, history)
+            .await
     }
 
     /// Create a Run with an isolated working directory (for worktree isolation).
@@ -143,7 +142,7 @@ impl RunManager {
         let (event_tx, _event_rx) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
 
         // Shared state for external querying
-        let shared_state = Arc::new(std::sync::RwLock::new(RunState::Created));
+        let shared_state = Arc::new(RwLock::new(RunState::Created));
 
         // Monotonic per-Run sequence counter. Shared with the Run so that
         // RunCreated (seq 0) and the Run's own events form one sequence.
@@ -190,7 +189,9 @@ impl RunManager {
             let log_task = tokio::spawn(async move {
                 loop {
                     match log_rx.recv().await {
-                        Ok(env) => { event_log.append(env); }
+                        Ok(env) => {
+                            event_log.append(env);
+                        }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                             tracing::warn!(run_id = %log_run_id, lagged = n, "event log subscriber lagged");
@@ -206,9 +207,8 @@ impl RunManager {
             let state_task = tokio::spawn(async move {
                 while let Ok(ev) = rx.recv().await {
                     if let RunEvent::StateChanged { to, .. } = &ev.event {
-                        if let Ok(mut g) = state_clone.write() {
-                            *g = *to;
-                        }
+                        let mut g = state_clone.write();
+                        *g = *to;
                     }
                     if matches!(
                         ev.event,
@@ -299,7 +299,11 @@ impl RunManager {
 
     /// List all Run IDs that have persisted event logs (for replay/fork).
     pub fn list_logged_runs(&self) -> Result<Vec<RunId>> {
-        let dir = self.brain.config.memory.as_ref()
+        let dir = self
+            .brain
+            .config
+            .memory
+            .as_ref()
             .map(|m| {
                 // Use the same base as memory db, but in a "runs" subdir
                 let home = std::env::var("HOME")
@@ -373,7 +377,8 @@ impl RunManager {
     pub fn cleanup_worktree(&self, repo_root: &str, worktree_path: &str) -> Result<()> {
         let mut wt = WorktreeManager::new(std::path::PathBuf::from(repo_root));
         // Find the worktree record by path
-        let target_id = wt.list_all()
+        let target_id = wt
+            .list_all()
             .iter()
             .find(|r| r.path.to_string_lossy() == worktree_path)
             .map(|r| r.id.clone());

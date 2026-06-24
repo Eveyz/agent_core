@@ -19,7 +19,8 @@ use std::collections::HashMap;
 use std::io::{self, IsTerminal, Write};
 use std::path::Path;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 // ── Tab completion ────────────────────────────────────────────────
 
@@ -509,11 +510,10 @@ async fn main() -> anyhow::Result<()> {
                         .and_then(|p| p.to_str().map(|s| s.to_string()))
                         .unwrap_or_default();
                     let model = agent.current_model();
-                    if let Ok(mgr) = session_mgr.lock() {
-                        let current_id = _current_session_id.lock().unwrap().clone();
-                        if let Ok(id) = mgr.save(current_id.as_deref(), &messages, &cwd, &model) {
-                            println!("Session auto-saved: {}", &id[..8]);
-                        }
+                    let mgr = session_mgr.lock();
+                    let current_id = _current_session_id.lock().clone();
+                    if let Ok(id) = mgr.save(current_id.as_deref(), &messages, &cwd, &model) {
+                        println!("Session auto-saved: {}", &id[..8]);
                     }
                 }
 
@@ -544,12 +544,12 @@ async fn main() -> anyhow::Result<()> {
             }
             "/clear" => {
                 agent.clear_context();
-                *_current_session_id.lock().unwrap() = None;
+                *_current_session_id.lock() = None;
                 println!("Context cleared. New session started.");
             }
             "/new" => {
                 agent.clear_context();
-                *_current_session_id.lock().unwrap() = None;
+                *_current_session_id.lock() = None;
                 println!("Fresh session started. Previous context cleared.");
             }
             cmd if cmd.starts_with("/rewind") => {
@@ -642,7 +642,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             "/todo" => {
-                let list = todo_list.lock().unwrap();
+                let list = todo_list.lock();
                 if list.items.is_empty() {
                     println!("Todo list is empty. Use /todo add <id> <description>");
                 } else {
@@ -650,11 +650,11 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             "/tasks" => {
-                let board = task_board.lock().unwrap();
+                let board = task_board.lock();
                 println!("{}", board.summary());
             }
             "/skills" => {
-                let mgr = skill_manager.lock().unwrap();
+                let mgr = skill_manager.lock();
                 let skills = mgr.list_with_sources();
                 if skills.is_empty() {
                     println!("No skills found. Searched:");
@@ -702,7 +702,7 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
             "/sessions" => {
-                let mgr = session_mgr.lock().unwrap();
+                let mgr = session_mgr.lock();
                 match mgr.list(false) {
                     Ok(sessions) => {
                         if sessions.is_empty() {
@@ -720,7 +720,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             cmd if cmd.starts_with("/session") => {
-                let mgr = session_mgr.lock().unwrap();
+                let mgr = session_mgr.lock();
                 let args: Vec<&str> = cmd.splitn(4, ' ').collect();
 
                 match args.get(1).copied() {
@@ -737,10 +737,10 @@ async fn main() -> anyhow::Result<()> {
                             .and_then(|p| p.to_str().map(|s| s.to_string()))
                             .unwrap_or_default();
                         let model = agent.current_model();
-                        let current_id = _current_session_id.lock().unwrap().clone();
+                        let current_id = _current_session_id.lock().clone();
                         match mgr.save(current_id.as_deref(), &messages, &cwd, &model) {
                             Ok(id) => {
-                                *_current_session_id.lock().unwrap() = Some(id.clone());
+                                *_current_session_id.lock() = Some(id.clone());
                                 println!("Session saved: {}", &id[..8]);
                             }
                             Err(e) => eprintln!("Failed to save session: {e}"),
@@ -757,7 +757,7 @@ async fn main() -> anyhow::Result<()> {
                                     for msg in &session.messages {
                                         agent.context_mut().add(msg.clone());
                                     }
-                                    *_current_session_id.lock().unwrap() =
+                                    *_current_session_id.lock() =
                                         Some(session_id.to_string());
                                     println!(
                                         "Resumed session '{}' ({} messages).",
@@ -917,7 +917,7 @@ async fn main() -> anyhow::Result<()> {
 
                 if rest.starts_with("deactivate ") {
                     let name = rest.strip_prefix("deactivate ").unwrap().trim();
-                    let mut mgr = skill_manager.lock().unwrap();
+                    let mut mgr = skill_manager.lock();
                     if name == "all" {
                         mgr.deactivate_all();
                         println!("All skills deactivated.");
@@ -927,13 +927,13 @@ async fn main() -> anyhow::Result<()> {
                         eprintln!("Skill '{}' is not active.", name);
                     }
                 } else if rest == "reload" {
-                    let mut mgr = skill_manager.lock().unwrap();
+                    let mut mgr = skill_manager.lock();
                     match mgr.scan() {
                         Ok(count) => println!("Reloaded {} skills from disk.", count),
                         Err(e) => eprintln!("Reload failed: {e}"),
                     }
                 } else if rest == "active" {
-                    let mgr = skill_manager.lock().unwrap();
+                    let mgr = skill_manager.lock();
                     let active = mgr.active_skill_names();
                     if active.is_empty() {
                         println!("No active skills.");
@@ -942,7 +942,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                 } else {
                     // Default: load skill
-                    let mgr = skill_manager.lock().unwrap();
+                    let mgr = skill_manager.lock();
                     match mgr.load_skill_context(rest) {
                         Ok(Some(content)) => {
                             println!("{}", content);
@@ -1104,7 +1104,7 @@ fn handle_todo_cmd(cmd: &str, todo_list: &Arc<Mutex<TodoList>>) {
     let args = cmd.strip_prefix("/todo ").unwrap().trim();
 
     if args == "clear" {
-        let mut list = todo_list.lock().unwrap();
+        let mut list = todo_list.lock();
         list.items.clear();
         println!("Todo list cleared.");
         return;
@@ -1119,7 +1119,7 @@ fn handle_todo_cmd(cmd: &str, todo_list: &Arc<Mutex<TodoList>>) {
         }
         let id = parts[0];
         let desc = parts[1];
-        let mut list = todo_list.lock().unwrap();
+        let mut list = todo_list.lock();
         list.add(TodoItem::new(id, desc));
         println!("Added todo '{}': {}", id, desc);
         return;
@@ -1127,7 +1127,7 @@ fn handle_todo_cmd(cmd: &str, todo_list: &Arc<Mutex<TodoList>>) {
 
     if args.starts_with("done ") {
         let id = args.strip_prefix("done ").unwrap().trim();
-        let mut list = todo_list.lock().unwrap();
+        let mut list = todo_list.lock();
         match list.update_status(id, TodoStatus::Completed) {
             Ok(()) => println!("Todo '{}' marked done.", id),
             Err(e) => eprintln!("Error: {}", e),
@@ -1137,7 +1137,7 @@ fn handle_todo_cmd(cmd: &str, todo_list: &Arc<Mutex<TodoList>>) {
 
     if args.starts_with("start ") {
         let id = args.strip_prefix("start ").unwrap().trim();
-        let mut list = todo_list.lock().unwrap();
+        let mut list = todo_list.lock();
         match list.update_status(id, TodoStatus::InProgress) {
             Ok(()) => println!("Todo '{}' started.", id),
             Err(e) => eprintln!("Error: {}", e),
@@ -1146,7 +1146,7 @@ fn handle_todo_cmd(cmd: &str, todo_list: &Arc<Mutex<TodoList>>) {
     }
 
     // Default: show list
-    let list = todo_list.lock().unwrap();
+    let list = todo_list.lock();
     if list.items.is_empty() {
         println!("Todo list is empty. Use /todo add <id> <description>");
     } else {
@@ -1158,7 +1158,7 @@ fn handle_tasks_cmd(cmd: &str, task_board: &Arc<Mutex<TaskBoard>>) {
     let args = cmd.strip_prefix("/tasks ").unwrap().trim();
 
     if args == "clear" {
-        let mut board = task_board.lock().unwrap();
+        let mut board = task_board.lock();
         *board = TaskBoard::new();
         println!("Task board cleared.");
         return;
@@ -1173,7 +1173,7 @@ fn handle_tasks_cmd(cmd: &str, task_board: &Arc<Mutex<TaskBoard>>) {
         }
         let id = parts[0];
         let desc = parts[1];
-        let mut board = task_board.lock().unwrap();
+        let mut board = task_board.lock();
         board.create(id, desc, vec![]);
         println!("Task '{}' created: {}", id, desc);
         return;
@@ -1181,7 +1181,7 @@ fn handle_tasks_cmd(cmd: &str, task_board: &Arc<Mutex<TaskBoard>>) {
 
     if args.starts_with("done ") {
         let id = args.strip_prefix("done ").unwrap().trim();
-        let mut board = task_board.lock().unwrap();
+        let mut board = task_board.lock();
         match board.update(id, TaskStatus::Completed, None) {
             Ok(()) => println!("Task '{}' completed.", id),
             Err(e) => eprintln!("Error: {e}"),
@@ -1191,7 +1191,7 @@ fn handle_tasks_cmd(cmd: &str, task_board: &Arc<Mutex<TaskBoard>>) {
 
     if args.starts_with("start ") {
         let id = args.strip_prefix("start ").unwrap().trim();
-        let mut board = task_board.lock().unwrap();
+        let mut board = task_board.lock();
         match board.update(id, TaskStatus::InProgress, None) {
             Ok(()) => println!("Task '{}' started.", id),
             Err(e) => eprintln!("Error: {e}"),
@@ -1200,7 +1200,7 @@ fn handle_tasks_cmd(cmd: &str, task_board: &Arc<Mutex<TaskBoard>>) {
     }
 
     // Default: show board
-    let board = task_board.lock().unwrap();
+    let board = task_board.lock();
     println!("{}", board.summary());
 }
 
@@ -1226,15 +1226,15 @@ fn print_status(
     println!("Hooks:       {}", if enable_hooks { "on" } else { "off" });
     println!("Tools:       {}", agent.tool_registry().list_names().len());
     {
-        let list = todo_list.lock().unwrap();
+        let list = todo_list.lock();
         println!("Todo:        {}", list.summary());
     }
     {
-        let board = task_board.lock().unwrap();
+        let board = task_board.lock();
         println!("Tasks:       {} total", board.all_tasks().len());
     }
     {
-        let mgr = skill_manager.lock().unwrap();
+        let mgr = skill_manager.lock();
         println!(
             "Skills:      {} loaded, {} active",
             mgr.count(),
@@ -1308,7 +1308,7 @@ async fn run_agent(
     let in_sub_text = std::sync::atomic::AtomicBool::new(false);
 
     // Deferred tool output: buffer ToolExecutionStart until ToolExecutionEnd arrives
-    let pending_tool: std::sync::Mutex<Option<(String, serde_json::Value)>> = std::sync::Mutex::new(None);
+    let pending_tool: Mutex<Option<(String, serde_json::Value)>> = Mutex::new(None);
 
     print!("\r  ⏳{}", reset(use_styles));
     io::stdout().flush().ok();
@@ -1335,10 +1335,10 @@ async fn run_agent(
                         );
                     }
                 }
-                AgentEvent::MessageUpdate { delta } => match delta {
+                AgentEvent::MessageUpdate { delta, .. } => match delta {
                     MessageDelta::Thinking(t) => {
                         // Flush pending tool output before thinking
-                        pending_tool.lock().unwrap().take();
+                        pending_tool.lock().take();
                         if in_agent_text.load(std::sync::atomic::Ordering::Relaxed) {
                             println!();
                             in_agent_text.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -1359,7 +1359,7 @@ async fn run_agent(
                     }
                     MessageDelta::Text(t) => {
                         // Flush pending tool output before text
-                        pending_tool.lock().unwrap().take();
+                        pending_tool.lock().take();
                         if in_thinking.load(std::sync::atomic::Ordering::Relaxed) {
                             println!("{}", reset(use_styles));
                             in_thinking.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -1389,7 +1389,7 @@ async fn run_agent(
                     tool_name, args, ..
                 } => {
                     // Defer — buffer it, print when ToolExecutionEnd arrives
-                    pending_tool.lock().unwrap().replace((tool_name, args));
+                    pending_tool.lock().replace((tool_name, args));
                 }
                 AgentEvent::ToolExecutionUpdate { .. } => {
                     // Silently consume — end event will show final result
@@ -1411,7 +1411,7 @@ async fn run_agent(
                     }
                     println!(); // visual separator before tool output
 
-                    let pt = pending_tool.lock().unwrap().take();
+                    let pt = pending_tool.lock().take();
                     let args = pt
                         .as_ref()
                         .map(|(_, a)| a.clone())
@@ -1421,7 +1421,7 @@ async fn run_agent(
                     io::stdout().flush().ok();
                 }
                 AgentEvent::Error(e) => {
-                    pending_tool.lock().unwrap().take();
+                    pending_tool.lock().take();
                     eprintln!(
                         "  {}{}✗{}{} {}{}",
                         bold(use_styles),
@@ -1445,7 +1445,7 @@ async fn run_agent(
                     explanation,
                     ..
                 } => {
-                    pending_tool.lock().unwrap().take();
+                    pending_tool.lock().take();
                     println!(
                         "  {}⚠ APPROVAL{} {} ({})",
                         yellow(use_styles),
@@ -1459,16 +1459,16 @@ async fn run_agent(
                         explanation,
                         reset(use_styles)
                     );
-                    if let Ok(mut pending) = agent_core::permission::global_pending_approvals().lock() {
-                        if let Some(tx) = pending.remove(&prompt_id) {
-                            let _ = tx.send(agent_core::permission::ApprovalChoice::AllowSession);
-                        }
+                    let approvals = agent_core::permission::global_pending_approvals();
+                    let mut pending = approvals.lock();
+                    if let Some(tx) = pending.remove(&prompt_id) {
+                        let _ = tx.send(agent_core::permission::ApprovalChoice::AllowSession);
                     }
                 }
 
                 // ── Subagent events ────────────────────────────────
                 AgentEvent::SubagentStart { subagent_id, role_name, task } => {
-                    pending_tool.lock().unwrap().take();
+                    pending_tool.lock().take();
                     in_sub_thinking.store(false, std::sync::atomic::Ordering::Relaxed);
                     in_sub_text.store(false, std::sync::atomic::Ordering::Relaxed);
                     println!(

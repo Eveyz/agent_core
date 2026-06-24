@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use serde_json::{Value, json};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::memory::MemoryManager;
 use crate::tools::Tool;
@@ -47,7 +48,7 @@ impl Tool for ArchivalMemoryInsertTool {
         let content = args["content"].as_str().context("missing 'content'")?;
         let metadata = args["metadata"].as_str();
 
-        let memory = self.memory.lock().unwrap();
+        let memory = self.memory.lock();
         let id = memory.archival().insert(content, metadata)?;
 
         Ok(json!({
@@ -101,7 +102,7 @@ impl Tool for ArchivalMemorySearchTool {
         let query = args["query"].as_str().context("missing 'query'")?;
         let top_k = args["top_k"].as_u64().unwrap_or(5) as usize;
 
-        let memory = self.memory.lock().unwrap();
+        let memory = self.memory.lock();
         let results = memory.archival().search(query, top_k)?;
 
         let items: Vec<Value> = results
@@ -156,7 +157,7 @@ impl Tool for ArchivalMemoryDeleteTool {
     async fn execute(&self, args: Value) -> Result<String> {
         let id = args["id"].as_str().context("missing 'id'")?;
 
-        let memory = self.memory.lock().unwrap();
+        let memory = self.memory.lock();
         let deleted = memory.archival().delete(id)?;
 
         Ok(json!({

@@ -1,8 +1,9 @@
 use crate::todo::{TodoItem, TodoList, TodoStatus};
 use crate::tools::{Tool, ToolRegistry};
 use anyhow::Result;
+use parking_lot::Mutex;
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub fn register_todo_tools(registry: &mut ToolRegistry, todo_list: Arc<Mutex<TodoList>>) {
     registry.register(Box::new(TodoWriteTool::new(todo_list.clone())));
@@ -62,7 +63,7 @@ impl Tool for TodoWriteTool {
             })
             .unwrap_or_default();
 
-        let mut list = self.todo_list.lock().unwrap();
+        let mut list = self.todo_list.lock();
         list.add(TodoItem::new(id, description).with_depends_on(depends_on));
         Ok(format!("Todo '{}' created: {}", id, description))
     }
@@ -93,7 +94,7 @@ impl Tool for TodoReadTool {
     }
 
     async fn execute(&self, _args: Value) -> Result<String> {
-        let list = self.todo_list.lock().unwrap();
+        let list = self.todo_list.lock();
         Ok(list.to_context_string())
     }
 }
@@ -148,7 +149,7 @@ impl Tool for TodoUpdateTool {
             s => anyhow::bail!("invalid status: {}", s),
         };
 
-        let mut list = self.todo_list.lock().unwrap();
+        let mut list = self.todo_list.lock();
         list.update_status(id, status)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
         Ok(format!(

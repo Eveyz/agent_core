@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use serde_json::{Value, json};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::memory::MemoryManager;
 use crate::tools::Tool;
@@ -47,7 +48,7 @@ impl Tool for CoreMemoryAppendTool {
         let block_id = args["block_id"].as_str().context("missing 'block_id'")?;
         let content = args["content"].as_str().context("missing 'content'")?;
 
-        let mut memory = self.memory.lock().unwrap();
+        let mut memory = self.memory.lock();
         memory.core_mut().append(block_id, content)?;
 
         let block = memory.core().get(block_id);
@@ -110,7 +111,7 @@ impl Tool for CoreMemoryReplaceTool {
             .as_str()
             .context("missing 'new_content'")?;
 
-        let mut memory = self.memory.lock().unwrap();
+        let mut memory = self.memory.lock();
         memory
             .core_mut()
             .replace(block_id, old_content, new_content)?;
@@ -161,7 +162,7 @@ impl Tool for CoreMemoryReadTool {
     async fn execute(&self, args: Value) -> Result<String> {
         let block_id = args["block_id"].as_str().context("missing 'block_id'")?;
 
-        let memory = self.memory.lock().unwrap();
+        let memory = self.memory.lock();
         match memory.core().get(block_id) {
             Some(block) => Ok(json!({
                 "block_id": block_id,

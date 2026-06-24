@@ -99,12 +99,14 @@ impl MemoryManager {
 
     /// Prune cold memories with low recall and importance.
     pub fn prune(&self, min_score: f32, min_importance: f32, max: usize) -> Result<usize> {
-        self.recall.prune_cold_memories(min_score, min_importance, max)
+        self.recall
+            .prune_cold_memories(min_score, min_importance, max)
     }
 
     /// Promote high-importance old memories to archival storage.
     pub fn promote_to_archival(&self, min_importance: f32, max: usize) -> Result<usize> {
-        self.recall.promote_to_archival(&self.archival, min_importance, max)
+        self.recall
+            .promote_to_archival(&self.archival, min_importance, max)
     }
 
     /// Get memory stats.

@@ -24,7 +24,10 @@ pub enum RunCommand {
     /// The message is processed at the next turn boundary.
     Steer { message: String },
     /// Resolve a pending approval request. Valid in `AwaitingApproval`.
-    Approve { prompt_id: String, choice: ApprovalChoice },
+    Approve {
+        prompt_id: String,
+        choice: ApprovalChoice,
+    },
     /// Answer a pending input request. Valid in `AwaitingInput`.
     Answer { prompt_id: String, answer: String },
 }

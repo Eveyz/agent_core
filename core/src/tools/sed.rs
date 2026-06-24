@@ -83,7 +83,10 @@ By default writes back to the file; set preview=true to only show the diff."
         let new_content = String::from_utf8_lossy(&result.stdout).to_string();
 
         if new_content == old_content {
-            return Ok(format!("No changes: expression '{}' matched nothing in '{}'", expression, file_path));
+            return Ok(format!(
+                "No changes: expression '{}' matched nothing in '{}'",
+                expression, file_path
+            ));
         }
 
         if !preview {
@@ -108,7 +111,11 @@ By default writes back to the file; set preview=true to only show the diff."
             .filter(|l| l.starts_with('-') && !l.starts_with("---"))
             .count();
 
-        let action = if preview { "Preview (not written)" } else { "Applied" };
+        let action = if preview {
+            "Preview (not written)"
+        } else {
+            "Applied"
+        };
         Ok(format!(
             "{} sed '{}' to '{}': +{} additions, -{} deletions\n{}",
             action, expression, file_path, additions, deletions, diff_str

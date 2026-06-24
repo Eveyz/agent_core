@@ -24,28 +24,32 @@ pub mod types;
 pub mod whitelist;
 
 use anyhow::Result;
+use parking_lot::Mutex;
 use serde_json::Value;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 pub type PendingApprovalMap = HashMap<String, tokio::sync::oneshot::Sender<types::ApprovalChoice>>;
 
 /// **Deprecated**: Per-Run approval routing via [`ApprovalResolver`](crate::runtime::ApprovalResolver)
 /// replaces this global map. This is kept only for backward compatibility with
 /// the legacy `Agent` path used by the CLI.
-#[deprecated(note = "use runtime::ApprovalResolver instead — this global map is not scoped per-Run")]
+#[deprecated(
+    note = "use runtime::ApprovalResolver instead — this global map is not scoped per-Run"
+)]
 pub fn global_pending_approvals() -> Arc<Mutex<PendingApprovalMap>> {
     static MAP: OnceLock<Arc<Mutex<PendingApprovalMap>>> = OnceLock::new();
-    MAP.get_or_init(|| Arc::new(Mutex::new(HashMap::new()))).clone()
+    MAP.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+        .clone()
 }
 
 pub use audit::{AuditLog, AuditStats};
 pub use types::AuditEntry;
 pub use types::{
-    glob_match, ApprovalChoice, ApprovalLevel, ApprovalPrompt, ApprovalScope, ConfigRule,
-    DangerLevel, PermissionConfig, PermissionMode, RuleSource, ToolPermissionPattern,
-    WhitelistEntry,
+    ApprovalChoice, ApprovalLevel, ApprovalPrompt, ApprovalScope, ConfigRule, DangerLevel,
+    PermissionConfig, PermissionMode, RuleSource, ToolPermissionPattern, WhitelistEntry,
+    glob_match,
 };
 pub use whitelist::WhitelistManager;
 
@@ -310,7 +314,15 @@ impl PermissionPolicy {
 
         // Layer 0: Yolo mode — everything allowed
         if self.mode == PermissionMode::Yolo {
-            self.audit_record(tool_name, tool_input_json, &ApprovalLevel::Allow, &RuleSource::Builtin, "yolo mode", danger, None);
+            self.audit_record(
+                tool_name,
+                tool_input_json,
+                &ApprovalLevel::Allow,
+                &RuleSource::Builtin,
+                "yolo mode",
+                danger,
+                None,
+            );
             return PermissionDecision::Allow;
         }
 
@@ -326,7 +338,15 @@ impl PermissionPolicy {
                     "Tool '{}' is blacklisted (config.toml [permissions.blacklist])",
                     tool_name
                 );
-                self.audit_record(tool_name, tool_input_json, &ApprovalLevel::Deny, &RuleSource::Config, &reason, danger, None);
+                self.audit_record(
+                    tool_name,
+                    tool_input_json,
+                    &ApprovalLevel::Deny,
+                    &RuleSource::Config,
+                    &reason,
+                    danger,
+                    None,
+                );
                 return PermissionDecision::Deny(reason);
             }
         }
@@ -336,11 +356,17 @@ impl PermissionPolicy {
             if entry.is_valid() {
                 let reason = format!(
                     "matched whitelist: {} (scope: {:?}, used {} times)",
-                    entry.pattern.tool_pattern,
-                    entry.scope,
-                    entry.use_count
+                    entry.pattern.tool_pattern, entry.scope, entry.use_count
                 );
-                self.audit_record(tool_name, tool_input_json, &ApprovalLevel::Allow, &RuleSource::Whitelist, &reason, danger, None);
+                self.audit_record(
+                    tool_name,
+                    tool_input_json,
+                    &ApprovalLevel::Allow,
+                    &RuleSource::Whitelist,
+                    &reason,
+                    danger,
+                    None,
+                );
                 return PermissionDecision::Allow;
             }
         }
@@ -351,8 +377,15 @@ impl PermissionPolicy {
             // commands) — let it fire at Layer 5 instead. Without this, setting
             // `auto_allow_up_to = Destructive` would bypass the destructive deny.
             if danger <= max_danger && !builtin_deny {
-                self.audit_record(tool_name, tool_input_json, &ApprovalLevel::Allow, &RuleSource::Config,
-                    &format!("auto_allow_up_to ≥ {:?}", danger), danger, None);
+                self.audit_record(
+                    tool_name,
+                    tool_input_json,
+                    &ApprovalLevel::Allow,
+                    &RuleSource::Config,
+                    &format!("auto_allow_up_to ≥ {:?}", danger),
+                    danger,
+                    None,
+                );
                 return PermissionDecision::Allow;
             }
         }
@@ -367,8 +400,15 @@ impl PermissionPolicy {
             PermissionMode::Permissive => {
                 // Auto-allow ReadOnly, ReadWrite, Network
                 if danger <= DangerLevel::Network {
-                    self.audit_record(tool_name, tool_input_json, &ApprovalLevel::Allow, &RuleSource::Builtin,
-                        &format!("permissive: {:?} ≤ Network", danger), danger, None);
+                    self.audit_record(
+                        tool_name,
+                        tool_input_json,
+                        &ApprovalLevel::Allow,
+                        &RuleSource::Builtin,
+                        &format!("permissive: {:?} ≤ Network", danger),
+                        danger,
+                        None,
+                    );
                     return PermissionDecision::Allow;
                 }
             }
@@ -394,11 +434,27 @@ impl PermissionPolicy {
                 );
                 match &rule.level {
                     ApprovalLevel::Allow => {
-                        self.audit_record(tool_name, tool_input_json, &ApprovalLevel::Allow, &RuleSource::Config, &matched, danger, None);
+                        self.audit_record(
+                            tool_name,
+                            tool_input_json,
+                            &ApprovalLevel::Allow,
+                            &RuleSource::Config,
+                            &matched,
+                            danger,
+                            None,
+                        );
                         return PermissionDecision::Allow;
                     }
                     ApprovalLevel::Deny => {
-                        self.audit_record(tool_name, tool_input_json, &ApprovalLevel::Deny, &RuleSource::Config, &matched, danger, None);
+                        self.audit_record(
+                            tool_name,
+                            tool_input_json,
+                            &ApprovalLevel::Deny,
+                            &RuleSource::Config,
+                            &matched,
+                            danger,
+                            None,
+                        );
                         return PermissionDecision::Deny(format!(
                             "Tool '{}' denied by config rule: {}",
                             tool_name, matched
@@ -447,11 +503,27 @@ impl PermissionPolicy {
                 );
                 match level {
                     ApprovalLevel::Allow => {
-                        self.audit_record(tool_name, tool_input_json, &ApprovalLevel::Allow, &RuleSource::Builtin, &matched, danger, None);
+                        self.audit_record(
+                            tool_name,
+                            tool_input_json,
+                            &ApprovalLevel::Allow,
+                            &RuleSource::Builtin,
+                            &matched,
+                            danger,
+                            None,
+                        );
                         return PermissionDecision::Allow;
                     }
                     ApprovalLevel::Deny => {
-                        self.audit_record(tool_name, tool_input_json, &ApprovalLevel::Deny, &RuleSource::Builtin, &matched, danger, None);
+                        self.audit_record(
+                            tool_name,
+                            tool_input_json,
+                            &ApprovalLevel::Deny,
+                            &RuleSource::Builtin,
+                            &matched,
+                            danger,
+                            None,
+                        );
                         return PermissionDecision::Deny(format!(
                             "Tool '{}' denied by builtin rule: {}",
                             tool_name, matched
@@ -466,16 +538,33 @@ impl PermissionPolicy {
 
         // Layer 6: Default — Ask (or Allow for permissive backward compat)
         if self.permissive_default {
-            self.audit_record(tool_name, tool_input_json, &ApprovalLevel::Allow, &RuleSource::Builtin,
-                "permissive default", danger, None);
+            self.audit_record(
+                tool_name,
+                tool_input_json,
+                &ApprovalLevel::Allow,
+                &RuleSource::Builtin,
+                "permissive default",
+                danger,
+                None,
+            );
             return PermissionDecision::Allow;
         }
 
         let prompt = self.build_approval_prompt(tool_name, tool_input_json, danger, command, path);
-        self.audit_record(tool_name, tool_input_json, &ApprovalLevel::Ask, &RuleSource::Builtin,
-            "default: Ask", danger, None);
+        self.audit_record(
+            tool_name,
+            tool_input_json,
+            &ApprovalLevel::Ask,
+            &RuleSource::Builtin,
+            "default: Ask",
+            danger,
+            None,
+        );
         PermissionDecision::Ask(
-            format!("Tool '{}' (danger: {:?}) requires approval", tool_name, danger),
+            format!(
+                "Tool '{}' (danger: {:?}) requires approval",
+                tool_name, danger
+            ),
             prompt,
         )
     }
@@ -581,7 +670,15 @@ impl PermissionPolicy {
         reason: Option<&str>,
     ) {
         if let Some(ref audit) = self.audit {
-            audit.record(tool_name, tool_input, decision, source, matched_rule, danger, reason);
+            audit.record(
+                tool_name,
+                tool_input,
+                decision,
+                source,
+                matched_rule,
+                danger,
+                reason,
+            );
         }
     }
 
@@ -652,7 +749,13 @@ fn canonicalize_target(file_path: &str) -> PathBuf {
 fn normalize_command(cmd: &str) -> String {
     let mut s: String = cmd
         .chars()
-        .map(|c| if c.is_whitespace() || c == '\u{00a0}' { ' ' } else { c })
+        .map(|c| {
+            if c.is_whitespace() || c == '\u{00a0}' {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect();
     s = s.replace("${IFS}", " ");
     s = s.replace("$IFS", " ");
@@ -785,14 +888,26 @@ mod tests {
     #[test]
     fn test_destructive_command_denied() {
         let mut policy = make_policy();
-        let result = policy.check("bash", r#"{"command":"rm -rf /"}"#, Some("rm -rf /"), None, None);
+        let result = policy.check(
+            "bash",
+            r#"{"command":"rm -rf /"}"#,
+            Some("rm -rf /"),
+            None,
+            None,
+        );
         assert!(result.is_denied());
     }
 
     #[test]
     fn test_safe_command_asks_by_default() {
         let mut policy = make_policy();
-        let result = policy.check("bash", r#"{"command":"ls -la"}"#, Some("ls -la"), None, None);
+        let result = policy.check(
+            "bash",
+            r#"{"command":"ls -la"}"#,
+            Some("ls -la"),
+            None,
+            None,
+        );
         assert!(result.needs_approval());
     }
 
@@ -811,7 +926,13 @@ mod tests {
     fn test_yolo_mode_allows_everything() {
         let mut policy = make_policy();
         policy.mode = PermissionMode::Yolo;
-        let result = policy.check("bash", r#"{"command":"rm -rf /"}"#, Some("rm -rf /"), None, None);
+        let result = policy.check(
+            "bash",
+            r#"{"command":"rm -rf /"}"#,
+            Some("rm -rf /"),
+            None,
+            None,
+        );
         assert!(result.is_allowed());
     }
 
@@ -882,7 +1003,9 @@ mod tests {
         // chmod / install variants the old check missed.
         assert!(is_destructive_command("chmod 0777 /etc"));
         assert!(is_destructive_command("chmod a=rwx file"));
-        assert!(is_destructive_command("install -m 777 script /usr/local/bin/script"));
+        assert!(is_destructive_command(
+            "install -m 777 script /usr/local/bin/script"
+        ));
         // Wrapper-prefixed destructive command.
         assert!(is_destructive_command("env rm -rf /tmp"));
         assert!(is_destructive_command("nohup rm -rf /tmp &"));
@@ -902,8 +1025,8 @@ mod tests {
 
     #[test]
     fn test_sandbox_path() {
-        let policy = PermissionPolicy::new()
-            .with_sandbox_paths(vec![PathBuf::from("/tmp/sandbox")]);
+        let policy =
+            PermissionPolicy::new().with_sandbox_paths(vec![PathBuf::from("/tmp/sandbox")]);
         assert!(policy.check_path("/etc/passwd").is_err());
         assert!(policy.check_path("/home/user/file.txt").is_err());
     }
@@ -947,7 +1070,13 @@ mod tests {
         );
         assert!(result.is_denied());
         // A safe command at or below the auto-allow level is still allowed.
-        let safe = policy.check("bash", r#"{"command":"ls -la"}"#, Some("ls -la"), None, None);
+        let safe = policy.check(
+            "bash",
+            r#"{"command":"ls -la"}"#,
+            Some("ls -la"),
+            None,
+            None,
+        );
         assert!(safe.is_allowed());
     }
 }

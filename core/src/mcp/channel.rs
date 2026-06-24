@@ -41,8 +41,7 @@ impl McpChannel {
     /// Convert tool definitions to the format expected by LLM tool schema.
     pub async fn tool_schemas(&self) -> Vec<Value> {
         let defs = self.tool_definitions().await;
-        defs
-            .iter()
+        defs.iter()
             .map(|t| {
                 serde_json::json!({
                     "type": "function",

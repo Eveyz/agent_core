@@ -65,10 +65,18 @@ impl Suggestion {
     pub fn diff_preview(&self) -> String {
         match self.kind {
             SuggestionKind::AppendSkill => {
-                format!("[skill] + {} (triggers: {:?})\n{}", self.target, self.skill_triggers, self.skill_body.as_deref().unwrap_or(""))
+                format!(
+                    "[skill] + {} (triggers: {:?})\n{}",
+                    self.target,
+                    self.skill_triggers,
+                    self.skill_body.as_deref().unwrap_or("")
+                )
             }
             SuggestionKind::MemoryThreshold => {
-                format!("[config] ~ memory.consolidation → {}\n# requires approval", self.target)
+                format!(
+                    "[config] ~ memory.consolidation → {}\n# requires approval",
+                    self.target
+                )
             }
             SuggestionKind::BehaviorLimit => {
                 format!("[config] ~ {}\n# requires approval", self.target)

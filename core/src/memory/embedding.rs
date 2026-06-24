@@ -1,6 +1,6 @@
 use anyhow::Result;
 use fastembed::{InitOptions, TextEmbedding};
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 pub struct EmbeddingModel {
     model: Mutex<TextEmbedding>,
@@ -22,7 +22,7 @@ impl EmbeddingModel {
     }
 
     pub fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        let mut model = self.model.lock().unwrap();
+        let mut model = self.model.lock();
         let embeddings = model.embed(texts, None)?;
         Ok(embeddings)
     }

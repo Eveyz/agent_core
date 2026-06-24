@@ -1,6 +1,7 @@
 use super::TeamMessage;
+use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct MessageBus {
@@ -21,22 +22,22 @@ impl MessageBus {
     }
 
     pub fn register(&self, agent_id: &str) {
-        let mut inboxes = self.inboxes.lock().unwrap();
+        let mut inboxes = self.inboxes.lock();
         inboxes.entry(agent_id.to_string()).or_default();
     }
 
     pub fn unregister(&self, agent_id: &str) {
-        let mut inboxes = self.inboxes.lock().unwrap();
+        let mut inboxes = self.inboxes.lock();
         inboxes.remove(agent_id);
     }
 
     pub fn send(&self, msg: TeamMessage) {
-        let mut inboxes = self.inboxes.lock().unwrap();
+        let mut inboxes = self.inboxes.lock();
         inboxes.entry(msg.to.clone()).or_default().push(msg);
     }
 
     pub fn receive(&self, agent_id: &str) -> Vec<TeamMessage> {
-        let mut inboxes = self.inboxes.lock().unwrap();
+        let mut inboxes = self.inboxes.lock();
         inboxes
             .get_mut(agent_id)
             .map(std::mem::take)
@@ -44,17 +45,17 @@ impl MessageBus {
     }
 
     pub fn peek(&self, agent_id: &str) -> Vec<TeamMessage> {
-        let inboxes = self.inboxes.lock().unwrap();
+        let inboxes = self.inboxes.lock();
         inboxes.get(agent_id).cloned().unwrap_or_default()
     }
 
     pub fn message_count(&self, agent_id: &str) -> usize {
-        let inboxes = self.inboxes.lock().unwrap();
+        let inboxes = self.inboxes.lock();
         inboxes.get(agent_id).map(|i| i.len()).unwrap_or(0)
     }
 
     pub fn total_messages(&self) -> usize {
-        let inboxes = self.inboxes.lock().unwrap();
+        let inboxes = self.inboxes.lock();
         inboxes.values().map(|i| i.len()).sum()
     }
 }

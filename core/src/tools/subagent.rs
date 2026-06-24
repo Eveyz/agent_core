@@ -5,8 +5,9 @@ use crate::subagent::{Subagent, SubagentConfig};
 use crate::tools::{Tool, ToolRegistry, ToolUpdateFn};
 use crate::types::EventSender;
 use anyhow::Result;
+use parking_lot::Mutex;
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub fn register_subagent_tools(
     registry: &mut ToolRegistry,
@@ -118,9 +119,8 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
 
         // Save subagent session if session manager is available
         if let Some(ref mgr) = self.session_mgr {
-            if let Ok(mgr) = mgr.lock() {
-                let _ = mgr.save_subagent("subagent", &result);
-            }
+            let mgr = mgr.lock();
+            let _ = mgr.save_subagent("subagent", &result);
         }
 
         Ok(result.summary())
@@ -225,7 +225,10 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                         .collect()
                 })
                 .unwrap_or_default();
-            let max_iterations = task_spec["max_iterations"].as_u64().map(|v| v as usize).unwrap_or(usize::MAX);
+            let max_iterations = task_spec["max_iterations"]
+                .as_u64()
+                .map(|v| v as usize)
+                .unwrap_or(usize::MAX);
 
             task_infos.push((id, task, tools, max_iterations));
         }
@@ -255,15 +258,19 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                     "max_iterations": max_iterations,
                 });
 
-                let result =
-                    spawn_single(&args, &model_config, &available_tools, sub_sender, &permission_config)
-                        .await;
+                let result = spawn_single(
+                    &args,
+                    &model_config,
+                    &available_tools,
+                    sub_sender,
+                    &permission_config,
+                )
+                .await;
 
                 if let Some(ref mgr) = mgr_clone {
-                    if let Ok(mgr) = mgr.lock() {
-                        if let Ok((ref sub_result, _)) = result {
-                            let _ = mgr.save_subagent(&id, sub_result);
-                        }
+                    let mgr = mgr.lock();
+                    if let Ok((ref sub_result, _)) = result {
+                        let _ = mgr.save_subagent(&id, sub_result);
                     }
                 }
 
@@ -300,19 +307,10 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                     ));
                 }
                 Ok((id, Err(e))) => {
-                    output.push_str(&format!(
-                        "[{}] {} — ERROR: {}\n\n",
-                        idx + 1,
-                        id,
-                        e
-                    ));
+                    output.push_str(&format!("[{}] {} — ERROR: {}\n\n", idx + 1, id, e));
                 }
                 Err(e) => {
-                    output.push_str(&format!(
-                        "[{}] — JOIN ERROR: {}\n\n",
-                        idx + 1,
-                        e
-                    ));
+                    output.push_str(&format!("[{}] — JOIN ERROR: {}\n\n", idx + 1, e));
                 }
             }
         }
@@ -431,7 +429,13 @@ Do NOT attempt to read or process image files.")
         max_context_tokens: 32000,
     };
 
-    let mut subagent = Subagent::new(id, config, model_config, tool_registry, permission_config.clone());
+    let mut subagent = Subagent::new(
+        id,
+        config,
+        model_config,
+        tool_registry,
+        permission_config.clone(),
+    );
     let result = subagent.run_with_sender(task, event_sender).await?;
 
     // Collect subagent messages for session saving

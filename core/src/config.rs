@@ -202,42 +202,51 @@ impl Config {
 
         let mut providers = HashMap::new();
         let mut provider_models = HashMap::new();
-        provider_models.insert("default".to_string(), ProviderModelEntry {
-            model_id: model_id.clone(),
-            temperature: None,
-            max_tokens: None,
-            system_prompt: None,
-        });
+        provider_models.insert(
+            "default".to_string(),
+            ProviderModelEntry {
+                model_id: model_id.clone(),
+                temperature: None,
+                max_tokens: None,
+                system_prompt: None,
+            },
+        );
 
-        providers.insert("default".to_string(), ProviderConfig {
-            name: "default".to_string(),
-            base_url: base_url.clone(),
-            api_key: api_key.clone(),
-            max_context_tokens: 128000,
-            temperature: None,
-            max_tokens: None,
-            react_enabled: true,
-            system_prompt: None,
-            max_iterations: 100,
-            request_timeout_secs: 60,
-            models: provider_models,
-        });
+        providers.insert(
+            "default".to_string(),
+            ProviderConfig {
+                name: "default".to_string(),
+                base_url: base_url.clone(),
+                api_key: api_key.clone(),
+                max_context_tokens: 128000,
+                temperature: None,
+                max_tokens: None,
+                react_enabled: true,
+                system_prompt: None,
+                max_iterations: 100,
+                request_timeout_secs: 60,
+                models: provider_models,
+            },
+        );
 
         let mut models = HashMap::new();
-        models.insert("default/default".to_string(), ModelConfig {
-            name: "default".to_string(),
-            base_url,
-            api_key: api_key.clone(),
-            model_id,
-            max_context_tokens: 128000,
-            temperature: None,
-            max_tokens: None,
-            react_enabled: true,
-            system_prompt: None,
-            max_iterations: 100,
-            request_timeout_secs: 60,
-            fallback_model: None,
-        });
+        models.insert(
+            "default/default".to_string(),
+            ModelConfig {
+                name: "default".to_string(),
+                base_url,
+                api_key: api_key.clone(),
+                model_id,
+                max_context_tokens: 128000,
+                temperature: None,
+                max_tokens: None,
+                react_enabled: true,
+                system_prompt: None,
+                max_iterations: 100,
+                request_timeout_secs: 60,
+                fallback_model: None,
+            },
+        );
 
         Ok(Self {
             default_model: "default/default".to_string(),
@@ -265,20 +274,26 @@ impl Config {
         for (provider_key, provider) in &self.providers {
             for (model_key, entry) in &provider.models {
                 let full_key = format!("{}/{}", provider_key, model_key);
-                self.models.insert(full_key, ModelConfig {
-                    name: provider.name.clone(),
-                    base_url: provider.base_url.clone(),
-                    api_key: provider.api_key.clone(),
-                    model_id: entry.model_id.clone(),
-                    max_context_tokens: provider.max_context_tokens,
-                    temperature: entry.temperature.or(provider.temperature),
-                    max_tokens: entry.max_tokens.or(provider.max_tokens),
-                    react_enabled: provider.react_enabled,
-                    system_prompt: entry.system_prompt.clone().or(provider.system_prompt.clone()),
-                    max_iterations: provider.max_iterations,
-                    request_timeout_secs: provider.request_timeout_secs,
-                    fallback_model: None,
-                });
+                self.models.insert(
+                    full_key,
+                    ModelConfig {
+                        name: provider.name.clone(),
+                        base_url: provider.base_url.clone(),
+                        api_key: provider.api_key.clone(),
+                        model_id: entry.model_id.clone(),
+                        max_context_tokens: provider.max_context_tokens,
+                        temperature: entry.temperature.or(provider.temperature),
+                        max_tokens: entry.max_tokens.or(provider.max_tokens),
+                        react_enabled: provider.react_enabled,
+                        system_prompt: entry
+                            .system_prompt
+                            .clone()
+                            .or(provider.system_prompt.clone()),
+                        max_iterations: provider.max_iterations,
+                        request_timeout_secs: provider.request_timeout_secs,
+                        fallback_model: None,
+                    },
+                );
             }
         }
     }
@@ -299,26 +314,32 @@ impl Config {
                 self.default_model = format!("{}/{}", provider_key, key);
             }
 
-            let provider = self.providers.entry(provider_key.clone()).or_insert_with(|| ProviderConfig {
-                name: model.name.clone(),
-                base_url: model.base_url.clone(),
-                api_key: model.api_key.clone(),
-                max_context_tokens: model.max_context_tokens,
-                temperature: model.temperature,
-                max_tokens: model.max_tokens,
-                react_enabled: model.react_enabled,
-                system_prompt: model.system_prompt.clone(),
-                max_iterations: model.max_iterations,
-                request_timeout_secs: model.request_timeout_secs,
-                models: HashMap::new(),
-            });
+            let provider = self
+                .providers
+                .entry(provider_key.clone())
+                .or_insert_with(|| ProviderConfig {
+                    name: model.name.clone(),
+                    base_url: model.base_url.clone(),
+                    api_key: model.api_key.clone(),
+                    max_context_tokens: model.max_context_tokens,
+                    temperature: model.temperature,
+                    max_tokens: model.max_tokens,
+                    react_enabled: model.react_enabled,
+                    system_prompt: model.system_prompt.clone(),
+                    max_iterations: model.max_iterations,
+                    request_timeout_secs: model.request_timeout_secs,
+                    models: HashMap::new(),
+                });
 
-            provider.models.insert(key, ProviderModelEntry {
-                model_id: model.model_id.clone(),
-                temperature: model.temperature,
-                max_tokens: model.max_tokens,
-                system_prompt: model.system_prompt.clone(),
-            });
+            provider.models.insert(
+                key,
+                ProviderModelEntry {
+                    model_id: model.model_id.clone(),
+                    temperature: model.temperature,
+                    max_tokens: model.max_tokens,
+                    system_prompt: model.system_prompt.clone(),
+                },
+            );
         }
     }
 
@@ -336,34 +357,40 @@ impl Config {
             &full_key
         };
 
-        let provider = self.providers.entry(provider_key.to_string()).or_insert_with(|| ProviderConfig {
-            name: model.name.clone(),
-            base_url: model.base_url.clone(),
-            api_key: model.api_key.clone(),
-            max_context_tokens: model.max_context_tokens,
-            temperature: model.temperature,
-            max_tokens: model.max_tokens,
-            react_enabled: model.react_enabled,
-            system_prompt: model.system_prompt.clone(),
-            max_iterations: model.max_iterations,
-            request_timeout_secs: model.request_timeout_secs,
-            models: HashMap::new(),
-        });
+        let provider = self
+            .providers
+            .entry(provider_key.to_string())
+            .or_insert_with(|| ProviderConfig {
+                name: model.name.clone(),
+                base_url: model.base_url.clone(),
+                api_key: model.api_key.clone(),
+                max_context_tokens: model.max_context_tokens,
+                temperature: model.temperature,
+                max_tokens: model.max_tokens,
+                react_enabled: model.react_enabled,
+                system_prompt: model.system_prompt.clone(),
+                max_iterations: model.max_iterations,
+                request_timeout_secs: model.request_timeout_secs,
+                models: HashMap::new(),
+            });
 
-        provider.models.insert(model_key.to_string(), ProviderModelEntry {
-            model_id: model.model_id.clone(),
-            temperature: model.temperature,
-            max_tokens: model.max_tokens,
-            system_prompt: model.system_prompt.clone(),
-        });
+        provider.models.insert(
+            model_key.to_string(),
+            ProviderModelEntry {
+                model_id: model.model_id.clone(),
+                temperature: model.temperature,
+                max_tokens: model.max_tokens,
+                system_prompt: model.system_prompt.clone(),
+            },
+        );
 
         self.models.insert(full_key, model);
     }
 
     /// Save config to a TOML file.
     pub fn save(&self, path: &str) -> Result<()> {
-        let toml_str = toml::to_string_pretty(self)
-            .context("failed to serialize config to TOML")?;
+        let toml_str =
+            toml::to_string_pretty(self).context("failed to serialize config to TOML")?;
         std::fs::write(path, toml_str)
             .with_context(|| format!("failed to write config to {path}"))?;
         Ok(())

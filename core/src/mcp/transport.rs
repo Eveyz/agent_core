@@ -29,14 +29,8 @@ impl StdioTransport {
             .spawn()
             .with_context(|| format!("Failed to spawn MCP server: {} {:?}", command, args))?;
 
-        let stdout = child
-            .stdout
-            .take()
-            .context("Failed to capture stdout")?;
-        let stdin = child
-            .stdin
-            .take()
-            .context("Failed to capture stdin")?;
+        let stdout = child.stdout.take().context("Failed to capture stdout")?;
+        let stdin = child.stdin.take().context("Failed to capture stdin")?;
 
         let reader = BufReader::new(stdout);
 
@@ -57,7 +51,11 @@ impl StdioTransport {
     }
 
     /// Send a JSON-RPC request and wait for the matching response.
-    pub async fn request(&self, method: &str, params: serde_json::Value) -> Result<JsonRpcResponse> {
+    pub async fn request(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<JsonRpcResponse> {
         let id = self.next_id().await;
         let req = JsonRpcRequest::new(id, method, params);
         let msg = serde_json::to_string(&req)? + "\n";

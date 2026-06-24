@@ -97,7 +97,10 @@ Use this whenever you need to find up-to-date information on the internet."
 
                 output.push_str(&format!(
                     "{}. **{}**\nURL: {}\nContent: {}\n\n",
-                    i + 1, title, url, content
+                    i + 1,
+                    title,
+                    url,
+                    content
                 ));
             }
         } else {

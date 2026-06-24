@@ -6,8 +6,8 @@
 //! - Same tool-call pattern repeated 3+ turns → flag looping, suggest a breaker skill.
 //! - Many `ApprovalRequired` followed by `DenyPersistent` → suggest tighter defaults (manual).
 
-use super::suggestion::{Suggestion, SuggestionKind};
 use super::TraceRecord;
+use super::suggestion::{Suggestion, SuggestionKind};
 use std::collections::HashMap;
 
 /// A named digester rule. Pure for testability.
@@ -18,13 +18,17 @@ pub struct DigesterRule {
 
 impl DigesterRule {
     pub const fn consecutive_tool_errors() -> Self {
-        Self { name: "consecutive_tool_errors" }
+        Self {
+            name: "consecutive_tool_errors",
+        }
     }
     pub const fn tool_loop() -> Self {
         Self { name: "tool_loop" }
     }
     pub const fn frequent_denials() -> Self {
-        Self { name: "frequent_denials" }
+        Self {
+            name: "frequent_denials",
+        }
     }
 }
 
@@ -88,7 +92,10 @@ impl Digester {
             if let Some(snap) = r.as_tool_end() {
                 // attribute to the most recent turn seen
                 if let Some(turn) = per_turn.keys().copied().max() {
-                    per_turn.entry(turn).or_default().push(snap.tool_name.clone());
+                    per_turn
+                        .entry(turn)
+                        .or_default()
+                        .push(snap.tool_name.clone());
                 }
             }
         }
@@ -188,8 +195,10 @@ mod tests {
         ];
         let d = Digester;
         let s = d.analyze(&recs);
-        assert!(s.iter().any(|s| s.kind == SuggestionKind::AppendSkill
-            && s.target.contains("bash")));
+        assert!(
+            s.iter()
+                .any(|s| s.kind == SuggestionKind::AppendSkill && s.target.contains("bash"))
+        );
     }
 
     #[test]

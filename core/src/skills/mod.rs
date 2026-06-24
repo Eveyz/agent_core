@@ -261,9 +261,7 @@ impl SkillManager {
                 if let Ok(content) = self.load_content(&skill.manifest) {
                     parts.push(format!(
                         "## Skill: {} (v{})\n{}\n",
-                        skill.manifest.name,
-                        skill.manifest.version,
-                        content,
+                        skill.manifest.name, skill.manifest.version, content,
                     ));
                 }
             }

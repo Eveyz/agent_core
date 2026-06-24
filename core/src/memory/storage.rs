@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
+use parking_lot::{Mutex, MutexGuard};
 use rusqlite::Connection;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct Storage {
@@ -38,7 +39,7 @@ impl Storage {
     }
 
     fn init_tables(&self) -> Result<()> {
-        let db = self.db.lock().unwrap();
+        let db = self.db.lock();
 
         db.execute_batch(
             "
@@ -162,7 +163,7 @@ impl Storage {
         Ok(())
     }
 
-    pub fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.db.lock().unwrap()
+    pub fn conn(&self) -> MutexGuard<'_, Connection> {
+        self.db.lock()
     }
 }

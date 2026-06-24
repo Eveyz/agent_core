@@ -7,8 +7,8 @@ use crate::types::{Message, StreamEvent, ToolDefinition};
 use anyhow::{Result, bail};
 use reqwest::Response;
 use serde_json::Value;
-use std::time::Duration;
 use std::sync::Arc;
+use std::time::Duration;
 
 pub struct OpenAIClient {
     http: reqwest::Client,
@@ -58,7 +58,7 @@ impl OpenAIClient {
 
     fn build_http_client(timeout_secs: u64) -> reqwest::Client {
         reqwest::Client::builder()
-            .timeout(Duration::from_secs(timeout_secs))
+            .read_timeout(Duration::from_secs(timeout_secs))
             .connect_timeout(Duration::from_secs(10))
             .no_gzip()
             .no_deflate()
@@ -150,12 +150,17 @@ impl OpenAIClient {
 
     async fn send_with_retry(&self, body: &Value) -> Result<Response> {
         let mut current_client = self;
-        
+
         loop {
             // Circuit breaker check
             if let Err(msg) = current_client.circuit_breaker.acquire_permit() {
                 if let Some(ref fallback) = current_client.fallback_client {
-                    tracing::warn!("Circuit breaker open for model {}: {}, falling back to {}", current_client.model.model_id, msg, fallback.model.model_id);
+                    tracing::warn!(
+                        "Circuit breaker open for model {}: {}, falling back to {}",
+                        current_client.model.model_id,
+                        msg,
+                        fallback.model.model_id
+                    );
                     current_client = fallback.as_ref();
                     continue;
                 }
@@ -189,7 +194,7 @@ impl OpenAIClient {
                             final_error = Some(anyhow::anyhow!("API error {}", r.status()));
                             break;
                         }
-                        
+
                         let retry_after = r
                             .headers()
                             .get("retry-after")
@@ -197,8 +202,14 @@ impl OpenAIClient {
                             .and_then(|v| v.parse::<u64>().ok())
                             .map(Duration::from_secs);
 
-                        let delay = retry_after.unwrap_or_else(|| calculate_backoff(attempt, base_delay, max_delay));
-                        tracing::warn!("Model {} failed with {}, retrying in {:?}", current_client.model.model_id, r.status(), delay);
+                        let delay = retry_after
+                            .unwrap_or_else(|| calculate_backoff(attempt, base_delay, max_delay));
+                        tracing::warn!(
+                            "Model {} failed with {}, retrying in {:?}",
+                            current_client.model.model_id,
+                            r.status(),
+                            delay
+                        );
                         tokio::time::sleep(delay).await;
                     }
                     Ok(r) => {
@@ -214,21 +225,30 @@ impl OpenAIClient {
                             final_error = Some(e.into());
                             break;
                         }
-                        
+
                         let delay = calculate_backoff(attempt, base_delay, max_delay);
-                        tracing::warn!("Model {} network error: {}, retrying in {:?}", current_client.model.model_id, e, delay);
+                        tracing::warn!(
+                            "Model {} network error: {}, retrying in {:?}",
+                            current_client.model.model_id,
+                            e,
+                            delay
+                        );
                         tokio::time::sleep(delay).await;
                     }
                 }
             }
-            
+
             // If we broke out of the loop with an error, try fallback
             if let Some(ref fallback) = current_client.fallback_client {
-                tracing::warn!("Model {} exhausted retries or failed, falling back to {}", current_client.model.model_id, fallback.model.model_id);
+                tracing::warn!(
+                    "Model {} exhausted retries or failed, falling back to {}",
+                    current_client.model.model_id,
+                    fallback.model.model_id
+                );
                 current_client = fallback.as_ref();
                 continue;
             }
-            
+
             if let Some(e) = final_error {
                 return Err(e);
             }

@@ -37,10 +37,7 @@ impl WhitelistManager {
         let valid: Vec<_> = entries.into_iter().filter(|e| e.is_valid()).collect();
         let expired = total - valid.len();
         if expired > 0 {
-            eprintln!(
-                "[permission] pruned {} expired whitelist entries",
-                expired
-            );
+            eprintln!("[permission] pruned {} expired whitelist entries", expired);
         }
         self.entries.extend(valid);
     }
@@ -265,8 +262,7 @@ mod tests {
     fn test_command_filter() {
         let mut wl = WhitelistManager::new();
         wl.add(WhitelistEntry::new(
-            ToolPermissionPattern::simple("bash")
-                .with_commands(vec!["git".into(), "npm".into()]),
+            ToolPermissionPattern::simple("bash").with_commands(vec!["git".into(), "npm".into()]),
             ApprovalScope::Persistent,
         ));
         assert!(wl.query("bash", Some("git status"), None, None).is_some());

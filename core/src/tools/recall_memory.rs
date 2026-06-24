@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use parking_lot::Mutex;
 use serde_json::{Value, json};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::memory::MemoryManager;
 use crate::tools::Tool;
@@ -48,7 +49,7 @@ impl Tool for ConversationSearchTool {
         let query = args["query"].as_str().context("missing 'query'")?;
         let top_k = args["top_k"].as_u64().unwrap_or(5) as usize;
 
-        let memory = self.memory.lock().unwrap();
+        let memory = self.memory.lock();
         let results = memory.search_conversation(query, top_k)?;
 
         let items: Vec<Value> = results
@@ -116,7 +117,7 @@ impl Tool for ConversationSearchDateTool {
         let end = args["end_date"].as_str().context("missing 'end_date'")?;
         let top_k = args["top_k"].as_u64().unwrap_or(10) as usize;
 
-        let memory = self.memory.lock().unwrap();
+        let memory = self.memory.lock();
         let results = memory.recall().search_by_date(start, end, top_k)?;
 
         let items: Vec<Value> = results

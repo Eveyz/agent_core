@@ -12,8 +12,9 @@
 //! this as a denial, allowing clean shutdown.
 
 use crate::permission::ApprovalChoice;
+use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Type alias for the pending approval map: prompt_id → oneshot sender.
 pub type PendingApprovalMap = HashMap<String, tokio::sync::oneshot::Sender<ApprovalChoice>>;
@@ -37,26 +38,21 @@ impl ApprovalResolver {
 
     /// Insert a pending approval (called by the executor).
     pub fn insert(&self, prompt_id: String, tx: tokio::sync::oneshot::Sender<ApprovalChoice>) {
-        if let Ok(mut map) = self.inner.lock() {
-            map.insert(prompt_id, tx);
-        }
+        self.inner.lock().insert(prompt_id, tx);
     }
 
     /// Remove a pending approval without resolving it (cleanup).
     pub fn remove(&self, prompt_id: &str) {
-        if let Ok(mut map) = self.inner.lock() {
-            map.remove(prompt_id);
-        }
+        self.inner.lock().remove(prompt_id);
     }
 
     /// Resolve a pending approval with the user's choice (called by the Run
     /// command loop). Returns `true` if the approval was found and resolved.
     pub fn resolve(&self, prompt_id: &str, choice: ApprovalChoice) -> bool {
-        if let Ok(mut map) = self.inner.lock() {
-            if let Some(tx) = map.remove(prompt_id) {
-                let _ = tx.send(choice);
-                return true;
-            }
+        let mut map = self.inner.lock();
+        if let Some(tx) = map.remove(prompt_id) {
+            let _ = tx.send(choice);
+            return true;
         }
         false
     }
@@ -65,14 +61,12 @@ impl ApprovalResolver {
     /// The waiting receivers will get `RecvError`, which the executor
     /// interprets as a denial.
     pub fn clear(&self) {
-        if let Ok(mut map) = self.inner.lock() {
-            map.clear();
-        }
+        self.inner.lock().clear();
     }
 
     /// Number of pending approvals.
     pub fn len(&self) -> usize {
-        self.inner.lock().map(|m| m.len()).unwrap_or(0)
+        self.inner.lock().len()
     }
 
     /// Whether there are no pending approvals.

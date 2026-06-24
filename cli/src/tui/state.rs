@@ -3,7 +3,8 @@ use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -567,7 +568,7 @@ impl AppState {
             }
 
             AgentEvent::MessageStart { .. } => {}
-            AgentEvent::MessageUpdate { delta } => {
+            AgentEvent::MessageUpdate { delta, .. } => {
                 match delta {
                     MessageDelta::Thinking(t) => {
                         // Transition from "working" to "thinking"
@@ -681,10 +682,9 @@ impl AppState {
                 // Auto-approve silently for now. In the future this will
                 // pause and ask the user via a modal.
                 if let Some(ref approvals) = self.pending_approvals {
-                    if let Ok(mut map) = approvals.lock() {
-                        if let Some(tx) = map.remove(&prompt_id) {
-                            let _ = tx.send(ApprovalChoice::AllowSession);
-                        }
+                    let mut map = approvals.lock();
+                    if let Some(tx) = map.remove(&prompt_id) {
+                        let _ = tx.send(ApprovalChoice::AllowSession);
                     }
                 }
             }
@@ -722,7 +722,7 @@ impl AppState {
                 self.update_subagent_activity(&subagent_id, Some(turn_index), "💭 Thinking...".to_string());
                 self.mark_dirty_force();
             }
-            AgentEvent::SubagentMessageUpdate { subagent_id, delta } => {
+            AgentEvent::SubagentMessageUpdate { subagent_id, delta, .. } => {
                 match &delta {
                     MessageDelta::Thinking(_) => {
                         self.update_subagent_activity(&subagent_id, None, "💭 Thinking...".to_string());

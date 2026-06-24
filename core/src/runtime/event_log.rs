@@ -141,8 +141,8 @@ impl EventLog {
         }
 
         let mut run_ids = Vec::new();
-        for entry in std::fs::read_dir(&dir)
-            .with_context(|| format!("failed to read runs dir: {dir:?}"))?
+        for entry in
+            std::fs::read_dir(&dir).with_context(|| format!("failed to read runs dir: {dir:?}"))?
         {
             let entry = entry?;
             let path = entry.path();
@@ -170,13 +170,22 @@ mod tests {
         let mut log = EventLog::new("run-1", dir.path().to_str().unwrap());
 
         log.append(Envelope {
-            seq: 0, event_id: "e0".into(), run_id: "run-1".into(),
-            turn_id: None, parent_call_id: None,
-            event: RunEvent::RunCreated { id: "run-1".into(), session_id: None },
+            seq: 0,
+            event_id: "e0".into(),
+            run_id: "run-1".into(),
+            turn_id: None,
+            parent_call_id: None,
+            event: RunEvent::RunCreated {
+                id: "run-1".into(),
+                session_id: None,
+            },
         });
         log.append(Envelope {
-            seq: 1, event_id: "e1".into(), run_id: "run-1".into(),
-            turn_id: None, parent_call_id: None,
+            seq: 1,
+            event_id: "e1".into(),
+            run_id: "run-1".into(),
+            turn_id: None,
+            parent_call_id: None,
             event: RunEvent::RunStarted,
         });
 
@@ -196,19 +205,36 @@ mod tests {
         {
             let mut log = EventLog::new("run-2", dir.path().to_str().unwrap());
             log.append(Envelope {
-                seq: 0, event_id: "e0".into(), run_id: "run-2".into(),
-                turn_id: None, parent_call_id: None,
-                event: RunEvent::RunCreated { id: "run-2".into(), session_id: None },
+                seq: 0,
+                event_id: "e0".into(),
+                run_id: "run-2".into(),
+                turn_id: None,
+                parent_call_id: None,
+                event: RunEvent::RunCreated {
+                    id: "run-2".into(),
+                    session_id: None,
+                },
             });
             log.append(Envelope {
-                seq: 1, event_id: "e1".into(), run_id: "run-2".into(),
-                turn_id: None, parent_call_id: None,
-                event: RunEvent::StateChanged { from: RunState::Created, to: RunState::Running },
+                seq: 1,
+                event_id: "e1".into(),
+                run_id: "run-2".into(),
+                turn_id: None,
+                parent_call_id: None,
+                event: RunEvent::StateChanged {
+                    from: RunState::Created,
+                    to: RunState::Running,
+                },
             });
             log.append(Envelope {
-                seq: 2, event_id: "e2".into(), run_id: "run-2".into(),
-                turn_id: None, parent_call_id: None,
-                event: RunEvent::RunCompleted { final_text: "done".into() },
+                seq: 2,
+                event_id: "e2".into(),
+                run_id: "run-2".into(),
+                turn_id: None,
+                parent_call_id: None,
+                event: RunEvent::RunCompleted {
+                    final_text: "done".into(),
+                },
             });
         }
 
@@ -226,14 +252,20 @@ mod tests {
         {
             let mut log1 = EventLog::new("run-a", dir.path().to_str().unwrap());
             log1.append(Envelope {
-                seq: 0, event_id: "e0".into(), run_id: "run-a".into(),
-                turn_id: None, parent_call_id: None,
+                seq: 0,
+                event_id: "e0".into(),
+                run_id: "run-a".into(),
+                turn_id: None,
+                parent_call_id: None,
                 event: RunEvent::RunStarted,
             });
             let mut log2 = EventLog::new("run-b", dir.path().to_str().unwrap());
             log2.append(Envelope {
-                seq: 0, event_id: "e0".into(), run_id: "run-b".into(),
-                turn_id: None, parent_call_id: None,
+                seq: 0,
+                event_id: "e0".into(),
+                run_id: "run-b".into(),
+                turn_id: None,
+                parent_call_id: None,
                 event: RunEvent::RunStarted,
             });
         }

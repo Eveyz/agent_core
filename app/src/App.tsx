@@ -223,7 +223,7 @@ function App() {
       const msg = editedText ?? entry.text ?? '';
       if (!msg.trim() || !activeSessionId) return;
 
-      dispatch(retryFromEntry(entryId));
+      dispatch(userMessageSent(msg));
       scrollToBottom();
 
       try {
@@ -333,7 +333,6 @@ function App() {
         {viewingSubagentPath.length > 0 && activeSubagent ? (
           <SubagentDetailPage
             subagent={activeSubagent}
-            onBack={() => dispatch(popSubagentView())}
             onAbort={handleAbort}
             isProcessing={isProcessing}
             defaultModel={defaultModel}
@@ -371,13 +370,11 @@ function App() {
 
 const SubagentDetailPage = memo(function SubagentDetailPage({
   subagent,
-  onBack,
   onAbort,
   isProcessing,
   defaultModel,
 }: {
   subagent: SubagentEntry;
-  onBack: () => void;
   onAbort: () => void;
   isProcessing: boolean;
   defaultModel: string;

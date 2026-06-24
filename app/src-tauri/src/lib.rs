@@ -5,13 +5,14 @@ use agent_core::{
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use std::sync::Arc;
+use parking_lot::Mutex;
 use tokio::sync::Mutex as AsyncMutex;
 
 struct AppState {
     /// The RunManager owns the Brain and tracks all active Runs.
     run_manager: Arc<AsyncMutex<RunManager>>,
     config_path: String,
-    project_manager: Arc<std::sync::Mutex<agent_core::ProjectManager>>,
+    project_manager: Arc<Mutex<agent_core::ProjectManager>>,
     session_manager: Arc<agent_core::SessionManager>,
 }
 
@@ -202,7 +203,7 @@ async fn approve_tool(
     // Try global pending approvals first (used by subagents)
     {
         let pending_arc = agent_core::permission::global_pending_approvals();
-        let mut pending = pending_arc.lock().unwrap();
+        let mut pending = pending_arc.lock();
         if let Some(tx) = pending.remove(&prompt_id) {
             let _ = tx.send(choice_enum.clone());
             return Ok(());
@@ -391,7 +392,7 @@ async fn create_session(state: State<'_, AppState>, project_id: String) -> Resul
     tokio::task::spawn_blocking(move || {
         let messages: Vec<agent_core::types::Message> = vec![];
         let project = {
-            let pm = pm.lock().map_err(|e| e.to_string())?;
+            let pm = pm.lock();
             pm.get(&project_id)
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| "Project not found".to_string())?
@@ -515,7 +516,7 @@ async fn resume_session(state: State<'_, AppState>, session_id: String) -> Resul
 async fn list_projects(state: State<'_, AppState>) -> Result<Vec<agent_core::Project>, String> {
     let pm = state.project_manager.clone();
     tokio::task::spawn_blocking(move || {
-        let pm = pm.lock().map_err(|e| e.to_string())?;
+        let pm = pm.lock();
         pm.list().map_err(|e| e.to_string())
     })
     .await
@@ -526,7 +527,7 @@ async fn list_projects(state: State<'_, AppState>) -> Result<Vec<agent_core::Pro
 async fn create_project(state: State<'_, AppState>, path: String) -> Result<agent_core::Project, String> {
     let pm = state.project_manager.clone();
     tokio::task::spawn_blocking(move || {
-        let pm = pm.lock().map_err(|e| e.to_string())?;
+        let pm = pm.lock();
         pm.create(&path).map_err(|e| e.to_string())
     })
     .await
@@ -537,7 +538,7 @@ async fn create_project(state: State<'_, AppState>, path: String) -> Result<agen
 async fn delete_project(state: State<'_, AppState>, project_id: String) -> Result<bool, String> {
     let pm = state.project_manager.clone();
     tokio::task::spawn_blocking(move || {
-        let pm = pm.lock().map_err(|e| e.to_string())?;
+        let pm = pm.lock();
         pm.delete(&project_id).map_err(|e| e.to_string())
     })
     .await
@@ -552,7 +553,7 @@ async fn rename_project(
 ) -> Result<bool, String> {
     let pm = state.project_manager.clone();
     tokio::task::spawn_blocking(move || {
-        let pm = pm.lock().map_err(|e| e.to_string())?;
+        let pm = pm.lock();
         pm.rename(&project_id, &new_name).map_err(|e| e.to_string())
     })
     .await
@@ -625,7 +626,7 @@ async fn get_project_sessions(
 ) -> Result<Vec<agent_core::session::SessionMeta>, String> {
     let pm = state.project_manager.clone();
     tokio::task::spawn_blocking(move || {
-        let pm = pm.lock().map_err(|e| e.to_string())?;
+        let pm = pm.lock();
         pm.list_sessions(&project_id).map_err(|e| e.to_string())
     })
     .await
@@ -705,7 +706,7 @@ pub fn run() {
             };
             let storage = agent_core::memory::storage::Storage::new(&db_path)
                 .expect("Failed to open storage database");
-            let project_manager = Arc::new(std::sync::Mutex::new(
+            let project_manager = Arc::new(Mutex::new(
                 agent_core::ProjectManager::new(storage.clone())
             ));
             let session_manager = Arc::new(

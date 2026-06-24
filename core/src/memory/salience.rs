@@ -141,8 +141,7 @@ impl SalienceScorer {
 
         // High-importance memories decay slower
         let importance_factor = 1.0
-            + (self.config.importance_decay_modifier - 1.0)
-                * ((importance - 0.5) * 2.0).max(0.0); // only above 0.5
+            + (self.config.importance_decay_modifier - 1.0) * ((importance - 0.5) * 2.0).max(0.0); // only above 0.5
 
         // Protective: avoid division by zero
         let s = memory_strength.max(0.01);
@@ -198,10 +197,25 @@ impl SalienceScorer {
 
         // Decision keywords — strong signal
         let decision_keywords = [
-            "决定", "以后都", "定下来", "就这样", "final",
-            "important", "remember", "记住", "必须", "never",
-            "always", "rule", "convention", "规则", "约定",
-            "prefer", "偏好", "习惯", "don't",
+            "决定",
+            "以后都",
+            "定下来",
+            "就这样",
+            "final",
+            "important",
+            "remember",
+            "记住",
+            "必须",
+            "never",
+            "always",
+            "rule",
+            "convention",
+            "规则",
+            "约定",
+            "prefer",
+            "偏好",
+            "习惯",
+            "don't",
         ];
         for kw in &decision_keywords {
             if content.to_lowercase().contains(&kw.to_lowercase()) {
@@ -235,10 +249,7 @@ impl SalienceScorer {
         }
 
         // Named entities: capitalized words or Chinese names
-        let upper_count = content
-            .chars()
-            .filter(|c| c.is_uppercase())
-            .count();
+        let upper_count = content.chars().filter(|c| c.is_uppercase()).count();
         if upper_count > 5 {
             score += 0.03;
         }
@@ -283,8 +294,19 @@ impl MemoryCategory {
 
         // Decision signals
         let decision_signals = [
-            "决定", "以后", "规则", "约定", "convention", "rule", "never",
-            "always", "必须", "must", "should", "final", "就这样",
+            "决定",
+            "以后",
+            "规则",
+            "约定",
+            "convention",
+            "rule",
+            "never",
+            "always",
+            "必须",
+            "must",
+            "should",
+            "final",
+            "就这样",
         ];
         for signal in &decision_signals {
             if lower.contains(signal) {
@@ -302,8 +324,8 @@ impl MemoryCategory {
 
         // Code signals
         let code_signals = [
-            ".rs", ".py", ".ts", ".js", "fn ", "def ", "class ", "import ", "use ",
-            "struct ", "impl ", "async fn", "pub fn",
+            ".rs", ".py", ".ts", ".js", "fn ", "def ", "class ", "import ", "use ", "struct ",
+            "impl ", "async fn", "pub fn",
         ];
         for signal in &code_signals {
             if lower.contains(signal) {
@@ -483,8 +505,14 @@ mod tests {
     #[test]
     fn test_category_half_lives() {
         let scorer = SalienceScorer::new(SalienceConfig::default());
-        assert!(scorer.category_half_life(MemoryCategory::Preference) > scorer.category_half_life(MemoryCategory::Conversation));
-        assert!(scorer.category_half_life(MemoryCategory::Trivia) < scorer.category_half_life(MemoryCategory::Conversation));
+        assert!(
+            scorer.category_half_life(MemoryCategory::Preference)
+                > scorer.category_half_life(MemoryCategory::Conversation)
+        );
+        assert!(
+            scorer.category_half_life(MemoryCategory::Trivia)
+                < scorer.category_half_life(MemoryCategory::Conversation)
+        );
     }
 
     #[test]

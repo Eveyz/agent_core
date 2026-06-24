@@ -302,12 +302,18 @@ mod tests {
         assert!(rules.len() >= 10);
 
         // read_file should be ReadOnly + Allow
-        let read_file = rules.iter().find(|(p, _, _)| p.tool_pattern == "read_file").unwrap();
+        let read_file = rules
+            .iter()
+            .find(|(p, _, _)| p.tool_pattern == "read_file")
+            .unwrap();
         assert_eq!(read_file.1, DangerLevel::ReadOnly);
         assert_eq!(read_file.2, ApprovalLevel::Allow);
 
         // git_commit should be ReadWrite + Ask
-        let git_commit = rules.iter().find(|(p, _, _)| p.tool_pattern == "git_commit").unwrap();
+        let git_commit = rules
+            .iter()
+            .find(|(p, _, _)| p.tool_pattern == "git_commit")
+            .unwrap();
         assert_eq!(git_commit.1, DangerLevel::ReadWrite);
         assert_eq!(git_commit.2, ApprovalLevel::Ask);
     }

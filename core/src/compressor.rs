@@ -359,10 +359,7 @@ impl Compressor {
                     }
                     if let Some(ref calls) = msg.tool_calls {
                         for call in calls {
-                            turns_text.push_str(&format!(
-                                "[Tool call: {}]\n",
-                                call.function.name
-                            ));
+                            turns_text.push_str(&format!("[Tool call: {}]\n", call.function.name));
                         }
                     }
                 }
@@ -655,7 +652,13 @@ mod tests {
 
         let text = Compressor::apply_summary(&mut msgs, 2, &summary, 1);
         assert_eq!(msgs.len(), 3); // summary + task2 + done2
-        assert!(msgs[0].content.as_ref().unwrap().contains("decided to refactor"));
+        assert!(
+            msgs[0]
+                .content
+                .as_ref()
+                .unwrap()
+                .contains("decided to refactor")
+        );
         assert!(text.contains("Compressed turns"));
     }
 

@@ -47,11 +47,7 @@ impl SseTransport {
             .with_context(|| format!("Failed to connect to SSE endpoint: {}", sse_url))?;
 
         if !response.status().is_success() {
-            anyhow::bail!(
-                "SSE endpoint returned {}: {}",
-                response.status(),
-                sse_url
-            );
+            anyhow::bail!("SSE endpoint returned {}: {}", response.status(), sse_url);
         }
 
         // Read the SSE stream to find the endpoint event

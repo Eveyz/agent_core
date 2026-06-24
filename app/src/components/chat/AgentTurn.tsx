@@ -31,6 +31,7 @@ import ScanTextIcon from 'lucide-react/dist/esm/icons/scan-text.mjs';
 import ListTodoIcon from 'lucide-react/dist/esm/icons/list-todo.mjs';
 import CalendarIcon from 'lucide-react/dist/esm/icons/calendar.mjs';
 import UsersIcon from 'lucide-react/dist/esm/icons/users.mjs';
+import AlertTriangleIcon from 'lucide-react/dist/esm/icons/alert-triangle.mjs';
 import { invoke } from '@tauri-apps/api/core';
 import { toolApprovalResponded, viewSubagent } from '../../features/chat/chatSlice';
 import type { ChatEntry, TurnBlock, SubagentEntry } from '../../features/chat/chatSlice';
@@ -105,17 +106,32 @@ const ProcessingTimer = memo(function ProcessingTimer({
   return <span>Processed {formatTime(diff)}</span>;
 });
 
+type ThinkingBlock = Extract<TurnBlock, { type: 'thinking' }>;
+type AssistantBlock = Extract<TurnBlock, { type: 'assistant' }>;
+type ApprovalBlock = Extract<TurnBlock, { type: 'approval' }>;
+type SubagentRefBlock = Extract<TurnBlock, { type: 'subagent_ref' }>;
+
+const SUBAGENT_TOOL_NAMES = ['subagent', 'subagents', 'invoke_subagent'];
+
+function isSubagentTool(b: TurnBlock): boolean {
+  return b.type === 'tool' && SUBAGENT_TOOL_NAMES.includes(b.name);
+}
+
+function isSubagentRefBlock(b: TurnBlock): b is SubagentRefBlock {
+  return b.type === 'subagent_ref';
+}
+
 interface TurnIteration {
   id: string;
-  thinkingBlock?: TurnBlock;
+  thinkingBlock?: ThinkingBlock;
   toolBlocks: TurnBlock[];
-  errorBlocks: TurnBlock[];
   isLast: boolean;
 }
 
 export type TurnRenderItem =
   | { type: 'iteration'; data: TurnIteration }
-  | { type: 'assistant'; data: TurnBlock };
+  | { type: 'assistant'; data: AssistantBlock }
+  | { type: 'error'; data: TurnBlock };
 
 function groupBlocksIntoItems(blocks: TurnBlock[]): TurnRenderItem[] {
   const items: TurnRenderItem[] = [];
@@ -131,18 +147,21 @@ function groupBlocksIntoItems(blocks: TurnBlock[]): TurnRenderItem[] {
   blocks.forEach((b, idx) => {
     if (b.type === 'assistant') {
       pushCurrentIter();
-      items.push({ type: 'assistant', data: b });
+      items.push({ type: 'assistant', data: b as AssistantBlock });
+      return;
+    }
+    
+    if (b.type === 'error') {
+      pushCurrentIter();
+      items.push({ type: 'error', data: b });
       return;
     }
     
     if (b.type === 'thinking') {
       pushCurrentIter();
-      currentIter = { id: `iter-${idx}`, thinkingBlock: b, toolBlocks: [], errorBlocks: [], isLast: false };
-    } else if (b.type === 'error') {
-      if (!currentIter) currentIter = { id: `iter-init-${idx}`, toolBlocks: [], errorBlocks: [], isLast: false };
-      currentIter.errorBlocks.push(b);
+      currentIter = { id: `iter-${idx}`, thinkingBlock: b as ThinkingBlock, toolBlocks: [], isLast: false };
     } else {
-      if (!currentIter) currentIter = { id: `iter-init-${idx}`, toolBlocks: [], errorBlocks: [], isLast: false };
+      if (!currentIter) currentIter = { id: `iter-init-${idx}`, toolBlocks: [], isLast: false };
       currentIter.toolBlocks.push(b);
     }
   });
@@ -172,7 +191,8 @@ const TurnIterationUI = memo(function TurnIterationUI({
   iteration: TurnIteration;
   subagents?: Record<string, SubagentEntry>;
 }) {
-  const isStreaming = !!(iteration.thinkingBlock as any)?.isStreaming;
+  const thinkingBlock = iteration.thinkingBlock;
+  const isStreaming = !!thinkingBlock?.isStreaming;
   
   const [thoughtCollapsed, setThoughtCollapsed] = useState(!isStreaming && !iteration.isLast);
   const [toolsCollapsed, setToolsCollapsed] = useState(!isStreaming && !iteration.isLast);
@@ -192,21 +212,13 @@ const TurnIterationUI = memo(function TurnIterationUI({
   }, [iteration.toolBlocks]);
 
   const subagentTools = useMemo(() => {
-    return iteration.toolBlocks.filter(b => b.type === 'tool' && ((b as any).name === 'subagent' || (b as any).name === 'subagents' || (b as any).name === 'invoke_subagent'));
+    return iteration.toolBlocks.filter(isSubagentTool);
   }, [iteration.toolBlocks]);
 
-  const spawnedAgentCount = useMemo(() => {
-    let count = 0;
-    subagentTools.forEach(b => {
-      count += countSpawnedAgents((b as any).args);
-    });
-    return count;
-  }, [subagentTools]);
-
-  const thinkingBlock = iteration.thinkingBlock as any;
   const hasThinkingContent = thinkingBlock?.text && thinkingBlock.text.trim().length > 0;
-  const hasToolsOrErrors = iteration.toolBlocks.length > 0 || iteration.errorBlocks.length > 0;
-  const hasErrors = iteration.errorBlocks.length > 0;
+  const hasTools = iteration.toolBlocks.length > 0;
+  
+  const hasOnlySubagents = toolCount > 0 && toolCount === subagentTools.length;
 
   const thoughtLabel = useMemo(() => {
     if (isStreaming) return 'Thinking...';
@@ -224,7 +236,83 @@ const TurnIterationUI = memo(function TurnIterationUI({
     }
   }, [isStreaming, toolCount]);
 
-  const ToolWrapperIcon = WrenchIcon;
+  const renderToolBlocks = () => (
+    <>
+      {iteration.toolBlocks.map((b: TurnBlock, idx: number) => {
+        if (b.type === 'tool') {
+          const name = b.name;
+          const approvalBlock = iteration.toolBlocks.find(
+            (tb) => tb.type === 'approval' && (tb as any).tool_name === name && (tb as any).status !== 'pending'
+          );
+          const approvalStatus = approvalBlock ? (approvalBlock as any).status : undefined;
+
+          if (name === 'edit') {
+            return (
+              <EditFileWidget
+                key={b.call_id || idx}
+                args={b.args}
+                result={b.result}
+                active={b.active}
+                is_error={b.is_error}
+              />
+            );
+          }
+          if (isSubagentTool(b)) {
+            // Link subagent_ref blocks to their parent tool by call_id (via
+            // parent_call_id on the ref). Falls back to showing all refs on
+            // the first subagent tool when parent_call_id is absent (legacy).
+            const refs = b.call_id
+              ? iteration.toolBlocks.filter(
+                  (tb): tb is SubagentRefBlock => isSubagentRefBlock(tb) && tb.parent_call_id === b.call_id
+                )
+              : iteration.toolBlocks.filter(isSubagentRefBlock);
+            return (
+              <SubagentSpawnWidget
+                key={b.call_id || idx}
+                args={b.args}
+                active={b.active}
+                subagentRefs={refs}
+                subagents={subagents}
+              />
+            );
+          }
+          return (
+            <ToolBlockUI
+              key={b.call_id || idx}
+              name={name}
+              args={b.args || {}}
+              result={b.result}
+              active={b.active}
+              is_error={b.is_error}
+              startTime={b.startTime}
+              endTime={b.endTime}
+              approvalStatus={approvalStatus}
+            />
+          );
+        } else if (b.type === 'approval') {
+          // The user requested to hide the standalone approval block completely
+          // and only show the inline "Approved" badge on the tool itself.
+          if (b.status !== 'pending') return null;
+          return <ApprovalBlockUI key={`approval-${b.prompt_id}-${idx}`} block={b} />;
+        }
+        // subagent_ref blocks are now rendered inline by SubagentSpawnWidget;
+        // if a ref arrives without a matching wrapper, show the card directly.
+        if (b.type === 'subagent_ref') {
+          const hasSpawnWidget = iteration.toolBlocks.some(isSubagentTool);
+          if (hasSpawnWidget) return null;
+
+          const sa = subagents?.[b.subagent_id];
+          if (!sa) return null;
+          return (
+            <div key={`subagent-${b.subagent_id}-${idx}`} className="subagents-section">
+              <SubagentCard subagent={sa} />
+            </div>
+          );
+        }
+        return null;
+      })}
+    </>
+  );
 
   return (
     <>
@@ -241,7 +329,7 @@ const TurnIterationUI = memo(function TurnIterationUI({
           {!thoughtCollapsed && (
             <div className="iteration-body" style={{ marginLeft: '6px', paddingLeft: '12px', borderLeft: '1px solid var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '6px', paddingBottom: '4px' }}>
               <div className="thinking-block">
-                {typeof thinkingBlock.text === 'string' ? thinkingBlock.text : JSON.stringify(thinkingBlock.text)}
+                {thinkingBlock.text}
                 {isStreaming ? <span className="typing-dot" style={{ display: 'inline-block', marginLeft: '4px' }}>...</span> : null}
               </div>
             </div>
@@ -249,90 +337,28 @@ const TurnIterationUI = memo(function TurnIterationUI({
         </div>
       )}
 
-      {hasToolsOrErrors && (
-        <div className="step-block" style={{ marginTop: hasThinkingContent ? '4px' : '0' }}>
-          <div
-            className={`step-row ${isStreaming ? 'step-row-active' : ''} ${hasErrors ? 'step-row-error' : ''}`}
-            onClick={() => setToolsCollapsed(!toolsCollapsed)}
-          >
-            <ToolWrapperIcon size={13} className="step-icon" color={hasErrors ? "#f87171" : (isStreaming ? undefined : "#888")} />
-            <span className="step-label" style={{ fontWeight: 500 }}>{toolsLabel}</span>
-            {toolsCollapsed ? <ChevronRightIcon size={12} className="step-chevron" /> : <ChevronDownIcon size={12} className="step-chevron" />}
-          </div>
-          {!toolsCollapsed && (
-            <div className="iteration-body" style={{ marginLeft: '6px', paddingLeft: '12px', borderLeft: '1px solid var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '6px', paddingBottom: '4px' }}>
-              {iteration.toolBlocks.map((b: TurnBlock, idx: number) => {
-                if (b.type === 'tool') {
-                  const name = typeof b.name === 'string' ? b.name : JSON.stringify(b.name);
-                  if (name === 'edit') {
-                    return (
-                      <EditFileWidget
-                        key={b.call_id || idx}
-                        args={(b as any).args}
-                        result={(b as any).result}
-                        active={b.active}
-                        is_error={b.is_error}
-                      />
-                    );
-                  }
-                  if (name === 'subagent' || name === 'subagents' || name === 'invoke_subagent') {
-                    const firstSubagentToolIdx = iteration.toolBlocks.findIndex(tb => tb.type === 'tool' && ((tb as any).name === 'subagent' || (tb as any).name === 'subagents' || (tb as any).name === 'invoke_subagent'));
-                    const isFirst = idx === firstSubagentToolIdx;
-                    const refs = isFirst ? iteration.toolBlocks.filter(tb => tb.type === 'subagent_ref') : [];
-                    return (
-                      <SubagentSpawnWidget
-                        key={b.call_id || idx}
-                        args={(b as any).args}
-                        active={b.active}
-                        subagentRefs={refs}
-                        subagents={subagents}
-                      />
-                    );
-                  }
-                  return (
-                    <ToolBlockUI
-                      key={b.call_id || idx}
-                      name={name}
-                      args={(b as any).args || {}}
-                      result={(b as any).result}
-                      active={b.active}
-                      is_error={b.is_error}
-                      startTime={(b as any).startTime}
-                      endTime={(b as any).endTime}
-                    />
-                  );
-                } else if (b.type === 'approval') {
-                  return <ApprovalBlockUI key={`approval-${b.prompt_id}-${idx}`} block={b as ApprovalBlock} />;
-                }
-                // subagent_ref blocks are now rendered inline by SubagentSpawnWidget;
-                // if a ref arrives without a matching wrapper, show the card directly.
-                if (b.type === 'subagent_ref') {
-                  const hasSpawnWidget = iteration.toolBlocks.some(tb => tb.type === 'tool' && ((tb as any).name === 'subagent' || (tb as any).name === 'subagents' || (tb as any).name === 'invoke_subagent'));
-                  if (hasSpawnWidget) return null;
-
-                  const sa = subagents?.[b.subagent_id!];
-                  if (!sa) return null;
-                  return (
-                    <div key={`subagent-${b.subagent_id}-${idx}`} className="subagents-section">
-                      <SubagentCard subagent={sa} />
-                    </div>
-                  );
-                }
-                return null;
-              })}
-              {iteration.errorBlocks.map((b: TurnBlock, idx: number) => {
-                if (b.type === 'error') {
-                  return (
-                    <div key={`err-${idx}`} style={{ color: '#f87171', fontSize: '12px', marginTop: '4px' }}>
-                      {b.text}
-                    </div>
-                  );
-                }
-                return null;
-              })}
-            </div>
-          )}
+      {hasOnlySubagents ? (
+        <div style={{ marginTop: hasThinkingContent ? '4px' : '0' }}>
+          {renderToolBlocks()}
         </div>
+      ) : (
+        hasTools && (
+          <div className="step-block" style={{ marginTop: hasThinkingContent ? '4px' : '0' }}>
+            <div
+              className={`step-row ${isStreaming ? 'step-row-active' : ''}`}
+              onClick={() => setToolsCollapsed(!toolsCollapsed)}
+            >
+              <WrenchIcon size={13} className="step-icon" color={isStreaming ? undefined : "#888"} />
+              <span className="step-label" style={{ fontWeight: 500 }}>{toolsLabel}</span>
+              {toolsCollapsed ? <ChevronRightIcon size={12} className="step-chevron" /> : <ChevronDownIcon size={12} className="step-chevron" />}
+            </div>
+            {!toolsCollapsed && (
+              <div className="iteration-body" style={{ marginLeft: '6px', paddingLeft: '12px', borderLeft: '1px solid var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '6px', paddingBottom: '4px' }}>
+                {renderToolBlocks()}
+              </div>
+            )}
+          </div>
+        )
       )}
     </>
   );
@@ -349,6 +375,7 @@ const ToolBlockUI = memo(function ToolBlockUI({
   is_error,
   startTime,
   endTime,
+  approvalStatus,
 }: {
   name: string;
   args?: unknown;
@@ -357,6 +384,7 @@ const ToolBlockUI = memo(function ToolBlockUI({
   is_error?: boolean;
   startTime?: number;
   endTime?: number;
+  approvalStatus?: 'approved' | 'denied';
 }) {
   const [collapsed, setCollapsed] = useState(!active);
   const [showMore, setShowMore] = useState(false);
@@ -389,15 +417,24 @@ const ToolBlockUI = memo(function ToolBlockUI({
       <div
         className={`step-row ${active ? 'step-row-active' : ''} ${is_error ? 'step-row-error' : ''}`}
         onClick={() => setCollapsed(!collapsed)}
+        style={{ cursor: 'pointer' }}
       >
         {(() => { const ToolIcon = getToolIcon(name); return <ToolIcon size={13} className="step-icon" style={{ marginRight: '5px' }} color={is_error ? '#f87171' : (active ? 'var(--text-muted)' : 'var(--text-muted)')} />; })()}
-        <span className="step-label tool-name">
-          {name}
-          {collapsed && startTime && endTime && (
-            <span style={{ opacity: 0.5, fontWeight: 'normal' }}> · {formatTime(endTime - startTime)}</span>
+        <span className="step-label tool-name" style={{ display: 'flex', alignItems: 'center', flex: 1 }}>
+          <span>{name}</span>
+          {startTime && endTime && (
+            <span style={{ opacity: 0.5, fontWeight: 'normal', marginLeft: '4px' }}>· {formatTime(endTime - startTime)}</span>
           )}
         </span>
-        {collapsed ? <ChevronRightIcon size={12} className="step-chevron" /> : <ChevronDownIcon size={12} className="step-chevron" />}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          {approvalStatus === 'approved' && (
+            <span className="approval-status-badge status-approved" style={{ fontSize: '10px', padding: '1px 6px', fontWeight: 'bold' }}>Approved</span>
+          )}
+          {approvalStatus === 'denied' && (
+            <span className="approval-status-badge status-denied" style={{ fontSize: '10px', padding: '1px 6px', fontWeight: 'bold' }}>Denied</span>
+          )}
+          {collapsed ? <ChevronRightIcon size={12} className="step-chevron" /> : <ChevronDownIcon size={12} className="step-chevron" />}
+        </div>
       </div>
       {!collapsed && (
         <div className="step-body">
@@ -407,31 +444,36 @@ const ToolBlockUI = memo(function ToolBlockUI({
               <pre className="tool-args-pre">{formattedArgs}</pre>
             </div>
           )}
-          {result && !active && (
+          {!active && (
             <div className="tool-section">
               <div className="tool-section-label">OUTPUT</div>
-              <MarkdownContent content={displayResult} className="tool-result-content assistant-msg" />
-              {!showMore && result.length > 500 && (
-                <div 
-                  className="tool-show-more-btn"
-                  onClick={(e) => { e.stopPropagation(); setShowMore(true); }}
-                  style={{
-                    color: 'var(--accent)',
-                    cursor: 'pointer',
-                    fontSize: '12px',
-                    textAlign: 'center',
-                    padding: '6px 0',
-                    marginTop: '8px',
-                    borderRadius: '6px',
-                    background: 'var(--overlay-0_04)',
-                    border: '1px solid var(--overlay-0_06)',
-                    transition: 'background 0.2s ease',
-                  }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--overlay-0_06)')}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--overlay-0_04)')}
-                >
-                  Show More
-                </div>
+              {result ? (
+                <>
+                  <MarkdownContent content={displayResult} className="tool-result-content assistant-msg" />
+                  {!showMore && result.length > 500 && (
+                    <div 
+                      className="tool-show-more-btn"
+                      onClick={(e) => { e.stopPropagation(); setShowMore(true); }}
+                      style={{
+                        color: 'var(--accent)',
+                        cursor: 'pointer',
+                        fontSize: '12px',
+                        textAlign: 'center',
+                        padding: '6px 0',
+                        marginTop: '8px',
+                        borderRadius: '6px',
+                        background: 'var(--overlay-0_04)',
+                        transition: 'background 0.2s',
+                      }}
+                      onMouseEnter={(e) => e.currentTarget.style.background = 'var(--overlay-0_08)'}
+                      onMouseLeave={(e) => e.currentTarget.style.background = 'var(--overlay-0_04)'}
+                    >
+                      Show More
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div style={{ opacity: 0.5, fontStyle: 'italic', fontSize: '12px' }}>(No output returned)</div>
               )}
             </div>
           )}
@@ -440,15 +482,6 @@ const ToolBlockUI = memo(function ToolBlockUI({
     </div>
   );
 });
-
-interface ApprovalBlock {
-  prompt_id?: string;
-  tool_name?: string;
-  tool_input?: unknown;
-  danger_level?: string;
-  explanation?: string;
-  status?: 'pending' | 'approved' | 'denied';
-}
 
 const APPROVAL_LABELS: Record<string, string> = {
   deny: 'Denied (once)',
@@ -675,7 +708,7 @@ const SubagentSpawnWidget = memo(function SubagentSpawnWidget({
 }: {
   args: unknown;
   active?: boolean;
-  subagentRefs?: TurnBlock[];
+  subagentRefs?: SubagentRefBlock[];
   subagents?: Record<string, SubagentEntry>;
 }) {
   const count = countSpawnedAgents(args);
@@ -689,7 +722,7 @@ const SubagentSpawnWidget = memo(function SubagentSpawnWidget({
       {subagentRefs && subagentRefs.length > 0 && (
         <div className="spawn-block-children" style={{ marginLeft: '16px', marginTop: '4px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
           {subagentRefs.map((refBlock, idx) => {
-            const sa = subagents?.[(refBlock as any).subagent_id!];
+            const sa = subagents?.[refBlock.subagent_id];
             if (!sa) return null;
             return <SubagentCard key={idx} subagent={sa} />;
           })}
@@ -816,8 +849,7 @@ export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: ChatEnt
     let tools = 0, thoughts = 0, errors = 0;
     entry.blocks?.forEach((b: TurnBlock) => {
       if (b.type === 'tool') {
-        const name = typeof b.name === 'string' ? b.name : '';
-        if (name !== 'invoke_subagent' && name !== 'subagent' && name !== 'subagents') tools++;
+        if (!isSubagentTool(b)) tools++;
       }
       if (b.type === 'thinking') thoughts++;
       if (b.type === 'error') errors++;
@@ -879,14 +911,33 @@ export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: ChatEnt
 
       {renderItems.map((item, idx) => {
         return (
-          <React.Fragment key={item.type === 'iteration' ? item.data.id : `assistant-${idx}`}>
+          <React.Fragment key={item.type === 'iteration' ? item.data.id : `block-${idx}`}>
             {item.type === 'assistant' ? (
               (!collapsed || lastIterIdx === -1 || idx > lastIterIdx) && (
                 <MarkdownContent
-                  content={typeof (item.data as any).text === 'string' ? (item.data as any).text : JSON.stringify((item.data as any).text)}
+                  content={item.data.text}
                   className="assistant-msg"
-                  isStreaming={!!(item.data as any).isStreaming}
+                  isStreaming={item.data.isStreaming}
                 />
+              )
+            ) : item.type === 'error' ? (
+              (!collapsed || idx === renderItems.length - 1) && (
+                <div style={{ 
+                  color: '#ef4444', 
+                  fontSize: '13px', 
+                  padding: '10px 14px',
+                  background: 'var(--danger-bg, rgba(239,68,68,0.06))',
+                  border: '1px solid var(--danger-border, rgba(239,68,68,0.2))',
+                  borderRadius: '8px',
+                  marginTop: '12px',
+                  marginBottom: '12px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '10px'
+                }}>
+                  <AlertTriangleIcon size={16} style={{ flexShrink: 0 }} />
+                  <span style={{ lineHeight: '1.4' }}>{(item.data as any).text}</span>
+                </div>
               )
             ) : (
               !collapsed && <TurnIterationUI iteration={item.data} subagents={subagents} />

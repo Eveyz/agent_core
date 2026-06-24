@@ -1,8 +1,9 @@
 use crate::skills::SkillManager;
 use crate::tools::Tool;
 use anyhow::Result;
+use parking_lot::Mutex;
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub fn register_skill_tools(
     registry: &mut crate::tools::ToolRegistry,
@@ -42,10 +43,13 @@ Use this to discover what skills are available before loading one."
     }
 
     async fn execute(&self, _args: Value) -> Result<String> {
-        let mgr = self.manager.lock().unwrap();
+        let mgr = self.manager.lock();
         let skills = mgr.list();
         if skills.is_empty() {
-            return Ok("No skills available. Create SKILL.md files in .agent/skills/ to add skills.".to_string());
+            return Ok(
+                "No skills available. Create SKILL.md files in .agent/skills/ to add skills."
+                    .to_string(),
+            );
         }
 
         let mut out = String::from("Available skills:\n");
@@ -107,7 +111,7 @@ Args: name (string). The skill's knowledge will guide your responses."
         let name = args["name"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("missing 'name'"))?;
-        let mut mgr = self.manager.lock().unwrap();
+        let mut mgr = self.manager.lock();
 
         let content = match mgr.load_skill_context(name)? {
             Some(c) => c,
@@ -115,7 +119,7 @@ Args: name (string). The skill's knowledge will guide your responses."
                 return Ok(format!(
                     "Skill '{}' not found. Use skill_list to see available skills.",
                     name
-                ))
+                ));
             }
         };
 
@@ -164,7 +168,7 @@ Args: name (string). Use 'all' to deactivate all active skills."
         let name = args["name"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("missing 'name'"))?;
-        let mut mgr = self.manager.lock().unwrap();
+        let mut mgr = self.manager.lock();
 
         if name == "all" {
             let count = mgr.active_skill_names().len();
@@ -208,8 +212,12 @@ Use this after adding or modifying SKILL.md files. Active skills are preserved."
     }
 
     async fn execute(&self, _args: Value) -> Result<String> {
-        let mut mgr = self.manager.lock().unwrap();
-        let old_active: Vec<String> = mgr.active_skill_names().iter().map(|s| s.to_string()).collect();
+        let mut mgr = self.manager.lock();
+        let old_active: Vec<String> = mgr
+            .active_skill_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
 
         let count = mgr.scan()?;
 

@@ -61,9 +61,8 @@ impl RecallMemory {
         let embedding_bytes = embedding_to_bytes(&embedding);
         let now = Utc::now().to_rfc3339();
 
-        let importance = importance.unwrap_or_else(|| {
-            self.scorer.auto_rate_importance(content, role)
-        });
+        let importance =
+            importance.unwrap_or_else(|| self.scorer.auto_rate_importance(content, role));
 
         let db = self.storage.conn();
         db.execute(
@@ -207,8 +206,12 @@ impl RecallMemory {
                 .map(|dt| (now - dt.with_timezone(&Utc)).num_hours().max(0) as f32)
                 .unwrap_or(0.0);
 
-            let recall = self.scorer.recall_score(hours_since, memory_strength, importance);
-            let total = self.scorer.retrieval_score(semantic, hours_since, memory_strength, importance);
+            let recall = self
+                .scorer
+                .recall_score(hours_since, memory_strength, importance);
+            let total =
+                self.scorer
+                    .retrieval_score(semantic, hours_since, memory_strength, importance);
             let category = MemoryCategory::classify(&content, "user");
 
             scored.push((
@@ -328,11 +331,9 @@ impl RecallMemory {
             )
             .unwrap_or(1.0);
         let avg_importance: f64 = db
-            .query_row(
-                "SELECT AVG(importance) FROM recall_memory",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT AVG(importance) FROM recall_memory", [], |row| {
+                row.get(0)
+            })
             .unwrap_or(0.5);
 
         Ok(MemoryStats {
@@ -395,7 +396,9 @@ impl RecallMemory {
         let deleted = to_delete.len();
         if deleted > 0 {
             // Build IN clause
-            let placeholders: Vec<String> = to_delete.iter().enumerate()
+            let placeholders: Vec<String> = to_delete
+                .iter()
+                .enumerate()
                 .map(|(i, _)| format!("?{}", i + 1))
                 .collect();
             let sql = format!(
@@ -406,8 +409,10 @@ impl RecallMemory {
                 .iter()
                 .map(|id| rusqlite::types::Value::Text(id.clone()))
                 .collect();
-            let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-                params.iter().map(|p| p as &dyn rusqlite::types::ToSql).collect();
+            let param_refs: Vec<&dyn rusqlite::types::ToSql> = params
+                .iter()
+                .map(|p| p as &dyn rusqlite::types::ToSql)
+                .collect();
 
             db.execute(&sql, param_refs.as_slice())
                 .context("failed to prune cold memories")?;
@@ -437,17 +442,15 @@ impl RecallMemory {
         let mut promoted = 0;
         let rows = stmt.query_map(
             rusqlite::params![min_importance, max_to_promote as i64],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                ))
-            },
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )?;
 
         for row in rows {
             let (id, content) = row?;
-            if archival.insert(&content, Some("promoted from recall")).is_ok() {
+            if archival
+                .insert(&content, Some("promoted from recall"))
+                .is_ok()
+            {
                 db.execute(
                     "DELETE FROM recall_memory WHERE id = ?1",
                     rusqlite::params![id],

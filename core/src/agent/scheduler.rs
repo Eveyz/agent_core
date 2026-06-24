@@ -124,7 +124,10 @@ fn shares_mutable_resource(a: &SchedNode, b: &SchedNode) -> bool {
 /// resources, which means they're free to run in parallel — they're expected to
 /// be effect-free relative to the local filesystem (e.g. pure compute / network
 /// GET). Tools with side effects should expose them via these fields.
-pub(crate) fn classify_resources(tool_name: &str, args: &Value) -> (Vec<ResourceKey>, Vec<ResourceKey>) {
+pub(crate) fn classify_resources(
+    tool_name: &str,
+    args: &Value,
+) -> (Vec<ResourceKey>, Vec<ResourceKey>) {
     let mut mutations = Vec::new();
     let mut reads = Vec::new();
 
@@ -306,7 +309,10 @@ mod tests {
         let (_, reads) = classify_resources("read_file", &serde_json::json!({"path": "x/y.rs"}));
         assert_eq!(reads, vec![ResourceKey::Path("x/y.rs".into())]);
 
-        let (mut_b, _) = classify_resources("bash", &serde_json::json!({"command": "/usr/bin/git status"}));
+        let (mut_b, _) = classify_resources(
+            "bash",
+            &serde_json::json!({"command": "/usr/bin/git status"}),
+        );
         assert_eq!(mut_b, vec![ResourceKey::BashProgram("git".into())]);
     }
 }

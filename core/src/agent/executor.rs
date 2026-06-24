@@ -1,5 +1,5 @@
 #![allow(deprecated)]
-use crate::agent::scheduler::{classify_resources, DepGraph, SchedNode};
+use crate::agent::scheduler::{DepGraph, SchedNode, classify_resources};
 use crate::hooks::{HookRegistry, PreToolResult};
 use crate::permission::{
     ApprovalChoice, ApprovalScope, PermissionDecision, PermissionPolicy, ToolPermissionPattern,
@@ -9,8 +9,9 @@ use crate::runtime::ApprovalResolver;
 use crate::tools::{ToolRegistry, ToolUpdateFn};
 use crate::types::{AgentEvent, ToolCall, ToolExecutionMode};
 use futures::stream::{FuturesUnordered, StreamExt};
+use parking_lot::Mutex;
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 pub struct ToolOrchestrator<'a> {
@@ -26,11 +27,7 @@ pub struct ToolOrchestrator<'a> {
 
 impl<'a> ToolOrchestrator<'a> {
     #[tracing::instrument(skip_all, fields(tool_count = calls.len()))]
-    pub async fn execute_tools<F>(
-        &mut self,
-        calls: &[ToolCall],
-        on_event: &F,
-    ) -> Vec<String> 
+    pub async fn execute_tools<F>(&mut self, calls: &[ToolCall], on_event: &F) -> Vec<String>
     where
         F: Fn(AgentEvent, &str) + Send + Sync,
     {
@@ -56,7 +53,10 @@ impl<'a> ToolOrchestrator<'a> {
                 .or(args.get("file_path"))
                 .or(args.get("file"))
                 .and_then(|v| v.as_str());
-            let host = args.get("url").or(args.get("host")).and_then(|v| v.as_str());
+            let host = args
+                .get("url")
+                .or(args.get("host"))
+                .and_then(|v| v.as_str());
 
             let decision = self.permission_policy.check(
                 &call.function.name,
@@ -79,18 +79,21 @@ impl<'a> ToolOrchestrator<'a> {
                     } else {
                         // Fallback: global map (old Agent path)
                         let pending_arc = crate::permission::global_pending_approvals();
-                        let mut pending = pending_arc.lock().unwrap();
+                        let mut pending = pending_arc.lock();
                         pending.insert(prompt.prompt_id.clone(), tx);
                     }
 
                     // Emit approval event
-                    on_event(AgentEvent::ApprovalRequired {
-                        prompt_id: prompt.prompt_id.clone(),
-                        tool_name: prompt.tool_name.clone(),
-                        tool_input: prompt.tool_input.clone(),
-                        danger_level: format!("{:?}", prompt.danger_level),
-                        explanation: prompt.explanation.clone(),
-                    }, &call.id);
+                    on_event(
+                        AgentEvent::ApprovalRequired {
+                            prompt_id: prompt.prompt_id.clone(),
+                            tool_name: prompt.tool_name.clone(),
+                            tool_input: prompt.tool_input.clone(),
+                            danger_level: format!("{:?}", prompt.danger_level),
+                            explanation: prompt.explanation.clone(),
+                        },
+                        &call.id,
+                    );
 
                     // Wait for user response, but also listen for cancellation so
                     // that an agent stuck on `ApprovalRequired` can be stopped
@@ -182,7 +185,7 @@ impl<'a> ToolOrchestrator<'a> {
                                 resolver.remove(&prompt.prompt_id);
                             } else {
                                 let pending_arc = crate::permission::global_pending_approvals();
-                                let mut pending = pending_arc.lock().unwrap();
+                                let mut pending = pending_arc.lock();
                                 pending.remove(&prompt.prompt_id);
                             }
                         }
@@ -192,16 +195,14 @@ impl<'a> ToolOrchestrator<'a> {
                                 resolver.remove(&prompt.prompt_id);
                             } else {
                                 let pending_arc = crate::permission::global_pending_approvals();
-                                let mut pending = pending_arc.lock().unwrap();
+                                let mut pending = pending_arc.lock();
                                 pending.remove(&prompt.prompt_id);
                             }
                             if self.cancel_token.is_cancelled() {
                                 results[i] = "Aborted".to_string();
                             } else {
-                                results[i] = format!(
-                                    "Approval cancelled for tool '{}'",
-                                    call.function.name
-                                );
+                                results[i] =
+                                    format!("Approval cancelled for tool '{}'", call.function.name);
                             }
                             continue;
                         }
@@ -222,11 +223,14 @@ impl<'a> ToolOrchestrator<'a> {
                     continue;
                 }
                 PreToolResult::Proceed(modified_args) => {
-                    on_event(AgentEvent::ToolExecutionStart {
-                        tool_call_id: call.id.clone(),
-                        tool_name: call.function.name.clone(),
-                        args: modified_args.clone(),
-                    }, &call.id);
+                    on_event(
+                        AgentEvent::ToolExecutionStart {
+                            tool_call_id: call.id.clone(),
+                            tool_name: call.function.name.clone(),
+                            args: modified_args.clone(),
+                        },
+                        &call.id,
+                    );
                     allowed.push((i, call.clone(), modified_args));
                 }
             }
@@ -354,7 +358,7 @@ impl<'a> ToolOrchestrator<'a> {
         args: serde_json::Value,
         cancel_token: CancellationToken,
         on_event: &F,
-    ) -> String 
+    ) -> String
     where
         F: Fn(AgentEvent, &str) + Send + Sync,
     {
@@ -376,7 +380,7 @@ impl<'a> ToolOrchestrator<'a> {
         let tool_call_id_clone = tool_call_id.to_string();
         let tool_name_clone = tool_name.to_string();
         let cancel_clone = cancel_token.clone();
-        
+
         let on_update: ToolUpdateFn = Arc::new(move |partial: &str| {
             if !cancel_clone.is_cancelled() {
                 let _ = event_tx_clone.send(AgentEvent::ToolExecutionUpdate {

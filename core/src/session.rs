@@ -91,7 +91,11 @@ pub fn row_to_meta(row: &rusqlite::Row) -> rusqlite::Result<SessionMeta> {
         model_used: row.get(7)?,
         tags,
         archived: row.get::<_, i32>(9)? != 0,
-        parent_session_id: if parent.is_empty() { None } else { Some(parent) },
+        parent_session_id: if parent.is_empty() {
+            None
+        } else {
+            Some(parent)
+        },
         session_type: stype,
         process_time_ms: row.get::<_, i64>(12)? as u64,
         thought_time_ms: row.get::<_, i64>(13)? as u64,
@@ -136,11 +140,17 @@ impl SessionManager {
         model_used: &str,
         project_id: Option<&str>,
     ) -> Result<String> {
-        self.save_full(session_id, messages, cwd, model_used, None, "main", project_id)
+        self.save_full(
+            session_id, messages, cwd, model_used, None, "main", project_id,
+        )
     }
 
     /// Save a subagent session, linked to a parent session.
-    pub fn save_subagent(&self, subagent_id: &str, result: &impl SubagentResultLike) -> Result<String> {
+    pub fn save_subagent(
+        &self,
+        subagent_id: &str,
+        result: &impl SubagentResultLike,
+    ) -> Result<String> {
         // Build minimal message log from the result
         let messages = vec![
             Message::user(&format!("Subagent task: {}", subagent_id)),
@@ -148,13 +158,8 @@ impl SessionManager {
         ];
         // Create as new session — subagent_id is used as the session ID
         self.save_full(
-            None,  // always create new
-            &messages,
-            "",
-            "subagent",
-            None,
-            "subagent",
-            None,
+            None, // always create new
+            &messages, "", "subagent", None, "subagent", None,
         )
     }
 
@@ -206,7 +211,8 @@ impl SessionManager {
         for (i, msg) in messages.iter().enumerate() {
             let role = msg.role.to_string();
             let content = msg.content.as_deref().unwrap_or("");
-            let tool_calls = serde_json::to_string(&msg.tool_calls).unwrap_or_else(|_| "[]".to_string());
+            let tool_calls =
+                serde_json::to_string(&msg.tool_calls).unwrap_or_else(|_| "[]".to_string());
             let tool_call_id = msg.tool_call_id.as_deref().unwrap_or("");
             let name = msg.name.as_deref().unwrap_or("");
 
@@ -246,10 +252,14 @@ impl SessionManager {
     pub fn search(&self, keyword: &str, limit: usize) -> Result<Vec<SessionMeta>> {
         let db = self.storage.conn();
         let pattern = format!("%{}%", keyword);
-        let sql = format!("{META_SELECT} WHERE (title LIKE ?1 OR summary LIKE ?1) ORDER BY updated_at DESC LIMIT ?2");
+        let sql = format!(
+            "{META_SELECT} WHERE (title LIKE ?1 OR summary LIKE ?1) ORDER BY updated_at DESC LIMIT ?2"
+        );
         let mut stmt = db.prepare(&sql)?;
 
-        let rows = stmt.query_map(rusqlite::params![pattern, limit as i64], |row| row_to_meta(row))?;
+        let rows = stmt.query_map(rusqlite::params![pattern, limit as i64], |row| {
+            row_to_meta(row)
+        })?;
 
         let mut sessions = Vec::new();
         for row in rows {
@@ -283,7 +293,7 @@ impl SessionManager {
         };
 
         // Scope the db lock so it's released before get_event_log tries to acquire it.
-        // std::sync::Mutex is NOT reentrant — holding the lock and calling
+        // Mutex is NOT reentrant — holding the lock and calling
         // get_event_log (which also calls storage.conn()) would deadlock.
         let messages = {
             let db = self.storage.conn();
@@ -302,39 +312,64 @@ impl SessionManager {
                 let idx: i64 = row.get(5)?;
 
                 let tool_calls: Option<Vec<crate::types::ToolCall>> =
-                    serde_json::from_str(&tool_calls_json).ok().and_then(|v: serde_json::Value| {
-                        if v.is_array() && !v.as_array().unwrap().is_empty() {
-                            serde_json::from_value(v).ok()
-                        } else {
-                            None
-                        }
-                    });
+                    serde_json::from_str(&tool_calls_json)
+                        .ok()
+                        .and_then(|v: serde_json::Value| {
+                            if v.is_array() && !v.as_array().unwrap().is_empty() {
+                                serde_json::from_value(v).ok()
+                            } else {
+                                None
+                            }
+                        });
 
-                Ok((idx, Message {
-                    role: crate::types::Role::from_str(&role_str),
-                    content: if content.is_empty() { None } else { Some(content) },
-                    tool_calls,
-                    tool_call_id: if tool_call_id.is_empty() { None } else { Some(tool_call_id) },
-                    name: if name.is_empty() { None } else { Some(name) },
-                }))
+                Ok((
+                    idx,
+                    Message {
+                        role: crate::types::Role::from_str(&role_str),
+                        content: if content.is_empty() {
+                            None
+                        } else {
+                            Some(content)
+                        },
+                        tool_calls,
+                        tool_call_id: if tool_call_id.is_empty() {
+                            None
+                        } else {
+                            Some(tool_call_id)
+                        },
+                        name: if name.is_empty() { None } else { Some(name) },
+                    },
+                ))
             })?;
 
             for row in rows {
                 messages.push(row?);
             }
             messages.sort_by_key(|(idx, _)| *idx);
-            messages.into_iter().map(|(_, m)| m).collect::<Vec<Message>>()
+            messages
+                .into_iter()
+                .map(|(_, m)| m)
+                .collect::<Vec<Message>>()
         }; // db lock released here
 
         let event_log = self.get_event_log(session_id).unwrap_or_default();
 
-        Ok(Some(Session { meta, messages, event_log }))
+        Ok(Some(Session {
+            meta,
+            messages,
+            event_log,
+        }))
     }
 
     // ── Update metadata ─────────────────────────────────────────────
 
     /// Save timing data for a session.
-    pub fn save_timing(&self, session_id: &str, process_time_ms: u64, thought_time_ms: u64) -> Result<()> {
+    pub fn save_timing(
+        &self,
+        session_id: &str,
+        process_time_ms: u64,
+        thought_time_ms: u64,
+    ) -> Result<()> {
         let db = self.storage.conn();
         let now = Utc::now().to_rfc3339();
         db.execute(
@@ -406,7 +441,15 @@ impl SessionManager {
         match val {
             serde_json::Value::String(s) => {
                 if s.len() > max_len {
-                    serde_json::Value::String(format!("{}...(truncated)", &s[..s.char_indices().take(max_len).last().map(|(i, c)| i + c.len_utf8()).unwrap_or(s.len())]))
+                    serde_json::Value::String(format!(
+                        "{}...(truncated)",
+                        &s[..s
+                            .char_indices()
+                            .take(max_len)
+                            .last()
+                            .map(|(i, c)| i + c.len_utf8())
+                            .unwrap_or(s.len())]
+                    ))
                 } else {
                     val.clone()
                 }
@@ -418,9 +461,11 @@ impl SessionManager {
                     .collect();
                 serde_json::Value::Object(new_map)
             }
-            serde_json::Value::Array(arr) => {
-                serde_json::Value::Array(arr.iter().map(|v| Self::truncate_payload(v, max_len)).collect())
-            }
+            serde_json::Value::Array(arr) => serde_json::Value::Array(
+                arr.iter()
+                    .map(|v| Self::truncate_payload(v, max_len))
+                    .collect(),
+            ),
             _ => val.clone(),
         }
     }
@@ -736,7 +781,10 @@ mod tests {
         let session = mgr.resume(&id).unwrap().unwrap();
         assert_eq!(session.messages.len(), 4);
         assert_eq!(session.messages[0].role, Role::User);
-        assert_eq!(session.messages[0].content.as_deref().unwrap(), "帮我修复权限系统的bug");
+        assert_eq!(
+            session.messages[0].content.as_deref().unwrap(),
+            "帮我修复权限系统的bug"
+        );
         assert_eq!(session.messages[1].role, Role::Assistant);
 
         // Tool call message
@@ -745,8 +793,17 @@ mod tests {
 
         // Tool result message
         assert_eq!(session.messages[3].role, Role::Tool);
-        assert_eq!(session.messages[3].tool_call_id.as_deref().unwrap(), "call_1");
-        assert!(session.messages[3].content.as_ref().unwrap().contains("PermissionPolicy"));
+        assert_eq!(
+            session.messages[3].tool_call_id.as_deref().unwrap(),
+            "call_1"
+        );
+        assert!(
+            session.messages[3]
+                .content
+                .as_ref()
+                .unwrap()
+                .contains("PermissionPolicy")
+        );
     }
 
     #[test]
@@ -779,7 +836,8 @@ mod tests {
         let msgs = vec![Message::user("hello")];
         let id = mgr.save(None, &msgs, "/tmp", "gpt").unwrap();
 
-        mgr.set_summary(&id, "User said hello and started a new project.").unwrap();
+        mgr.set_summary(&id, "User said hello and started a new project.")
+            .unwrap();
         let meta = mgr.get_meta(&id).unwrap().unwrap();
         assert!(meta.summary.contains("hello"));
     }
@@ -804,8 +862,12 @@ mod tests {
     fn test_archive_and_list() {
         let (mgr, _dir) = make_manager();
 
-        let id1 = mgr.save(None, &[Message::user("a")], "/tmp", "gpt").unwrap();
-        let id2 = mgr.save(None, &[Message::user("b")], "/tmp", "gpt").unwrap();
+        let id1 = mgr
+            .save(None, &[Message::user("a")], "/tmp", "gpt")
+            .unwrap();
+        let id2 = mgr
+            .save(None, &[Message::user("b")], "/tmp", "gpt")
+            .unwrap();
 
         mgr.archive(&id1).unwrap();
 
@@ -822,7 +884,9 @@ mod tests {
     #[test]
     fn test_unarchive() {
         let (mgr, _dir) = make_manager();
-        let id = mgr.save(None, &[Message::user("a")], "/tmp", "gpt").unwrap();
+        let id = mgr
+            .save(None, &[Message::user("a")], "/tmp", "gpt")
+            .unwrap();
         mgr.archive(&id).unwrap();
         assert_eq!(mgr.list(false).unwrap().len(), 0);
 
@@ -846,9 +910,12 @@ mod tests {
     fn test_search_by_keyword() {
         let (mgr, _dir) = make_manager();
 
-        mgr.save(None, &[Message::user("Rust内存管理问题")], "/tmp", "gpt").unwrap();
-        mgr.save(None, &[Message::user("Python脚本优化")], "/tmp", "gpt").unwrap();
-        mgr.save(None, &[Message::user("Docker部署Rust服务")], "/tmp", "gpt").unwrap();
+        mgr.save(None, &[Message::user("Rust内存管理问题")], "/tmp", "gpt")
+            .unwrap();
+        mgr.save(None, &[Message::user("Python脚本优化")], "/tmp", "gpt")
+            .unwrap();
+        mgr.save(None, &[Message::user("Docker部署Rust服务")], "/tmp", "gpt")
+            .unwrap();
 
         mgr.set_summary(
             &mgr.list(false).unwrap()[0].id,
@@ -864,8 +931,11 @@ mod tests {
     fn test_purge_archived() {
         let (mgr, _dir) = make_manager();
 
-        let id1 = mgr.save(None, &[Message::user("a")], "/tmp", "gpt").unwrap();
-        mgr.save(None, &[Message::user("b")], "/tmp", "gpt").unwrap();
+        let id1 = mgr
+            .save(None, &[Message::user("a")], "/tmp", "gpt")
+            .unwrap();
+        mgr.save(None, &[Message::user("b")], "/tmp", "gpt")
+            .unwrap();
         mgr.archive(&id1).unwrap();
 
         let deleted = mgr.purge_archived().unwrap();
@@ -877,8 +947,11 @@ mod tests {
     fn test_count() {
         let (mgr, _dir) = make_manager();
 
-        mgr.save(None, &[Message::user("a")], "/tmp", "gpt").unwrap();
-        let id2 = mgr.save(None, &[Message::user("b")], "/tmp", "gpt").unwrap();
+        mgr.save(None, &[Message::user("a")], "/tmp", "gpt")
+            .unwrap();
+        let id2 = mgr
+            .save(None, &[Message::user("b")], "/tmp", "gpt")
+            .unwrap();
         mgr.archive(&id2).unwrap();
 
         let counts = mgr.count().unwrap();
@@ -990,7 +1063,11 @@ mod tests {
             updated_at: "".to_string(),
         };
         let line = meta.display_line();
-        assert!(line.contains("[sub]"), "subagent sessions should show [sub] tag, got: {}", line);
+        assert!(
+            line.contains("[sub]"),
+            "subagent sessions should show [sub] tag, got: {}",
+            line
+        );
     }
 
     #[test]

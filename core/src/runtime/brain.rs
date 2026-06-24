@@ -12,7 +12,8 @@
 //! hooks (per-Run), or any mutable execution state.
 
 use anyhow::{Context, Result};
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 use crate::client::OpenAIClient;
 use crate::config::{Config, ModelConfig};
@@ -58,7 +59,8 @@ impl Brain {
 
     /// Build a Brain by loading config from a file path.
     pub fn load_config(path: &str) -> Result<Self> {
-        let config = Config::load(path).with_context(|| format!("failed to load config: {path}"))?;
+        let config =
+            Config::load(path).with_context(|| format!("failed to load config: {path}"))?;
         Self::from_config(config)
     }
 
@@ -161,7 +163,11 @@ impl Brain {
         }
 
         if let Ok(model_config) = self.current_model_config() {
-            let available_tools: Vec<String> = registry.list_names().into_iter().map(|s| s.to_string()).collect();
+            let available_tools: Vec<String> = registry
+                .list_names()
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect();
             crate::tools::subagent::register_subagent_tools(
                 &mut registry,
                 model_config,
@@ -198,7 +204,8 @@ impl Brain {
     pub fn principles_text(&self, permission_mode: &str) -> String {
         format!(
             "{}\n\nPermission Mode: {} — tools may require user approval before execution.",
-            prompt::DEFAULT_PRINCIPLES, permission_mode
+            prompt::DEFAULT_PRINCIPLES,
+            permission_mode
         )
     }
 

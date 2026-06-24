@@ -1,9 +1,10 @@
 use anyhow::{Result, bail};
 use futures::StreamExt;
+use parking_lot::Mutex;
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
 pub mod executor;
@@ -18,10 +19,10 @@ use crate::permission::{
     ApprovalChoice, ApprovalScope, PermissionDecision, PermissionPolicy, ToolPermissionPattern,
     WhitelistEntry,
 };
-use crate::skills::SkillManager;
-use crate::trace::TraceCollector;
 use crate::prompt::{self, PromptBuilder};
+use crate::skills::SkillManager;
 use crate::tools::{ToolRegistry, ToolUpdateFn};
+use crate::trace::TraceCollector;
 use crate::types::{
     AgentEvent, AgentState, Message, MessageDelta, StreamEvent, ToolCall, ToolExecutionMode,
     ToolResultRecord,
@@ -196,7 +197,6 @@ impl AgentBuilder {
         self
     }
 
-
     /// Attach a custom [`RecoveryEngine`] for loop-level error recovery
     /// (context compaction, token escalation, retry). Defaults to
     /// [`RecoveryEngine::default`] when not set. This complements — and does
@@ -206,7 +206,6 @@ impl AgentBuilder {
         self.recovery = Some(engine);
         self
     }
-
 
     pub fn build(self) -> Result<Agent> {
         let default_model_name = self.config.default_model.clone();
@@ -248,16 +247,18 @@ impl AgentBuilder {
         }
 
         // ── 7-segment context engine setup ──────────────────────────
-        let (identity_text, principles_text) = if self.system_prompt.is_some()
-            || model_config.system_prompt.is_some()
-        {
-            (system_prompt.clone(), prompt::DEFAULT_PRINCIPLES.to_string())
-        } else {
-            (
-                prompt::DEFAULT_IDENTITY.to_string(),
-                prompt::DEFAULT_PRINCIPLES.to_string(),
-            )
-        };
+        let (identity_text, principles_text) =
+            if self.system_prompt.is_some() || model_config.system_prompt.is_some() {
+                (
+                    system_prompt.clone(),
+                    prompt::DEFAULT_PRINCIPLES.to_string(),
+                )
+            } else {
+                (
+                    prompt::DEFAULT_IDENTITY.to_string(),
+                    prompt::DEFAULT_PRINCIPLES.to_string(),
+                )
+            };
 
         let mut context = Context::new(&identity_text, model_config.max_context_tokens);
 
@@ -295,7 +296,7 @@ impl AgentBuilder {
 
         // Segment 5: ACTIVE MEMORY
         if let Some(ref mem) = memory
-            && let Ok(m) = mem.lock()
+            && let m = mem.lock()
         {
             let core_memory_str = m.core().to_context_string();
             if !core_memory_str.is_empty() {
@@ -305,11 +306,10 @@ impl AgentBuilder {
 
         // Segment 6: LOADED SKILLS — catalog of available skills
         if let Some(ref mgr) = self.skill_manager {
-            if let Ok(mgr) = mgr.lock() {
-                let catalog = mgr.build_catalog();
-                if !catalog.is_empty() {
-                    context.set_loaded_skills(&catalog);
-                }
+            let mgr = mgr.lock();
+            let catalog = mgr.build_catalog();
+            if !catalog.is_empty() {
+                context.set_loaded_skills(&catalog);
             }
         }
 
@@ -337,7 +337,7 @@ impl AgentBuilder {
                 client_opt = Some(OpenAIClient::new(fallback_cfg));
             }
         }
-        
+
         let client = if let Some(child) = client_opt {
             OpenAIClient::with_fallback(model_config.clone(), Some(child))
         } else {
@@ -484,9 +484,8 @@ impl Agent {
         let trace = self.trace.clone();
         let traced = move |ev: AgentEvent| {
             if let Some(ref tc) = trace {
-                if let Ok(mut guard) = tc.lock() {
-                    guard.record(&ev);
-                }
+                let mut guard = tc.lock();
+                guard.record(&ev);
             }
             on_event(ev);
         };
@@ -494,7 +493,7 @@ impl Agent {
         self.context.add(Message::user(input));
 
         if let Some(ref mem) = self.memory
-            && let Ok(m) = mem.lock()
+            && let m = mem.lock()
         {
             let _ = m.store_conversation("user", input);
         }
@@ -503,7 +502,7 @@ impl Agent {
         // Check user message against skill triggers, auto-load matching skills
         if let Some(ref mgr) = self.skill_manager {
             let matched: Vec<(String, String)> = {
-                let mgr = mgr.lock().unwrap();
+                let mgr = mgr.lock();
                 let matched = mgr.check_triggers(input);
                 let mut result = Vec::new();
                 for skill in &matched {
@@ -526,10 +525,9 @@ impl Agent {
             }
 
             // Activate matched skills
-            if let Ok(mut mgr) = mgr.lock() {
-                for (name, _) in &matched {
-                    mgr.activate(name);
-                }
+            let mut mgr = mgr.lock();
+            for (name, _) in &matched {
+                mgr.activate(name);
             }
         }
 
@@ -613,7 +611,7 @@ impl Agent {
         // token escalation / retry instead of abandoning the turn on the
         // first failure.
         tracing::debug!(turn = turn_index, stage = Stage::Model.as_str());
-        let (text, tool_calls) = match self.model_turn(on_event).await {
+        let (text, tool_calls, message_id) = match self.model_turn(on_event).await {
             Ok(r) => r,
             Err(e) => {
                 if self.cancel_token.is_cancelled() {
@@ -633,6 +631,7 @@ impl Agent {
             let assistant_msg = Message::assistant(&text);
             self.context.add(assistant_msg.clone());
             on_event(AgentEvent::MessageEnd {
+                message_id: message_id.clone(),
                 message: assistant_msg.clone(),
             });
             on_event(AgentEvent::TurnEnd {
@@ -642,10 +641,8 @@ impl Agent {
             });
             self.hook_registry.fire_turn_end(turn_index);
 
-            if let Some(ref mem) = self.memory {
-                if let Ok(m) = mem.lock() {
-                    let _ = m.store_conversation("assistant", &text);
-                }
+            if let Some(mem) = self.memory.clone() {
+                mem.lock().store_conversation("assistant", &text);
                 self.refresh_core_memory_in_context();
                 self.maybe_consolidate();
             }
@@ -671,6 +668,7 @@ impl Agent {
         };
 
         on_event(AgentEvent::MessageEnd {
+            message_id: message_id.clone(),
             message: assistant_msg.clone(),
         });
 
@@ -686,7 +684,9 @@ impl Agent {
                 cancel_token: self.cancel_token.clone(),
                 approval_resolver: None,
             };
-            orchestrator.execute_tools(&tool_calls, &|ev, _call_id: &str| on_event(ev)).await
+            orchestrator
+                .execute_tools(&tool_calls, &|ev, _call_id: &str| on_event(ev))
+                .await
         };
         self.state = AgentState::Streaming;
 
@@ -742,8 +742,6 @@ impl Agent {
         TurnOutcome::Continue
     }
 
-
-
     /// Build the outgoing message list for this turn: refresh-independent
     /// snapshot of context messages with optional `transform_context` applied.
     fn build_messages(&self) -> Vec<Message> {
@@ -782,7 +780,7 @@ impl Agent {
     async fn model_turn(
         &mut self,
         on_event: &(impl Fn(AgentEvent) + Send + Sync),
-    ) -> Result<(String, Vec<ToolCall>), String> {
+    ) -> Result<(String, Vec<ToolCall>, String), String> {
         const MAX_RECOVERY_ATTEMPTS: u32 = 3;
 
         for _attempt in 0..MAX_RECOVERY_ATTEMPTS {
@@ -798,8 +796,14 @@ impl Agent {
             if let Some(preset) = self.hook_registry.fire_before_model(&snapshot) {
                 self.recovery_ctx.record_success();
                 self.hook_registry.fire_after_model(&preset, 0);
-                return Ok((preset, Vec::new()));
+                return Ok((preset, Vec::new(), uuid::Uuid::new_v4().to_string()));
             }
+
+            let message_id = uuid::Uuid::new_v4().to_string();
+            on_event(AgentEvent::MessageStart {
+                message_id: message_id.clone(),
+                message: crate::types::Message::assistant(""),
+            });
 
             // Acquire the stream. On error we propagate an owned String so the
             // immutable borrow of `self.client` ends before we call the
@@ -813,9 +817,11 @@ impl Agent {
             // Collect the stream within a scope that only borrows `self`
             // immutably (cancel token). The result is owned, so the borrow is
             // released by the time we reach the recovery path.
-            let collected: Result<(String, Vec<ToolCall>), String> = {
+            let collected: Result<(String, Vec<ToolCall>, String), String> = {
                 let cancel = self.cancel_token.clone();
-                let res = self.collect_stream(stream, on_event).await;
+                let res = self
+                    .collect_stream(stream, message_id.clone(), on_event)
+                    .await;
                 match res {
                     Ok(r) => Ok(r),
                     Err(e) => {
@@ -828,11 +834,10 @@ impl Agent {
             };
 
             match collected {
-                Ok((text, tool_calls)) => {
+                Ok((text, tool_calls, message_id)) => {
                     self.recovery_ctx.record_success();
-                    self.hook_registry
-                        .fire_after_model(&text, tool_calls.len());
-                    return Ok((text, tool_calls));
+                    self.hook_registry.fire_after_model(&text, tool_calls.len());
+                    return Ok((text, tool_calls, message_id));
                 }
                 Err(msg) => {
                     self.recovery_ctx.record_error(&msg);
@@ -879,9 +884,7 @@ impl Agent {
                 RecoveryOutcome::Retry
             }
             RecoveryAction::SwitchModel { model } => {
-                if self.config.get_model(&model).is_some()
-                    && self.switch_model(&model).is_ok()
-                {
+                if self.config.get_model(&model).is_some() && self.switch_model(&model).is_ok() {
                     on_event(AgentEvent::Error(format!(
                         "switched to fallback model: {model}"
                     )));
@@ -926,8 +929,9 @@ impl Agent {
     async fn collect_stream(
         &self,
         stream: impl futures::Stream<Item = Result<StreamEvent>>,
+        message_id: String,
         on_event: &(impl Fn(AgentEvent) + Send + Sync),
-    ) -> Result<(String, Vec<ToolCall>)> {
+    ) -> Result<(String, Vec<ToolCall>, String)> {
         use crate::client::streaming::ToolCallAccumulator;
 
         let mut text_buffer = String::new();
@@ -955,6 +959,7 @@ impl Agent {
                         StreamEvent::ThinkingDelta(delta) => {
                             if !delta.is_empty() {
                                 on_event(AgentEvent::MessageUpdate {
+                                    message_id: message_id.clone(),
                                     delta: MessageDelta::Thinking(delta),
                                 });
                             }
@@ -963,6 +968,7 @@ impl Agent {
                             if !delta.is_empty() {
                                 text_buffer.push_str(&delta);
                                 on_event(AgentEvent::MessageUpdate {
+                                    message_id: message_id.clone(),
                                     delta: MessageDelta::Text(delta),
                                 });
                             }
@@ -983,12 +989,12 @@ impl Agent {
             vec![]
         };
 
-        Ok((text_buffer, tool_calls))
+        Ok((text_buffer, tool_calls, message_id))
     }
 
     fn refresh_core_memory_in_context(&mut self) {
         if let Some(ref mem) = self.memory
-            && let Ok(m) = mem.lock()
+            && let m = mem.lock()
         {
             let core_str = m.core().to_context_string();
             self.context.set_active_memory(&core_str);
@@ -1013,7 +1019,7 @@ impl Agent {
 
         // Segment 5: ACTIVE MEMORY — refresh from memory manager if enabled
         if let Some(ref mem) = self.memory
-            && let Ok(m) = mem.lock()
+            && let m = mem.lock()
         {
             let core_str = m.core().to_context_string();
             if !core_str.is_empty() {
@@ -1063,21 +1069,12 @@ impl Agent {
 
     fn maybe_consolidate(&self) {
         if let Some(ref mem) = self.memory {
-            let should_consolidate = match mem.lock() {
-                Ok(m) => !m.session_id().is_empty(),
-                Err(_) => false,
-            };
+            let should_consolidate = !mem.lock().session_id().is_empty();
 
             if should_consolidate {
                 let memory = mem.clone();
                 tokio::spawn(async move {
-                    let result = match memory.lock() {
-                        Ok(m) => m.consolidate(),
-                        Err(e) => {
-                            eprintln!("[memory] lock error during consolidation: {e}");
-                            return;
-                        }
-                    };
+                    let result = memory.lock().consolidate();
                     match result {
                         Ok(report) => {
                             if report.deduped_recall > 0 || report.deduped_archival > 0 {
@@ -1229,7 +1226,7 @@ impl Agent {
     pub fn clear_context(&mut self) {
         self.context.clear();
         if let Some(ref mem) = self.memory
-            && let Ok(mut m) = mem.lock()
+            && let mut m = mem.lock()
         {
             m.new_session();
         }
@@ -1272,8 +1269,8 @@ impl Agent {
         self.current_session_id = Some(id);
     }
 
-    pub fn memory(&self) -> Option<std::sync::MutexGuard<'_, MemoryManager>> {
-        self.memory.as_ref().and_then(|m| m.lock().ok())
+    pub fn memory(&self) -> Option<parking_lot::MutexGuard<'_, MemoryManager>> {
+        self.memory.as_ref().map(|m| m.lock())
     }
 
     pub fn memory_enabled(&self) -> bool {
@@ -1494,7 +1491,11 @@ default = { model_id = "mock" }
                 .map(|c| c.contains("[a][b]"))
                 .unwrap_or(false)
         });
-        assert!(any_tagged, "processors not applied in order: {:?}", messages);
+        assert!(
+            any_tagged,
+            "processors not applied in order: {:?}",
+            messages
+        );
     }
 
     /// Phase D: enabling tracing via the builder must not break the build.
@@ -1522,7 +1523,8 @@ mod stage_tests {
     use super::*;
     use crate::hooks::{Hook, HookAction, HookEvent};
     use crate::types::AgentEvent;
-    use std::sync::{Arc, Mutex};
+    use parking_lot::Mutex;
+    use std::sync::Arc;
 
     /// A hook that short-circuits the model with a fixed preset answer, so
     /// `run_turn` can be exercised end-to-end without a live LLM.
@@ -1591,16 +1593,22 @@ default = { model_id = "mock" }
                     AgentEvent::Error(_) => "Error",
                     _ => return,
                 };
-                ev_clone.lock().unwrap().push(tag);
+                ev_clone.lock().push(tag);
             })
             .await
             .unwrap();
 
         assert_eq!(result, "42");
-        let recorded = events.lock().unwrap().clone();
+        let recorded = events.lock().clone();
         assert_eq!(
             recorded,
-            vec!["AgentStart", "TurnStart", "MessageEnd", "TurnEnd", "AgentEnd"],
+            vec![
+                "AgentStart",
+                "TurnStart",
+                "MessageEnd",
+                "TurnEnd",
+                "AgentEnd"
+            ],
             "event ordering must be unchanged by Phase E staging"
         );
     }
@@ -1625,7 +1633,7 @@ default = { model_id = "mock" }
         let result = agent
             .run_with_events("hi", move |ev| {
                 if matches!(ev, AgentEvent::TurnStart { .. }) {
-                    *tc_clone.lock().unwrap() += 1;
+                    *tc_clone.lock() += 1;
                 }
             })
             .await
@@ -1633,6 +1641,6 @@ default = { model_id = "mock" }
 
         assert_eq!(result, "done");
         // The final-answer branch returns after the first turn.
-        assert_eq!(*turn_count.lock().unwrap(), 1);
+        assert_eq!(*turn_count.lock(), 1);
     }
 }

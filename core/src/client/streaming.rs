@@ -171,7 +171,7 @@ impl ToolCallAccumulator {
                 let mut id = partial
                     .id
                     .unwrap_or_else(|| format!("call_{}", uuid::Uuid::new_v4()));
-                    
+
                 while !seen_ids.insert(id.clone()) {
                     id = format!("{}_{}", id, i);
                 }
