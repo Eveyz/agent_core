@@ -39,7 +39,7 @@ const TurnFooter = memo(function TurnFooter({ entry }: { entry: ChatEntry }) {
     return (
       <div className="turn-footer turn-footer-processing">
         <div className="black-hole-spinner" style={{ width: 12, height: 12 }} />
-        <span className="turn-end-time">Processing...</span>
+        <span className="turn-end-time">Working...</span>
       </div>
     );
   }
