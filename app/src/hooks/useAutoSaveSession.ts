@@ -1,9 +1,6 @@
 import { useEffect, useRef } from 'react';
-import { useAppDispatch, useAppSelector } from './useAppDispatch';
-import { useStore } from 'react-redux';
-import type { RootState } from '../store';
-import { entriesToMessages, entriesToEventLog } from '../features/chat/chatSlice';
-import { saveSessionMessages } from '../features/project/projectSlice';
+import { useAppSelector } from './useAppDispatch';
+import { useSaveSession } from './useSaveSession';
 
 interface AutoSaveParams {
   activeSessionId: string | null;
@@ -16,8 +13,7 @@ export function useAutoSaveSession({
   activeProjectPath,
   defaultModel,
 }: AutoSaveParams): void {
-  const dispatch = useAppDispatch();
-  const store = useStore<RootState>();
+  const saveSession = useSaveSession();
 
   const isProcessing = useAppSelector((state) => state.chat.isProcessing);
   const resumedFromBackend = useAppSelector((state) => state.chat._resumedFromBackend);
@@ -32,29 +28,9 @@ export function useAutoSaveSession({
 
     if (resumedFromBackend) return;
 
-    const state = store.getState();
-    const entries = state.chat.entries;
-    const subagents = state.chat.subagents;
-
-    if (!lastAgentEndRef.current && entries.length > 0) {
+    if (!lastAgentEndRef.current) {
       lastAgentEndRef.current = true;
-      if (activeSessionId && activeProjectPath) {
-        const msgs = entriesToMessages(entries);
-        if (msgs.length > 0) {
-          const { eventLog, processTimeMs, thoughtTimeMs } = entriesToEventLog(entries, subagents);
-          dispatch(
-            saveSessionMessages({
-              sessionId: activeSessionId,
-              messages: msgs,
-              cwd: activeProjectPath,
-              modelUsed: defaultModel,
-              processTimeMs: processTimeMs || undefined,
-              thoughtTimeMs: thoughtTimeMs || undefined,
-              eventLog,
-            })
-          );
-        }
-      }
+      saveSession({ activeSessionId, activeProjectPath, defaultModel, skipIfResumed: true });
     }
-  }, [isProcessing, resumedFromBackend, activeSessionId, activeProjectPath, defaultModel, dispatch, store]);
+  }, [isProcessing, resumedFromBackend, activeSessionId, activeProjectPath, defaultModel, saveSession]);
 }

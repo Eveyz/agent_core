@@ -1,5 +1,5 @@
 import { memo, useState, useCallback, useRef, useEffect } from 'react';
-import { useSelector, useStore } from 'react-redux';
+import { useSelector } from 'react-redux';
 import { open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { RootState } from '../../store';
@@ -7,10 +7,11 @@ import {
   createProject, fetchProjectSessions, deleteProject, renameProject,
   setActiveProject, setActiveSession,
   createSession, deleteSession, resumeSession,
-  saveSessionMessages,
 } from '../../features/project/projectSlice';
-import { clearChat, cacheCurrentSession, restoreOrClearSession, entriesToMessages, entriesToEventLog } from '../../features/chat/chatSlice';
+import { clearChat, restoreOrClearSession } from '../../features/chat/chatSlice';
 import { useAppDispatch } from '../../hooks/useAppDispatch';
+import { useSaveSession } from '../../hooks/useSaveSession';
+import { useConfirmDialog } from '../ui/DialogManager';
 import PlusIcon from 'lucide-react/dist/esm/icons/plus.mjs';
 import LayoutGridIcon from 'lucide-react/dist/esm/icons/layout-grid.mjs';
 import MessageSquareIcon from 'lucide-react/dist/esm/icons/message-square.mjs';
@@ -127,7 +128,6 @@ export const Sidebar = memo(function Sidebar({
   onOpenSettings: () => void;
 }) {
   const dispatch = useAppDispatch();
-  const store = useStore<RootState>();
   const projects = useSelector((state: RootState) => state.project.projects);
   const sessions = useSelector((state: RootState) => state.project.sessions);
   const activeProjectId = useSelector((state: RootState) => state.project.activeProjectId);
@@ -136,6 +136,7 @@ export const Sidebar = memo(function Sidebar({
   const defaultModel = useSelector((state: RootState) => state.settings.config?.default_model || '');
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [creatingSession, setCreatingSession] = useState(false);
+  const { confirm, prompt, dialogElement } = useConfirmDialog();
 
   // Auto-expand active project when it changes
   const lastAutoExpanded = useRef<string | null>(null);
@@ -173,41 +174,44 @@ export const Sidebar = memo(function Sidebar({
     }
   }, [dispatch]);
 
-  const handleDeleteProject = useCallback((projectId: string) => {
-    if (confirm('Delete this project and all its sessions?')) {
+  const handleDeleteProject = useCallback(async (projectId: string) => {
+    const confirmed = await confirm({
+      title: 'Delete Project',
+      message: 'Delete this project and all its sessions?',
+      confirmLabel: 'Delete',
+      cancelLabel: 'Cancel',
+      danger: true,
+    });
+    if (confirmed) {
       dispatch(deleteProject(projectId));
     }
-  }, [dispatch]);
+  }, [dispatch, confirm]);
 
-  const handleRenameProject = useCallback((projectId: string, newName: string) => {
-    const name = prompt('New name:', newName);
+  const handleRenameProject = useCallback(async (projectId: string, newName: string) => {
+    const name = await prompt({
+      title: 'Rename Project',
+      message: 'Enter new name:',
+      defaultValue: newName,
+      confirmLabel: 'Rename',
+      cancelLabel: 'Cancel',
+    });
     if (name?.trim()) dispatch(renameProject({ projectId, newName: name.trim() }));
-  }, [dispatch]);
+  }, [dispatch, prompt]);
 
 
 
-  // Save current session to backend + memory cache
+  // Save current session to backend + memory cache (P2-3: uses shared useSaveSession hook)
+  const saveSession = useSaveSession();
   const saveAndCacheCurrent = useCallback(() => {
-    const chatState = store.getState().chat;
-    if (!activeSessionId || !activeProjectId || chatState._resumedFromBackend) return;
-    const msgs = entriesToMessages(chatState.entries);
-    if (msgs.length > 0) {
-      const project = projects.find((p) => p.id === activeProjectId);
-      if (project) {
-        const { eventLog, processTimeMs, thoughtTimeMs } = entriesToEventLog(chatState.entries, chatState.subagents);
-        dispatch(saveSessionMessages({
-          sessionId: activeSessionId,
-          messages: msgs,
-          cwd: project.path,
-          modelUsed: defaultModel,
-          processTimeMs: processTimeMs || undefined,
-          thoughtTimeMs: thoughtTimeMs || undefined,
-          eventLog,
-        }));
-      }
-    }
-    dispatch(cacheCurrentSession(activeSessionId));
-  }, [dispatch, store, activeSessionId, activeProjectId, projects, defaultModel]);
+    const project = projects.find((p) => p.id === activeProjectId);
+    saveSession({
+      activeSessionId,
+      activeProjectPath: project?.path ?? null,
+      defaultModel,
+      skipIfResumed: true,
+      cacheAfter: true,
+    });
+  }, [saveSession, activeSessionId, activeProjectId, projects, defaultModel]);
 
   const handleNewSession = useCallback(async (projectId: string) => {
     if (creatingSession) return;
@@ -232,11 +236,18 @@ export const Sidebar = memo(function Sidebar({
     dispatch(resumeSession(sessionId));
   }, [dispatch, activeSessionId, saveAndCacheCurrent]);
 
-  const handleDeleteSession = useCallback((sessionId: string, projectId: string) => {
-    if (confirm('Delete this session?')) {
+  const handleDeleteSession = useCallback(async (sessionId: string, projectId: string) => {
+    const confirmed = await confirm({
+      title: 'Delete Session',
+      message: 'Delete this session?',
+      confirmLabel: 'Delete',
+      cancelLabel: 'Cancel',
+      danger: true,
+    });
+    if (confirmed) {
       dispatch(deleteSession({ sessionId, projectId }));
     }
-  }, [dispatch]);
+  }, [dispatch, confirm]);
 
   return (
     <aside className="sidebar">
@@ -268,8 +279,8 @@ export const Sidebar = memo(function Sidebar({
 
       {/* Quick actions */}
       <div className="sidebar-nav" style={{ marginBottom: '4px' }}>
-        <div className="nav-item"><PlusIcon size={14} /> New Agent</div>
-        <div className="nav-item"><MessageSquareIcon size={14} /> New requirement</div>
+        <div className="nav-item" style={{ opacity: 0.4, cursor: 'default' }} title="Coming soon"><PlusIcon size={14} /> New Agent</div>
+        <div className="nav-item" style={{ opacity: 0.4, cursor: 'default' }} title="Coming soon"><MessageSquareIcon size={14} /> New requirement</div>
       </div>
 
       {/* Projects list */}
@@ -370,6 +381,8 @@ export const Sidebar = memo(function Sidebar({
         <div className="nav-item"><SmartphoneIcon size={14} /> Connect phone</div>
         <div className="nav-item" onClick={onOpenSettings}><SettingsIcon size={14} /> Settings</div>
       </div>
+
+      {dialogElement}
     </aside>
   );
 });

@@ -14,7 +14,6 @@ import { RootState } from './store';
 import {
   agentEventReceived,
   userMessageSent,
-  retryFromEntry,
   agentAborted,
   runIdSet,
   selectEntryById,
@@ -41,7 +40,7 @@ import { Sidebar } from './components/layout/Sidebar';
 import { CosmicBackground } from './components/layout/CosmicBackground';
 import { EmptyState } from './components/chat/EmptyState';
 import { UserRow } from './components/chat/UserRow';
-import { AgentRow } from './components/chat/AgentRow';
+import { AgentTurnUI } from './components/chat/AgentTurn';
 import { ChatInput } from './components/chat/ChatInput';
 import SettingsModal from './components/settings/SettingsModal';
 import './App.css';
@@ -322,11 +321,11 @@ function App() {
             )}
           </div>
           <div className="header-actions">
-            <button className="icon-btn"><BoxIcon size={14} /></button>
-            <button className="icon-btn"><MessageSquareIcon size={14} /></button>
-            <button className="icon-btn"><TerminalSquareIcon size={14} /></button>
-            <button className="icon-btn"><FolderIcon size={14} /></button>
-            <button className="icon-btn"><Maximize2Icon size={14} /></button>
+            <button className="icon-btn" disabled title="Coming soon"><BoxIcon size={14} /></button>
+            <button className="icon-btn" disabled title="Coming soon"><MessageSquareIcon size={14} /></button>
+            <button className="icon-btn" disabled title="Coming soon"><TerminalSquareIcon size={14} /></button>
+            <button className="icon-btn" disabled title="Coming soon"><FolderIcon size={14} /></button>
+            <button className="icon-btn" disabled title="Coming soon"><Maximize2Icon size={14} /></button>
           </div>
         </header>
 
@@ -402,7 +401,7 @@ const SubagentDetailPage = memo(function SubagentDetailPage({
           modelName={defaultModel}
           isProcessing={isProcessing}
         />
-        <AgentRow entry={syntheticEntry} />
+        <AgentTurnUI entry={syntheticEntry} />
       </div>
     </>
   );
@@ -425,7 +424,11 @@ const EntryRow = memo(function EntryRow({
   if (entry.type === 'user') {
     return <UserRow entry={entry} modelName={defaultModel} onRetry={handleRetry} isProcessing={isProcessing} />;
   } else {
-    return <AgentRow entry={entry} />;
+    return (
+      <div className="message-row agent-row">
+        <AgentTurnUI entry={entry} />
+      </div>
+    );
   }
 });
 

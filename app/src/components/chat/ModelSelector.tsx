@@ -16,10 +16,8 @@ interface ModelItem {
 
 export function ModelSelector({
   currentModel,
-  onModelChange,
 }: {
   currentModel: string;
-  onModelChange?: (key: string) => void;
 }) {
   const dispatch = useAppDispatch();
   const configFromStore = useSelector((state: RootState) => state.settings.config);
@@ -83,12 +81,11 @@ export function ModelSelector({
     async (key: string) => {
       setOpen(false);
       setSearch('');
-      onModelChange?.(key);
       if (configFromStore) {
         dispatch(switchModel({ modelKey: key, currentConfig: configFromStore }));
       }
     },
-    [dispatch, configFromStore, onModelChange]
+    [dispatch, configFromStore]
   );
 
   const config = configFromStore;

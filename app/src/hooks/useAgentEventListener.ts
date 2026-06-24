@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { useAppDispatch } from './useAppDispatch';
-import { agentEventReceived, resyncRun } from '../features/chat/chatSlice';
+import { agentEventReceived } from '../features/chat/chatSlice';
 
 /**
  * Subscribe to the backend `agent-event` stream and dispatch each event into
@@ -12,6 +12,9 @@ import { agentEventReceived, resyncRun } from '../features/chat/chatSlice';
  * arrivals for one animation frame and flush them together. React 18 already
  * batches dispatches within a single tick, and rAF coalesces the ticks to the
  * display refresh — this caps re-renders to ~60/s instead of one per token.
+ *
+ * Gap detection / resync is now handled by the listenerMiddleware in store.ts
+ * (P2-1), so this hook no longer needs the window CustomEvent bridge.
  */
 export function useAgentEventListener(): void {
   const dispatch = useAppDispatch();
@@ -51,19 +54,7 @@ export function useAgentEventListener(): void {
 
     setupListener();
 
-    // Gap-resync listener (B2 self-heal, Stage 3): when the reducer detects a
-    // missing seq, it dispatches an 'agent-event-gap' CustomEvent. We catch it
-    // here and trigger a replay from the backend's persisted log.
-    const handleGap = (e: Event): void => {
-      const detail = (e as CustomEvent).detail as { runId: string; fromSeq: number };
-      if (detail?.runId !== undefined) {
-        dispatch(resyncRun({ runId: detail.runId, fromSeq: detail.fromSeq }));
-      }
-    };
-    window.addEventListener('agent-event-gap', handleGap);
-
     return () => {
-      window.removeEventListener('agent-event-gap', handleGap);
       isMounted = false;
       if (rafId !== null) cancelAnimationFrame(rafId);
       rafId = null;

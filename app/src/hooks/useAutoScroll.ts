@@ -70,7 +70,7 @@ export function useAutoScroll<T extends HTMLElement>() {
       }
     });
 
-    observer.observe(el, { childList: true, subtree: true, characterData: true });
+    observer.observe(el, { childList: true, subtree: true });
     return () => {
       observer.disconnect();
       el.removeEventListener('scroll', handleScroll);

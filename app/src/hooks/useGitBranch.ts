@@ -50,9 +50,9 @@ export function useGitBranch(projectPath: string | undefined) {
         setActiveBranch(branch);
         setBranchError('');
       } catch (e) {
-        window.alert(String(e));
-        // Note: we don't setBranchError here because the local branch hasn't changed.
-        // It's just a failed action, the current branch is still active and valid.
+        setBranchError(String(e));
+        // The local branch hasn't changed. The error is displayed via branchError
+        // in the component (P2-6: replaced window.alert with state-based display).
       }
       setShowBranchDropdown(false);
     },

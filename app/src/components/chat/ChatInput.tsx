@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect, memo } from 'react';
 import { useSelector } from 'react-redux';
+import DOMPurify from 'dompurify';
 import { RootState } from '../../store';
 import SendIcon from 'lucide-react/dist/esm/icons/send.mjs';
 import PlusIcon from 'lucide-react/dist/esm/icons/plus.mjs';
@@ -47,9 +48,6 @@ export const ChatInput = memo(function ChatInput({
   const activeSessionId = useSelector((state: RootState) => state.project.activeSessionId);
   const projects = useSelector((state: RootState) => state.project.projects);
   const activeProject = projects.find((p) => p.id === activeProjectId);
-
-  const tokenCount = useTokenCount();
-  const turnCount = useTurnCount();
 
   const {
     showAutocomplete,
@@ -195,7 +193,7 @@ export const ChatInput = memo(function ChatInput({
           ref={overlayRef}
           className="highlight-overlay"
           aria-hidden="true"
-          dangerouslySetInnerHTML={{ __html: highlightedHTML + '<br />' }}
+          dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(highlightedHTML + '<br />') }}
         />
         <textarea
           ref={textareaRef}
@@ -286,11 +284,21 @@ export const ChatInput = memo(function ChatInput({
               </div>
             )}
           </div>
-          <span>{tokenCount >= 1000 ? `${(tokenCount / 1000).toFixed(1)}k` : tokenCount} tokens</span>
-          <span>{turnCount} turns</span>
+          <ChatStats />
         </div>
         <div>{isProcessing ? 'Press Esc to stop' : 'Type @ for files, / for commands'}</div>
       </div>
     </div>
+  );
+});
+
+const ChatStats = memo(function ChatStats() {
+  const tokenCount = useTokenCount();
+  const turnCount = useTurnCount();
+  return (
+    <>
+      <span>{tokenCount >= 1000 ? `${(tokenCount / 1000).toFixed(1)}k` : tokenCount} tokens</span>
+      <span>{turnCount} turns</span>
+    </>
   );
 });

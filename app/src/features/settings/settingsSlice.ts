@@ -186,16 +186,20 @@ export const switchModel = createAsyncThunk(
   ) => {
     dispatch(setDefaultModel(modelKey));
     const newConfig = { ...currentConfig, default_model: modelKey };
+    // Switch the runtime model first; if that succeeds, persist to config.
+    // This avoids the config/runtime inconsistency where save_config succeeds
+    // but switch_model fails (P2-2).
     try {
-      await invoke('save_config', { config: newConfig });
+      await invoke('switch_model', { name: modelKey });
     } catch (e) {
       dispatch(setDefaultModel(currentConfig.default_model));
       return rejectWithValue(String(e));
     }
     try {
-      await invoke('switch_model', { name: modelKey });
+      await invoke('save_config', { config: newConfig });
     } catch (e) {
-      return rejectWithValue(String(e));
+      // Runtime switched but config not saved — not critical, log and proceed.
+      console.warn('Model switched but config save failed:', e);
     }
     return newConfig;
   }

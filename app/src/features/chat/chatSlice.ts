@@ -1,4 +1,4 @@
-import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
+import { createSlice, createAsyncThunk, createSelector, PayloadAction } from '@reduxjs/toolkit';
 import { invoke } from '@tauri-apps/api/core';
 import { resumeSession } from '../project/projectSlice';
 
@@ -80,6 +80,10 @@ interface ChatState {
   processingBySession: Record<string, boolean>;
   subagentsBySession: Record<string, Record<string, SubagentEntry>>;
   _resumedFromBackend: boolean;
+  /** Per-message buffer for cross-chunk <think> tag reassembly (P0-4). */
+  _thinkBuffers: Record<string, string>;
+  /** Transient gap info set by the reducer, consumed by listenerMiddleware (P2-1). */
+  _pendingGap: { runId: string; fromSeq: number } | null;
 }
 
 const initialState: ChatState = {
@@ -95,6 +99,8 @@ const initialState: ChatState = {
   processingBySession: {},
   subagentsBySession: {},
   _resumedFromBackend: false,
+  _thinkBuffers: {},
+  _pendingGap: null,
 };
 
 // ── Event payload types ──────────────────────────────────────────────
@@ -204,6 +210,44 @@ function closeStreamingBlock(blocks: AnyBlock[] | undefined, messageId?: string)
       break;
     }
   }
+}
+
+// ── Cross-chunk <think> tag reassembly (P0-4) ────────────────────────
+// DeepSeek streams <think>...</think> tags inline in Text deltas. If a tag
+// is split across two deltas, naive includes() matching fails. We buffer the
+// trailing partial-tag suffix and prepend it to the next chunk.
+
+const THINK_OPEN = '<think>';
+const THINK_CLOSE = '</think>';
+
+function getPartialThinkTagSuffix(text: string): string {
+  let longest = '';
+  for (const tag of [THINK_OPEN, THINK_CLOSE]) {
+    for (let i = 1; i < tag.length; i++) {
+      const prefix = tag.substring(0, i);
+      if (text.endsWith(prefix) && prefix.length > longest.length) {
+        longest = prefix;
+      }
+    }
+  }
+  return longest;
+}
+
+function processThinkBuffer(
+  buffers: Record<string, string>,
+  key: string,
+  delta: DeltaPayload
+): DeltaPayload {
+  if (typeof delta.Text !== 'string' || !delta.Text) return delta;
+  const prev = buffers[key] ?? '';
+  let text = prev + delta.Text;
+  buffers[key] = '';
+  const partial = getPartialThinkTagSuffix(text);
+  if (partial) {
+    buffers[key] = text.slice(text.length - partial.length);
+    text = text.slice(0, text.length - partial.length);
+  }
+  return { ...delta, Text: text };
 }
 
 function appendDeltaToBlocks(
@@ -387,12 +431,14 @@ function handleMessageStart(state: ChatState, messageId: string | undefined): vo
 function handleMessageUpdate(state: ChatState, messageId: string | undefined, delta: DeltaPayload): void {
   const turn = getActiveTurn(state);
   if (turn && turn.type === 'turn' && turn.blocks) {
-    appendDeltaToBlocks(turn.blocks, delta, messageId);
+    const processed = processThinkBuffer(state._thinkBuffers, messageId ?? '_nomsg', delta);
+    appendDeltaToBlocks(turn.blocks, processed, messageId);
   }
 }
 
 
 function handleMessageEnd(state: ChatState, messageId?: string): void {
+  if (messageId) delete state._thinkBuffers[messageId];
   const turn = getActiveTurn(state);
   if (turn && turn.type === 'turn' && turn.blocks) {
     closeStreamingBlock(turn.blocks, messageId);
@@ -581,7 +627,16 @@ function handleSubagentMessageUpdate(
 ): void {
   const sa = state.subagents[subagentId];
   if (sa) {
-    appendDeltaToBlocks(sa.blocks, delta, messageId);
+    const processed = processThinkBuffer(state._thinkBuffers, messageId ?? `_sa_${subagentId}`, delta);
+    appendDeltaToBlocks(sa.blocks, processed, messageId);
+  }
+}
+
+function handleSubagentMessageEnd(state: ChatState, subagentId: string, messageId?: string): void {
+  if (messageId) delete state._thinkBuffers[messageId];
+  const sa = state.subagents[subagentId];
+  if (sa) {
+    closeStreamingBlock(sa.blocks, messageId);
   }
 }
 
@@ -766,10 +821,10 @@ function resolveApprovalBlock(state: ChatState, promptId: string, choice?: strin
  */
 export const resyncRun = createAsyncThunk<
   void,
-  { runId: string; fromSeq: number },
-  { state: { chat: ChatState } }
+  { runId: string; fromSeq: number }
 >('chat/resyncRun', async ({ runId, fromSeq }, { dispatch, getState }) => {
-  if (getState().chat.resyncing) return;
+  const state = getState() as { chat: ChatState };
+  if (state.chat.resyncing) return;
   dispatch(setResyncing(true));
   try {
     const lines = await invoke<string[]>('replay_since', { runId, fromSeq });
@@ -862,14 +917,10 @@ export const chatSlice = createSlice({
           console.warn(
             `[agent-event] gap detected for run ${ev.run_id}: expected ${prev + 1}, got ${ev.seq} (${ev.seq - prev - 1} missing); triggering resync`
           );
-          // Self-heal (B2): dispatch a window event the listener picks up to
-          // replay missing envelopes from the backend's persisted log. We
-          // can't dispatch a thunk from inside a reducer, so we defer it.
-          Promise.resolve().then(() => {
-            window.dispatchEvent(new CustomEvent('agent-event-gap', {
-              detail: { runId: ev.run_id, fromSeq: prev },
-            }));
-          });
+          // Store gap info for the listenerMiddleware to pick up (P2-1).
+          // Previously this used Promise.resolve().then() inside the reducer,
+          // which is a side-effect anti-pattern.
+          state._pendingGap = { runId: ev.run_id, fromSeq: prev };
         }
         state.lastSeqByRun[ev.run_id] = ev.seq;
       }
@@ -929,7 +980,8 @@ export const chatSlice = createSlice({
           else handleMessageUpdate(state, ev.message_id, ev.delta ?? {});
           break;
         case 'message_end':
-          if (!ev.subagent_id) handleMessageEnd(state, ev.message_id);
+          if (ev.subagent_id) handleSubagentMessageEnd(state, ev.subagent_id, ev.message_id);
+          else handleMessageEnd(state, ev.message_id);
           break;
         case 'tool_started':
           if (ev.subagent_id) handleSubagentToolStart(state, ev.subagent_id, ev.call_id ?? '', ev.name ?? '', ev.args);
@@ -1008,6 +1060,8 @@ export const chatSlice = createSlice({
       const idx = state.entries.findIndex((e) => e.id === entryId);
       if (idx === -1) return;
       const userText = action.payload.text ?? state.entries[idx].text ?? '';
+      // Truncate everything from the retried entry onward, then push the new message.
+      state.entries.splice(idx);
       state.entries.push({
         id: `user-${Date.now()}`,
         type: 'user',
@@ -1027,6 +1081,9 @@ export const chatSlice = createSlice({
     },
     setResyncing: (state, action: PayloadAction<boolean>) => {
       state.resyncing = action.payload;
+    },
+    clearPendingGap: (state) => {
+      state._pendingGap = null;
     },
   },
   extraReducers: (builder) => {
@@ -1171,6 +1228,7 @@ export const {
   popSubagentView,
   clearSubagentView,
   setResyncing,
+  clearPendingGap,
 } = chatSlice.actions;
 export default chatSlice.reducer;
 
@@ -1193,24 +1251,29 @@ export function selectSubagentById(state: { chat: ChatState }, subagentId: strin
   return state.chat.subagents[subagentId];
 }
 
-export function selectPendingApprovalCount(state: { chat: ChatState }): number {
-  let count = 0;
-  for (const entry of state.chat.entries) {
-    if (entry.type !== 'turn') continue;
-    if (entry.blocks) {
-      for (const b of entry.blocks) {
+export const selectPendingApprovalCount = createSelector(
+  [
+    (state: { chat: ChatState }) => state.chat.entries,
+    (state: { chat: ChatState }) => state.chat.subagents,
+  ],
+  (entries, subagents) => {
+    let count = 0;
+    for (const entry of entries) {
+      if (entry.type !== 'turn') continue;
+      if (entry.blocks) {
+        for (const b of entry.blocks) {
+          if (b.type === 'approval' && b.status === 'pending') count++;
+        }
+      }
+    }
+    for (const sa of Object.values(subagents)) {
+      for (const b of sa.blocks) {
         if (b.type === 'approval' && b.status === 'pending') count++;
       }
     }
+    return count;
   }
-  // Subagent approvals live in the global dict (R8)
-  for (const sa of Object.values(state.chat.subagents)) {
-    for (const b of sa.blocks) {
-      if (b.type === 'approval' && b.status === 'pending') count++;
-    }
-  }
-  return count;
-}
+);
 
 // ── Helpers ──────────────────────────────────────────────────────────
 

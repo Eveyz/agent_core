@@ -1,9 +1,14 @@
+import { createSelector } from '@reduxjs/toolkit';
+import type { RootState } from '../store';
 import { useAppSelector } from './useAppDispatch';
 import { roughTokenCount } from '../utils/tokens';
 
-export function useTokenCount(): number {
-  return useAppSelector((state) => {
-    return state.chat.entries.reduce((sum, e) => {
+const selectEntries = (state: RootState) => state.chat.entries;
+
+const selectTokenCount = createSelector(
+  [selectEntries],
+  (entries) => {
+    return entries.reduce((sum, e) => {
       if (e.type === 'user' && e.text) return sum + roughTokenCount(e.text);
       if (e.type === 'turn' && e.blocks)
         return sum + e.blocks.reduce((s, b) => {
@@ -13,7 +18,11 @@ export function useTokenCount(): number {
         }, 0);
       return sum;
     }, 0);
-  });
+  }
+);
+
+export function useTokenCount(): number {
+  return useAppSelector(selectTokenCount);
 }
 
 export function useTurnCount(): number {

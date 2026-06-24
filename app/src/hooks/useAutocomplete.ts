@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { parseMentions, findMentionBoundaries } from '../utils/mentions';
 
@@ -220,7 +220,7 @@ export function useAutocomplete(
     [fetchDirectoryEntries, closeAutocomplete]
   );
 
-  const highlightedHTML = (() => {
+  const highlightedHTML = useMemo(() => {
     const tokens = parseMentions(input);
     return tokens
       .map((t) => {
@@ -237,7 +237,7 @@ export function useAutocomplete(
           .replace(/>/g, '&gt;');
       })
       .join('');
-  })();
+  }, [input]);
 
   return {
     showAutocomplete,
