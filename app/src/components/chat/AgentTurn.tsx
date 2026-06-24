@@ -238,18 +238,14 @@ const TurnIterationUI = memo(function TurnIterationUI({
     }
   }, [isStreaming, iteration.isLast]);
 
-  const toolCount = useMemo(() => {
-    return iteration.toolBlocks.filter(b => b.type === 'tool').length;
-  }, [iteration.toolBlocks]);
-
-  const subagentTools = useMemo(() => {
-    return iteration.toolBlocks.filter(isSubagentTool);
+  const regularToolCount = useMemo(() => {
+    return iteration.toolBlocks.filter(b => b.type === 'tool' && !isSubagentTool(b)).length;
   }, [iteration.toolBlocks]);
 
   const hasThinkingContent = thinkingBlock?.text && thinkingBlock.text.trim().length > 0;
-  const hasTools = iteration.toolBlocks.length > 0;
   
-  const hasOnlySubagents = toolCount > 0 && toolCount === subagentTools.length;
+  const hasRegularTools = iteration.toolBlocks.some(b => (b.type === 'tool' && !isSubagentTool(b)) || (b.type === 'approval' && b.status === 'pending'));
+  const hasSubagents = iteration.toolBlocks.some(b => (b.type === 'tool' && isSubagentTool(b)) || b.type === 'subagent_ref');
 
   const thoughtLabel = useMemo(() => {
     if (isStreaming) return 'Thinking...';
@@ -261,16 +257,17 @@ const TurnIterationUI = memo(function TurnIterationUI({
 
   const toolsLabel = useMemo(() => {
     if (isStreaming) {
-      return toolCount > 0 ? `Calling ${toolCount} tool${toolCount > 1 ? 's' : ''}...` : 'Calling tool...';
+      return regularToolCount > 0 ? `Calling ${regularToolCount} tool${regularToolCount > 1 ? 's' : ''}...` : 'Calling tool...';
     } else {
-      return toolCount > 0 ? `Called ${toolCount} tool${toolCount > 1 ? 's' : ''}` : 'Called tool';
+      return regularToolCount > 0 ? `Called ${regularToolCount} tool${regularToolCount > 1 ? 's' : ''}` : 'Called tool';
     }
-  }, [isStreaming, toolCount]);
+  }, [isStreaming, regularToolCount]);
 
-  const renderToolBlocks = () => (
+  const renderRegularTools = () => (
     <>
       {iteration.toolBlocks.map((b: TurnBlock, idx: number) => {
         if (b.type === 'tool') {
+          if (isSubagentTool(b)) return null;
           const name = b.name;
           const approvalBlock = iteration.toolBlocks.find(
             (tb): tb is ApprovalBlock => tb.type === 'approval' && tb.tool_name === name && tb.status !== 'pending'
@@ -285,25 +282,6 @@ const TurnIterationUI = memo(function TurnIterationUI({
                 result={b.result}
                 active={b.active}
                 is_error={b.is_error}
-              />
-            );
-          }
-          if (isSubagentTool(b)) {
-            // Link subagent_ref blocks to their parent tool by call_id (via
-            // parent_call_id on the ref). Falls back to showing all refs on
-            // the first subagent tool when parent_call_id is absent (legacy).
-            const refs = b.call_id
-              ? iteration.toolBlocks.filter(
-                  (tb): tb is SubagentRefBlock => isSubagentRefBlock(tb) && tb.parent_call_id === b.call_id
-                )
-              : iteration.toolBlocks.filter(isSubagentRefBlock);
-            return (
-              <SubagentSpawnWidget
-                key={b.call_id || idx}
-                args={b.args}
-                active={b.active}
-                subagentRefs={refs}
-                subagents={subagents}
               />
             );
           }
@@ -325,6 +303,33 @@ const TurnIterationUI = memo(function TurnIterationUI({
           // and only show the inline "Approved" badge on the tool itself.
           if (b.status !== 'pending') return null;
           return <ApprovalBlockUI key={`approval-${b.prompt_id}-${idx}`} block={b} />;
+        }
+        return null;
+      })}
+    </>
+  );
+
+  const renderSubagentTools = () => (
+    <>
+      {iteration.toolBlocks.map((b: TurnBlock, idx: number) => {
+        if (b.type === 'tool' && isSubagentTool(b)) {
+          // Link subagent_ref blocks to their parent tool by call_id (via
+          // parent_call_id on the ref). Falls back to showing all refs on
+          // the first subagent tool when parent_call_id is absent (legacy).
+          const refs = b.call_id
+            ? iteration.toolBlocks.filter(
+                (tb): tb is SubagentRefBlock => isSubagentRefBlock(tb) && tb.parent_call_id === b.call_id
+              )
+            : iteration.toolBlocks.filter(isSubagentRefBlock);
+          return (
+            <SubagentSpawnWidget
+              key={b.call_id || idx}
+              args={b.args}
+              active={b.active}
+              subagentRefs={refs}
+              subagents={subagents}
+            />
+          );
         }
         // subagent_ref blocks are now rendered inline by SubagentSpawnWidget;
         // if a ref arrives without a matching wrapper, show the card directly.
@@ -368,28 +373,28 @@ const TurnIterationUI = memo(function TurnIterationUI({
         </div>
       )}
 
-      {hasOnlySubagents ? (
-        <div style={{ marginTop: hasThinkingContent ? '4px' : '0' }}>
-          {renderToolBlocks()}
-        </div>
-      ) : (
-        hasTools && (
-          <div className="step-block" style={{ marginTop: hasThinkingContent ? '4px' : '0' }}>
-            <div
-              className={`step-row ${isStreaming ? 'step-row-active' : ''}`}
-              onClick={() => setToolsCollapsed(!toolsCollapsed)}
-            >
-              <WrenchIcon size={13} className="step-icon" color={isStreaming ? undefined : "#888"} />
-              <span className="step-label" style={stepLabelBold}>{toolsLabel}</span>
-              {toolsCollapsed ? <ChevronRightIcon size={12} className="step-chevron" /> : <ChevronDownIcon size={12} className="step-chevron" />}
-            </div>
-            {!toolsCollapsed && (
-            <div className="iteration-body" style={iterationBodyStyle}>
-                {renderToolBlocks()}
-              </div>
-            )}
+      {hasRegularTools && (
+        <div className="step-block" style={{ marginTop: hasThinkingContent ? '4px' : '0' }}>
+          <div
+            className={`step-row ${isStreaming ? 'step-row-active' : ''}`}
+            onClick={() => setToolsCollapsed(!toolsCollapsed)}
+          >
+            <WrenchIcon size={13} className="step-icon" color={isStreaming ? undefined : "#888"} />
+            <span className="step-label" style={stepLabelBold}>{toolsLabel}</span>
+            {toolsCollapsed ? <ChevronRightIcon size={12} className="step-chevron" /> : <ChevronDownIcon size={12} className="step-chevron" />}
           </div>
-        )
+          {!toolsCollapsed && (
+            <div className="iteration-body" style={iterationBodyStyle}>
+              {renderRegularTools()}
+            </div>
+          )}
+        </div>
+      )}
+
+      {hasSubagents && (
+        <div style={{ marginTop: hasThinkingContent || hasRegularTools ? '4px' : '0' }}>
+          {renderSubagentTools()}
+        </div>
       )}
     </>
   );

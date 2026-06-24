@@ -2974,10 +2974,9 @@ select.settings-input {
 .subagent-detail-bar {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 12px;
   padding: 8px 16px;
-  border-bottom: 1px solid var(--border-color);
-  background: var(--overlay-0_02);
 }
 
 .subagent-detail-title {

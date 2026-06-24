@@ -387,23 +387,16 @@ const SubagentDetailPage = memo(function SubagentDetailPage({
     endTime: subagent.endTime,
   };
   return (
-    <>
-      {isProcessing && (
-        <div className="subagent-detail-bar">
-          <button className="btn-deny" onClick={onAbort} title="Stop the run">
-            Stop
-          </button>
-        </div>
-      )}
-      <div className="chat-history">
-        <UserRow
-          entry={{ id: `${subagent.id}-task`, type: 'user', text: taskText }}
-          modelName={defaultModel}
-          isProcessing={isProcessing}
-        />
+    <div className="chat-history">
+      <UserRow
+        entry={{ id: `${subagent.id}-task`, type: 'user', text: taskText }}
+        modelName={defaultModel}
+        isProcessing={isProcessing}
+      />
+      <div className="message-row agent-row">
         <AgentTurnUI entry={syntheticEntry} />
       </div>
-    </>
+    </div>
   );
 });
 

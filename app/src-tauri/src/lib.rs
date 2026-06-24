@@ -101,6 +101,9 @@ async fn send_message(
                     if let Err(e) = app_handle_clone.emit("agent-event", &event) {
                         eprintln!("Failed to emit agent event: {}", e);
                     }
+                    // Prevent WKWebView IPC flood which can drop the first events of a burst
+                    tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+                    
                     // Check if this is a terminal event
                     if matches!(
                         event.event,
