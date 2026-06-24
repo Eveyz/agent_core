@@ -73,14 +73,14 @@ function ProjectContextMenu({ projectId, projectName, projectPath, onDelete, onR
       </button>
       {open && (
         <div ref={menuRef} className="context-menu" style={{ left: pos.x, top: pos.y }}>
-          <div className="context-menu-item" onClick={() => { onRename(projectId, projectName); setOpen(false); }}>
+          <div className="context-menu-item" onClick={(e) => { e.stopPropagation(); onRename(projectId, projectName); setOpen(false); }}>
             <PencilIcon size={13} /> Rename
           </div>
-          <div className="context-menu-item" onClick={handleOpenExplorer}>
+          <div className="context-menu-item" onClick={(e) => { e.stopPropagation(); handleOpenExplorer(); }}>
             <ExternalLinkIcon size={13} /> Open in Explorer
           </div>
           <div className="context-menu-separator" />
-          <div className="context-menu-item context-menu-danger" onClick={() => { setOpen(false); onDelete(projectId); }}>
+          <div className="context-menu-item context-menu-danger" onClick={(e) => { e.stopPropagation(); setOpen(false); onDelete(projectId); }}>
             <TrashIcon size={13} /> Delete
           </div>
         </div>
@@ -107,7 +107,7 @@ function SessionContextMenu({ sessionId, projectId, onDelete }: {
       </button>
       {open && (
         <div ref={menuRef} className="context-menu" style={{ left: pos.x, top: pos.y }}>
-          <div className="context-menu-item context-menu-danger" onClick={() => { setOpen(false); onDelete(sessionId, projectId); }}>
+          <div className="context-menu-item context-menu-danger" onClick={(e) => { e.stopPropagation(); setOpen(false); onDelete(sessionId, projectId); }}>
             <TrashIcon size={13} /> Delete
           </div>
         </div>

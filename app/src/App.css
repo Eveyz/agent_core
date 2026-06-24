@@ -390,7 +390,7 @@ body {
 .context-menu {
   position: fixed;
   z-index: 10000;
-  background: var(--bg-user-msg);
+  background: var(--bg-main);
   border: 1px solid var(--overlay-0_1);
   border-radius: var(--radius-md);
   padding: 4px;
@@ -3126,4 +3126,202 @@ select.settings-input {
 @keyframes session-spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
+}
+
+/* Dialog Manager Styles */
+.dialog-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: var(--overlay-0_3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100000;
+  backdrop-filter: blur(2px);
+}
+
+.dialog-content {
+  background: var(--bg-main);
+  border: 1px solid var(--overlay-0_1);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  width: 100%;
+  max-width: 400px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.dialog-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.dialog-message {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.dialog-input {
+  background: var(--bg-user-msg);
+  border: 1px solid var(--overlay-0_1);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+  color: var(--text-main);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+}
+.dialog-input:focus {
+  border-color: var(--text-dim);
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.btn-cancel, .btn-confirm {
+  padding: 6px 14px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  transition: background 0.2s;
+}
+
+.btn-cancel {
+  background: transparent;
+  color: var(--text-dim);
+}
+.btn-cancel:hover {
+  background: var(--overlay-0_08);
+  color: var(--text-main);
+}
+
+.btn-allow {
+  background: var(--text-main);
+  color: var(--bg-main);
+}
+.btn-allow:hover {
+  opacity: 0.9;
+}
+
+.btn-deny {
+  background: #ef4444;
+  color: white;
+}
+.btn-deny:hover {
+  background: #dc2626;
+}
+
+/* AgentTurn.tsx Extracted Styles */
+.iteration-body {
+  margin-left: 6px;
+  padding-left: 12px;
+  border-left: 1px solid var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+  padding-bottom: 4px;
+}
+
+.step-label-bold {
+  font-weight: 500;
+}
+
+.tool-icon-margin {
+  margin-right: 5px;
+}
+
+.approval-badge-style {
+  font-size: 10px;
+  padding: 1px 6px;
+  font-weight: bold;
+}
+
+.approval-actions-style {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.spawn-block-children-style {
+  margin-left: 16px;
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.typing-dot-style {
+  display: inline-block;
+  margin-left: 4px;
+}
+
+.error-block-style {
+  color: #ef4444;
+  font-size: 13px;
+  padding: 10px 14px;
+  background: var(--danger-bg, rgba(239,68,68,0.06));
+  border: 1px solid var(--danger-border, rgba(239,68,68,0.2));
+  border-radius: 8px;
+  margin-top: 12px;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.step-row-pointer {
+  cursor: pointer;
+}
+
+.step-row-default {
+  cursor: default;
+}
+
+.tool-name-flex {
+  display: flex;
+  align-items: center;
+  flex: 1;
+}
+
+.tool-time-muted {
+  opacity: 0.5;
+  font-weight: normal;
+  margin-left: 4px;
+}
+
+.tool-controls-flex {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tool-no-output {
+  opacity: 0.5;
+  font-style: italic;
+  font-size: 12px;
+}
+
+.ml-4 {
+  margin-left: 4px;
+}
+
+.mt-4 {
+  margin-top: 4px;
+}
+
+.mt-0 {
+  margin-top: 0;
 }

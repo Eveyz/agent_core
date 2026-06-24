@@ -79,6 +79,8 @@ interface ChatState {
   entriesBySession: Record<string, ChatEntry[]>;
   processingBySession: Record<string, boolean>;
   subagentsBySession: Record<string, Record<string, SubagentEntry>>;
+  runIdBySession: Record<string, string | null>;
+  activeSessionId: string | null;
   _resumedFromBackend: boolean;
   /** Per-message buffer for cross-chunk <think> tag reassembly (P0-4). */
   _thinkBuffers: Record<string, string>;
@@ -98,6 +100,8 @@ const initialState: ChatState = {
   entriesBySession: {},
   processingBySession: {},
   subagentsBySession: {},
+  runIdBySession: {},
+  activeSessionId: null,
   _resumedFromBackend: false,
   _thinkBuffers: {},
   _pendingGap: null,
@@ -855,18 +859,22 @@ export const chatSlice = createSlice({
       state.entriesBySession[sessionId] = state.entries;
       state.processingBySession[sessionId] = state.isProcessing;
       state.subagentsBySession[sessionId] = state.subagents;
+      state.runIdBySession[sessionId] = state.runId;
     },
     restoreOrClearSession: (state, action: PayloadAction<string>) => {
       const sessionId = action.payload;
+      state.activeSessionId = sessionId;
       const cached = state.entriesBySession[sessionId];
       if (cached) {
         state.entries = cached;
         state.isProcessing = state.processingBySession[sessionId] ?? false;
         state.subagents = state.subagentsBySession[sessionId] ?? {};
+        state.runId = state.runIdBySession[sessionId] ?? null;
       } else {
         state.entries = [];
         state.isProcessing = false;
         state.subagents = {};
+        state.runId = null;
       }
       state.viewingSubagentPath = [];
       state._resumedFromBackend = false;
@@ -907,6 +915,18 @@ export const chatSlice = createSlice({
       // format is no longer produced by the backend (Stage 1, R4).
       if (!raw || typeof raw.event !== 'string') return;
       const ev = raw as unknown as RunEventPayload;
+
+      // When a new run is created for the active session, claim it
+      if (ev.event === 'run_created') {
+        if (ev.session_id === state.activeSessionId) {
+          state.runId = ev.run_id ?? null;
+        }
+      }
+
+      // Ignore all events that don't belong to the active run
+      if (ev.run_id !== state.runId) {
+        return;
+      }
 
       // Gap detection (Stage 0/3): every event carries a per-Run monotonic seq.
       // A gap means events were lost in transit (e.g. broadcast lag). We warn

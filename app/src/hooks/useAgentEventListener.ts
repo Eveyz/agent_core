@@ -42,6 +42,7 @@ export function useAgentEventListener(): void {
 
     const setupListener = async (): Promise<void> => {
       const fn = await listen<unknown>('agent-event', (event) => {
+        if (!isMounted) return;
         buffer.push(event.payload as string | Record<string, unknown>);
         scheduleFlush();
       });
@@ -58,7 +59,6 @@ export function useAgentEventListener(): void {
       isMounted = false;
       if (rafId !== null) cancelAnimationFrame(rafId);
       rafId = null;
-      // Drain any buffered events so nothing is lost on unmount.
       if (buffer.length > 0) {
         for (const payload of buffer) {
           dispatch(agentEventReceived(payload));

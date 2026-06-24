@@ -87,7 +87,7 @@ impl Default for ModelConfig {
             react_enabled: true,
             system_prompt: None,
             max_iterations: 100,
-            request_timeout_secs: 60,
+            request_timeout_secs: 3600,
             fallback_model: None,
         }
     }
@@ -224,7 +224,7 @@ impl Config {
                 react_enabled: true,
                 system_prompt: None,
                 max_iterations: 100,
-                request_timeout_secs: 60,
+                request_timeout_secs: 3600,
                 models: provider_models,
             },
         );
@@ -243,7 +243,7 @@ impl Config {
                 react_enabled: true,
                 system_prompt: None,
                 max_iterations: 100,
-                request_timeout_secs: 60,
+                request_timeout_secs: 3600,
                 fallback_model: None,
             },
         );

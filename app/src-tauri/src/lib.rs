@@ -65,15 +65,17 @@ async fn send_message(
 
     // Load history if resuming a session
     let mut history = vec![];
+    let mut working_dir = None;
     if let Some(ref sid) = session_id {
         if let Ok(Some(sess)) = state.session_manager.resume(sid) {
             history = sess.messages;
+            working_dir = Some(sess.meta.cwd);
         }
     }
 
     // Create the Run
     let run_id = manager
-        .create_run(&message, session_id.clone(), history)
+        .create_run_with_workdir(&message, session_id.clone(), working_dir, history)
         .await
         .map_err(|e| e.to_string())?;
 

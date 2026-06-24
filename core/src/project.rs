@@ -53,8 +53,24 @@ impl ProjectManager {
 
     /// Create a new project from a directory path.
     pub fn create(&self, path: &str) -> Result<Project> {
-        let project = Project::from_path(path);
         let db = self.storage.conn();
+        
+        // Check if a project with the same path already exists
+        if let Ok(mut stmt) = db.prepare("SELECT id, name, path, created_at, updated_at FROM projects WHERE path = ?1") {
+            if let Ok(existing) = stmt.query_row([path], |row| {
+                Ok(Project {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    path: row.get(2)?,
+                    created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
+                })
+            }) {
+                return Ok(existing);
+            }
+        }
+
+        let project = Project::from_path(path);
         db.execute(
             "INSERT INTO projects (id, name, path, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
             rusqlite::params![&project.id, &project.name, &project.path, &project.created_at],

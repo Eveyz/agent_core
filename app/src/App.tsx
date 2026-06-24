@@ -332,7 +332,6 @@ function App() {
         {viewingSubagentPath.length > 0 && activeSubagent ? (
           <SubagentDetailPage
             subagent={activeSubagent}
-            onAbort={handleAbort}
             isProcessing={isProcessing}
             defaultModel={defaultModel}
           />
@@ -369,12 +368,10 @@ function App() {
 
 const SubagentDetailPage = memo(function SubagentDetailPage({
   subagent,
-  onAbort,
   isProcessing,
   defaultModel,
 }: {
   subagent: SubagentEntry;
-  onAbort: () => void;
   isProcessing: boolean;
   defaultModel: string;
 }) {

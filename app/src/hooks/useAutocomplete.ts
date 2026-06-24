@@ -98,7 +98,8 @@ export function useAutocomplete(
       const after = input.slice(triggerInfo.end);
       let insertValue = item.value;
       if (triggerInfo.type === '@') {
-        insertValue = `@${item.value} `;
+        const isDir = item.icon === 'folder';
+        insertValue = `@${item.label}${isDir ? '/' : ''} `;
       }
       const newValue = before + insertValue + after;
       setInput(newValue);

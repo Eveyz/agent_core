@@ -34,43 +34,9 @@ import UsersIcon from 'lucide-react/dist/esm/icons/users.mjs';
 import AlertTriangleIcon from 'lucide-react/dist/esm/icons/alert-triangle.mjs';
 import { invoke } from '@tauri-apps/api/core';
 import { toolApprovalResponded, viewSubagent } from '../../features/chat/chatSlice';
-import type { ChatEntry, TurnBlock, SubagentEntry } from '../../features/chat/chatSlice';
-import { MarkdownContent, formatTime, parseMarkdown } from './MarkdownContent';
+import type { ChatEntry, TurnBlock } from '../../features/chat/chatSlice';
+import { MarkdownContent, formatTime } from './MarkdownContent';
 
-export { formatTime, parseMarkdown };
-
-const ml4 = { marginLeft: '4px' };
-
-// ── Shared style constants (P1-5: avoid inline objects that break memo) ──
-const iterationBodyStyle: React.CSSProperties = {
-  marginLeft: '6px',
-  paddingLeft: '12px',
-  borderLeft: '1px solid var(--text-muted)',
-  display: 'flex',
-  flexDirection: 'column',
-  gap: '8px',
-  marginTop: '6px',
-  paddingBottom: '4px',
-};
-const stepLabelBold: React.CSSProperties = { fontWeight: 500 };
-const toolIconMargin: React.CSSProperties = { marginRight: '5px' };
-const approvalBadgeStyle: React.CSSProperties = { fontSize: '10px', padding: '1px 6px', fontWeight: 'bold' };
-const approvalActionsStyle: React.CSSProperties = { display: 'flex', gap: '8px', flexWrap: 'wrap' };
-const spawnBlockChildrenStyle: React.CSSProperties = { marginLeft: '16px', marginTop: '4px', display: 'flex', flexDirection: 'column', gap: '4px' };
-const typingDotStyle: React.CSSProperties = { display: 'inline-block', marginLeft: '4px' };
-const errorBlockStyle: React.CSSProperties = {
-  color: '#ef4444',
-  fontSize: '13px',
-  padding: '10px 14px',
-  background: 'var(--danger-bg, rgba(239,68,68,0.06))',
-  border: '1px solid var(--danger-border, rgba(239,68,68,0.2))',
-  borderRadius: '8px',
-  marginTop: '12px',
-  marginBottom: '12px',
-  display: 'flex',
-  alignItems: 'center',
-  gap: '10px',
-};
 
 // ── Per-tool icon mapping ───────────────────────────────────────────
 // Each tool gets a distinct icon so the user can tell at a glance what the
@@ -217,10 +183,8 @@ function countSpawnedAgents(args?: unknown): number {
 
 const TurnIterationUI = memo(function TurnIterationUI({
   iteration,
-  subagents,
 }: {
   iteration: TurnIteration;
-  subagents?: Record<string, SubagentEntry>;
 }) {
   const thinkingBlock = iteration.thinkingBlock;
   const isStreaming = !!thinkingBlock?.isStreaming;
@@ -327,7 +291,6 @@ const TurnIterationUI = memo(function TurnIterationUI({
               args={b.args}
               active={b.active}
               subagentRefs={refs}
-              subagents={subagents}
             />
           );
         }
@@ -337,11 +300,9 @@ const TurnIterationUI = memo(function TurnIterationUI({
           const hasSpawnWidget = iteration.toolBlocks.some(isSubagentTool);
           if (hasSpawnWidget) return null;
 
-          const sa = subagents?.[b.subagent_id];
-          if (!sa) return null;
           return (
             <div key={`subagent-${b.subagent_id}-${idx}`} className="subagents-section">
-              <SubagentCard subagent={sa} />
+              <SubagentCard subagentId={b.subagent_id} />
             </div>
           );
         }
@@ -359,14 +320,14 @@ const TurnIterationUI = memo(function TurnIterationUI({
             onClick={() => setThoughtCollapsed(!thoughtCollapsed)}
           >
             <BrainIcon size={13} className={`step-icon ${isStreaming ? 'step-icon-thinking' : ''}`} color={isStreaming ? undefined : "#888"} />
-            <span className="step-label" style={stepLabelBold}>{thoughtLabel}</span>
+            <span className="step-label step-label-bold">{thoughtLabel}</span>
             {thoughtCollapsed ? <ChevronRightIcon size={12} className="step-chevron" /> : <ChevronDownIcon size={12} className="step-chevron" />}
           </div>
           {!thoughtCollapsed && (
-            <div className="iteration-body" style={{ marginLeft: '6px', paddingLeft: '12px', borderLeft: '1px solid var(--text-muted)', display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '6px', paddingBottom: '4px' }}>
+            <div className="iteration-body">
               <div className="thinking-block">
                 {thinkingBlock.text}
-                {isStreaming ? <span className="typing-dot" style={typingDotStyle}>...</span> : null}
+                {isStreaming ? <span className="typing-dot typing-dot-style">...</span> : null}
               </div>
             </div>
           )}
@@ -374,17 +335,17 @@ const TurnIterationUI = memo(function TurnIterationUI({
       )}
 
       {hasRegularTools && (
-        <div className="step-block" style={{ marginTop: hasThinkingContent ? '4px' : '0' }}>
+        <div className={`step-block ${hasThinkingContent ? 'mt-4' : 'mt-0'}`}>
           <div
             className={`step-row ${isStreaming ? 'step-row-active' : ''}`}
             onClick={() => setToolsCollapsed(!toolsCollapsed)}
           >
             <WrenchIcon size={13} className="step-icon" color={isStreaming ? undefined : "#888"} />
-            <span className="step-label" style={stepLabelBold}>{toolsLabel}</span>
+            <span className="step-label step-label-bold">{toolsLabel}</span>
             {toolsCollapsed ? <ChevronRightIcon size={12} className="step-chevron" /> : <ChevronDownIcon size={12} className="step-chevron" />}
           </div>
           {!toolsCollapsed && (
-            <div className="iteration-body" style={iterationBodyStyle}>
+            <div className="iteration-body">
               {renderRegularTools()}
             </div>
           )}
@@ -392,7 +353,7 @@ const TurnIterationUI = memo(function TurnIterationUI({
       )}
 
       {hasSubagents && (
-        <div style={{ marginTop: hasThinkingContent || hasRegularTools ? '4px' : '0' }}>
+        <div className={hasThinkingContent || hasRegularTools ? 'mt-4' : 'mt-0'}>
           {renderSubagentTools()}
         </div>
       )}
@@ -403,8 +364,7 @@ const TurnIterationUI = memo(function TurnIterationUI({
          prev.iteration.isLast === next.iteration.isLast &&
          prev.iteration.thinkingBlock === next.iteration.thinkingBlock &&
          prev.iteration.toolBlocks.length === next.iteration.toolBlocks.length &&
-         prev.iteration.toolBlocks.every((b, i) => b === next.iteration.toolBlocks[i]) &&
-         prev.subagents === next.subagents;
+         prev.iteration.toolBlocks.every((b, i) => b === next.iteration.toolBlocks[i]);
 });
 
 
@@ -430,12 +390,13 @@ const ToolBlockUI = memo(function ToolBlockUI({
   approvalStatus?: 'approved' | 'denied';
 }) {
   const [collapsed, setCollapsed] = useState(!active);
+  const [prevActive, setPrevActive] = useState(active);
   const [showMore, setShowMore] = useState(false);
 
-  useEffect(() => {
-    if (active === false) setCollapsed(true);
-    else if (active === true) setCollapsed(false);
-  }, [active]);
+  if (active !== prevActive) {
+    setPrevActive(active);
+    setCollapsed(!active);
+  }
 
   const formattedArgs = useMemo(() => {
     if (!args) return '';
@@ -458,23 +419,22 @@ const ToolBlockUI = memo(function ToolBlockUI({
   return (
     <div className="step-block">
       <div
-        className={`step-row ${active ? 'step-row-active' : ''} ${is_error ? 'step-row-error' : ''}`}
+        className={`step-row ${active ? 'step-row-active' : ''} ${is_error ? 'step-row-error' : ''} step-row-pointer`}
         onClick={() => setCollapsed(!collapsed)}
-        style={{ cursor: 'pointer' }}
       >
-        {(() => { const ToolIcon = getToolIcon(name); return <ToolIcon size={13} className="step-icon" style={toolIconMargin} color={is_error ? '#f87171' : (active ? 'var(--text-muted)' : 'var(--text-muted)')} />; })()}
-        <span className="step-label tool-name" style={{ display: 'flex', alignItems: 'center', flex: 1 }}>
+        {(() => { const ToolIcon = getToolIcon(name); return <ToolIcon size={13} className="step-icon tool-icon-margin" color={is_error ? '#f87171' : (active ? 'var(--text-muted)' : 'var(--text-muted)')} />; })()}
+        <span className="step-label tool-name tool-name-flex">
           <span>{name}</span>
           {startTime && endTime && (
-            <span style={{ opacity: 0.5, fontWeight: 'normal', marginLeft: '4px' }}>· {formatTime(endTime - startTime)}</span>
+            <span className="tool-time-muted">· {formatTime(endTime - startTime)}</span>
           )}
         </span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <div className="tool-controls-flex">
           {approvalStatus === 'approved' && (
-            <span className="approval-status-badge status-approved" style={approvalBadgeStyle}>Approved</span>
+            <span className="approval-status-badge status-approved approval-badge-style">Approved</span>
           )}
           {approvalStatus === 'denied' && (
-            <span className="approval-status-badge status-denied" style={approvalBadgeStyle}>Denied</span>
+            <span className="approval-status-badge status-denied approval-badge-style">Denied</span>
           )}
           {collapsed ? <ChevronRightIcon size={12} className="step-chevron" /> : <ChevronDownIcon size={12} className="step-chevron" />}
         </div>
@@ -516,7 +476,7 @@ const ToolBlockUI = memo(function ToolBlockUI({
                   )}
                 </>
               ) : (
-                <div style={{ opacity: 0.5, fontStyle: 'italic', fontSize: '12px' }}>(No output returned)</div>
+                <div className="tool-no-output">(No output returned)</div>
               )}
             </div>
           )}
@@ -582,7 +542,7 @@ const ApprovalBlockUI = memo(function ApprovalBlockUI({ block }: { block: Approv
       <div className="approval-args">
         <pre>{typeof block.tool_input === 'string' ? block.tool_input : JSON.stringify(block.tool_input, null, 2)}</pre>
       </div>
-      <div className="approval-actions" style={approvalActionsStyle}>
+      <div className="approval-actions approval-actions-style">
         <button className="btn-deny" onClick={() => handleApprove('deny')}>Deny Once</button>
         <button className="btn-deny" onClick={() => handleApprove('deny_persistent')}>Deny Always</button>
         <button className="btn-allow" onClick={() => handleApprove('allow_once')}>Allow Once</button>
@@ -670,11 +630,12 @@ const EditFileWidget = memo(function EditFileWidget({
   is_error?: boolean;
 }) {
   const [collapsed, setCollapsed] = useState(!active);
+  const [prevActive, setPrevActive] = useState(active);
 
-  useEffect(() => {
-    if (active === false) setCollapsed(true);
-    else if (active === true) setCollapsed(false);
-  }, [active]);
+  if (active !== prevActive) {
+    setPrevActive(active);
+    setCollapsed(!active);
+  }
 
   const filePath = (args as Record<string, unknown> | undefined)?.file_path as string | undefined;
   const fileName = filePath ? basename(filePath) : 'file';
@@ -698,11 +659,10 @@ const EditFileWidget = memo(function EditFileWidget({
   return (
     <div className="step-block edit-file-block">
       <div
-        className={`step-row ${active ? 'step-row-active' : ''} ${is_error ? 'step-row-error' : ''}`}
+        className={`step-row ${active ? 'step-row-active' : ''} ${is_error ? 'step-row-error' : ''} ${active ? 'step-row-default' : 'step-row-pointer'}`}
         onClick={() => !active && setCollapsed(!collapsed)}
-        style={{ cursor: active ? 'default' : 'pointer' }}
       >
-        {(() => { const ToolIcon = getToolIcon('edit'); return <ToolIcon size={13} className="step-icon" style={toolIconMargin} color={is_error ? '#f87171' : (active ? 'var(--text-muted)' : 'var(--text-muted)')} />; })()}
+        {(() => { const ToolIcon = getToolIcon('edit'); return <ToolIcon size={13} className="step-icon tool-icon-margin" color={is_error ? '#f87171' : (active ? 'var(--text-muted)' : 'var(--text-muted)')} />; })()}
         <span className="step-label edit-file-label">
           {labelPrefix} <span className="edit-file-name">{fileName}</span>
           {range && <span className="edit-file-range"> · {range}</span>}
@@ -747,27 +707,23 @@ const SubagentSpawnWidget = memo(function SubagentSpawnWidget({
   args,
   active,
   subagentRefs,
-  subagents,
 }: {
   args: unknown;
   active?: boolean;
   subagentRefs?: SubagentRefBlock[];
-  subagents?: Record<string, SubagentEntry>;
 }) {
   const count = countSpawnedAgents(args);
   const title = active ? `Spawning ${count} agent${count > 1 ? 's' : ''}...` : `Spawned ${count} agent${count > 1 ? 's' : ''}`;
   return (
     <div className="step-block spawn-block">
-      <div className={`step-row ${active ? 'step-row-active' : ''}`} style={{ cursor: 'default' }}>
+      <div className={`step-row step-row-default ${active ? 'step-row-active' : ''}`}>
         <UsersIcon size={13} className="step-icon" color={active ? undefined : 'var(--text-muted)'} />
-        <span className="step-label" style={stepLabelBold}>{title}</span>
+        <span className="step-label step-label-bold">{title}</span>
       </div>
       {subagentRefs && subagentRefs.length > 0 && (
-        <div className="spawn-block-children" style={spawnBlockChildrenStyle}>
+        <div className="spawn-block-children spawn-block-children-style">
           {subagentRefs.map((refBlock, idx) => {
-            const sa = subagents?.[refBlock.subagent_id];
-            if (!sa) return null;
-            return <SubagentCard key={idx} subagent={sa} />;
+            return <SubagentCard key={idx} subagentId={refBlock.subagent_id} />;
           })}
         </div>
       )}
@@ -776,26 +732,28 @@ const SubagentSpawnWidget = memo(function SubagentSpawnWidget({
 }, (prev, next) => {
   if (prev.active !== next.active) return false;
   if (prev.args !== next.args) return false;
-  if (prev.subagents !== next.subagents) return false;
   if (!prev.subagentRefs && !next.subagentRefs) return true;
   if (!prev.subagentRefs || !next.subagentRefs) return false;
   if (prev.subagentRefs.length !== next.subagentRefs.length) return false;
   return prev.subagentRefs.every((r, i) => r === next.subagentRefs![i]);
 });
 
-const SubagentCard = memo(function SubagentCard({ subagent }: { subagent: SubagentEntry }) {
+const SubagentCard = memo(function SubagentCard({ subagentId }: { subagentId: string }) {
   const dispatch = useAppDispatch();
+  const subagent = useSelector((state: RootState) => state.chat.subagents[subagentId]);
 
   const statusIcon = useMemo(() => {
+    if (!subagent) return null;
     if (subagent.status === 'working') return <div className="black-hole-spinner" style={{ width: 12, height: 12 }} />;
     if (subagent.status === 'done') return <CheckIcon size={12} color="var(--success)" />;
     if (subagent.status === 'error') return <XIcon size={12} color="#f87171" />;
     return null;
-  }, [subagent.status]);
+  }, [subagent?.status]);
 
-  const toolCount = useMemo(() => subagent.blocks?.filter((b) => b.type === 'tool').length || 0, [subagent.blocks]);
+  const toolCount = useMemo(() => subagent?.blocks?.filter((b) => b.type === 'tool').length || 0, [subagent?.blocks]);
 
   const statusText = useMemo(() => {
+    if (!subagent) return '';
     if (subagent.status === 'working') {
       const elapsed = subagent.endTime
         ? formatTime(subagent.endTime - subagent.startTime)
@@ -813,17 +771,19 @@ const SubagentCard = memo(function SubagentCard({ subagent }: { subagent: Subage
     return parts.join(' · ');
   }, [subagent, toolCount]);
 
-  const displayStr = subagent.role_name || subagent.id;
+  const displayStr = subagent?.role_name || subagent?.id || subagentId;
   const idText = typeof displayStr === 'string' ? displayStr : JSON.stringify(displayStr);
 
   const hasPendingApproval = useMemo(
-    () => subagent.blocks?.some((b) => b.type === 'approval' && b.status === 'pending'),
-    [subagent.blocks]
+    () => subagent?.blocks?.some((b) => b.type === 'approval' && b.status === 'pending'),
+    [subagent?.blocks]
   );
 
   const handleViewDetails = useCallback(() => {
-    dispatch(viewSubagent({ id: subagent.id, name: idText }));
-  }, [dispatch, subagent.id, idText]);
+    dispatch(viewSubagent({ id: subagentId, name: idText }));
+  }, [dispatch, subagentId, idText]);
+
+  if (!subagent) return null;
 
   return (
     <div
@@ -871,11 +831,13 @@ const TurnFooter = memo(function TurnFooter({ entry }: { entry: ChatEntry }) {
     }
   }, [rawOutput]);
 
-  if (!endTimeText && !rawOutput) return null;
+  const isProcessing = !entry.endTime;
+
+  if (!endTimeText && (!rawOutput || isProcessing)) return null;
 
   return (
     <div className="turn-footer">
-      {rawOutput && (
+      {rawOutput && !isProcessing && (
         <button className="turn-copy-btn" onClick={handleCopy} title="Copy Raw Assistant Output">
           {copied ? <CheckIcon size={11} color="var(--success)" /> : <CopyIcon size={11} />}
         </button>
@@ -886,7 +848,6 @@ const TurnFooter = memo(function TurnFooter({ entry }: { entry: ChatEntry }) {
 });
 
 export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: ChatEntry }) {
-  const subagents = useSelector((state: RootState) => state.chat.subagents);
   const isProcessing = !!(entry.startTime && !entry.endTime);
   const isDone = !!(entry.endTime);
 
@@ -936,8 +897,7 @@ export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: ChatEnt
       {(hasIntermediateSteps || isProcessing) && (
         <>
           <div
-            className={`turn-header ${isProcessing ? 'processing-pulse' : ''}`}
-            style={{ cursor: !isProcessing ? 'pointer' : 'default' }}
+            className={`turn-header ${isProcessing ? 'processing-pulse step-row-default' : 'step-row-pointer'}`}
             onClick={() => {
               if (!isProcessing) setCollapsed(!collapsed);
             }}
@@ -946,12 +906,12 @@ export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: ChatEnt
               <>
                 <LoaderIcon className="tool-loader-icon" size={12} />
                 <ProcessingTimer startTime={entry.startTime} endTime={entry.endTime} />
-                <ChevronDownIcon size={12} style={ml4} />
+                <ChevronDownIcon size={12} className="ml-4" />
               </>
             ) : (
               <>
                 <span>Worked {summaryParts.join(' · ')}</span>
-                {collapsed ? <ChevronRightIcon size={12} style={ml4} /> : <ChevronDownIcon size={12} style={ml4} />}
+                {collapsed ? <ChevronRightIcon size={12} className="ml-4" /> : <ChevronDownIcon size={12} className="ml-4" />}
               </>
             )}
           </div>
@@ -972,13 +932,13 @@ export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: ChatEnt
               )
             ) : item.type === 'error' ? (
               (!collapsed || idx === renderItems.length - 1) && (
-                <div style={errorBlockStyle}>
+                <div className="error-block-style">
                   <AlertTriangleIcon size={16} style={{ flexShrink: 0 }} />
                   <span style={{ lineHeight: '1.4' }}>{item.data.text}</span>
                 </div>
               )
             ) : (
-              !collapsed && <TurnIterationUI iteration={item.data} subagents={subagents} />
+              !collapsed && <TurnIterationUI iteration={item.data} />
             )}
           </React.Fragment>
         );

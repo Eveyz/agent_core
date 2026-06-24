@@ -1,0 +1,5 @@
+Line 1: Hello, this is a test file.
+Line 2: It contains some simple text.
+Line 3: This line has been successfully edited!
+Line 4: Just a placeholder line here.
+Line 5: End of the dummy file.
