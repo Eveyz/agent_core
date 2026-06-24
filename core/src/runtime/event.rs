@@ -147,6 +147,20 @@ pub enum RunEvent {
         child_id: ChildId,
         reason: String,
     },
+
+    // ── Planning ──────────────────────────────────────────────────
+    TodoUpdated {
+        items: Vec<TodoItemPayload>,
+    },
+}
+
+/// A lightweight todo item sent to the frontend via `TodoUpdated`.
+/// Strips internal fields (depends_on, timestamps) the UI doesn't need.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TodoItemPayload {
+    pub id: String,
+    pub description: String,
+    pub status: String,
 }
 
 /// A stamped envelope wrapping a [`RunEvent`] with identity + ordering.

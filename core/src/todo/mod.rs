@@ -91,6 +91,16 @@ impl TodoList {
         self.persist();
     }
 
+    /// Replace the entire list with new items. IDs are auto-assigned (1, 2, 3, ...).
+    pub fn replace_all(&mut self, descriptions: Vec<String>) {
+        self.items = descriptions
+            .into_iter()
+            .enumerate()
+            .map(|(i, desc)| TodoItem::new(&(i + 1).to_string(), &desc))
+            .collect();
+        self.persist();
+    }
+
     pub fn update_status(&mut self, id: &str, status: TodoStatus) -> Result<(), String> {
         let item = self
             .items

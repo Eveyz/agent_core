@@ -4,6 +4,12 @@ import { resumeSession } from '../project/projectSlice';
 
 // ── Types ────────────────────────────────────────────────────────────
 
+export interface TodoItem {
+  id: string;
+  description: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'blocked';
+}
+
 export type TurnBlock =
   | { type: 'assistant'; text: string; isStreaming: boolean; message_id?: string }
   | { type: 'thinking'; text: string; isStreaming: boolean; message_id?: string; startTime?: number; endTime?: number }
@@ -86,6 +92,8 @@ interface ChatState {
   _thinkBuffers: Record<string, string>;
   /** Transient gap info set by the reducer, consumed by listenerMiddleware (P2-1). */
   _pendingGap: { runId: string; fromSeq: number } | null;
+  /** Current todo list (planning state), updated via todo_updated events. */
+  todo: TodoItem[];
 }
 
 const initialState: ChatState = {
@@ -126,7 +134,8 @@ export type RunEventType =
   | 'approval_required' | 'approval_resolved' | 'input_requested'
   | 'context_compacted' | 'error'
   | 'subagent_started' | 'subagent_ended'
-  | 'process_spawned' | 'process_killed';
+  | 'process_spawned' | 'process_killed'
+  | 'todo_updated';
 
 export interface RunEventPayload {
   event: RunEventType;
@@ -179,6 +188,8 @@ export interface RunEventPayload {
   // Process
   child_id?: string;
   label?: string;
+  // Todo
+  items?: { id: string; description: string; status: string }[];
 }
 
 export type RunState = 'created' | 'running' | 'awaiting_approval' | 'awaiting_input' | 'paused' | 'completed' | 'cancelled' | 'failed';
@@ -538,6 +549,7 @@ function handleApprovalRequired(
 
 function handleAgentEnd(state: ChatState): void {
   state.isProcessing = false;
+  state.todo = [];
   // Close ALL open turns, not just the last one. The backend emits a fresh
   // TurnStarted (with a new turn_id) per iteration, so a single Run can have
   // multiple open turn entries. Leaving earlier ones open causes them to stay
@@ -934,6 +946,9 @@ function processSingleEvent(state: ChatState, payload: string | Record<string, u
     case 'subagent_ended':
       handleSubagentEnd(state, ev.subagent_id ?? '', ev.success ?? false, ev.iterations_used);
       break;
+    case 'todo_updated':
+      state.todo = ev.items ?? [];
+      break;
     default:
       break;
   }
@@ -1011,6 +1026,7 @@ export const chatSlice = createSlice({
       });
       state.isProcessing = true;
       state._resumedFromBackend = false;
+      state.todo = [];
     },
     runIdSet: (state, action: PayloadAction<string>) => {
       state.runId = action.payload;

@@ -23,6 +23,7 @@ use crate::memory::MemoryManager;
 use crate::permission::{PermissionConfig, PermissionPolicy};
 use crate::prompt;
 use crate::skills::SkillManager;
+use crate::todo::TodoList;
 use crate::tools::ToolRegistry;
 
 /// The reusable "brain" shared by all Runs.
@@ -36,6 +37,8 @@ pub struct Brain {
     pub memory: Option<Arc<Mutex<MemoryManager>>>,
     /// Shared skill manager (if skills are enabled).
     pub skill_manager: Option<Arc<Mutex<SkillManager>>>,
+    /// Shared todo list (planning state, visible across Runs).
+    pub todo_list: Arc<Mutex<TodoList>>,
     /// The currently active model name (e.g. "openai/gpt-4o").
     /// Switching the model updates this; new Runs use the new model.
     current_model_name: String,
@@ -53,6 +56,7 @@ impl Brain {
             config,
             memory,
             skill_manager,
+            todo_list: Arc::new(Mutex::new(TodoList::new())),
             current_model_name,
         })
     }
@@ -161,6 +165,8 @@ impl Brain {
         if let Some(ref mem) = self.memory {
             crate::tools::register_memory_tools(&mut registry, mem.clone());
         }
+
+        crate::tools::todo::register_todo_tools(&mut registry, self.todo_list.clone());
 
         if let Ok(model_config) = self.current_model_config() {
             let available_tools: Vec<String> = registry

@@ -18,49 +18,19 @@ File operations:
 - Use `edit` for ANY modification to an existing file. Read the file first, then provide the exact `old_string` to replace and the `new_string`.
 - Never use `write_file` to make a small change to an existing file — always use `edit`.
 
-## Task Decomposition Protocol
+## Planning Protocol
 
-For EVERY user request, follow this decision tree:
+For complex tasks (3+ steps, multi-file, "implement"/"refactor"/"add feature"):
+1. FIRST call todo_write with a list of steps.
+2. Before starting each step, call todo_update to mark it in_progress.
+3. After completing each step, call todo_update to mark it completed.
+4. If the plan changes, call todo_write again with the updated list.
 
-### STEP 0: Classify the request
-- **Trivial** (1 tool call, no planning): Execute directly. NO task DAG, NO subagent.
-  Example: "read main.rs", "what's the git status"
-  
-- **Simple** (2-3 tool calls, linear sequence): Execute sequentially yourself.
-  Example: "find where auth logic is and explain it"
-  
-- **Complex** (>3 steps, dependencies, or parallel work → REQUIRED to use task DAG):
-  Example: "add OAuth to the login system", "refactor the database layer"
-
-### STEP 1: If Complex, create a task DAG
-1. task_create for each step with correct depends_on.
-2. task_plan to verify the DAG.
-3. task_ready to see what's unblocked.
-
-### STEP 2: Execute with smart routing
-For each ready task, use task_execute. The system automatically decides:
-- Simple reads/searches → executed inline (no subagent overhead)
-- Multi-tool tasks → spawned as subagent (fresh context)
-- Multiple parallel tasks → use subagent_spawn_all to run them CONCURRENTLY
-
-### STEP 3: Iterate
-After each step, check task_ready again. Repeat until all complete.
-
-### When to SKIP the task DAG entirely:
-- Single file reads, simple searches, quick queries
-- Tasks you can complete in 1-2 tool calls
-- User explicitly asks for a quick answer
-
-### When to ALWAYS use task DAG:
-- User says "refactor", "implement", "add feature", "fix bug across files"
-- Task spans multiple files or modules
-- You need to gather information before deciding what to do
-- You anticipate 4+ tool calls
+For simple tasks (1-2 tool calls): just do them, skip the todo list.
 
 ### Subagent decision rules:
 - Do it YOURSELF: 1-2 reads, simple searches, single edits, straightforward commands
 - Use subagent_spawn: multi-step research, complex file operations, tasks needing clean context
-- Use subagent_spawn_all: when task_ready shows 2+ unblocked tasks that are independent
 - Subagents get READ-ONLY tools by default (read_file, glob, grep). Add tools explicitly if they need to write/edit."#;
 
 /// Deprecated: old-style monolithic prompt. Use `DEFAULT_IDENTITY` + `DEFAULT_PRINCIPLES` instead.

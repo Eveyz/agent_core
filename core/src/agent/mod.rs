@@ -19,6 +19,7 @@ use crate::permission::{
     ApprovalChoice, ApprovalScope, PermissionDecision, PermissionPolicy, ToolPermissionPattern,
     WhitelistEntry,
 };
+use crate::todo::TodoList;
 use crate::prompt::{self, PromptBuilder};
 use crate::skills::SkillManager;
 use crate::tools::{ToolRegistry, ToolUpdateFn};
@@ -242,6 +243,9 @@ impl AgentBuilder {
             crate::tools::register_memory_tools(&mut registry, mem.clone());
         }
 
+        let todo_list: Arc<Mutex<TodoList>> = Arc::new(Mutex::new(TodoList::new()));
+        crate::tools::todo::register_todo_tools(&mut registry, todo_list.clone());
+
         for tool in self.tools {
             registry.register(tool);
         }
@@ -377,6 +381,7 @@ impl AgentBuilder {
             registry,
             context,
             memory,
+            todo_list,
             permission_policy,
             hook_registry: self.hook_registry.unwrap_or_default(),
             state: AgentState::Idle,
@@ -406,6 +411,7 @@ pub struct Agent {
     registry: ToolRegistry,
     context: Context,
     memory: Option<Arc<Mutex<MemoryManager>>>,
+    todo_list: Arc<Mutex<TodoList>>,
     permission_policy: PermissionPolicy,
     hook_registry: HookRegistry,
     state: AgentState,
@@ -1027,8 +1033,11 @@ impl Agent {
             }
         }
 
-        // Segment 7: EXECUTION PLAN — placeholder, can be filled by external hooks
-        // (the todo/task modules can push updates via set_execution_plan)
+        // Segment 7: EXECUTION PLAN — inject current todo list
+        let plan_str = self.todo_list.lock().to_context_string();
+        if !plan_str.is_empty() {
+            self.context.set_execution_plan(&plan_str);
+        }
     }
 
     /// Stage 4 LLM compaction: if tokens are critically high (>95%),

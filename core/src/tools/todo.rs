@@ -1,4 +1,4 @@
-use crate::todo::{TodoItem, TodoList, TodoStatus};
+use crate::todo::{TodoList, TodoStatus};
 use crate::tools::{Tool, ToolRegistry};
 use anyhow::Result;
 use parking_lot::Mutex;
@@ -28,44 +28,38 @@ impl Tool for TodoWriteTool {
     }
 
     fn description(&self) -> &str {
-        "Create a todo item for planning. Args: id (string), description (string), depends_on (optional array of IDs)"
+        "Create a plan by overwriting the entire todo list. Pass an array of item descriptions. Previous list is replaced. Use this for initial planning and when the plan changes."
     }
 
     fn parameters_schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "id": {"type": "string", "description": "Unique ID"},
-                "description": {"type": "string", "description": "Task description"},
-                "depends_on": {
+                "items": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "IDs this task depends on"
+                    "description": "List of task descriptions. IDs are auto-assigned (1, 2, 3, ...)."
                 }
             },
-            "required": ["id", "description"]
+            "required": ["items"]
         })
     }
 
     async fn execute(&self, args: Value) -> Result<String> {
-        let id = args["id"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
-        let description = args["description"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("missing 'description'"))?;
-        let depends_on: Vec<String> = args["depends_on"]
+        let items: Vec<String> = args["items"]
             .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
+            .ok_or_else(|| anyhow::anyhow!("missing 'items' array"))?
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+
+        if items.is_empty() {
+            anyhow::bail!("'items' must not be empty");
+        }
 
         let mut list = self.todo_list.lock();
-        list.add(TodoItem::new(id, description).with_depends_on(depends_on));
-        Ok(format!("Todo '{}' created: {}", id, description))
+        list.replace_all(items);
+        Ok(list.to_context_string())
     }
 }
 

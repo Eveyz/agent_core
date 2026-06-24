@@ -43,6 +43,7 @@ import { EmptyState } from './components/chat/EmptyState';
 import { UserRow } from './components/chat/UserRow';
 import { AgentTurnUI } from './components/chat/AgentTurn';
 import { ChatInput } from './components/chat/ChatInput';
+import TodoPanel from './components/chat/TodoPanel';
 import SettingsModal from './components/settings/SettingsModal';
 import './App.css';
 
@@ -340,6 +341,7 @@ function App() {
           <EmptyState onSend={handleSend} />
         ) : (
           <>
+            <TodoPanel />
             <div className="chat-history" ref={scrollRef}>
               {entryIds.map((id) => (
                 <EntryRow

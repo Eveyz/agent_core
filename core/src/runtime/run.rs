@@ -589,6 +589,26 @@ impl Run {
             g.complete();
         }
 
+        // If any todo tool was called, push the current todo snapshot to the frontend.
+        let todo_changed = tool_calls
+            .iter()
+            .any(|c| matches!(c.function.name.as_str(), "todo_write" | "todo_update"));
+        if todo_changed {
+            let items: Vec<crate::runtime::event::TodoItemPayload> = self
+                .brain
+                .todo_list
+                .lock()
+                .items
+                .iter()
+                .map(|item| crate::runtime::event::TodoItemPayload {
+                    id: item.id.clone(),
+                    description: item.description.clone(),
+                    status: item.status.to_string(),
+                })
+                .collect();
+            self.emit(RunEvent::TodoUpdated { items });
+        }
+
         self.emit(RunEvent::TurnEnded { index: turn_index });
         self.hook_registry.fire_turn_end(turn_index);
 
@@ -860,6 +880,12 @@ impl Run {
             if !core_str.is_empty() {
                 self.context.set_active_memory(&core_str);
             }
+        }
+
+        // Segment 7: EXECUTION PLAN — inject current todo list
+        let plan_str = self.brain.todo_list.lock().to_context_string();
+        if !plan_str.is_empty() {
+            self.context.set_execution_plan(&plan_str);
         }
     }
 
