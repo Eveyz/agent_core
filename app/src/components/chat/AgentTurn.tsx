@@ -7,11 +7,30 @@ import ChevronRightIcon from 'lucide-react/dist/esm/icons/chevron-right.mjs';
 import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
 import XIcon from 'lucide-react/dist/esm/icons/x.mjs';
 import LoaderIcon from 'lucide-react/dist/esm/icons/loader.mjs';
-import CheckCircle2Icon from 'lucide-react/dist/esm/icons/check-circle-2.mjs';
-import XCircleIcon from 'lucide-react/dist/esm/icons/x-circle.mjs';
 import CopyIcon from 'lucide-react/dist/esm/icons/copy.mjs';
 import BrainIcon from 'lucide-react/dist/esm/icons/brain.mjs';
 import WrenchIcon from 'lucide-react/dist/esm/icons/wrench.mjs';
+import FileIcon from 'lucide-react/dist/esm/icons/file.mjs';
+import SearchIcon from 'lucide-react/dist/esm/icons/search.mjs';
+import EyeIcon from 'lucide-react/dist/esm/icons/eye.mjs';
+import TerminalIcon from 'lucide-react/dist/esm/icons/terminal.mjs';
+import GlobeIcon from 'lucide-react/dist/esm/icons/globe.mjs';
+import GitBranchIcon from 'lucide-react/dist/esm/icons/git-branch.mjs';
+import GitCommitIcon from 'lucide-react/dist/esm/icons/git-commit.mjs';
+import GitCompareIcon from 'lucide-react/dist/esm/icons/git-compare.mjs';
+import DatabaseIcon from 'lucide-react/dist/esm/icons/database.mjs';
+import FolderSearchIcon from 'lucide-react/dist/esm/icons/folder-search.mjs';
+import FileSearchIcon from 'lucide-react/dist/esm/icons/file-search.mjs';
+import SaveIcon from 'lucide-react/dist/esm/icons/save.mjs';
+import WandIcon from 'lucide-react/dist/esm/icons/wand.mjs';
+import BookOpenIcon from 'lucide-react/dist/esm/icons/book-open.mjs';
+import TrashIcon from 'lucide-react/dist/esm/icons/trash.mjs';
+import PlusIcon from 'lucide-react/dist/esm/icons/plus.mjs';
+import ReplaceIcon from 'lucide-react/dist/esm/icons/replace.mjs';
+import ScanTextIcon from 'lucide-react/dist/esm/icons/scan-text.mjs';
+import ListTodoIcon from 'lucide-react/dist/esm/icons/list-todo.mjs';
+import CalendarIcon from 'lucide-react/dist/esm/icons/calendar.mjs';
+import UsersIcon from 'lucide-react/dist/esm/icons/users.mjs';
 import { invoke } from '@tauri-apps/api/core';
 import { toolApprovalResponded, viewSubagent } from '../../features/chat/chatSlice';
 import type { ChatEntry, TurnBlock, SubagentEntry } from '../../features/chat/chatSlice';
@@ -20,6 +39,50 @@ import { MarkdownContent, formatTime, parseMarkdown } from './MarkdownContent';
 export { formatTime, parseMarkdown };
 
 const ml4 = { marginLeft: '4px' };
+
+// ── Per-tool icon mapping ───────────────────────────────────────────
+// Each tool gets a distinct icon so the user can tell at a glance what the
+// agent is doing. Falls back to WrenchIcon for unknown tools.
+const TOOL_ICONS: Record<string, React.ComponentType<{ size?: number; color?: string; className?: string; style?: React.CSSProperties }>> = {
+  bash: TerminalIcon,
+  edit: FileIcon,
+  sed: ScanTextIcon,
+  read_file: EyeIcon,
+  write_file: SaveIcon,
+  glob: FolderSearchIcon,
+  grep: FileSearchIcon,
+  git_status: GitBranchIcon,
+  git_diff: GitCompareIcon,
+  git_commit: GitCommitIcon,
+  git_log: GitCompareIcon,
+  git_show: GitCompareIcon,
+  webfetch: GlobeIcon,
+  tavily_search: SearchIcon,
+  subagent: UsersIcon,
+  subagents: UsersIcon,
+  invoke_subagent: UsersIcon,
+  core_memory_read: DatabaseIcon,
+  core_memory_append: PlusIcon,
+  core_memory_replace: ReplaceIcon,
+  archival_memory_search: SearchIcon,
+  archival_memory_insert: PlusIcon,
+  archival_memory_delete: TrashIcon,
+  conversation_search: SearchIcon,
+  conversation_search_date: CalendarIcon,
+  skill_load: WandIcon,
+  skill_reload: WandIcon,
+  skill_deactivate: WandIcon,
+  skill_list: BookOpenIcon,
+  todo_read: ListTodoIcon,
+  todo_write: ListTodoIcon,
+  todo_update: ListTodoIcon,
+};
+
+function getToolIcon(name: string): React.ComponentType<{ size?: number; color?: string; className?: string; style?: React.CSSProperties }> {
+  return TOOL_ICONS[name] || WrenchIcon;
+}
+
+
 
 const ProcessingTimer = memo(function ProcessingTimer({
   startTime,
@@ -41,7 +104,6 @@ const ProcessingTimer = memo(function ProcessingTimer({
   const diff = now - startTime;
   return <span>Processed {formatTime(diff)}</span>;
 });
-
 
 interface TurnIteration {
   id: string;
@@ -95,6 +157,14 @@ function groupBlocksIntoItems(blocks: TurnBlock[]): TurnRenderItem[] {
   return items;
 }
 
+/** Count subagents from the tool args: single = 1, batch = tasks.length. */
+function countSpawnedAgents(args?: unknown): number {
+  if (!args || typeof args !== 'object') return 1;
+  const obj = args as Record<string, unknown>;
+  if (Array.isArray(obj.tasks)) return obj.tasks.length;
+  return 1;
+}
+
 const TurnIterationUI = memo(function TurnIterationUI({
   iteration,
   subagents,
@@ -118,8 +188,20 @@ const TurnIterationUI = memo(function TurnIterationUI({
   }, [isStreaming, iteration.isLast]);
 
   const toolCount = useMemo(() => {
-    return iteration.toolBlocks.filter(b => b.type === 'tool' && b.name !== 'invoke_subagent' && b.name !== 'subagent' && b.name !== 'subagents').length;
+    return iteration.toolBlocks.filter(b => b.type === 'tool').length;
   }, [iteration.toolBlocks]);
+
+  const subagentTools = useMemo(() => {
+    return iteration.toolBlocks.filter(b => b.type === 'tool' && ((b as any).name === 'subagent' || (b as any).name === 'subagents' || (b as any).name === 'invoke_subagent'));
+  }, [iteration.toolBlocks]);
+
+  const spawnedAgentCount = useMemo(() => {
+    let count = 0;
+    subagentTools.forEach(b => {
+      count += countSpawnedAgents((b as any).args);
+    });
+    return count;
+  }, [subagentTools]);
 
   const thinkingBlock = iteration.thinkingBlock as any;
   const hasThinkingContent = thinkingBlock?.text && thinkingBlock.text.trim().length > 0;
@@ -141,6 +223,8 @@ const TurnIterationUI = memo(function TurnIterationUI({
       return toolCount > 0 ? `Called ${toolCount} tool${toolCount > 1 ? 's' : ''}` : 'Called tool';
     }
   }, [isStreaming, toolCount]);
+
+  const ToolWrapperIcon = WrenchIcon;
 
   return (
     <>
@@ -171,7 +255,7 @@ const TurnIterationUI = memo(function TurnIterationUI({
             className={`step-row ${isStreaming ? 'step-row-active' : ''} ${hasErrors ? 'step-row-error' : ''}`}
             onClick={() => setToolsCollapsed(!toolsCollapsed)}
           >
-            <WrenchIcon size={13} className="step-icon" color={hasErrors ? "#f87171" : (isStreaming ? undefined : "#888")} />
+            <ToolWrapperIcon size={13} className="step-icon" color={hasErrors ? "#f87171" : (isStreaming ? undefined : "#888")} />
             <span className="step-label" style={{ fontWeight: 500 }}>{toolsLabel}</span>
             {toolsCollapsed ? <ChevronRightIcon size={12} className="step-chevron" /> : <ChevronDownIcon size={12} className="step-chevron" />}
           </div>
@@ -180,8 +264,30 @@ const TurnIterationUI = memo(function TurnIterationUI({
               {iteration.toolBlocks.map((b: TurnBlock, idx: number) => {
                 if (b.type === 'tool') {
                   const name = typeof b.name === 'string' ? b.name : JSON.stringify(b.name);
-                  if (name === 'invoke_subagent' || name === 'subagent' || name === 'subagents') {
-                    return null;
+                  if (name === 'edit') {
+                    return (
+                      <EditFileWidget
+                        key={b.call_id || idx}
+                        args={(b as any).args}
+                        result={(b as any).result}
+                        active={b.active}
+                        is_error={b.is_error}
+                      />
+                    );
+                  }
+                  if (name === 'subagent' || name === 'subagents' || name === 'invoke_subagent') {
+                    const firstSubagentToolIdx = iteration.toolBlocks.findIndex(tb => tb.type === 'tool' && ((tb as any).name === 'subagent' || (tb as any).name === 'subagents' || (tb as any).name === 'invoke_subagent'));
+                    const isFirst = idx === firstSubagentToolIdx;
+                    const refs = isFirst ? iteration.toolBlocks.filter(tb => tb.type === 'subagent_ref') : [];
+                    return (
+                      <SubagentSpawnWidget
+                        key={b.call_id || idx}
+                        args={(b as any).args}
+                        active={b.active}
+                        subagentRefs={refs}
+                        subagents={subagents}
+                      />
+                    );
                   }
                   return (
                     <ToolBlockUI
@@ -197,7 +303,13 @@ const TurnIterationUI = memo(function TurnIterationUI({
                   );
                 } else if (b.type === 'approval') {
                   return <ApprovalBlockUI key={`approval-${b.prompt_id}-${idx}`} block={b as ApprovalBlock} />;
-                } else if (b.type === 'subagent_ref') {
+                }
+                // subagent_ref blocks are now rendered inline by SubagentSpawnWidget;
+                // if a ref arrives without a matching wrapper, show the card directly.
+                if (b.type === 'subagent_ref') {
+                  const hasSpawnWidget = iteration.toolBlocks.some(tb => tb.type === 'tool' && ((tb as any).name === 'subagent' || (tb as any).name === 'subagents' || (tb as any).name === 'invoke_subagent'));
+                  if (hasSpawnWidget) return null;
+
                   const sa = subagents?.[b.subagent_id!];
                   if (!sa) return null;
                   return (
@@ -254,12 +366,6 @@ const ToolBlockUI = memo(function ToolBlockUI({
     else if (active === true) setCollapsed(false);
   }, [active]);
 
-  const statusIcon = useMemo(() => {
-    if (active) return <LoaderIcon className="tool-loader-icon" size={13} color="var(--text-muted)" />;
-    if (is_error) return <XCircleIcon color="#f87171" size={13} />;
-    return <CheckCircle2Icon color="var(--success)" size={13} />;
-  }, [active, is_error]);
-
   const formattedArgs = useMemo(() => {
     if (!args) return '';
     if (typeof args === 'string') return args;
@@ -284,7 +390,7 @@ const ToolBlockUI = memo(function ToolBlockUI({
         className={`step-row ${active ? 'step-row-active' : ''} ${is_error ? 'step-row-error' : ''}`}
         onClick={() => setCollapsed(!collapsed)}
       >
-        <span className="step-icon">{statusIcon}</span>
+        {(() => { const ToolIcon = getToolIcon(name); return <ToolIcon size={13} className="step-icon" style={{ marginRight: '5px' }} color={is_error ? '#f87171' : (active ? 'var(--text-muted)' : 'var(--text-muted)')} />; })()}
         <span className="step-label tool-name">
           {name}
           {collapsed && startTime && endTime && (
@@ -410,6 +516,189 @@ const ApprovalBlockUI = memo(function ApprovalBlockUI({ block }: { block: Approv
     </div>
   );
 });
+// ── Edit File Widget ─────────────────────────────────────────────────
+
+/** Extract a filename from a path string. */
+function basename(path: string): string {
+  const parts = path.replace(/\\/g, '/').split('/');
+  return parts[parts.length - 1] || path;
+}
+
+/** Parse a unified diff into side-by-side rows. */
+interface DiffRow {
+  oldLineNo: number | null;
+  newLineNo: number | null;
+  oldText: string;
+  newText: string;
+  type: 'context' | 'add' | 'del' | 'empty';
+}
+
+function parseUnifiedDiff(diffStr: string): DiffRow[] {
+  const lines = diffStr.split('\n');
+  const rows: DiffRow[] = [];
+  let oldLine = 0;
+  let newLine = 0;
+  let inHunk = false;
+
+  for (const line of lines) {
+    if (line.startsWith('@@')) {
+      const m = line.match(/@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+      if (m) {
+        oldLine = parseInt(m[1] ? line.match(/@@ -(\d+)/)![1] : '0', 10);
+        newLine = parseInt(m[2], 10);
+      }
+      inHunk = true;
+      continue;
+    }
+    if (!inHunk) continue;
+    if (line.startsWith('---') || line.startsWith('+++')) continue;
+
+    if (line.startsWith('+')) {
+      rows.push({ oldLineNo: null, newLineNo: newLine++, oldText: '', newText: line.slice(1), type: 'add' });
+    } else if (line.startsWith('-')) {
+      rows.push({ oldLineNo: oldLine++, newLineNo: null, oldText: line.slice(1), newText: '', type: 'del' });
+    } else if (line.startsWith(' ')) {
+      rows.push({ oldLineNo: oldLine++, newLineNo: newLine++, oldText: line.slice(1), newText: line.slice(1), type: 'context' });
+    } else if (line.startsWith('\\')) {
+      // "\ No newline at end of file" — skip
+      continue;
+    }
+  }
+  return rows;
+}
+
+/** Extract the line-range summary line the backend emits:
+ *  "Edited lines 12–18 (3 additions, 2 deletions)" → {start,end,adds,dels}. */
+interface EditSummary {
+  start: number;
+  end: number;
+  additions: number;
+  deletions: number;
+}
+
+function parseEditSummary(result: string): EditSummary | null {
+  const m = result.match(/Edited lines (\d+)–(\d+) \((\d+) additions?, (\d+) deletions?\)/);
+  if (!m) return null;
+  return { start: +m[1], end: +m[2], additions: +m[3], deletions: +m[4] };
+}
+
+const EditFileWidget = memo(function EditFileWidget({
+  args,
+  result,
+  active,
+  is_error,
+}: {
+  args?: unknown;
+  result?: string;
+  active?: boolean;
+  is_error?: boolean;
+}) {
+  const [collapsed, setCollapsed] = useState(!active);
+
+  useEffect(() => {
+    if (active === false) setCollapsed(true);
+    else if (active === true) setCollapsed(false);
+  }, [active]);
+
+  const filePath = (args as Record<string, unknown> | undefined)?.file_path as string | undefined;
+  const fileName = filePath ? basename(filePath) : 'file';
+
+  const summary = useMemo(() => (result ? parseEditSummary(result) : null), [result]);
+  const diffRows = useMemo(() => {
+    if (!result) return [];
+    // The diff starts after the summary line.
+    const diffStart = result.indexOf('--- ');
+    if (diffStart === -1) return [];
+    return parseUnifiedDiff(result.slice(diffStart));
+  }, [result]);
+
+  const range = useMemo(() => {
+    if (!summary) return null;
+    return summary.start === summary.end ? `L${summary.start}` : `L${summary.start}–L${summary.end}`;
+  }, [summary]);
+
+  const labelPrefix = active ? 'Editing' : is_error ? 'Edit failed:' : summary ? 'Edited' : 'Edited';
+
+  return (
+    <div className="step-block edit-file-block">
+      <div
+        className={`step-row ${active ? 'step-row-active' : ''} ${is_error ? 'step-row-error' : ''}`}
+        onClick={() => !active && setCollapsed(!collapsed)}
+        style={{ cursor: active ? 'default' : 'pointer' }}
+      >
+        {(() => { const ToolIcon = getToolIcon('edit'); return <ToolIcon size={13} className="step-icon" style={{ marginRight: '5px' }} color={is_error ? '#f87171' : (active ? 'var(--text-muted)' : 'var(--text-muted)')} />; })()}
+        <span className="step-label edit-file-label">
+          {labelPrefix} <span className="edit-file-name">{fileName}</span>
+          {range && <span className="edit-file-range"> · {range}</span>}
+          {summary && (
+            <span className="edit-file-stats">
+              {' '}(<span className="stat-add">+{summary.additions}</span> <span className="stat-del">−{summary.deletions}</span>)
+            </span>
+          )}
+        </span>
+        {!active && !is_error && diffRows.length > 0 && (
+          collapsed
+            ? <ChevronRightIcon size={12} className="step-chevron" />
+            : <ChevronDownIcon size={12} className="step-chevron" />
+        )}
+      </div>
+      {!collapsed && diffRows.length > 0 && (
+        <div className="edit-diff-body">
+          <div className="edit-diff-path">{filePath}</div>
+          <div className="edit-diff-table">
+            {diffRows.map((row, idx) => (
+              <div key={idx} className={`diff-row diff-${row.type}`}>
+                <span className="diff-lineno diff-old">{row.oldLineNo ?? ''}</span>
+                <span className="diff-linecontent diff-old-content">
+                  {row.type === 'add' ? '' : row.oldText}
+                </span>
+                <span className="diff-lineno diff-new">{row.newLineNo ?? ''}</span>
+                <span className="diff-linecontent diff-new-content">
+                  {row.type === 'del' ? '' : row.newText}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
+
+
+
+const SubagentSpawnWidget = memo(function SubagentSpawnWidget({
+  args,
+  active,
+  subagentRefs,
+  subagents,
+}: {
+  args: unknown;
+  active?: boolean;
+  subagentRefs?: TurnBlock[];
+  subagents?: Record<string, SubagentEntry>;
+}) {
+  const count = countSpawnedAgents(args);
+  const title = active ? `Spawning ${count} agent${count > 1 ? 's' : ''}...` : `Spawned ${count} agent${count > 1 ? 's' : ''}`;
+  return (
+    <div className="step-block spawn-block">
+      <div className={`step-row ${active ? 'step-row-active' : ''}`} style={{ cursor: 'default' }}>
+        <UsersIcon size={13} className="step-icon" color={active ? undefined : 'var(--text-muted)'} />
+        <span className="step-label" style={{ fontWeight: 500 }}>{title}</span>
+      </div>
+      {subagentRefs && subagentRefs.length > 0 && (
+        <div className="spawn-block-children" style={{ marginLeft: '16px', marginTop: '4px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          {subagentRefs.map((refBlock, idx) => {
+            const sa = subagents?.[(refBlock as any).subagent_id!];
+            if (!sa) return null;
+            return <SubagentCard key={idx} subagent={sa} />;
+          })}
+        </div>
+      )}
+    </div>
+  );
+});
+
 const SubagentCard = memo(function SubagentCard({ subagent }: { subagent: SubagentEntry }) {
   const dispatch = useAppDispatch();
 
@@ -469,56 +758,6 @@ const SubagentCard = memo(function SubagentCard({ subagent }: { subagent: Subage
   );
 });
 
-const THINKING_PHRASES = [
-  'Analyzing context...',
-  'Synthesizing logic...',
-  'Exploring possibilities...',
-  'Simulating outcomes...',
-  'Consulting neural pathways...',
-  'Formulating strategy...',
-];
-
-const DynamicWorkingIndicator = memo(function DynamicWorkingIndicator({ entry }: { entry: ChatEntry }) {
-  const [phraseIndex, setPhraseIndex] = useState(0);
-
-  const isActive = !!(entry.startTime && !entry.endTime);
-  useEffect(() => {
-    if (!isActive) return;
-    const interval = setInterval(() => {
-      setPhraseIndex((prev) => (prev + 1) % THINKING_PHRASES.length);
-    }, 2500);
-    return () => clearInterval(interval);
-  }, [isActive]);
-
-  if (!isActive) return null;
-
-  const statusText = useMemo(() => {
-    if (!entry.blocks || entry.blocks.length === 0) {
-      return 'Waking up the agent...';
-    }
-    const lastBlock = entry.blocks[entry.blocks.length - 1];
-
-    if (lastBlock.type === 'thinking' && lastBlock.isStreaming) {
-      return THINKING_PHRASES[phraseIndex];
-    } else if (lastBlock.type === 'tool' && lastBlock.active) {
-      if (lastBlock.name === 'invoke_subagent') return 'Waiting for subagents...';
-      return `Interfacing with ${lastBlock.name}...`;
-    } else if (lastBlock.type === 'approval' && lastBlock.status === 'pending') {
-      return 'Awaiting human authorization...';
-    } else if (lastBlock.type === 'assistant' && lastBlock.isStreaming) {
-      return 'Transmitting response...';
-    }
-
-    return 'Working...';
-  }, [entry.blocks, phraseIndex]);
-
-  return (
-    <div className="working-indicator">
-      <div className="black-hole-spinner" />
-      <span className="light-wave-text">{statusText}</span>
-    </div>
-  );
-});
 
 const TurnFooter = memo(function TurnFooter({ entry }: { entry: ChatEntry }) {
   const [copied, setCopied] = useState(false);
@@ -603,7 +842,6 @@ export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: ChatEnt
   const hasIntermediateSteps = toolCount > 0 || thoughtCount > 0;
 
   const renderItems = useMemo(() => groupBlocksIntoItems(entry.blocks || []), [entry.blocks]);
-  const firstIterIdx = useMemo(() => renderItems.findIndex(i => i.type === 'iteration'), [renderItems]);
   const lastIterIdx = useMemo(() => {
     for (let i = renderItems.length - 1; i >= 0; i--) {
       if (renderItems[i].type === 'iteration') return i;
@@ -613,54 +851,7 @@ export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: ChatEnt
 
   return (
     <div className="agent-turn">
-      {renderItems.map((item, idx) => {
-        const isFirstIter = idx === firstIterIdx;
-        const showHeaderHere = isFirstIter || (firstIterIdx === -1 && idx === renderItems.length - 1);
-
-        return (
-          <React.Fragment key={item.type === 'iteration' ? item.data.id : `assistant-${idx}`}>
-            {showHeaderHere && (hasIntermediateSteps || isProcessing) && (
-              <>
-                <div
-                  className={`turn-header ${isProcessing ? 'processing-pulse' : ''}`}
-                  style={{ cursor: !isProcessing ? 'pointer' : 'default' }}
-                  onClick={() => {
-                    if (!isProcessing) setCollapsed(!collapsed);
-                  }}
-                >
-                  {isProcessing ? (
-                    <>
-                      <LoaderIcon className="tool-loader-icon" size={12} />
-                      <ProcessingTimer startTime={entry.startTime} endTime={entry.endTime} />
-                      <ChevronDownIcon size={12} style={ml4} />
-                    </>
-                  ) : (
-                    <>
-                      <span>Worked {summaryParts.join(' · ')}</span>
-                      {collapsed ? <ChevronRightIcon size={12} style={ml4} /> : <ChevronDownIcon size={12} style={ml4} />}
-                    </>
-                  )}
-                </div>
-                <div className="turn-divider" />
-              </>
-            )}
-
-            {item.type === 'assistant' ? (
-              (!collapsed || lastIterIdx === -1 || idx > lastIterIdx) && (
-                <MarkdownContent
-                  content={typeof (item.data as any).text === 'string' ? (item.data as any).text : JSON.stringify((item.data as any).text)}
-                  className="assistant-msg"
-                  isStreaming={!!(item.data as any).isStreaming}
-                />
-              )
-            ) : (
-              !collapsed && <TurnIterationUI iteration={item.data} subagents={subagents} />
-            )}
-          </React.Fragment>
-        );
-      })}
-
-      {firstIterIdx === -1 && renderItems.length === 0 && (hasIntermediateSteps || isProcessing) && (
+      {(hasIntermediateSteps || isProcessing) && (
         <>
           <div
             className={`turn-header ${isProcessing ? 'processing-pulse' : ''}`}
@@ -686,9 +877,25 @@ export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: ChatEnt
         </>
       )}
 
+      {renderItems.map((item, idx) => {
+        return (
+          <React.Fragment key={item.type === 'iteration' ? item.data.id : `assistant-${idx}`}>
+            {item.type === 'assistant' ? (
+              (!collapsed || lastIterIdx === -1 || idx > lastIterIdx) && (
+                <MarkdownContent
+                  content={typeof (item.data as any).text === 'string' ? (item.data as any).text : JSON.stringify((item.data as any).text)}
+                  className="assistant-msg"
+                  isStreaming={!!(item.data as any).isStreaming}
+                />
+              )
+            ) : (
+              !collapsed && <TurnIterationUI iteration={item.data} subagents={subagents} />
+            )}
+          </React.Fragment>
+        );
+      })}
 
-
-      {isProcessing ? <DynamicWorkingIndicator entry={entry} /> : <TurnFooter entry={entry} />}
+      <TurnFooter entry={entry} />
     </div>
   );
 });

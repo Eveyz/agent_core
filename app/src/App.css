@@ -2989,3 +2989,142 @@ select.settings-input {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ── Edit File Widget ─────────────────────────────────────────────── */
+.edit-file-block {
+  /* inherits .step-block */
+}
+
+.edit-file-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.edit-diff-body {
+  margin-top: 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--overlay-0_02);
+}
+
+.edit-diff-path {
+  padding: 6px 10px;
+  font-size: 11px;
+  font-family: 'Fira Code', 'Menlo', monospace;
+  color: var(--text-dim);
+  background: var(--overlay-0_04);
+  border-bottom: 1px solid var(--border-color);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.edit-diff-table {
+  font-family: 'Fira Code', 'Menlo', monospace;
+  font-size: 12px;
+  overflow-x: auto;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.diff-row {
+  display: grid;
+  grid-template-columns: 3em 1fr 3em 1fr;
+  align-items: baseline;
+}
+
+.diff-lineno {
+  text-align: right;
+  padding: 0 6px;
+  color: var(--text-dim);
+  user-select: none;
+  font-size: 11px;
+  min-width: 2.5em;
+}
+
+.diff-linecontent {
+  padding: 0 8px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  min-width: 0;
+}
+
+.diff-row.diff-context .diff-linecontent {
+  color: var(--text-muted);
+}
+
+.diff-row.diff-add .diff-new-content {
+  background: rgba(34, 197, 94, 0.12);
+  color: #4ade80;
+}
+
+.diff-row.diff-del .diff-old-content {
+  background: rgba(239, 68, 68, 0.12);
+  color: #f87171;
+}
+
+.diff-row.diff-add .diff-old-content,
+.diff-row.diff-del .diff-new-content {
+  background: transparent;
+}
+
+/* ── Subagent Spawn Widget ────────────────────────────────────────── */
+.spawn-block {
+  /* inherits .step-block */
+}
+
+.spawn-label {
+  font-weight: 500;
+}
+
+.spawn-children {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 20px;
+}
+
+/* ── Edit File label: highlighted filename + colored stats ────────── */
+.edit-file-name {
+  color: #d2a8ff;
+  font-weight: 600;
+  font-family: 'Fira Code', 'Menlo', monospace;
+}
+
+.edit-file-range {
+  color: var(--text-dim);
+  font-family: 'Fira Code', 'Menlo', monospace;
+  font-size: 11px;
+}
+
+.edit-file-stats {
+  font-family: 'Fira Code', 'Menlo', monospace;
+  font-size: 11px;
+}
+
+.edit-file-stats .stat-add {
+  color: #4ade80;
+  font-weight: 600;
+}
+
+.edit-file-stats .stat-del {
+  color: #f87171;
+  font-weight: 600;
+}
+
+/* ── Session processing spinner ───────────────────────────────────── */
+.session-processing-spinner {
+  color: var(--text-muted);
+  animation: session-spin 1s linear infinite;
+  flex-shrink: 0;
+  opacity: 1 !important;
+  margin-right: 4px;
+}
+
+@keyframes session-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

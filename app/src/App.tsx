@@ -392,17 +392,13 @@ const SubagentDetailPage = memo(function SubagentDetailPage({
   };
   return (
     <>
-      <div className="subagent-detail-bar">
-        <button className="icon-btn" onClick={onBack} title="Back to conversation">
-          ‹ Back
-        </button>
-        <span className="subagent-detail-title">{subagent.role_name || subagent.id}</span>
-        {isProcessing && (
+      {isProcessing && (
+        <div className="subagent-detail-bar">
           <button className="btn-deny" onClick={onAbort} title="Stop the run">
             Stop
           </button>
-        )}
-      </div>
+        </div>
+      )}
       <div className="chat-history">
         <UserRow
           entry={{ id: `${subagent.id}-task`, type: 'user', text: taskText }}

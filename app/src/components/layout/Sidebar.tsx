@@ -24,6 +24,7 @@ import ExternalLinkIcon from 'lucide-react/dist/esm/icons/external-link.mjs';
 import ChevronRightIcon from 'lucide-react/dist/esm/icons/chevron-right.mjs';
 import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
 import MoreHorizontalIcon from 'lucide-react/dist/esm/icons/more-horizontal.mjs';
+import LoaderIcon from 'lucide-react/dist/esm/icons/loader.mjs';
 
 // ── Context menu hook ────────────────────────────────────────────────
 
@@ -131,6 +132,7 @@ export const Sidebar = memo(function Sidebar({
   const sessions = useSelector((state: RootState) => state.project.sessions);
   const activeProjectId = useSelector((state: RootState) => state.project.activeProjectId);
   const activeSessionId = useSelector((state: RootState) => state.project.activeSessionId);
+  const isProcessing = useSelector((state: RootState) => state.chat.isProcessing);
   const defaultModel = useSelector((state: RootState) => state.settings.config?.default_model || '');
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [creatingSession, setCreatingSession] = useState(false);
@@ -334,20 +336,24 @@ export const Sidebar = memo(function Sidebar({
                           onClick={() => handleSelectSession(session.id, project.id)}
                         >
                           <span className="session-row-text">{session.title || 'Untitled'}</span>
-                          <span className="session-row-actions">
-                            <SessionContextMenu
-                              sessionId={session.id}
-                              projectId={project.id}
-                              onDelete={handleDeleteSession}
-                            />
-                            <button
-                              className="sidebar-context-trigger session-delete-btn"
-                              onClick={(e) => { e.stopPropagation(); handleDeleteSession(session.id, project.id); }}
-                              title="Delete session"
-                            >
-                              <TrashIcon size={12} />
-                            </button>
-                          </span>
+                          {isSessionActive && isProcessing ? (
+                            <LoaderIcon size={12} className="session-processing-spinner" />
+                          ) : (
+                            <span className="session-row-actions">
+                              <SessionContextMenu
+                                sessionId={session.id}
+                                projectId={project.id}
+                                onDelete={handleDeleteSession}
+                              />
+                              <button
+                                className="sidebar-context-trigger session-delete-btn"
+                                onClick={(e) => { e.stopPropagation(); handleDeleteSession(session.id, project.id); }}
+                                title="Delete session"
+                              >
+                                <TrashIcon size={12} />
+                              </button>
+                            </span>
+                          )}
                         </div>
                       );
                     })}

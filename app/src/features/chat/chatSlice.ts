@@ -46,8 +46,10 @@ export interface SubagentEntry {
 export interface ChatEntry {
   id: string;
   type: 'user' | 'turn';
-  /** Backend-assigned turn id (R7). Events carrying this id route here. */
+  /** Latest backend-assigned turn id (R7). Events carrying this id route here. */
   turnId?: string;
+  /** All turn ids associated with this chat entry (e.g., iterations). */
+  turnIds?: string[];
   turnIndex?: number;
   text?: string;
   blocks?: TurnBlock[];
@@ -178,11 +180,15 @@ type AnyBlock = TurnBlock | SubagentBlock;
 
 function closeStreamingBlock(blocks: AnyBlock[] | undefined): void {
   if (!blocks || blocks.length === 0) return;
-  const last = blocks[blocks.length - 1];
-  if (last && 'isStreaming' in last && last.isStreaming) {
-    last.isStreaming = false;
-    if (last.type === 'thinking') {
-      last.endTime = Date.now();
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const block = blocks[i];
+    if ('isStreaming' in block && block.isStreaming) {
+      block.isStreaming = false;
+      if (block.type === 'thinking') {
+        block.endTime = Date.now();
+      }
+    } else {
+      break;
     }
   }
 }
@@ -191,19 +197,38 @@ function appendDeltaToBlocks(
   blocks: AnyBlock[],
   delta: DeltaPayload
 ): void {
-  const appendToCurrent = (text: string, defaultType: 'assistant' | 'thinking') => {
-    let block = blocks[blocks.length - 1];
-    if (!block || !('isStreaming' in block) || !block.isStreaming || block.type !== defaultType) {
-      closeStreamingBlock(blocks);
-      if (defaultType === 'thinking') {
-        blocks.push({ type: 'thinking', text: '', isStreaming: true, startTime: Date.now() });
+  const appendToType = (text: string, targetType: 'assistant' | 'thinking') => {
+    let targetBlock = null;
+    for (let i = blocks.length - 1; i >= 0; i--) {
+      const b = blocks[i];
+      if ('isStreaming' in b && b.isStreaming) {
+        if (b.type === targetType) {
+          targetBlock = b;
+          break;
+        }
+      } else {
+        break;
+      }
+    }
+
+    if (!targetBlock) {
+      if (targetType === 'thinking') {
+        const lastBlock = blocks[blocks.length - 1];
+        if (lastBlock && lastBlock.type === 'assistant' && 'isStreaming' in lastBlock && lastBlock.isStreaming) {
+          blocks.splice(blocks.length - 1, 0, { type: 'thinking', text: '', isStreaming: true, startTime: Date.now() });
+          targetBlock = blocks[blocks.length - 2];
+        } else {
+          blocks.push({ type: 'thinking', text: '', isStreaming: true, startTime: Date.now() });
+          targetBlock = blocks[blocks.length - 1];
+        }
       } else {
         blocks.push({ type: 'assistant', text: '', isStreaming: true });
+        targetBlock = blocks[blocks.length - 1];
       }
-      block = blocks[blocks.length - 1];
     }
-    if (block.type === 'assistant' || block.type === 'thinking') {
-      block.text += text;
+    
+    if (targetBlock.type === 'assistant' || targetBlock.type === 'thinking') {
+      targetBlock.text += text;
     }
   };
 
@@ -218,35 +243,23 @@ function appendDeltaToBlocks(
       if (thinkStartIdx !== -1 && (thinkEndIdx === -1 || thinkStartIdx < thinkEndIdx)) {
         // Handle <think>
         const before = textChunk.substring(0, thinkStartIdx);
-        if (before) appendToCurrent(before, 'assistant');
-        
-        closeStreamingBlock(blocks);
-        blocks.push({ type: 'thinking', text: '', isStreaming: true, startTime: Date.now() });
+        if (before) appendToType(before, 'assistant');
         textChunk = textChunk.substring(thinkStartIdx + 7);
       } else if (thinkEndIdx !== -1) {
         // Handle </think>
         const before = textChunk.substring(0, thinkEndIdx);
-        if (before) appendToCurrent(before, 'thinking');
-        
-        closeStreamingBlock(blocks);
-        blocks.push({ type: 'assistant', text: '', isStreaming: true });
+        if (before) appendToType(before, 'thinking');
         textChunk = textChunk.substring(thinkEndIdx + 8);
       }
     }
 
     if (textChunk) {
-      appendToCurrent(textChunk, 'assistant');
+      appendToType(textChunk, 'assistant');
     }
-  } else if (typeof delta.Thinking === 'string') {
-    let block = blocks[blocks.length - 1];
-    if (!block || block.type !== 'thinking' || !block.isStreaming) {
-      closeStreamingBlock(blocks);
-      blocks.push({ type: 'thinking', text: '', isStreaming: true, startTime: Date.now() });
-      block = blocks[blocks.length - 1];
-    }
-    if (block.type === 'thinking') {
-      block.text += delta.Thinking;
-    }
+  } 
+  
+  if (typeof delta.Thinking === 'string') {
+    appendToType(delta.Thinking, 'thinking');
   }
 }
 
@@ -267,7 +280,7 @@ function getActiveTurn(state: ChatState): ChatEntry | undefined {
   // R7: if the current event carries a turn_id, route by it.
   if (state._pendingTurnId) {
     const byId = state.entries.find(
-      (e) => e.type === 'turn' && e.turnId === state._pendingTurnId
+      (e) => e.type === 'turn' && (e.turnId === state._pendingTurnId || e.turnIds?.includes(state._pendingTurnId!))
     );
     if (byId && byId.type === 'turn') return byId;
   }
@@ -305,7 +318,7 @@ function handleTurnStart(state: ChatState, turnIndex: number, turnId?: string): 
   // If we have a turn_id and an open turn already uses it, just update its index.
   if (turnId) {
     const existing = state.entries.find(
-      (e) => e.type === 'turn' && e.turnId === turnId
+      (e) => e.type === 'turn' && (e.turnId === turnId || e.turnIds?.includes(turnId))
     );
     if (existing && existing.type === 'turn') {
       existing.turnIndex = turnIndex;
@@ -313,15 +326,20 @@ function handleTurnStart(state: ChatState, turnIndex: number, turnId?: string): 
     }
   }
   const last = state.entries[state.entries.length - 1];
-  if (last && last.type === 'turn' && !last.endTime && !last.turnId) {
-    // Adopt the last open unassigned turn (first turn_started after creation).
+  if (last && last.type === 'turn' && !last.endTime) {
+    // Adopt the last open turn (either unassigned, or from a previous iteration).
     last.turnIndex = turnIndex;
-    if (turnId) last.turnId = turnId;
+    if (turnId) {
+      last.turnId = turnId;
+      if (!last.turnIds) last.turnIds = [];
+      if (!last.turnIds.includes(turnId)) last.turnIds.push(turnId);
+    }
   } else {
     state.entries.push({
       id: `turn-${turnIndex}-${Date.now()}`,
       type: 'turn',
       turnId,
+      turnIds: turnId ? [turnId] : [],
       turnIndex,
       blocks: [],
       startTime: Date.now(),
@@ -368,7 +386,14 @@ function handleToolStart(
 function handleToolUpdate(state: ChatState, toolCallId: string, partialResult: unknown): void {
   const lastEntry = state.entries[state.entries.length - 1];
   if (lastEntry && lastEntry.type === 'turn' && lastEntry.blocks) {
-    const block = lastEntry.blocks.find((b) => b.type === 'tool' && b.call_id === toolCallId);
+    let block = undefined;
+    for (let i = lastEntry.blocks.length - 1; i >= 0; i--) {
+      const b = lastEntry.blocks[i];
+      if (b.type === 'tool' && (toolCallId ? b.call_id === toolCallId : b.active)) {
+        block = b;
+        break;
+      }
+    }
     if (block && block.type === 'tool') {
       block.result += typeof partialResult === 'string' ? partialResult : JSON.stringify(partialResult);
     }
@@ -383,7 +408,14 @@ function handleToolEnd(
 ): void {
   const lastEntry = state.entries[state.entries.length - 1];
   if (lastEntry && lastEntry.type === 'turn' && lastEntry.blocks) {
-    const block = lastEntry.blocks.find((b) => b.type === 'tool' && b.call_id === toolCallId);
+    let block = undefined;
+    for (let i = lastEntry.blocks.length - 1; i >= 0; i--) {
+      const b = lastEntry.blocks[i];
+      if (b.type === 'tool' && (toolCallId ? b.call_id === toolCallId : b.active)) {
+        block = b;
+        break;
+      }
+    }
     if (block && block.type === 'tool') {
       block.active = false;
       block.is_error = isError;
@@ -418,11 +450,15 @@ function handleApprovalRequired(
 
 function handleAgentEnd(state: ChatState): void {
   state.isProcessing = false;
-  const last = state.entries[state.entries.length - 1];
-  if (last && last.type === 'turn' && !last.endTime) {
-    last.endTime = Date.now();
-    // Stop any dangling subagents owned by this turn
-    stopDanglingSubagents(state, last);
+  // Close ALL open turns, not just the last one. The backend emits a fresh
+  // TurnStarted (with a new turn_id) per iteration, so a single Run can have
+  // multiple open turn entries. Leaving earlier ones open causes them to stay
+  // stuck in "Processed..." forever.
+  for (const entry of state.entries) {
+    if (entry.type === 'turn' && !entry.endTime) {
+      entry.endTime = Date.now();
+      stopDanglingSubagents(state, entry);
+    }
   }
 }
 
@@ -516,7 +552,14 @@ function handleSubagentToolStart(
 function handleSubagentToolUpdate(state: ChatState, subagentId: string, toolCallId: string, partialResult: unknown): void {
   const sa = state.subagents[subagentId];
   if (sa) {
-    const block = sa.blocks.find((b) => b.type === 'tool' && b.call_id === toolCallId);
+    let block = undefined;
+    for (let i = sa.blocks.length - 1; i >= 0; i--) {
+      const b = sa.blocks[i];
+      if (b.type === 'tool' && (toolCallId ? b.call_id === toolCallId : b.active)) {
+        block = b;
+        break;
+      }
+    }
     if (block && block.type === 'tool') {
       block.result += typeof partialResult === 'string' ? partialResult : JSON.stringify(partialResult);
     }
@@ -532,7 +575,14 @@ function handleSubagentToolEnd(
 ): void {
   const sa = state.subagents[subagentId];
   if (sa) {
-    const block = sa.blocks.find((b) => b.type === 'tool' && b.call_id === toolCallId);
+    let block = undefined;
+    for (let i = sa.blocks.length - 1; i >= 0; i--) {
+      const b = sa.blocks[i];
+      if (b.type === 'tool' && (toolCallId ? b.call_id === toolCallId : b.active)) {
+        block = b;
+        break;
+      }
+    }
     if (block && block.type === 'tool') {
       block.result = truncateResult(stringifyResult(result));
       block.active = false;
@@ -780,12 +830,14 @@ export const chatSlice = createSlice({
         state.runId = null;
         // Display the failure reason (pushes an error block).
         handleError(state, ev.error ?? 'run failed');
-        // B9: close the failed turn so getActiveTurn doesn't misattach later
-        // subagent events to a perpetually-open failed turn. (handleError
-        // already stopped dangling subagents owned by the turn.)
-        const last = state.entries[state.entries.length - 1];
-        if (last && last.type === 'turn' && !last.endTime) {
-          last.endTime = Date.now();
+        // B9: close ALL open turns (not just the last one) so none stays stuck
+        // in "Processed..." forever. handleError already stopped dangling
+        // subagents on the active turn; close the rest too.
+        for (const entry of state.entries) {
+          if (entry.type === 'turn' && !entry.endTime) {
+            entry.endTime = Date.now();
+            stopDanglingSubagents(state, entry);
+          }
         }
       }
 

@@ -56,6 +56,14 @@ impl Tool for EditTool {
         let new_content = old_content.replacen(old_string, new_string, 1);
         std::fs::write(file_path, &new_content)?;
 
+        // Compute the line range of the edited region (1-based) in the
+        // *original* file, so the UI can show "Edited lines L12–L18".
+        let byte_offset = old_content
+            .find(old_string)
+            .unwrap_or(0);
+        let line_start = old_content[..byte_offset].matches('\n').count() + 1;
+        let line_end = line_start + old_string.matches('\n').count();
+
         // Generate unified diff for the change
         let diff = TextDiff::from_lines(&old_content, &new_content);
         let mut diff_bytes = Vec::new();
@@ -76,8 +84,14 @@ impl Tool for EditTool {
             .count();
 
         Ok(format!(
-            "Successfully edited '{}': +{} additions, -{} deletions\n{}",
-            file_path, additions, deletions, diff_str
+            "Edited lines {}–{} ({} {}, {} {})\n{}",
+            line_start,
+            line_end,
+            additions,
+            if additions == 1 { "addition" } else { "additions" },
+            deletions,
+            if deletions == 1 { "deletion" } else { "deletions" },
+            diff_str
         ))
     }
 }

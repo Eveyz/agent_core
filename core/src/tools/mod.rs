@@ -5,6 +5,7 @@ pub mod git;
 pub mod glob;
 pub mod grep;
 pub mod read_file;
+pub mod sed;
 pub mod recall_memory;
 pub mod bash;
 pub mod skill;
@@ -78,6 +79,7 @@ impl ToolRegistry {
         registry.register(Box::new(read_file::ReadFileTool));
         registry.register(Box::new(write_file::WriteFileTool));
         registry.register(Box::new(edit::EditTool));
+        registry.register(Box::new(sed::SedTool));
         registry.register(Box::new(grep::GrepTool));
         registry.register(Box::new(glob::GlobTool));
         registry.register(Box::new(bash::BashTool::new()));
@@ -249,6 +251,7 @@ pub fn build_tool_by_name(name: &str) -> Option<Box<dyn Tool>> {
         "read_file" => Some(Box::new(read_file::ReadFileTool)),
         "write_file" => Some(Box::new(write_file::WriteFileTool)),
         "edit" => Some(Box::new(edit::EditTool)),
+        "sed" => Some(Box::new(sed::SedTool)),
         "grep" => Some(Box::new(grep::GrepTool)),
         "glob" => Some(Box::new(glob::GlobTool)),
         "bash" => Some(Box::new(bash::BashTool::new())),
