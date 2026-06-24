@@ -16,7 +16,7 @@
   --radius-md: 10px;
   --radius-lg: 16px;
 
-  --font-family: 'Geist Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-family: 'Geist Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
 
   --spinner-core: radial-gradient(circle at 40% 40%, #0a0a0a 30%, #1a1a2e 70%);
   --spinner-corona-1: rgba(139, 92, 246, 0.6);
@@ -617,8 +617,8 @@ body {
 .turn-divider {
   height: 1px;
   background: var(--border-color);
-  opacity: 0.5;
-  margin: 2px 0 4px 0;
+  opacity: 0.4;
+  margin: 6px 0 8px 0;
 }
 
 .turn-footer {
@@ -631,6 +631,10 @@ body {
 }
 
 .agent-turn:hover .turn-footer {
+  opacity: 1;
+}
+
+.turn-footer-processing {
   opacity: 1;
 }
 
@@ -1114,7 +1118,10 @@ body {
 /* Assistant Message Markdown */
 .assistant-msg {
   color: var(--text-main);
-  line-height: 1.6;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.65;
+  letter-spacing: -0.01em;
 }
 
 .assistant-msg p {
@@ -1124,6 +1131,57 @@ body {
   margin-bottom: 0;
 }
 
+.assistant-msg h1,
+.assistant-msg h2,
+.assistant-msg h3,
+.assistant-msg h4,
+.assistant-msg h5,
+.assistant-msg h6 {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.3;
+  margin: 20px 0 10px 0;
+  color: var(--text-main);
+}
+.assistant-msg h1 { font-size: 1.4em; }
+.assistant-msg h2 { font-size: 1.25em; }
+.assistant-msg h3 { font-size: 1.1em; }
+.assistant-msg h4,
+.assistant-msg h5,
+.assistant-msg h6 { font-size: 1em; }
+.assistant-msg h1:first-child,
+.assistant-msg h2:first-child,
+.assistant-msg h3:first-child {
+  margin-top: 0;
+}
+
+.assistant-msg strong {
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.assistant-msg hr {
+  border: 0;
+  border-top: 1px solid var(--border-color);
+  opacity: 0.5;
+  margin: 1.5rem 0;
+}
+
+.assistant-msg a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.assistant-msg a:hover {
+  text-decoration: underline;
+}
+
+.assistant-msg blockquote {
+  border-left: 2px solid var(--border-color);
+  padding-left: 14px;
+  margin: 0 0 12px 0;
+  color: var(--text-muted);
+}
+
 .assistant-msg ul,
 .assistant-msg ol {
   padding-left: 24px;
@@ -1131,7 +1189,7 @@ body {
 }
 
 .assistant-msg li {
-  margin-bottom: 4px;
+  margin-bottom: 6px;
 }
 
 .assistant-msg pre {
@@ -1143,7 +1201,7 @@ body {
 }
 
 .assistant-msg code {
-  font-family: monospace;
+  font-family: 'Geist Mono', 'SF Mono', 'Menlo', 'Consolas', monospace;
   font-size: 13px;
   background-color: var(--bg-hover);
   padding: 2px 4px;

@@ -35,7 +35,16 @@ const TurnFooter = memo(function TurnFooter({ entry }: { entry: ChatEntry }) {
 
   const isProcessing = !entry.endTime;
 
-  if (!endTimeText && (!rawOutput || isProcessing)) return null;
+  if (isProcessing) {
+    return (
+      <div className="turn-footer turn-footer-processing">
+        <div className="black-hole-spinner" style={{ width: 12, height: 12 }} />
+        <span className="turn-end-time">Processing...</span>
+      </div>
+    );
+  }
+
+  if (!endTimeText && !rawOutput) return null;
 
   return (
     <div className="turn-footer">
