@@ -255,7 +255,7 @@ async fn run_tui_mode() -> anyhow::Result<()> {
     let skill_manager = Arc::new(Mutex::new(skill_manager));
 
     let builder = builder
-        .with_memory(false)
+        .with_memory(true)
         .with_skill_manager(skill_manager.clone())
         .with_tool_execution_mode(ToolExecutionMode::Parallel);
 
@@ -317,13 +317,8 @@ async fn main() -> anyhow::Result<()> {
     let use_styles = std::io::stdout().is_terminal();
     println!("=== Agent Core CLI ===\n");
 
-    // Memory
-    print!("Enable memory system? (y/N): ");
-    io::stdout().flush()?;
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    let enable_memory = input.trim().to_lowercase() == "y";
-    builder = builder.with_memory(enable_memory);
+    // Memory — enabled by default
+    builder = builder.with_memory(true);
 
     // Permission
     print!("Enable permission system? (Y/n): ");
@@ -440,7 +435,7 @@ async fn main() -> anyhow::Result<()> {
     println!("\n--- Status ---");
     println!(
         "Memory:      {}",
-        if enable_memory { "enabled" } else { "disabled" }
+        "Memory:      enabled"
     );
     println!(
         "Permission:  {}",
@@ -693,7 +688,6 @@ async fn main() -> anyhow::Result<()> {
             "/status" => {
                 print_status(
                     &agent,
-                    enable_memory,
                     enable_permission,
                     enable_hooks,
                     &todo_list,
@@ -1206,7 +1200,6 @@ fn handle_tasks_cmd(cmd: &str, task_board: &Arc<Mutex<TaskBoard>>) {
 
 fn print_status(
     agent: &agent_core::Agent,
-    enable_memory: bool,
     enable_permission: bool,
     enable_hooks: bool,
     todo_list: &Arc<Mutex<TodoList>>,
@@ -1218,7 +1211,7 @@ fn print_status(
     println!("State:       {:?}", agent.state());
     println!("Tool mode:   {:?}", agent.tool_execution_mode());
     println!("Tokens:      {}", agent.context_token_count());
-    println!("Memory:      {}", if enable_memory { "on" } else { "off" });
+    println!("Memory:      {}", if agent.memory_enabled() { "on" } else { "off" });
     println!(
         "Permission:  {}",
         if enable_permission { "on" } else { "off" }

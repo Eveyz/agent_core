@@ -158,6 +158,9 @@ pub struct Config {
     pub permissions: crate::permission::PermissionConfig,
     #[serde(default)]
     pub mcp: crate::mcp::McpConfig,
+    /// Enable offline reflection (analyzes Run event logs after completion).
+    #[serde(default)]
+    pub reflector_enabled: bool,
 }
 
 impl Config {
@@ -256,6 +259,7 @@ impl Config {
             memory: None,
             permissions: crate::permission::PermissionConfig::default(),
             mcp: crate::mcp::McpConfig::default(),
+            reflector_enabled: false,
         })
     }
 

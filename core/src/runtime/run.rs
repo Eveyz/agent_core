@@ -485,6 +485,23 @@ impl Run {
                 let _ = m.store_conversation("assistant", &text);
             }
 
+            // Consolidate memory in background (non-blocking, best-effort)
+            if let Some(ref mem) = self.brain.memory {
+                let mem = mem.clone();
+                self.join_set.spawn(async move {
+                    let result = mem.lock().consolidate();
+                    if let Ok(report) = result {
+                        if report.deduped_recall > 0 || report.deduped_archival > 0 {
+                            tracing::info!(
+                                deduped_recall = report.deduped_recall,
+                                deduped_archival = report.deduped_archival,
+                                "memory consolidated"
+                            );
+                        }
+                    }
+                });
+            }
+
             // Process steering messages
             while let Some(steer_msg) = self.steering_queue.pop_front() {
                 self.context.add(steer_msg);

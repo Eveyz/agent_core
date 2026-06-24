@@ -22,6 +22,7 @@ use crate::hooks::HookRegistry;
 use crate::memory::MemoryManager;
 use crate::permission::{PermissionConfig, PermissionPolicy};
 use crate::prompt;
+use crate::reflector::Reflector;
 use crate::skills::SkillManager;
 use crate::todo::TodoList;
 use crate::tools::ToolRegistry;
@@ -39,6 +40,8 @@ pub struct Brain {
     pub skill_manager: Option<Arc<Mutex<SkillManager>>>,
     /// Shared todo list (planning state, visible across Runs).
     pub todo_list: Arc<Mutex<TodoList>>,
+    /// Offline reflector (analyzes Run event logs after completion).
+    pub reflector: Option<Reflector>,
     /// The currently active model name (e.g. "openai/gpt-4o").
     /// Switching the model updates this; new Runs use the new model.
     current_model_name: String,
@@ -47,8 +50,9 @@ pub struct Brain {
 impl Brain {
     /// Build a Brain from a loaded Config.
     pub fn from_config(config: Config) -> Result<Self> {
-        let memory = Self::build_memory(&config)?;
+        let memory = Self::build_memory(&config);
         let skill_manager = Self::build_skill_manager(&config)?;
+        let reflector = Self::build_reflector(&config);
 
         let current_model_name = config.default_model.clone();
 
@@ -57,6 +61,7 @@ impl Brain {
             memory,
             skill_manager,
             todo_list: Arc::new(Mutex::new(TodoList::new())),
+            reflector,
             current_model_name,
         })
     }
@@ -68,16 +73,24 @@ impl Brain {
         Self::from_config(config)
     }
 
-    fn build_memory(config: &Config) -> Result<Option<Arc<Mutex<MemoryManager>>>> {
-        if let Some(ref mem_config) = config.memory {
-            let m = MemoryManager::new(
-                &mem_config.db_path,
-                &mem_config.embedding_model,
-                mem_config.default_block_max_chars,
-            )?;
-            Ok(Some(Arc::new(Mutex::new(m))))
-        } else {
-            Ok(None)
+    fn build_memory(config: &Config) -> Option<Arc<Mutex<MemoryManager>>> {
+        let mem_config = config.memory.as_ref();
+        let db_path = mem_config
+            .map(|m| m.db_path.as_str())
+            .unwrap_or("~/.agent_core/memory.db");
+        let embedding_model = mem_config
+            .map(|m| m.embedding_model.as_str())
+            .unwrap_or("BAAI/bge-small-en-v1.5");
+        let block_max_chars = mem_config
+            .map(|m| m.default_block_max_chars)
+            .unwrap_or(2000);
+
+        match MemoryManager::new(db_path, embedding_model, block_max_chars) {
+            Ok(m) => Some(Arc::new(Mutex::new(m))),
+            Err(e) => {
+                tracing::warn!("failed to initialize memory system: {e}; continuing without memory");
+                None
+            }
         }
     }
 
@@ -85,6 +98,18 @@ impl Brain {
         // Skill manager is optional and requires a skills directory.
         // For now, return None — can be wired up via builder.
         Ok(None)
+    }
+
+    fn build_reflector(config: &Config) -> Option<Reflector> {
+        if !config.reflector_enabled {
+            return None;
+        }
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| ".".to_string());
+        let skills_dir = std::path::PathBuf::from(&home).join(".agent_core/skills");
+        let _ = std::fs::create_dir_all(&skills_dir);
+        Some(Reflector::new(skills_dir))
     }
 
     /// Get the currently active model's full config.

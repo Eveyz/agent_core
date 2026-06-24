@@ -311,7 +311,8 @@ impl ComprehensiveAgent {
         let reflector = self.reflector.as_ref().context("reflector not enabled")?;
 
         let records = Reflector::load_trace(trace_path)?;
-        let mut suggestions = reflector.analyze(&records);
+        let events: Vec<_> = records.iter().filter_map(|r| r.to_digest_event()).collect();
+        let mut suggestions = reflector.analyze(&events);
 
         if enrich {
             // Borrow the agent's client for the cosmetic rationale rewrite.

@@ -693,6 +693,7 @@ pub fn run() {
                     memory: None,
                     permissions: Default::default(),
                     mcp: Default::default(),
+                    reflector_enabled: false,
                 };
                 default_config.rebuild_models();
                 let _ = default_config.save(&config_path_str);

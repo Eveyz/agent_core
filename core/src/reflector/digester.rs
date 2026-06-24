@@ -6,9 +6,27 @@
 //! - Same tool-call pattern repeated 3+ turns → flag looping, suggest a breaker skill.
 //! - Many `ApprovalRequired` followed by `DenyPersistent` → suggest tighter defaults (manual).
 
-use super::TraceRecord;
 use super::suggestion::{Suggestion, SuggestionKind};
 use std::collections::HashMap;
+
+/// Normalized event the digester operates on.
+/// Decoupled from both AgentEvent and RunEvent so it works with either trace source.
+#[derive(Debug, Clone)]
+pub struct DigestEvent {
+    pub kind: DigestEventKind,
+    pub tool_name: Option<String>,
+    pub is_error: bool,
+    pub message: Option<String>,
+    pub turn_index: Option<usize>,
+    pub ts: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DigestEventKind {
+    TurnStart,
+    ToolEnd,
+    Error,
+}
 
 /// A named digester rule. Pure for testability.
 #[derive(Debug, Clone, Copy)]
@@ -37,45 +55,48 @@ impl DigesterRule {
 pub struct Digester;
 
 impl Digester {
-    pub fn analyze(&self, records: &[TraceRecord]) -> Vec<Suggestion> {
+    pub fn analyze(&self, events: &[DigestEvent]) -> Vec<Suggestion> {
         let mut out = Vec::new();
-        out.extend(self.consecutive_tool_errors(records));
-        out.extend(self.tool_loop(records));
-        out.extend(self.frequent_denials(records));
+        out.extend(self.consecutive_tool_errors(events));
+        out.extend(self.tool_loop(events));
+        out.extend(self.frequent_denials(events));
         out
     }
 
-    /// 3+ consecutive `ToolExecutionEnd{is_error:true}` for the same tool.
-    fn consecutive_tool_errors(&self, records: &[TraceRecord]) -> Vec<Suggestion> {
+    /// 3+ consecutive tool errors for the same tool.
+    fn consecutive_tool_errors(&self, events: &[DigestEvent]) -> Vec<Suggestion> {
         let mut streaks: HashMap<String, u32> = HashMap::new();
         let mut fired: HashMap<String, bool> = HashMap::new();
         let mut out = Vec::new();
 
-        for r in records {
-            if let Some(snap) = r.as_tool_end() {
-                if snap.is_error {
-                    let count = streaks.entry(snap.tool_name.clone()).or_insert(0);
+        for ev in events {
+            if ev.kind != DigestEventKind::ToolEnd {
+                continue;
+            }
+            if let Some(ref name) = ev.tool_name {
+                if ev.is_error {
+                    let count = streaks.entry(name.clone()).or_insert(0);
                     *count += 1;
-                    if *count >= 3 && !fired.get(&snap.tool_name).copied().unwrap_or(false) {
-                        fired.insert(snap.tool_name.clone(), true);
+                    if *count >= 3 && !fired.get(name).copied().unwrap_or(false) {
+                        fired.insert(name.clone(), true);
                         out.push(Suggestion {
-                            id: format!("skill-{}-errors", slug(&snap.tool_name)),
+                            id: format!("skill-{}-errors", slug(name)),
                             kind: SuggestionKind::AppendSkill,
-                            target: format!("{}-usage-guide", slug(&snap.tool_name)),
+                            target: format!("{}-usage-guide", slug(name)),
                             rationale: format!(
                                 "Tool '{}' failed {} times in a row; a skill guiding correct usage may prevent recurrence.",
-                                snap.tool_name, count
+                                name, count
                             ),
-                            detected_at: r.ts,
-                            skill_triggers: vec![snap.tool_name.clone()],
+                            detected_at: ev.ts,
+                            skill_triggers: vec![name.clone()],
                             skill_body: Some(format!(
                                 "# {} usage guide\n\nWhen calling {}, ensure:\n- arguments are valid JSON\n- paths exist before access\n- check the result for `Error:` prefixes\n",
-                                snap.tool_name, snap.tool_name
+                                name, name
                             )),
                         });
                     }
                 } else {
-                    streaks.remove(&snap.tool_name);
+                    streaks.remove(name);
                 }
             }
         }
@@ -83,20 +104,26 @@ impl Digester {
     }
 
     /// Same tool called 3+ times across distinct turns → looping signal.
-    fn tool_loop(&self, records: &[TraceRecord]) -> Vec<Suggestion> {
+    fn tool_loop(&self, events: &[DigestEvent]) -> Vec<Suggestion> {
         let mut per_turn: HashMap<usize, Vec<String>> = HashMap::new();
-        for r in records {
-            if let Some(turn) = r.as_turn_start() {
-                per_turn.entry(turn).or_default();
-            }
-            if let Some(snap) = r.as_tool_end() {
-                // attribute to the most recent turn seen
-                if let Some(turn) = per_turn.keys().copied().max() {
-                    per_turn
-                        .entry(turn)
-                        .or_default()
-                        .push(snap.tool_name.clone());
+        let mut current_turn: Option<usize> = None;
+
+        for ev in events {
+            match ev.kind {
+                DigestEventKind::TurnStart => {
+                    if let Some(t) = ev.turn_index {
+                        current_turn = Some(t);
+                        per_turn.entry(t).or_default();
+                    }
                 }
+                DigestEventKind::ToolEnd => {
+                    if let Some(ref name) = ev.tool_name {
+                        if let Some(t) = current_turn {
+                            per_turn.entry(t).or_default().push(name.clone());
+                        }
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -128,13 +155,14 @@ impl Digester {
             .collect::<Vec<_>>()
     }
 
-    /// Frequent `Error` events mentioning permission denial → manual suggestion
+    /// Frequent errors mentioning permission denial → manual suggestion
     /// to review defaults. (Never auto-writes permissions.)
-    fn frequent_denials(&self, records: &[TraceRecord]) -> Vec<Suggestion> {
-        let denials = records
+    fn frequent_denials(&self, events: &[DigestEvent]) -> Vec<Suggestion> {
+        let denials = events
             .iter()
-            .filter_map(|r| r.as_error())
-            .filter(|e| e.contains("Permission denied") || e.contains("not approved"))
+            .filter(|ev| ev.kind == DigestEventKind::Error)
+            .filter_map(|ev| ev.message.as_deref())
+            .filter(|m| m.contains("Permission denied") || m.contains("not approved"))
             .count();
 
         if denials >= 3 {
@@ -163,38 +191,49 @@ fn slug(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
-    fn tool_end(name: &str, is_error: bool) -> TraceRecord {
-        TraceRecord {
+    fn tool_end(name: &str, is_error: bool) -> DigestEvent {
+        DigestEvent {
+            kind: DigestEventKind::ToolEnd,
+            tool_name: Some(name.to_string()),
+            is_error,
+            message: None,
+            turn_index: None,
             ts: chrono::Utc::now(),
-            event: json!({
-                "ToolExecutionEnd": {
-                    "tool_call_id": "c",
-                    "tool_name": name,
-                    "result": if is_error { "Error: boom" } else { "ok" },
-                    "is_error": is_error,
-                }
-            }),
         }
     }
 
-    fn turn_start(i: usize) -> TraceRecord {
-        TraceRecord {
+    fn turn_start(i: usize) -> DigestEvent {
+        DigestEvent {
+            kind: DigestEventKind::TurnStart,
+            tool_name: None,
+            is_error: false,
+            message: None,
+            turn_index: Some(i),
             ts: chrono::Utc::now(),
-            event: json!({ "TurnStart": { "turn_index": i } }),
+        }
+    }
+
+    fn error_event(msg: &str) -> DigestEvent {
+        DigestEvent {
+            kind: DigestEventKind::Error,
+            tool_name: None,
+            is_error: true,
+            message: Some(msg.to_string()),
+            turn_index: None,
+            ts: chrono::Utc::now(),
         }
     }
 
     #[test]
     fn test_consecutive_errors_fires_skill() {
-        let recs = vec![
+        let events = vec![
             tool_end("bash", true),
             tool_end("bash", true),
             tool_end("bash", true),
         ];
         let d = Digester;
-        let s = d.analyze(&recs);
+        let s = d.analyze(&events);
         assert!(
             s.iter()
                 .any(|s| s.kind == SuggestionKind::AppendSkill && s.target.contains("bash"))
@@ -203,21 +242,20 @@ mod tests {
 
     #[test]
     fn test_consecutive_errors_resets_on_success() {
-        let recs = vec![
+        let events = vec![
             tool_end("bash", true),
             tool_end("bash", true),
             tool_end("bash", false), // resets
             tool_end("bash", true),
         ];
         let d = Digester;
-        let s = d.analyze(&recs);
-        // 2 then 1 — never reaches 3
+        let s = d.analyze(&events);
         assert!(!s.iter().any(|s| s.target.contains("usage-guide")));
     }
 
     #[test]
     fn test_tool_loop_detected_across_turns() {
-        let recs = vec![
+        let events = vec![
             turn_start(0),
             tool_end("grep", false),
             turn_start(1),
@@ -226,39 +264,28 @@ mod tests {
             tool_end("grep", false),
         ];
         let d = Digester;
-        let s = d.analyze(&recs);
+        let s = d.analyze(&events);
         assert!(s.iter().any(|s| s.target.contains("loop-breaker")));
     }
 
     #[test]
     fn test_frequent_denials_emits_manual_only() {
-        let recs: Vec<TraceRecord> = (0..4)
-            .map(|_| TraceRecord {
-                ts: chrono::Utc::now(),
-                event: json!("Error"), // tag-only; as_error needs string value
-            })
-            .collect();
-        // Build proper Error events: AgentEvent::Error(String) serializes as
-        // {"Error": "message"}.
-        let recs: Vec<TraceRecord> = (0..4)
-            .map(|_| TraceRecord {
-                ts: chrono::Utc::now(),
-                event: json!({"Error": "Permission denied by user"}),
-            })
+        let events: Vec<DigestEvent> = (0..4)
+            .map(|_| error_event("Permission denied by user"))
             .collect();
         let d = Digester;
-        let s = d.analyze(&recs);
+        let s = d.analyze(&events);
         assert!(s.iter().any(|s| s.kind == SuggestionKind::PermissionChange));
     }
 
     #[test]
     fn test_no_false_positives_on_clean_trace() {
-        let recs = vec![
+        let events = vec![
             turn_start(0),
             tool_end("bash", false),
             tool_end("grep", false),
         ];
         let d = Digester;
-        assert!(d.analyze(&recs).is_empty());
+        assert!(d.analyze(&events).is_empty());
     }
 }

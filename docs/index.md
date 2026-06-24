@@ -8,7 +8,7 @@
 |------|-------|-------------|
 | ADR | 1 | Architecture Decision Records |
 | RFC | 0 | Requests for Comments |
-| PLAN | 1 | Development Plans |
+| PLAN | 2 | Development Plans |
 | RUN | 0 | Runbooks |
 | POST | 0 | Post-mortems |
 | AI-NOTE | 0 | AI Analysis Notes |
@@ -33,6 +33,7 @@
 | ID | Title | Status | Author | Updated |
 |----|-------|--------|--------|---------|
 | PLAN-0001 | Agent Self-Planning Todo System | Draft | zniverse | 2026-06-25 |
+| PLAN-0002 | Memory & Reflector 激活计划 | Draft | zniverse | 2026-06-25 |
 
 ## RUN (Runbooks)
 

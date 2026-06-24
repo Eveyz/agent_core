@@ -37,7 +37,7 @@ use crate::types::Message;
 pub mod digester;
 pub mod suggestion;
 
-pub use digester::{Digester, DigesterRule};
+pub use digester::{Digester, DigesterRule, DigestEvent, DigestEventKind};
 pub use suggestion::{
     SAFE_AUTO_APPLY, SECURITY_FIELDS, Suggestion, SuggestionAction, SuggestionKind,
 };
@@ -79,13 +79,64 @@ impl Reflector {
         Ok(records)
     }
 
-    /// Analyze a loaded trace and produce suggestions. Pure: does not write
-    /// anything. The caller decides what to auto-apply vs. surface for approval.
-    pub fn analyze(&self, records: &[TraceRecord]) -> Vec<Suggestion> {
+    /// Analyze a list of digest events and produce suggestions. Pure: does
+    /// not write anything. The caller decides what to auto-apply vs. surface
+    /// for approval.
+    pub fn analyze(&self, events: &[DigestEvent]) -> Vec<Suggestion> {
         let digester = Digester;
-        let mut suggestions = digester.analyze(records);
+        let mut suggestions = digester.analyze(events);
         suggestions.truncate(self.max_suggestions);
         suggestions
+    }
+
+    /// Load a Runtime EventLog (Envelope JSONL) and convert to digest events.
+    /// This bridges the Run's `EventLog` format to the digester's input.
+    pub fn load_event_log(path: &Path) -> Result<Vec<DigestEvent>> {
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read event log: {path:?}"))?;
+        let mut events = Vec::new();
+        for (i, line) in content.lines().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let env: serde_json::Value = serde_json::from_str(line)
+                .with_context(|| format!("failed to parse event log line {}: {line}", i + 1))?;
+
+            let event_tag = env.get("event").and_then(|v| v.as_str()).unwrap_or("");
+            let ts = chrono::Utc::now();
+
+            let digest = match event_tag {
+                "turn_started" => Some(DigestEvent {
+                    kind: DigestEventKind::TurnStart,
+                    tool_name: None,
+                    is_error: false,
+                    message: None,
+                    turn_index: env.get("index").and_then(|v| v.as_u64()).map(|n| n as usize),
+                    ts,
+                }),
+                "tool_ended" => Some(DigestEvent {
+                    kind: DigestEventKind::ToolEnd,
+                    tool_name: env.get("name").and_then(|v| v.as_str()).map(String::from),
+                    is_error: env.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false),
+                    message: None,
+                    turn_index: None,
+                    ts,
+                }),
+                "error" => Some(DigestEvent {
+                    kind: DigestEventKind::Error,
+                    tool_name: None,
+                    is_error: true,
+                    message: env.get("message").and_then(|v| v.as_str()).map(String::from),
+                    turn_index: None,
+                    ts,
+                }),
+                _ => None,
+            };
+            if let Some(d) = digest {
+                events.push(d);
+            }
+        }
+        Ok(events)
     }
 
     /// Apply a suggestion. Returns what actually happened.
@@ -247,6 +298,41 @@ impl TraceRecord {
             .as_u64()
             .map(|n| n as usize)
     }
+
+    /// Convert this trace record to a normalized `DigestEvent`.
+    /// Returns `None` if the record doesn't match any digester-relevant variant.
+    pub fn to_digest_event(&self) -> Option<DigestEvent> {
+        if let Some(snap) = self.as_tool_end() {
+            Some(DigestEvent {
+                kind: DigestEventKind::ToolEnd,
+                tool_name: Some(snap.tool_name),
+                is_error: snap.is_error,
+                message: None,
+                turn_index: None,
+                ts: self.ts,
+            })
+        } else if let Some(turn) = self.as_turn_start() {
+            Some(DigestEvent {
+                kind: DigestEventKind::TurnStart,
+                tool_name: None,
+                is_error: false,
+                message: None,
+                turn_index: Some(turn),
+                ts: self.ts,
+            })
+        } else if let Some(msg) = self.as_error() {
+            Some(DigestEvent {
+                kind: DigestEventKind::Error,
+                tool_name: None,
+                is_error: true,
+                message: Some(msg),
+                turn_index: None,
+                ts: self.ts,
+            })
+        } else {
+            None
+        }
+    }
 }
 
 /// Snapshot of a tool execution end event, for digester heuristics.
@@ -395,7 +481,8 @@ mod guard_tests {
         let skills_dir = dir.path().join("skills");
         let reflector = Reflector::new(&skills_dir);
         let records = Reflector::load_trace(&trace_path).unwrap();
-        let suggestions = reflector.analyze(&records);
+        let events: Vec<_> = records.iter().filter_map(|r| r.to_digest_event()).collect();
+        let suggestions = reflector.analyze(&events);
 
         assert!(
             suggestions

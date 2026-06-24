@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio::task::JoinHandle;
 
+use crate::reflector::Reflector;
 use crate::runtime::brain::Brain;
 use crate::runtime::command::RunCommand;
 use crate::runtime::event::{Envelope, RunEvent, RunId};
@@ -180,6 +181,8 @@ impl RunManager {
         let event_tx_clone = event_tx.clone();
         let log_run_id = run_id.clone();
         let event_tx_for_log = event_tx.clone();
+        let brain_for_reflect = self.brain.clone();
+        let reflect_run_id = run_id.clone();
         let join_handle = tokio::spawn(async move {
             // Logging subscriber: persists every Envelope to JSONL so that
             // replay/resync works. Runs independently of the Run task, ensuring
@@ -227,6 +230,50 @@ impl RunManager {
             let _ = state_task.await;
             // Wait for the logging subscriber to flush remaining events.
             let _ = log_task.await;
+
+            // Offline reflection: analyze the Run's event log for improvement
+            // suggestions. Only runs if the Brain has a Reflector configured.
+            if let Some(ref reflector) = brain_for_reflect.reflector {
+                let log_path = std::path::PathBuf::from(default_runs_dir())
+                    .join(format!("{reflect_run_id}.jsonl"));
+                match Reflector::load_event_log(&log_path) {
+                    Ok(events) => {
+                        let suggestions = reflector.analyze(&events);
+                        for sug in &suggestions {
+                            match reflector.apply(sug) {
+                                Ok(crate::reflector::SuggestionAction::Applied) => {
+                                    tracing::info!(
+                                        suggestion = %sug.id,
+                                        target = %sug.target,
+                                        "reflector auto-applied skill"
+                                    );
+                                }
+                                Ok(crate::reflector::SuggestionAction::NeedsApproval(diff)) => {
+                                    tracing::info!(
+                                        suggestion = %sug.id,
+                                        "reflector suggestion needs approval: {diff}"
+                                    );
+                                }
+                                Ok(crate::reflector::SuggestionAction::Forbidden) => {
+                                    tracing::debug!(
+                                        suggestion = %sug.id,
+                                        "reflector suggestion forbidden"
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        suggestion = %sug.id,
+                                        "reflector apply error: {e}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("reflector failed to load event log: {e}");
+                    }
+                }
+            }
         });
 
         // Store the handle
