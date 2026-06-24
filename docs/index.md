@@ -20,7 +20,7 @@
 
 | ID | Title | Status | Author | Updated |
 |----|-------|--------|--------|---------|
-| — | — | — | — | — |
+| ADR-0001 | Memory Layer Abstraction — Core, Recall, and Archival Storage | Draft | agent_core | 2026-06-24 |
 
 ## RFC (Requests for Comments)
 

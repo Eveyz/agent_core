@@ -1,4 +1,5 @@
 import { createSelector } from '@reduxjs/toolkit';
+import { useState, useEffect, useRef } from 'react';
 import type { RootState } from '../store';
 import { useAppSelector } from './useAppDispatch';
 import { roughTokenCount } from '../utils/tokens';
@@ -21,10 +22,41 @@ const selectTokenCount = createSelector(
   }
 );
 
+/**
+ * PERF-2: Throttled token count.
+ *
+ * The selector itself is memoized, but Immer creates a new `entries` array on
+ * every token delta, so the memoization misses. To avoid blocking the main
+ * thread with O(total text) computation on every token, we sample the selector
+ * at most once every 500ms via a timer-based throttle.
+ */
 export function useTokenCount(): number {
-  return useAppSelector(selectTokenCount);
+  const rawCount = useAppSelector(selectTokenCount);
+  const [displayCount, setDisplayCount] = useState(rawCount);
+  const lastUpdateRef = useRef(0);
+
+  useEffect(() => {
+    const now = Date.now();
+    if (now - lastUpdateRef.current >= 500) {
+      lastUpdateRef.current = now;
+      setDisplayCount(rawCount);
+    } else {
+      const timer = setTimeout(() => {
+        lastUpdateRef.current = Date.now();
+        setDisplayCount(rawCount);
+      }, 500 - (now - lastUpdateRef.current));
+      return () => clearTimeout(timer);
+    }
+  }, [rawCount]);
+
+  return displayCount;
 }
 
+const selectTurnCount = createSelector(
+  [selectEntries],
+  (entries) => entries.filter((e) => e.type === 'turn').length
+);
+
 export function useTurnCount(): number {
-  return useAppSelector((state) => state.chat.entries.filter((e) => e.type === 'turn').length);
+  return useAppSelector(selectTurnCount);
 }

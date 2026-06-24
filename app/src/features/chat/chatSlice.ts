@@ -815,6 +815,130 @@ function resolveApprovalBlock(state: ChatState, promptId: string, choice?: strin
   }
 }
 
+// ── Core event processing (extracted for batch dispatch, PERF-1) ──────
+
+function processSingleEvent(state: ChatState, payload: string | Record<string, unknown>): void {
+  let raw: Record<string, unknown>;
+  if (typeof payload === 'string') {
+    try {
+      raw = JSON.parse(payload);
+    } catch {
+      return;
+    }
+  } else {
+    raw = payload as Record<string, unknown>;
+  }
+
+  if (!raw || typeof raw.event !== 'string') return;
+  const ev = raw as unknown as RunEventPayload;
+
+  // When a new run is created for the active session, claim it
+  if (ev.event === 'run_created') {
+    if (ev.session_id === state.activeSessionId) {
+      state.runId = ev.run_id ?? null;
+    }
+  }
+
+  // Ignore all events that don't belong to the active run
+  if (ev.run_id !== state.runId) {
+    return;
+  }
+
+  // Gap detection (Stage 0/3)
+  if (typeof ev.seq === 'number' && typeof ev.run_id === 'string') {
+    const prev = state.lastSeqByRun[ev.run_id];
+    if (prev !== undefined && ev.seq > prev + 1) {
+      console.warn(
+        `[agent-event] gap detected for run ${ev.run_id}: expected ${prev + 1}, got ${ev.seq} (${ev.seq - prev - 1} missing); triggering resync`
+      );
+      state._pendingGap = { runId: ev.run_id, fromSeq: prev };
+    }
+    state.lastSeqByRun[ev.run_id] = ev.seq;
+  }
+
+  // Lifecycle
+  if (ev.event === 'state_changed' && ev.to) {
+    state.runState = ev.to as RunState;
+    if (ev.to === 'completed' || ev.to === 'cancelled' || ev.to === 'failed') {
+      state.isProcessing = false;
+    }
+  } else if (ev.event === 'run_started') {
+    state.runState = 'running';
+  } else if (ev.event === 'run_paused') {
+    state.runState = 'paused';
+  } else if (ev.event === 'run_resumed') {
+    state.runState = 'running';
+  } else if (ev.event === 'run_completed' || ev.event === 'run_cancelled') {
+    state.isProcessing = false;
+    state.runId = null;
+    handleAgentEnd(state);
+  } else if (ev.event === 'run_failed') {
+    state.isProcessing = false;
+    state.runId = null;
+    handleError(state, ev.error ?? 'run failed');
+    for (const entry of state.entries) {
+      if (entry.type === 'turn' && !entry.endTime) {
+        entry.endTime = Date.now();
+        stopDanglingSubagents(state, entry);
+      }
+    }
+  }
+
+  state._pendingTurnId = ev.turn_id;
+
+  switch (ev.event) {
+    case 'turn_started':
+      handleTurnStart(state, ev.index ?? 0, ev.turn_id);
+      break;
+    case 'turn_ended':
+      handleTurnEnded(state);
+      break;
+    case 'message_start':
+      if (ev.subagent_id) handleSubagentMessageStart(state, ev.subagent_id, ev.message_id);
+      else handleMessageStart(state, ev.message_id);
+      break;
+    case 'message_update':
+    case 'model_streaming':
+      if (ev.subagent_id) handleSubagentMessageUpdate(state, ev.subagent_id, ev.message_id, ev.delta ?? {});
+      else handleMessageUpdate(state, ev.message_id, ev.delta ?? {});
+      break;
+    case 'message_end':
+      if (ev.subagent_id) handleSubagentMessageEnd(state, ev.subagent_id, ev.message_id);
+      else handleMessageEnd(state, ev.message_id);
+      break;
+    case 'tool_started':
+      if (ev.subagent_id) handleSubagentToolStart(state, ev.subagent_id, ev.call_id ?? '', ev.name ?? '', ev.args);
+      else handleToolStart(state, ev.call_id ?? '', ev.name ?? '', ev.args);
+      break;
+    case 'tool_update':
+      if (ev.subagent_id) handleSubagentToolUpdate(state, ev.subagent_id, ev.call_id ?? '', ev.partial ?? '');
+      else handleToolUpdate(state, ev.call_id ?? '', ev.partial ?? '');
+      break;
+    case 'tool_ended':
+      if (ev.subagent_id) handleSubagentToolEnd(state, ev.subagent_id, ev.call_id ?? '', ev.result ?? '', ev.is_error ?? false);
+      else handleToolEnd(state, ev.call_id ?? '', ev.result ?? '', ev.is_error ?? false);
+      break;
+    case 'approval_required':
+      if (ev.subagent_id) handleSubagentApprovalRequired(state, ev.subagent_id, ev.prompt_id ?? '', ev.tool_name ?? '', ev.tool_input, ev.danger_level ?? '', ev.explanation ?? '');
+      else handleApprovalRequired(state, ev.prompt_id ?? '', ev.tool_name ?? '', ev.tool_input, ev.danger_level ?? '', ev.explanation ?? '');
+      break;
+    case 'approval_resolved':
+      resolveApprovalBlock(state, ev.prompt_id ?? '', ev.choice);
+      break;
+    case 'error':
+      handleError(state, ((ev as unknown as Record<string, unknown>).message as string | undefined) ?? 'unknown error');
+      break;
+    case 'subagent_started':
+      handleSubagentStart(state, ev.subagent_id ?? '', ev.parent_call_id, ev.role_name, ev.task ?? '');
+      break;
+    case 'subagent_ended':
+      handleSubagentEnd(state, ev.subagent_id ?? '', ev.success ?? false, ev.iterations_used);
+      break;
+    default:
+      break;
+  }
+}
+
 /**
  * Resync a Run's event stream after a gap (B2 self-heal, Stage 3).
  *
@@ -899,142 +1023,13 @@ export const chatSlice = createSlice({
       }
     },
     agentEventReceived: (state, action: PayloadAction<string | Record<string, unknown>>) => {
-      let raw: Record<string, unknown>;
-      if (typeof action.payload === 'string') {
-        try {
-          raw = JSON.parse(action.payload);
-        } catch {
-          return;
-        }
-      } else {
-        raw = action.payload as Record<string, unknown>;
-      }
-
-      // Every event now arrives as a stamped RunEvent envelope
-      // ({ event, seq, event_id, run_id, ... }). The legacy AgentEvent
-      // format is no longer produced by the backend (Stage 1, R4).
-      if (!raw || typeof raw.event !== 'string') return;
-      const ev = raw as unknown as RunEventPayload;
-
-      // When a new run is created for the active session, claim it
-      if (ev.event === 'run_created') {
-        if (ev.session_id === state.activeSessionId) {
-          state.runId = ev.run_id ?? null;
-        }
-      }
-
-      // Ignore all events that don't belong to the active run
-      if (ev.run_id !== state.runId) {
-        return;
-      }
-
-      // Gap detection (Stage 0/3): every event carries a per-Run monotonic seq.
-      // A gap means events were lost in transit (e.g. broadcast lag). We warn
-      // and signal the listener to trigger a resync from the persisted log.
-      if (typeof ev.seq === 'number' && typeof ev.run_id === 'string') {
-        const prev = state.lastSeqByRun[ev.run_id];
-        if (prev !== undefined && ev.seq > prev + 1) {
-          console.warn(
-            `[agent-event] gap detected for run ${ev.run_id}: expected ${prev + 1}, got ${ev.seq} (${ev.seq - prev - 1} missing); triggering resync`
-          );
-          // Store gap info for the listenerMiddleware to pick up (P2-1).
-          // Previously this used Promise.resolve().then() inside the reducer,
-          // which is a side-effect anti-pattern.
-          state._pendingGap = { runId: ev.run_id, fromSeq: prev };
-        }
-        state.lastSeqByRun[ev.run_id] = ev.seq;
-      }
-
-      // Lifecycle (handled directly; not routed through block handlers)
-      if (ev.event === 'state_changed' && ev.to) {
-        state.runState = ev.to as RunState;
-        if (ev.to === 'completed' || ev.to === 'cancelled' || ev.to === 'failed') {
-          state.isProcessing = false;
-        }
-      } else if (ev.event === 'run_started') {
-        state.runState = 'running';
-      } else if (ev.event === 'run_paused') {
-        state.runState = 'paused';
-      } else if (ev.event === 'run_resumed') {
-        state.runState = 'running';
-      } else if (ev.event === 'run_completed' || ev.event === 'run_cancelled') {
-        state.isProcessing = false;
-        state.runId = null;
-        // Close the active turn + stop any dangling subagents.
-        handleAgentEnd(state);
-      } else if (ev.event === 'run_failed') {
-        state.isProcessing = false;
-        state.runId = null;
-        // Display the failure reason (pushes an error block).
-        handleError(state, ev.error ?? 'run failed');
-        // B9: close ALL open turns (not just the last one) so none stays stuck
-        // in "Processed..." forever. handleError already stopped dangling
-        // subagents on the active turn; close the rest too.
-        for (const entry of state.entries) {
-          if (entry.type === 'turn' && !entry.endTime) {
-            entry.endTime = Date.now();
-            stopDanglingSubagents(state, entry);
-          }
-        }
-      }
-
-      // Set the pending turn_id so main-agent handlers (which use
-      // getActiveTurn) route to the correct turn by id (R7).
-      state._pendingTurnId = ev.turn_id;
-
-      // Block-routing: direct RunEvent -> handler (no legacy shim, R4)
-      switch (ev.event) {
-        case 'turn_started':
-          handleTurnStart(state, ev.index ?? 0, ev.turn_id);
-          break;
-        case 'turn_ended':
-          handleTurnEnded(state);
-          break;
-        case 'message_start':
-          if (ev.subagent_id) handleSubagentMessageStart(state, ev.subagent_id, ev.message_id);
-          else handleMessageStart(state, ev.message_id);
-          break;
-        case 'message_update':
-        case 'model_streaming':
-          if (ev.subagent_id) handleSubagentMessageUpdate(state, ev.subagent_id, ev.message_id, ev.delta ?? {});
-          else handleMessageUpdate(state, ev.message_id, ev.delta ?? {});
-          break;
-        case 'message_end':
-          if (ev.subagent_id) handleSubagentMessageEnd(state, ev.subagent_id, ev.message_id);
-          else handleMessageEnd(state, ev.message_id);
-          break;
-        case 'tool_started':
-          if (ev.subagent_id) handleSubagentToolStart(state, ev.subagent_id, ev.call_id ?? '', ev.name ?? '', ev.args);
-          else handleToolStart(state, ev.call_id ?? '', ev.name ?? '', ev.args);
-          break;
-        case 'tool_update':
-          if (ev.subagent_id) handleSubagentToolUpdate(state, ev.subagent_id, ev.call_id ?? '', ev.partial ?? '');
-          else handleToolUpdate(state, ev.call_id ?? '', ev.partial ?? '');
-          break;
-        case 'tool_ended':
-          if (ev.subagent_id) handleSubagentToolEnd(state, ev.subagent_id, ev.call_id ?? '', ev.result ?? '', ev.is_error ?? false);
-          else handleToolEnd(state, ev.call_id ?? '', ev.result ?? '', ev.is_error ?? false);
-          break;
-        case 'approval_required':
-          if (ev.subagent_id) handleSubagentApprovalRequired(state, ev.subagent_id, ev.prompt_id ?? '', ev.tool_name ?? '', ev.tool_input, ev.danger_level ?? '', ev.explanation ?? '');
-          else handleApprovalRequired(state, ev.prompt_id ?? '', ev.tool_name ?? '', ev.tool_input, ev.danger_level ?? '', ev.explanation ?? '');
-          break;
-        case 'approval_resolved':
-          resolveApprovalBlock(state, ev.prompt_id ?? '', ev.choice);
-          break;
-        case 'error':
-          handleError(state, ((ev as unknown as Record<string, unknown>).message as string | undefined) ?? 'unknown error');
-          break;
-        case 'subagent_started':
-          handleSubagentStart(state, ev.subagent_id ?? '', ev.parent_call_id, ev.role_name, ev.task ?? '');
-          break;
-        case 'subagent_ended':
-          handleSubagentEnd(state, ev.subagent_id ?? '', ev.success ?? false, ev.iterations_used);
-          break;
-        // run_created / message_start / model_call_* / input_requested /
-        // context_compacted / process_spawned / process_killed: not routed yet.
-        default:
-          break;
+      processSingleEvent(state, action.payload);
+    },
+    agentEventsBatch: (state, action: PayloadAction<Array<string | Record<string, unknown>>>) => {
+      // PERF-1: Process all buffered events in a single reducer pass.
+      // This avoids N selector recomputations per frame during streaming.
+      for (const payload of action.payload) {
+        processSingleEvent(state, payload);
       }
     },
     toolApprovalResponded: (state, action: PayloadAction<{ promptId: string; approved: boolean }>) => {
@@ -1236,6 +1231,7 @@ interface EventLogEntry {
 export const {
   userMessageSent,
   agentEventReceived,
+  agentEventsBatch,
   toolApprovalResponded,
   clearChat,
   agentAborted,
@@ -1252,7 +1248,14 @@ export const {
 } = chatSlice.actions;
 export default chatSlice.reducer;
 
-// ── Memoized entry-by-ID lookup (O(n) per state change, not O(n²)) ────
+// ── Memoized selectors ───────────────────────────────────────────────
+
+// PERF-6: Memoized entry ID array. Only recomputes when entries are added or
+// removed, not when text content changes during streaming.
+export const selectEntryIds = createSelector(
+  [(state: { chat: ChatState }) => state.chat.entries],
+  (entries) => entries.map((e) => e.id)
+);
 
 const entryMapCache = new WeakMap<ChatEntry[], Record<string, ChatEntry>>();
 

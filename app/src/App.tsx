@@ -17,6 +17,7 @@ import {
   agentAborted,
   runIdSet,
   selectEntryById,
+  selectEntryIds,
   selectPendingApprovalCount,
   selectSubagentById,
   popSubagentView,
@@ -56,7 +57,7 @@ function App() {
   const dispatch = useAppDispatch();
   const store = useStore<RootState>();
 
-  const entryIds = useSelector((state: RootState) => state.chat.entries.map((e) => e.id), shallowEqual);
+  const entryIds = useSelector(selectEntryIds);
   const entriesLength = useSelector((state: RootState) => state.chat.entries.length);
   const isProcessing = useSelector((state: RootState) => state.chat.isProcessing);
   const defaultModel = useSelector((state: RootState) => state.settings.config?.default_model || '');

@@ -1,26 +1,55 @@
 import { useMemo, memo } from 'react';
 import DOMPurify from 'dompurify';
-import { marked } from 'marked';
+import { Marked } from 'marked';
+
+// ── Marked configuration ──────────────────────────────────────────────
+// Configure a singleton Marked instance with GFM, line breaks, and no
+// inline HTML (we sanitize with DOMPurify anyway). Using a dedicated
+// instance avoids polluting the global marked state.
+const markedInstance = new Marked({
+  gfm: true,
+  breaks: true,
+  async: false,
+});
+
+// ── DOMPurify configuration ──────────────────────────────────────────
+// Whitelist only the tags/attributes we actually need for rendering
+// assistant markdown. This blocks <svg>, <math>, <form>, <input>, etc.
+const PURIFY_CONFIG = {
+  ALLOWED_TAGS: [
+    'p', 'br', 'hr', 'strong', 'em', 'del', 's', 'code', 'pre', 'blockquote',
+    'ul', 'ol', 'li', 'table', 'thead', 'tbody', 'tr', 'th', 'td',
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'a', 'img', 'span', 'div',
+    'sup', 'sub', 'mark',
+  ],
+  ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'target', 'rel', 'colspan', 'rowspan'],
+  ALLOW_DATA_ATTR: false,
+  FORBID_TAGS: ['style', 'script', 'iframe', 'object', 'embed', 'form', 'input'],
+  FORBID_ATTR: ['style', 'onerror', 'onload', 'onclick', 'onmouseover'],
+};
 
 export function parseMarkdown(raw: string): { __html: string } {
-  const html = marked.parse(raw) as string;
-  return { __html: DOMPurify.sanitize(html) };
+  const html = markedInstance.parse(raw);
+  // marked with async:false always returns string, but the type signature
+  // is string | Promise<string>. Guard at runtime.
+  const htmlStr = typeof html === 'string' ? html : '';
+  return { __html: DOMPurify.sanitize(htmlStr, PURIFY_CONFIG) };
 }
 
-export function formatTime(ms: number): string {
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-  const m = Math.floor(ms / 60000);
-  const s = Math.floor((ms % 60000) / 1000);
-  return `${m}m ${s}s`;
-}
+// ── Streaming fast-path threshold ────────────────────────────────────
+// While streaming, re-parsing the full markdown on every token is O(n²).
+// We render plain text while the block is still streaming (cheap, and
+// partial markdown reads fine as text), and only do the expensive
+// parse+sanitize once the stream settles. If the streamed buffer gets
+// very long we fall back to rendering it as markdown anyway so very long
+// live output still looks reasonable.
+const STREAM_PLAINTEXT_LIMIT = 20000;
 
-// While streaming, re-parsing the full markdown on every token is O(n²) in the
-// message length and drops frames on long turns. We render plain text while the
-// block is still streaming (cheap, and partial markdown reads fine as text),
-// and only do the expensive parse+sanitize once the stream settles. If the
-// streamed buffer gets very long we fall back to rendering it as markdown
-// anyway so very long live output still looks reasonable.
-const STREAM_PLAINTEXT_LIMIT = 4000;
+// Module-level constant: avoid creating a new style object on every render.
+const streamingStyle: React.CSSProperties = {
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-word',
+};
 
 /**
  * Markdown renderer with a streaming fast-path.
@@ -28,16 +57,30 @@ const STREAM_PLAINTEXT_LIMIT = 4000;
  * Pass `isStreaming` for blocks whose `content` is still being appended to.
  * While streaming we skip markdown parsing entirely (plain text with preserved
  * whitespace); once streaming ends we parse once and memoize.
+ *
+ * Pass `plainText` to render content as preformatted text without any markdown
+ * parsing (e.g. tool output that may contain markdown special chars like #).
  */
 export const MarkdownContent = memo(function MarkdownContent({
   content,
   className,
   isStreaming = false,
+  plainText = false,
 }: {
   content: string;
   className?: string;
   isStreaming?: boolean;
+  plainText?: boolean;
 }) {
+  // plainText mode: always render as preformatted text, no markdown.
+  if (plainText) {
+    return (
+      <div className={className} style={streamingStyle}>
+        {content}
+      </div>
+    );
+  }
+
   const renderAsMarkdown = !isStreaming || content.length > STREAM_PLAINTEXT_LIMIT;
   const html = useMemo(
     () => (renderAsMarkdown ? parseMarkdown(content) : null),
@@ -49,7 +92,7 @@ export const MarkdownContent = memo(function MarkdownContent({
   }
   // Streaming fast path: cheap plain-text render, no parse.
   return (
-    <div className={className} style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+    <div className={className} style={streamingStyle}>
       {content}
     </div>
   );

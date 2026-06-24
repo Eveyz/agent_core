@@ -1,20 +1,18 @@
 import { useEffect } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { useAppDispatch } from './useAppDispatch';
-import { agentEventReceived } from '../features/chat/chatSlice';
+import { agentEventsBatch } from '../features/chat/chatSlice';
 
 /**
- * Subscribe to the backend `agent-event` stream and dispatch each event into
- * the chat slice.
+ * Subscribe to the backend `agent-event` stream and dispatch events into the
+ * chat slice in batches.
  *
- * During streaming the backend can fire dozens of `MessageUpdate` events per
- * second. Dispatching (and re-rendering) on every one is wasteful, so we buffer
- * arrivals for one animation frame and flush them together. React 18 already
- * batches dispatches within a single tick, and rAF coalesces the ticks to the
- * display refresh — this caps re-renders to ~60/s instead of one per token.
+ * Events arriving within one animation frame are collected and dispatched as
+ * a single `agentEventsBatch` action. This means the reducer runs once (not
+ * N times), and all downstream selectors evaluate once per frame — a critical
+ * optimization for streaming where dozens of tokens arrive per second.
  *
- * Gap detection / resync is now handled by the listenerMiddleware in store.ts
- * (P2-1), so this hook no longer needs the window CustomEvent bridge.
+ * Gap detection / resync is handled by the listenerMiddleware in store.ts.
  */
 export function useAgentEventListener(): void {
   const dispatch = useAppDispatch();
@@ -30,9 +28,8 @@ export function useAgentEventListener(): void {
       if (!isMounted || buffer.length === 0) return;
       const batch = buffer;
       buffer = [];
-      for (const payload of batch) {
-        dispatch(agentEventReceived(payload));
-      }
+      // Single dispatch — reducer processes all events in one pass.
+      dispatch(agentEventsBatch(batch));
     };
 
     const scheduleFlush = (): void => {
@@ -60,9 +57,7 @@ export function useAgentEventListener(): void {
       if (rafId !== null) cancelAnimationFrame(rafId);
       rafId = null;
       if (buffer.length > 0) {
-        for (const payload of buffer) {
-          dispatch(agentEventReceived(payload));
-        }
+        dispatch(agentEventsBatch(buffer));
         buffer = [];
       }
       if (unlistenFn) unlistenFn();

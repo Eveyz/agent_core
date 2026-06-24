@@ -35,7 +35,8 @@ import AlertTriangleIcon from 'lucide-react/dist/esm/icons/alert-triangle.mjs';
 import { invoke } from '@tauri-apps/api/core';
 import { toolApprovalResponded, viewSubagent } from '../../features/chat/chatSlice';
 import type { ChatEntry, TurnBlock } from '../../features/chat/chatSlice';
-import { MarkdownContent, formatTime } from './MarkdownContent';
+import { MarkdownContent } from './MarkdownContent';
+import { formatTime } from '../../utils/format';
 
 
 // ── Per-tool icon mapping ───────────────────────────────────────────
@@ -93,7 +94,9 @@ const ProcessingTimer = memo(function ProcessingTimer({
 
   useEffect(() => {
     if (!startTime || endTime) return;
-    const interval = setInterval(() => setNow(Date.now()), 250);
+    // PERF-7: 1s granularity is sufficient for "Processed 3s" display.
+    // Previously 250ms caused 4 unnecessary re-renders/sec during streaming.
+    const interval = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(interval);
   }, [startTime, endTime]);
 
@@ -452,7 +455,7 @@ const ToolBlockUI = memo(function ToolBlockUI({
               <div className="tool-section-label">OUTPUT</div>
               {result ? (
                 <>
-                  <MarkdownContent content={displayResult} className="tool-result-content assistant-msg" />
+                  <MarkdownContent content={displayResult} className="tool-result-content assistant-msg" plainText />
                   {!showMore && result.length > 500 && (
                     <div 
                       className="tool-show-more-btn"
@@ -805,14 +808,16 @@ const SubagentCard = memo(function SubagentCard({ subagentId }: { subagentId: st
 
 const TurnFooter = memo(function TurnFooter({ entry }: { entry: ChatEntry }) {
   const [copied, setCopied] = useState(false);
-
+  // PERF-7: Skip expensive text concatenation while streaming (no endTime).
+  // The footer renders null during streaming anyway, so the computation is wasted.
+  const isStreaming = !entry.endTime;
   const rawOutput = useMemo(() => {
-    if (!entry.blocks) return '';
+    if (isStreaming || !entry.blocks) return '';
     return entry.blocks
       .filter((b): b is Extract<TurnBlock, { type: 'assistant' }> => b.type === 'assistant')
       .map((b) => b.text)
       .join('\n');
-  }, [entry.blocks]);
+  }, [entry.blocks, isStreaming]);
 
   const endTimeText = useMemo(() => {
     if (!entry.endTime) return null;

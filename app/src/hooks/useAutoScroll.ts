@@ -10,6 +10,12 @@ export function useAutoScroll<T extends HTMLElement>() {
   const stickRef = useRef(false);
   const stickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // PERF-3: rAF-throttled scroll check to avoid layout thrashing.
+  // Previously, the MutationObserver callback read scrollHeight and wrote
+  // scrollTop synchronously on every DOM mutation (every token), causing
+  // forced sync layout. Now we batch into a single rAF per frame.
+  const scrollRafRef = useRef<number | null>(null);
+
   const snapToBottom = useCallback(() => {
     requestAnimationFrame(() => {
       const el = ref.current;
@@ -23,10 +29,6 @@ export function useAutoScroll<T extends HTMLElement>() {
     snapToBottom();
   }, [snapToBottom]);
 
-  // Force-stick to the bottom for a settling window. Each content mutation while
-  // sticking refreshes the window, so the view stays pinned through all the async
-  // reflows that happen as a loaded session renders, then releases so the user can
-  // scroll freely.
   const forceStickToBottom = useCallback(() => {
     stickRef.current = true;
     snapToBottom();
@@ -50,7 +52,6 @@ export function useAutoScroll<T extends HTMLElement>() {
     };
 
     const handleScroll = () => {
-      // Don't fight the user while we're force-sticking during load.
       if (stickRef.current) return;
       const threshold = el.clientHeight;
       const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
@@ -59,7 +60,11 @@ export function useAutoScroll<T extends HTMLElement>() {
 
     el.addEventListener('scroll', handleScroll);
 
-    const observer = new MutationObserver(() => {
+    // PERF-3: rAF-throttled scroll-to-bottom during streaming.
+    // The callback is scheduled via rAF so it runs at most once per frame,
+    // after layout has settled — no forced sync layout.
+    const checkAndScroll = () => {
+      scrollRafRef.current = null;
       if (stickRef.current) {
         refreshStick();
         return;
@@ -68,6 +73,11 @@ export function useAutoScroll<T extends HTMLElement>() {
       if (isNearBottom) {
         el.scrollTop = el.scrollHeight;
       }
+    };
+
+    const observer = new MutationObserver(() => {
+      if (scrollRafRef.current !== null) return; // already scheduled
+      scrollRafRef.current = requestAnimationFrame(checkAndScroll);
     });
 
     observer.observe(el, { childList: true, subtree: true });
@@ -75,6 +85,7 @@ export function useAutoScroll<T extends HTMLElement>() {
       observer.disconnect();
       el.removeEventListener('scroll', handleScroll);
       if (stickTimerRef.current) clearTimeout(stickTimerRef.current);
+      if (scrollRafRef.current !== null) cancelAnimationFrame(scrollRafRef.current);
     };
   }, []);
 

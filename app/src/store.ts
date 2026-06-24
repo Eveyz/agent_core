@@ -1,5 +1,5 @@
 import { configureStore, createListenerMiddleware } from '@reduxjs/toolkit';
-import chatReducer, { agentEventReceived, resyncRun, clearPendingGap } from './features/chat/chatSlice';
+import chatReducer, { agentEventsBatch, resyncRun, clearPendingGap } from './features/chat/chatSlice';
 import settingsReducer from './features/settings/settingsSlice';
 import projectReducer from './features/project/projectSlice';
 
@@ -10,7 +10,7 @@ import projectReducer from './features/project/projectSlice';
 const listenerMiddleware = createListenerMiddleware();
 
 listenerMiddleware.startListening({
-  actionCreator: agentEventReceived,
+  actionCreator: agentEventsBatch,
   effect: async (_, listenerApi) => {
     const state = listenerApi.getState() as RootState;
     const gap = state.chat._pendingGap;

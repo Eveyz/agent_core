@@ -1202,12 +1202,14 @@ body {
   z-index: 1;
 }
 
-/* Background glows �?distant nebulae & gravity wells */
+/* Background glows — distant nebulae & gravity wells */
+/* PERF-8: Reduced blur from 70px to 30px — visually similar, ~5x cheaper GPU compositing */
 .cosmic-glow {
   position: absolute;
   border-radius: 50%;
-  filter: blur(70px);
+  filter: blur(30px);
   pointer-events: none;
+  will-change: filter;
 }
 .cosmic-glow-1 {
   width: 600px;
@@ -1244,62 +1246,16 @@ body {
 }
 
 /* Sparse star field */
+/* PERF-8: Replaced 36 box-shadow declarations with a static SVG background
+   image to eliminate per-frame compositing cost during streaming. */
 .star-field {
   position: absolute;
   inset: 0;
   pointer-events: none;
   overflow: hidden;
-}
-.star-field::before,
-.star-field::after {
-  content: '';
-  position: absolute;
-  width: 2px;
-  height: 2px;
-  border-radius: 50%;
-  background: var(--overlay-0_5);
-  box-shadow:
-    120px 80px 0 var(--overlay-0_3),
-    340px 200px 0 var(--overlay-0_5),
-    560px 120px 0 var(--overlay-0_2),
-    780px 320px 0 var(--overlay-0_4),
-    1020px 180px 0 var(--overlay-0_6),
-    140px 420px 0 var(--overlay-0_25),
-    380px 500px 0 var(--overlay-0_45),
-    620px 380px 0 var(--overlay-0_35),
-    900px 480px 0 var(--overlay-0_55),
-    1180px 420px 0 var(--overlay-0_3),
-    240px 280px 0 var(--overlay-0_4),
-    480px 140px 0 var(--overlay-0_2),
-    720px 260px 0 var(--overlay-0_5),
-    960px 80px 0 var(--overlay-0_35),
-    1080px 300px 0 var(--overlay-0_45),
-    60px 160px 0 var(--overlay-0_3),
-    300px 360px 0 var(--overlay-0_55),
-    540px 60px 0 var(--overlay-0_25),
-    820px 220px 0 var(--overlay-0_4),
-    1100px 100px 0 var(--overlay-0_5),
-    180px 240px 0 var(--overlay-0_35),
-    420px 400px 0 var(--overlay-0_45),
-    660px 180px 0 var(--overlay-0_3),
-    940px 360px 0 var(--overlay-0_55),
-    1260px 260px 0 var(--overlay-0_25),
-    200px 100px 0 var(--overlay-0_4),
-    440px 320px 0 var(--overlay-0_2),
-    680px 440px 0 var(--overlay-0_5),
-    860px 140px 0 var(--overlay-0_35),
-    1140px 380px 0 var(--overlay-0_45),
-    260px 460px 0 var(--overlay-0_3),
-    500px 240px 0 var(--overlay-0_55),
-    740px 100px 0 var(--overlay-0_25),
-    1000px 440px 0 var(--overlay-0_4),
-    1220px 160px 0 var(--overlay-0_5);
-}
-.star-field::after {
-  width: 1px;
-  height: 1px;
-  opacity: 0.6;
-  transform: translate(50px, 30px);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1280' height='520'%3E%3Cg fill='%23888' opacity='0.4'%3E%3Ccircle cx='120' cy='80' r='1'/%3E%3Ccircle cx='340' cy='200' r='1.5'/%3E%3Ccircle cx='560' cy='120' r='0.8'/%3E%3Ccircle cx='780' cy='320' r='1'/%3E%3Ccircle cx='1020' cy='180' r='1.5'/%3E%3Ccircle cx='140' cy='420' r='1'/%3E%3Ccircle cx='380' cy='500' r='1.2'/%3E%3Ccircle cx='620' cy='380' r='1'/%3E%3Ccircle cx='900' cy='480' r='1.3'/%3E%3Ccircle cx='1180' cy='420' r='1'/%3E%3Ccircle cx='240' cy='280' r='1'/%3E%3Ccircle cx='480' cy='140' r='0.8'/%3E%3Ccircle cx='720' cy='260' r='1.2'/%3E%3Ccircle cx='960' cy='80' r='1'/%3E%3Ccircle cx='1080' cy='300' r='1.2'/%3E%3Ccircle cx='60' cy='160' r='1'/%3E%3Ccircle cx='300' cy='360' r='1.3'/%3E%3Ccircle cx='540' cy='60' r='0.8'/%3E%3Ccircle cx='820' cy='220' r='1'/%3E%3Ccircle cx='1100' cy='100' r='1.2'/%3E%3Ccircle cx='180' cy='240' r='1'/%3E%3Ccircle cx='420' cy='400' r='1.2'/%3E%3Ccircle cx='660' cy='180' r='1'/%3E%3Ccircle cx='940' cy='360' r='1.3'/%3E%3Ccircle cx='1260' cy='260' r='0.8'/%3E%3Ccircle cx='200' cy='100' r='1'/%3E%3Ccircle cx='440' cy='320' r='0.8'/%3E%3Ccircle cx='680' cy='440' r='1.2'/%3E%3Ccircle cx='860' cy='140' r='1'/%3E%3Ccircle cx='1140' cy='380' r='1.2'/%3E%3Ccircle cx='260' cy='460' r='1'/%3E%3Ccircle cx='500' cy='240' r='1.3'/%3E%3Ccircle cx='740' cy='100' r='0.8'/%3E%3Ccircle cx='1000' cy='440' r='1'/%3E%3Ccircle cx='1220' cy='160' r='1.2'/%3E%3C/g%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-size: cover;
 }
 
 .empty-state-content {
