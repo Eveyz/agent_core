@@ -95,6 +95,16 @@ impl OpenAIClient {
             body["max_tokens"] = serde_json::json!(max_tokens);
         }
 
+        if let Some(effort) = &self.model.reasoning_effort {
+            body["reasoning_effort"] = serde_json::json!(effort);
+        }
+
+        if self.model.thinking_enabled {
+            body["thinking"] = serde_json::json!({
+                "type": "enabled"
+            });
+        }
+
         if !tools.is_empty() {
             body["tools"] = serde_json::json!(tools);
             body["tool_choice"] = serde_json::json!("auto");

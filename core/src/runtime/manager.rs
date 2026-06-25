@@ -409,15 +409,23 @@ impl RunManager {
         anyhow::bail!("worktree not found: {worktree_path}")
     }
 
-    /// Switch the active model for future Runs.
-    pub fn switch_model(&self, name: &str) -> Result<()> {
-        // Brain is behind Arc, but we need &mut for switch_model.
-        // This is a limitation — for now we require exclusive access.
-        // In practice, model switching happens between Runs, not during.
-        // A proper solution would use an RwLock<Brain> or interior mutability.
-        // For now, we return an error if there are active runs.
-        // TODO: use Arc<RwLock<Brain>> for concurrent model switching
-        anyhow::bail!("model switching requires no active runs; use switch_model_unchecked")
+    /// Switch the active model for future Runs. Requires exclusive access to Brain.
+    pub fn switch_model(&mut self, name: &str) -> Result<()> {
+        if let Some(brain_mut) = Arc::get_mut(&mut self.brain) {
+            brain_mut.switch_model(name)
+        } else {
+            anyhow::bail!("Cannot switch model while runs are active (Brain is shared)")
+        }
+    }
+
+    /// Update the active configuration. Requires exclusive access to Brain.
+    pub fn update_config(&mut self, config: crate::config::Config) -> Result<()> {
+        if let Some(brain_mut) = Arc::get_mut(&mut self.brain) {
+            brain_mut.update_config(config);
+            Ok(())
+        } else {
+            anyhow::bail!("Cannot update config while runs are active (Brain is shared)")
+        }
     }
 }
 

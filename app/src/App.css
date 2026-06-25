@@ -2817,7 +2817,7 @@ select.settings-input {
 
 .models-table-header {
   display: grid;
-  grid-template-columns: 1fr 1fr 32px;
+  grid-template-columns: 1fr 1fr 0.8fr 0.8fr 0.8fr 60px 32px;
   gap: 8px;
   padding: 0 4px;
   font-size: 11px;
@@ -2827,7 +2827,7 @@ select.settings-input {
 
 .models-table-row {
   display: grid;
-  grid-template-columns: 1fr 1fr 32px;
+  grid-template-columns: 1fr 1fr 0.8fr 0.8fr 0.8fr 60px 32px;
   gap: 8px;
   align-items: center;
   position: relative;

@@ -12,9 +12,39 @@ import StarIcon from 'lucide-react/dist/esm/icons/star.mjs';
 import SaveIcon from 'lucide-react/dist/esm/icons/save.mjs';
 import XIcon from 'lucide-react/dist/esm/icons/x.mjs';
 
+interface ProviderModelEntry {
+  model_id: string;
+  temperature?: number;
+  max_tokens?: number;
+  system_prompt?: string;
+  max_context_tokens?: number;
+  reasoning_effort?: string;
+  thinking_enabled?: boolean;
+}
+
+interface ProviderData {
+  name?: string;
+  base_url: string;
+  api_key: string;
+  max_context_tokens?: number;
+  temperature?: number;
+  max_tokens?: number;
+  react_enabled: boolean;
+  system_prompt?: string;
+  max_iterations: number;
+  request_timeout_secs: number;
+  models: Record<string, ProviderModelEntry>;
+}
+
 interface ModelRow {
   key: string;
   model_id: string;
+  temperature?: number;
+  max_tokens?: number;
+  system_prompt?: string;
+  max_context_tokens?: number;
+  reasoning_effort?: string;
+  thinking_enabled?: boolean;
 }
 
 interface ProviderFormData {
@@ -22,7 +52,6 @@ interface ProviderFormData {
   provider_name: string;
   base_url: string;
   api_key: string;
-  max_context_tokens: number;
   models: ModelRow[];
 }
 
@@ -31,13 +60,16 @@ const EMPTY_FORM: ProviderFormData = {
   provider_name: '',
   base_url: '',
   api_key: '',
-  max_context_tokens: 32768,
   models: [{ key: '', model_id: '' }],
 };
 
 function modelRowToEntry(row: ModelRow): ProviderModelEntry {
   return {
     model_id: row.model_id,
+    max_context_tokens: row.max_context_tokens || undefined,
+    max_tokens: row.max_tokens || undefined,
+    reasoning_effort: row.reasoning_effort || undefined,
+    thinking_enabled: row.thinking_enabled || false,
   };
 }
 
@@ -61,8 +93,14 @@ function ProviderForm({
         provider_name: provider.name ?? '',
         base_url: provider.base_url,
         api_key: provider.api_key,
-        max_context_tokens: provider.max_context_tokens ?? 32768,
-        models: Object.entries(provider.models).map(([k, m]) => ({ key: k, model_id: m.model_id })),
+        models: Object.entries(provider.models).map(([k, m]) => ({ 
+          key: k, 
+          model_id: m.model_id, 
+          max_context_tokens: m.max_context_tokens,
+          max_tokens: m.max_tokens,
+          reasoning_effort: m.reasoning_effort,
+          thinking_enabled: m.thinking_enabled,
+        })),
       });
     } else {
       setForm(EMPTY_FORM);
@@ -112,6 +150,7 @@ function ProviderForm({
     const next: Record<string, string> = {};
     if (!form.provider_key.trim()) next.provider_key = 'Provider key is required';
     if (!form.base_url.trim()) next.base_url = 'Base URL is required';
+    if (!form.api_key.trim()) next.api_key = 'API Key is required';
 
     if (config) {
       const isNewProvider = !editKey || editKey !== form.provider_key.trim();
@@ -150,7 +189,7 @@ function ProviderForm({
     });
 
     const providerData = {
-      name: form.provider_name,
+      name: form.provider_key.trim(),
       base_url: form.base_url,
       api_key: form.api_key,
       max_context_tokens: form.max_context_tokens,
@@ -159,7 +198,7 @@ function ProviderForm({
       react_enabled: true,
       system_prompt: undefined,
       max_iterations: 100,
-      request_timeout_secs: 60,
+      request_timeout_secs: 1800,
       models,
     };
 
@@ -199,16 +238,6 @@ function ProviderForm({
         </div>
 
         <div className="model-form-field model-form-field-full">
-          <label className="model-form-label">Provider Name</label>
-          <input
-            className="settings-input"
-            value={form.provider_name}
-            onChange={(e) => updateField('provider_name', e.target.value)}
-            placeholder="e.g. OpenAI, DeepSeek, Ollama"
-          />
-        </div>
-
-        <div className="model-form-field model-form-field-full">
           <label className="model-form-label">Base URL <span className="required">*</span></label>
           <input
             className={inputClass('base_url')}
@@ -220,24 +249,15 @@ function ProviderForm({
         </div>
 
         <div className="model-form-field model-form-field-full">
-          <label className="model-form-label">API Key</label>
+          <label className="model-form-label">API Key <span className="required">*</span></label>
           <input
-            className="settings-input"
+            className={inputClass('api_key')}
             type="password"
             value={form.api_key}
             onChange={(e) => updateField('api_key', e.target.value)}
             placeholder="sk-... or ${ENV_VAR}"
           />
-        </div>
-
-        <div className="model-form-field">
-          <label className="model-form-label">Max Context Tokens</label>
-          <input
-            className="settings-input"
-            type="number"
-            value={form.max_context_tokens}
-            onChange={(e) => updateField('max_context_tokens', Number(e.target.value))}
-          />
+          {errors.api_key && <span className="field-error">{errors.api_key}</span>}
         </div>
       </div>
 
@@ -252,6 +272,10 @@ function ProviderForm({
           <div className="models-table-header">
             <span>Model Key <span className="required">*</span></span>
             <span>Model ID <span className="required">*</span></span>
+            <span title="Max Context Tokens">Context Tkns</span>
+            <span title="Max Output Tokens">Output Tkns</span>
+            <span title="Reasoning Effort">Reasoning</span>
+            <span title="Thinking Enabled">Thinking</span>
             <span style={{ width: '32px' }} />
           </div>
           {form.models.map((row, index) => (
@@ -269,6 +293,37 @@ function ProviderForm({
                 onChange={(e) => updateModelRow(index, { model_id: e.target.value })}
                 placeholder="e.g. gpt-4o"
               />
+              <input
+                className="settings-input"
+                type="number"
+                value={row.max_context_tokens || ''}
+                onChange={(e) => updateModelRow(index, { max_context_tokens: e.target.value ? Number(e.target.value) : undefined })}
+                placeholder="128k"
+              />
+              <input
+                className="settings-input"
+                type="number"
+                value={row.max_tokens || ''}
+                onChange={(e) => updateModelRow(index, { max_tokens: e.target.value ? Number(e.target.value) : undefined })}
+                placeholder="4096"
+              />
+              <select
+                className="settings-input"
+                value={row.reasoning_effort || ''}
+                onChange={(e) => updateModelRow(index, { reasoning_effort: e.target.value || undefined })}
+              >
+                <option value="">Default</option>
+                <option value="low">Low</option>
+                <option value="medium">Medium</option>
+                <option value="high">High</option>
+              </select>
+              <div style={{ display: 'flex', justifyContent: 'center' }}>
+                <input
+                  type="checkbox"
+                  checked={row.thinking_enabled || false}
+                  onChange={(e) => updateModelRow(index, { thinking_enabled: e.target.checked })}
+                />
+              </div>
               <button
                 className="model-row-delete"
                 title="Remove model"

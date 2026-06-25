@@ -12,6 +12,12 @@ pub struct ProviderModelEntry {
     pub max_tokens: Option<u32>,
     #[serde(default)]
     pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub max_context_tokens: Option<usize>,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub thinking_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,10 +62,14 @@ pub struct ModelConfig {
     /// Optional fallback model ID to use if this model fails
     #[serde(default)]
     pub fallback_model: Option<String>,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub thinking_enabled: bool,
 }
 
 fn default_request_timeout() -> u64 {
-    60
+    1800
 }
 
 fn default_true() -> bool {
@@ -87,8 +97,10 @@ impl Default for ModelConfig {
             react_enabled: true,
             system_prompt: None,
             max_iterations: 100,
-            request_timeout_secs: 3600,
+            request_timeout_secs: 1800,
             fallback_model: None,
+            reasoning_effort: None,
+            thinking_enabled: false,
         }
     }
 }
@@ -221,6 +233,9 @@ impl Config {
                 temperature: None,
                 max_tokens: None,
                 system_prompt: None,
+                max_context_tokens: None,
+                reasoning_effort: None,
+                thinking_enabled: false,
             },
         );
 
@@ -236,7 +251,7 @@ impl Config {
                 react_enabled: true,
                 system_prompt: None,
                 max_iterations: 100,
-                request_timeout_secs: 3600,
+                request_timeout_secs: 1800,
                 models: provider_models,
             },
         );
@@ -255,8 +270,10 @@ impl Config {
                 react_enabled: true,
                 system_prompt: None,
                 max_iterations: 100,
-                request_timeout_secs: 3600,
+                request_timeout_secs: 1800,
                 fallback_model: None,
+                reasoning_effort: None,
+                thinking_enabled: false,
             },
         );
 
@@ -294,17 +311,19 @@ impl Config {
                         base_url: provider.base_url.clone(),
                         api_key: provider.api_key.clone(),
                         model_id: entry.model_id.clone(),
-                        max_context_tokens: provider.max_context_tokens,
+                        max_context_tokens: entry.max_context_tokens.unwrap_or(provider.max_context_tokens),
                         temperature: entry.temperature.or(provider.temperature),
                         max_tokens: entry.max_tokens.or(provider.max_tokens),
                         react_enabled: provider.react_enabled,
                         system_prompt: entry
                             .system_prompt
                             .clone()
-                            .or(provider.system_prompt.clone()),
+                            .or_else(|| provider.system_prompt.clone()),
                         max_iterations: provider.max_iterations,
                         request_timeout_secs: provider.request_timeout_secs,
                         fallback_model: None,
+                        reasoning_effort: entry.reasoning_effort.clone(),
+                        thinking_enabled: entry.thinking_enabled,
                     },
                 );
             }
@@ -351,6 +370,9 @@ impl Config {
                     temperature: model.temperature,
                     max_tokens: model.max_tokens,
                     system_prompt: model.system_prompt.clone(),
+                    max_context_tokens: Some(model.max_context_tokens),
+                    reasoning_effort: model.reasoning_effort.clone(),
+                    thinking_enabled: model.thinking_enabled,
                 },
             );
         }
@@ -394,6 +416,9 @@ impl Config {
                 temperature: model.temperature,
                 max_tokens: model.max_tokens,
                 system_prompt: model.system_prompt.clone(),
+                max_context_tokens: Some(model.max_context_tokens),
+                reasoning_effort: model.reasoning_effort.clone(),
+                thinking_enabled: model.thinking_enabled,
             },
         );
 

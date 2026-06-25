@@ -370,21 +370,24 @@ fn get_config(state: State<'_, AppState>) -> Result<agent_core::config::Config, 
 }
 
 #[tauri::command]
-fn save_config(state: State<'_, AppState>, config: agent_core::config::Config) -> Result<(), String> {
+async fn save_config(state: State<'_, AppState>, config: agent_core::config::Config) -> Result<(), String> {
+    let mut manager = state.run_manager.lock().await;
+    let runs = manager.list_runs().await;
+    if !runs.is_empty() {
+        return Err("Cannot save config while runs are active".to_string());
+    }
+    manager.update_config(config.clone()).map_err(|e| e.to_string())?;
     config.save(&state.config_path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn switch_model(state: State<'_, AppState>, name: String) -> Result<(), String> {
-    let manager = state.run_manager.lock().await;
+    let mut manager = state.run_manager.lock().await;
     // Check if there are active runs
     let runs = manager.list_runs().await;
     if !runs.is_empty() {
         return Err("Cannot switch model while runs are active".to_string());
     }
-    // Model switching requires &mut Brain. The RunManager holds Arc<Brain>.
-    // For now, we use the switch_model method on RunManager which handles
-    // interior mutability internally.
     manager.switch_model(&name).map_err(|e| e.to_string())
 }
 
@@ -669,6 +672,9 @@ pub fn run() {
                             temperature: None,
                             max_tokens: None,
                             system_prompt: None,
+                            max_context_tokens: None,
+                            reasoning_effort: None,
+                            thinking_enabled: false,
                         });
                         p.insert("default".to_string(), agent_core::config::ProviderConfig {
                             name: "default".to_string(),

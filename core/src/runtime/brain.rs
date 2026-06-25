@@ -149,7 +149,12 @@ impl Brain {
         &self.current_model_name
     }
 
-    /// Switch the active model. New Runs will use this model.
+    /// Update the brain's configuration in memory.
+    pub fn update_config(&mut self, config: Config) {
+        self.config = config;
+    }
+
+    /// Switch the active model by name (must exist in config).
     pub fn switch_model(&mut self, name: &str) -> Result<()> {
         if self.config.get_model(name).is_none() {
             anyhow::bail!("model '{name}' not found in config");
