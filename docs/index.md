@@ -8,7 +8,7 @@
 |------|-------|-------------|
 | ADR | 1 | Architecture Decision Records |
 | RFC | 0 | Requests for Comments |
-| PLAN | 2 | Development Plans |
+| PLAN | 3 | Development Plans |
 | RUN | 0 | Runbooks |
 | POST | 0 | Post-mortems |
 | AI-NOTE | 0 | AI Analysis Notes |
@@ -34,6 +34,7 @@
 |----|-------|--------|--------|---------|
 | PLAN-0001 | Agent Self-Planning Todo System | Draft | zniverse | 2026-06-25 |
 | PLAN-0002 | Memory & Reflector 激活计划 | Draft | zniverse | 2026-06-25 |
+| PLAN-0003 | Context Engine 修复与激活 | Draft | zniverse | 2026-06-25 |
 
 ## RUN (Runbooks)
 

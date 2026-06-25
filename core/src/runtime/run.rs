@@ -304,6 +304,9 @@ impl Run {
         self.emit(RunEvent::RunStarted);
         self.transition(RunState::Running);
 
+        // Load recent session memories as context
+        self.load_recent_memories();
+
         // Add user message to context
         self.context.add(Message::user(user_input));
 
@@ -313,11 +316,44 @@ impl Run {
             let _ = m.store_conversation("user", user_input);
         }
 
+        // Skill auto-trigger: check user message against skill triggers
+        if let Some(ref sm) = self.brain.skill_manager {
+            let matched: Vec<(String, String)> = {
+                let mgr = sm.lock();
+                let matched = mgr.check_triggers(user_input);
+                let mut result = Vec::new();
+                for skill in &matched {
+                    if let Ok(content) = mgr.load_content(skill) {
+                        result.push((
+                            skill.name.clone(),
+                            format!(
+                                "== Skill: {} (v{}) ==\n{}\n== End Skill: {} ==\n",
+                                skill.name, skill.version, content, skill.name
+                            ),
+                        ));
+                    }
+                }
+                result
+            };
+
+            for (_, text) in &matched {
+                self.context.set_loaded_skills(text);
+            }
+
+            let mut mgr = sm.lock();
+            for (name, _) in &matched {
+                mgr.activate(name);
+            }
+        }
+
         // Run the loop
         let result = self.run_loop().await;
 
         match result {
             Ok(text) => {
+                // Auto-session-summary: write a brief memory file
+                self.write_session_memory(&text);
+
                 self.transition(RunState::Completed);
                 self.emit(RunEvent::RunCompleted { final_text: text });
             }
@@ -806,6 +842,41 @@ impl Run {
         Ok((text_buffer, tool_calls, message_id))
     }
 
+    /// Force an LLM compaction of the oldest turns regardless of current token
+    /// count. Used by the recovery path when the model returns a context-too-long
+    /// error. Falls back to `micro_compact` if the LLM call or JSON parse fails.
+    async fn force_compact(&mut self, target_ratio: f64) {
+        let remove_fraction = (1.0 - target_ratio).clamp(0.1, 0.6);
+        let num_turns = (self.context.len().max(4) as f64 * remove_fraction) as usize;
+        let request = match self.context.prepare_summary(num_turns) {
+            Some(r) => r,
+            None => {
+                self.context.micro_compact(self.context.len().max(4) / 3);
+                return;
+            }
+        };
+
+        let messages = vec![Message::system(&request.prompt)];
+        let (result_text, _) = match self.client.chat_completion(&messages, &[]).await {
+            Ok(r) => r,
+            Err(_) => {
+                self.context.micro_compact(self.context.len().max(4) / 3);
+                return;
+            }
+        };
+
+        let summary: crate::compressor::TurnSummary = match serde_json::from_str(&result_text) {
+            Ok(s) => s,
+            Err(_) => {
+                self.context.micro_compact(self.context.len().max(4) / 3);
+                return;
+            }
+        };
+
+        self.context
+            .apply_summary(request.split_index, &summary, num_turns);
+    }
+
     async fn try_recover(&mut self, error: &str) -> RecoveryOutcome {
         let action = self.recovery.determine_strategy(&self.recovery_ctx);
         match action {
@@ -816,8 +887,7 @@ impl Run {
                         target_ratio * 100.0
                     ),
                 });
-                // Use micro_compact to reduce context size
-                self.context.micro_compact(self.context.len().max(4) / 3);
+                self.force_compact(target_ratio).await;
                 RecoveryOutcome::Retry
             }
             RecoveryAction::EscalateTokens { new_max_tokens } => {
@@ -890,12 +960,142 @@ impl Run {
         let tool_catalog = Context::build_tool_catalog_string(&tool_defs, &danger_map);
         self.context.set_tool_catalog(&tool_catalog);
 
-        // Segment 5: ACTIVE MEMORY
-        if let Some(ref mem) = self.brain.memory {
-            let m = mem.lock();
-            let core_str = m.core().to_context_string();
-            if !core_str.is_empty() {
-                self.context.set_active_memory(&core_str);
+        // Segment 5: ACTIVE MEMORY — project instructions + core memory + recall search
+        {
+            let mut mem_str = String::new();
+
+            // Layered project instructions (agverse.md):
+            //   1. Global:   ~/.agverse/agverse.md
+            //   2. Project:  {cwd}/agverse.md  (or AGENTS.md)
+            //   3. Local:    {cwd}/agverse.local.md  (gitignore, personal)
+            //   4. Rules:    {cwd}/.agverse/rules/*.md  (modular, path-scoped later)
+            let cwd = self.working_dir.clone().or_else(|| {
+                std::env::current_dir()
+                    .ok()
+                    .and_then(|p| p.to_str().map(|s| s.to_string()))
+            });
+            let mut instructions = Vec::new();
+
+            // 1. Global
+            let global_path = crate::paths::get_global_agverse_md_path();
+            if let Ok(content) = std::fs::read_to_string(&global_path) {
+                instructions.push(("Global Project".to_string(), content));
+            }
+
+            let mut global_local_path = global_path.clone();
+            global_local_path.set_file_name("agverse.local.md");
+            if let Ok(content) = std::fs::read_to_string(&global_local_path) {
+                instructions.push(("Global User Preferences".to_string(), content));
+            }
+
+            // Extract recent conversation text to match path-scoped rules
+            let conversation_text = self.context.messages().iter().rev().take(5)
+                .filter_map(|m| m.content.as_deref())
+                .collect::<Vec<_>>()
+                .join("\n")
+                .to_lowercase();
+
+            // 2. Project root
+            if let Some(ref dir) = cwd {
+                for name in &["agverse.md", "AGENTS.md"] {
+                    let path = std::path::Path::new(dir).join(name);
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        instructions.push((format!("Project ({name})"), content));
+                        break;
+                    }
+                }
+
+                // 3. Local (personal, gitignored)
+                let local_path = std::path::Path::new(dir).join("agverse.local.md");
+                if let Ok(content) = std::fs::read_to_string(&local_path) {
+                    instructions.push(("Project Local".to_string(), content));
+                }
+
+                // 4. Rules directory (.agverse/rules/*.md) - Path Scoped
+                let rules_dir = std::path::Path::new(dir).join(".agverse/rules");
+                if rules_dir.is_dir() {
+                    if let Ok(entries) = std::fs::read_dir(&rules_dir) {
+                        let mut rule_files: Vec<_> = entries
+                            .filter_map(|e| e.ok())
+                            .filter(|e| {
+                                e.path().extension().is_some_and(|ext| ext == "md")
+                            })
+                            .collect();
+                        rule_files.sort_by_key(|e| e.path());
+                        for entry in rule_files {
+                            if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                                let path = entry.path();
+                                let name = path
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("rule");
+
+                                let name_lower = name.to_lowercase();
+                                if name_lower == "global" || name_lower == "default" || conversation_text.contains(&name_lower) {
+                                    instructions.push((format!("Rule: {name}"), content));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !instructions.is_empty() {
+                let mut parts = Vec::new();
+                for (label, content) in &instructions {
+                    parts.push(format!("## {label}\n{content}"));
+                }
+                mem_str.push_str(&format!("Project Instructions:\n{}\n\n", parts.join("\n\n")));
+            }
+
+            // Core memory + recall search (if memory system is enabled)
+            if let Some(ref mem) = self.brain.memory {
+                let m = mem.lock();
+                let core_str = m.core().to_context_string();
+                if !core_str.is_empty() {
+                    mem_str.push_str(&core_str);
+                    mem_str.push('\n');
+                }
+
+                // Recall search: find relevant past conversations
+                if let Some(last_user) = self.context.raw_messages().iter().rev()
+                    .find(|msg| msg.role == Role::User)
+                    .and_then(|msg| msg.content.as_deref())
+                {
+                    if let Ok(results) = m.search_conversation(last_user, 3) {
+                        if !results.is_empty() {
+                            let recall_str: String = results.iter()
+                                .map(|r| format!("  • [{}] {}", r.role, r.content.chars().take(200).collect::<String>()))
+                                .collect::<Vec<_>>()
+                                .join("\n");
+                            mem_str.push_str(&format!("Recall:\n{recall_str}\n"));
+                        }
+                    }
+                }
+            }
+
+            if !mem_str.is_empty() {
+                self.context.set_active_memory(&mem_str);
+            }
+        }
+
+        // Segment 6: LOADED SKILLS — catalog + active skill content
+        if let Some(ref sm) = self.brain.skill_manager {
+            let mgr = sm.lock();
+            let catalog = mgr.build_catalog();
+            let active = mgr.build_active_context();
+            let mut skills_str = String::new();
+            if !catalog.is_empty() {
+                skills_str.push_str(&catalog);
+            }
+            if !active.is_empty() {
+                if !skills_str.is_empty() {
+                    skills_str.push_str("\n\n");
+                }
+                skills_str.push_str(&active);
+            }
+            if !skills_str.is_empty() {
+                self.context.set_loaded_skills(&skills_str);
             }
         }
 
@@ -908,9 +1108,9 @@ impl Run {
 
     async fn maybe_llm_compact(&mut self) {
         let current = self.context.current_token_count();
-        let critical = (self.client.model.max_context_tokens as f64 * 0.95) as usize;
+        let threshold = (self.client.model.max_context_tokens as f64 * 0.80) as usize;
 
-        if current < critical {
+        if current < threshold {
             return;
         }
 
@@ -923,16 +1123,123 @@ impl Run {
         let messages = vec![Message::system(&request.prompt)];
         let (result_text, _) = match self.client.chat_completion(&messages, &[]).await {
             Ok(r) => r,
-            Err(_) => return,
+            Err(_) => {
+                // LLM call failed — fallback to micro_compact
+                self.context.micro_compact(self.context.len().max(4) / 3);
+                return;
+            }
         };
 
         let summary: crate::compressor::TurnSummary = match serde_json::from_str(&result_text) {
             Ok(s) => s,
-            Err(_) => return,
+            Err(_) => {
+                // JSON parse failed — fallback to micro_compact
+                self.context.micro_compact(self.context.len().max(4) / 3);
+                return;
+            }
         };
 
         self.context
             .apply_summary(request.split_index, &summary, num_turns);
+    }
+
+    // ── Session memory ────────────────────────────────────────────
+
+    /// Load the 3 most recent session memory files and inject as a system message.
+    /// This gives the agent continuity across sessions without embedding search.
+    fn load_recent_memories(&mut self) {
+        let mem_dir = crate::paths::get_memories_dir();
+
+        let entries = match std::fs::read_dir(&mem_dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+
+        let mut files: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+            .collect();
+        files.sort_by_key(|e| std::cmp::Reverse(e.path()));
+        files.truncate(3);
+
+        let mut parts = Vec::new();
+        for entry in &files {
+            if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                let trimmed: String = content.chars().take(1000).collect();
+                parts.push(trimmed);
+            }
+        }
+
+        if !parts.is_empty() {
+            let combined = format!(
+                "== Previous Session Memories ==\n{}\n== End Memories ==\n",
+                parts.join("\n---\n")
+            );
+            self.context.add(Message::system(&combined));
+        }
+    }
+
+    /// Write a brief memory file after Run completion.
+    /// Extracts user messages and assistant final answers into a compact
+    /// markdown file stored in ~/.agverse/memories/. Loaded on next startup.
+    fn write_session_memory(&self, final_text: &str) {
+        let mem_dir = crate::paths::get_memories_dir();
+        let _ = std::fs::create_dir_all(&mem_dir);
+
+        // Extract conversation summary from context messages
+        let messages = self.context.raw_messages();
+        let mut summary = String::new();
+        let mut turn = 0;
+        for msg in messages {
+            match msg.role {
+                Role::User => {
+                    turn += 1;
+                    let content = msg.content.as_deref().unwrap_or("");
+                    let preview: String = content.chars().take(200).collect();
+                    summary.push_str(&format!("{turn}. User: {preview}\n"));
+                }
+                Role::Assistant => {
+                    let content = msg.content.as_deref().unwrap_or("");
+                    if !content.is_empty() {
+                        let preview: String = content.chars().take(200).collect();
+                        summary.push_str(&format!("   → {preview}\n"));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Also include the final answer
+        if !final_text.is_empty() && summary.len() < 100 {
+            summary.push_str(&format!("Result: {}\n", final_text.chars().take(300).collect::<String>()));
+        }
+
+        if summary.is_empty() {
+            return;
+        }
+
+        let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+        let filename = format!("session_{timestamp}.md");
+        let path = mem_dir.join(&filename);
+        let content = format!(
+            "# Session Memory — {timestamp}\n\n{summary}\n",
+        );
+        if let Err(e) = std::fs::write(&path, content) {
+            tracing::warn!("failed to write session memory: {e}");
+        }
+
+        // Keep only the 20 most recent memory files
+        if let Ok(entries) = std::fs::read_dir(&mem_dir) {
+            let mut files: Vec<_> = entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+                .collect();
+            files.sort_by_key(|e| e.path());
+            while files.len() > 20 {
+                let old = files.remove(0);
+                let _ = std::fs::remove_file(old.path());
+            }
+        }
     }
 
     // ── Cleanup ──────────────────────────────────────────────────
@@ -995,10 +1302,7 @@ enum RunError {
 
 /// Default directory for Run event logs.
 pub(crate) fn default_runs_dir() -> String {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".to_string());
-    format!("{home}/.agent_core/runs")
+    crate::paths::get_runs_dir().to_string_lossy().into_owned()
 }
 
 // ── Helper functions (copied from agent/mod.rs for now) ───────────

@@ -6,19 +6,31 @@ use super::storage::Storage;
 
 pub struct MemoryConsolidator {
     storage: Storage,
-    #[allow(dead_code)]
-    embedding_model: Arc<EmbeddingModel>,
+    embedding_model: Option<Arc<EmbeddingModel>>,
 }
 
 impl MemoryConsolidator {
     pub fn new(storage: Storage, embedding_model: Arc<EmbeddingModel>) -> Self {
         Self {
             storage,
-            embedding_model,
+            embedding_model: Some(embedding_model),
+        }
+    }
+
+    pub fn without_embedding(storage: Storage) -> Self {
+        Self {
+            storage,
+            embedding_model: None,
         }
     }
 
     pub fn consolidate(&self) -> Result<ConsolidationReport> {
+        if self.embedding_model.is_none() {
+            return Ok(ConsolidationReport {
+                deduped_recall: 0,
+                deduped_archival: 0,
+            });
+        }
         let deduped_recall = self.dedup_recall_memory()?;
         let deduped_archival = self.dedup_archival_memory()?;
 

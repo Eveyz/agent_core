@@ -206,7 +206,7 @@ default_model = "deepseek"
 
 # ── 记忆系统 (可选，全部可省略使用默认值) ────────────────────────────
 [memory]
-# db_path = "~/.agent_core/memory.db"
+# db_path = "~/.agverse/memory.db"
 # embedding_model = "BAAI/bge-small-en-v1.5"
 # max_core_blocks = 5
 # default_block_max_chars = 2000
@@ -377,9 +377,10 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Session manager — create before tool registration for subagent sessions
-    let session_db = "~/.agent_core/memory.db";
+    let session_db_path = agent_core::paths::get_memory_db_path();
+    let session_db = session_db_path.to_string_lossy();
     let session_storage =
-        agent_core::memory::storage::Storage::new(session_db).expect("Failed to open session DB");
+        agent_core::memory::storage::Storage::new(&session_db).expect("Failed to open session DB");
     let session_mgr = Arc::new(Mutex::new(SessionManager::new(session_storage)));
     let _current_session_id: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
 
@@ -462,7 +463,7 @@ async fn main() -> anyhow::Result<()> {
         .build();
     let mut rl = Editor::with_config(config).expect("Failed to create line editor");
     rl.set_helper(Some(CommandCompleter));
-    let _ = rl.load_history(".agent_core_history");
+    let _ = rl.load_history(&agent_core::paths::get_cli_history_dir());
 
     loop {
         let input = match rl.readline("> ") {
@@ -521,7 +522,7 @@ async fn main() -> anyhow::Result<()> {
                 }
 
                 // 3. Save command history
-                if let Err(e) = rl.save_history(".agent_core_history") {
+                if let Err(e) = rl.save_history(&agent_core::paths::get_cli_history_dir()) {
                     eprintln!("History save warning: {e}");
                 }
 

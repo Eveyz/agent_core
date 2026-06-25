@@ -23,7 +23,7 @@ pub struct RecallRecord {
 
 pub struct RecallMemory {
     storage: Storage,
-    embedding_model: Arc<EmbeddingModel>,
+    embedding_model: Option<Arc<EmbeddingModel>>,
     scorer: SalienceScorer,
 }
 
@@ -31,7 +31,15 @@ impl RecallMemory {
     pub fn new(storage: Storage, embedding_model: Arc<EmbeddingModel>) -> Self {
         Self {
             storage,
-            embedding_model,
+            embedding_model: Some(embedding_model),
+            scorer: SalienceScorer::new(SalienceConfig::default()),
+        }
+    }
+
+    pub fn without_embedding(storage: Storage) -> Self {
+        Self {
+            storage,
+            embedding_model: None,
             scorer: SalienceScorer::new(SalienceConfig::default()),
         }
     }
@@ -57,8 +65,12 @@ impl RecallMemory {
         importance: Option<f32>,
     ) -> Result<String> {
         let id = uuid::Uuid::new_v4().to_string();
-        let embedding = self.embedding_model.embed_single(content)?;
-        let embedding_bytes = embedding_to_bytes(&embedding);
+        let embedding_bytes = if let Some(ref model) = self.embedding_model {
+            let embedding = model.embed_single(content)?;
+            embedding_to_bytes(&embedding)
+        } else {
+            Vec::new()
+        };
         let now = Utc::now().to_rfc3339();
 
         let importance =
@@ -89,9 +101,55 @@ impl RecallMemory {
 
     /// Search recall memory using the salience scorer
     /// (Ebbinghaus decay × semantic similarity × importance).
+    /// Falls back to keyword search when no embedding model is available.
     pub fn search(&self, query: &str, top_k: usize) -> Result<Vec<RecallRecord>> {
-        let query_embedding = self.embedding_model.embed_single(query)?;
-        self.search_by_vector(&query_embedding, top_k)
+        if let Some(ref model) = self.embedding_model {
+            let query_embedding = model.embed_single(query)?;
+            self.search_by_vector(&query_embedding, top_k)
+        } else {
+            self.search_by_keyword(query, top_k)
+        }
+    }
+
+    /// Keyword-based search fallback (no embedding model).
+    /// Uses SQLite LIKE to find records containing query terms.
+    fn search_by_keyword(&self, query: &str, top_k: usize) -> Result<Vec<RecallRecord>> {
+        let db = self.storage.conn();
+        let pattern = format!("%{}%", query);
+        let mut stmt = db
+            .prepare(
+                "SELECT id, session_id, role, content, embedding, importance, \
+                 COALESCE(memory_strength, 1.0), \
+                 COALESCE(access_count, 0), \
+                 last_accessed_at, \
+                 created_at \
+                 FROM recall_memory \
+                 WHERE content LIKE ?1 \
+                 ORDER BY created_at DESC LIMIT ?2",
+            )
+            .context("failed to prepare keyword search query")?;
+
+        let rows = stmt.query_map(rusqlite::params![pattern, top_k as i64], |row| {
+            let embedding_bytes: Vec<u8> = row.get(4)?;
+            Ok(RecallRecord {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                role: row.get(2)?,
+                content: row.get(3)?,
+                embedding: bytes_to_embedding(&embedding_bytes),
+                importance: row.get(5)?,
+                memory_strength: row.get(6)?,
+                access_count: row.get(7)?,
+                last_accessed_at: row.get(8)?,
+                created_at: row.get(9)?,
+            })
+        })?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        Ok(results)
     }
 
     /// Search by query embedding vector.
@@ -170,7 +228,9 @@ impl RecallMemory {
         query: &str,
         top_k: usize,
     ) -> Result<Vec<super::salience::ScoredRecord>> {
-        let query_embedding = self.embedding_model.embed_single(query)?;
+        let model = self.embedding_model.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("embedding model not available; search_scored requires embedding"))?;
+        let query_embedding = model.embed_single(query)?;
 
         let db = self.storage.conn();
         let mut stmt = db

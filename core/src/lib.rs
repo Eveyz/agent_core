@@ -10,6 +10,7 @@ pub mod error_recovery;
 pub mod hooks;
 pub mod mcp;
 pub mod memory;
+pub mod paths;
 pub mod permission;
 pub mod project;
 pub mod prompt;

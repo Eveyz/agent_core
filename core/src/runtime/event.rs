@@ -360,6 +360,84 @@ impl RunEvent {
             // ContextCompacted doesn't exist in AgentEvent — Run emits it directly
         })
     }
+
+    /// Convert a `RunEvent` back into a legacy `AgentEvent`.
+    /// Used by the CLI TUI which still consumes `AgentEvent` but is backed
+    /// by the Runtime (Brain/Run) engine.
+    pub fn to_agent_event(&self) -> Option<crate::types::AgentEvent> {
+        use crate::types::AgentEvent;
+        let ev = match &self {
+            RunEvent::RunStarted => AgentEvent::AgentStart,
+            RunEvent::RunCancelled { reason } => AgentEvent::Aborted { reason: reason.clone() },
+            RunEvent::TurnStarted { index } => AgentEvent::TurnStart { turn_index: *index },
+            RunEvent::TurnEnded { index } => AgentEvent::TurnEnd {
+                turn_index: *index,
+                assistant_message: crate::types::Message::assistant(""),
+                tool_results: vec![],
+            },
+            RunEvent::MessageStart { message_id, message } => AgentEvent::MessageStart {
+                message_id: message_id.clone(),
+                message: message.clone(),
+            },
+            RunEvent::MessageUpdate { message_id, delta, .. } | RunEvent::ModelStreaming { message_id, delta, .. } => {
+                AgentEvent::MessageUpdate {
+                    message_id: message_id.clone(),
+                    delta: delta.clone(),
+                }
+            }
+            RunEvent::MessageEnd { message_id, message } => AgentEvent::MessageEnd {
+                message_id: message_id.clone(),
+                message: message.clone(),
+            },
+            RunEvent::ToolStarted { call_id, name, args, .. } => AgentEvent::ToolExecutionStart {
+                tool_call_id: call_id.clone(),
+                tool_name: name.clone(),
+                args: args.clone(),
+            },
+            RunEvent::ToolUpdate { call_id, partial, .. } => AgentEvent::ToolExecutionUpdate {
+                tool_call_id: call_id.clone(),
+                tool_name: String::new(),
+                partial_result: partial.clone(),
+            },
+            RunEvent::ToolEnded { call_id, name, result, is_error, .. } => {
+                AgentEvent::ToolExecutionEnd {
+                    tool_call_id: call_id.clone(),
+                    tool_name: name.clone(),
+                    result: result.clone(),
+                    is_error: *is_error,
+                }
+            }
+            RunEvent::ApprovalRequired { prompt_id, tool_name, tool_input, danger_level, explanation, .. } => {
+                AgentEvent::ApprovalRequired {
+                    prompt_id: prompt_id.clone(),
+                    tool_name: tool_name.clone(),
+                    tool_input: tool_input.clone(),
+                    danger_level: danger_level.clone(),
+                    explanation: explanation.clone(),
+                }
+            }
+            RunEvent::Error { message } => AgentEvent::Error(message.clone()),
+            RunEvent::SubagentStarted { subagent_id, role_name, task } => {
+                AgentEvent::SubagentStart {
+                    subagent_id: subagent_id.clone(),
+                    role_name: role_name.clone(),
+                    task: task.clone(),
+                }
+            }
+            RunEvent::SubagentEnded { subagent_id, success, iterations_used } => {
+                AgentEvent::SubagentEnd {
+                    subagent_id: subagent_id.clone(),
+                    role_name: String::new(),
+                    success: *success,
+                    iterations_used: *iterations_used,
+                }
+            }
+            RunEvent::RunCompleted { .. } => AgentEvent::AgentEnd { messages: vec![] },
+            RunEvent::RunFailed { error } => AgentEvent::Error(error.clone()),
+            _ => return None,
+        };
+        Some(ev)
+    }
 }
 
 #[cfg(test)]

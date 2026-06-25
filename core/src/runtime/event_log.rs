@@ -1,6 +1,6 @@
 //! EventLog — append-only JSONL persistence for Run events.
 //!
-//! Each Run writes its events to `~/.agent_core/runs/{run_id}.jsonl`.
+//! Each Run writes its events to `~/.agverse/runs/{run_id}.jsonl`.
 //! This enables:
 //! - **Replay**: re-execute or visualize a past Run's event sequence
 //! - **Fork**: start a new Run from a past Run's context at a specific event

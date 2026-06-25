@@ -211,7 +211,7 @@ impl ComprehensiveAgentBuilder {
             let dir = self
                 .reflector_skills_dir
                 .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from(".agent_core_history/reflector-skills"));
+                .unwrap_or_else(crate::paths::get_skills_dir);
             Some(Reflector::new(dir))
         } else {
             None

@@ -111,10 +111,16 @@ pub struct MemoryConfig {
     pub default_block_max_chars: usize,
     #[serde(default = "default_true")]
     pub consolidation_enabled: bool,
+    /// Enable embedding-based vector search (requires downloading a model).
+    /// When false, conversation search falls back to keyword matching.
+    #[serde(default)]
+    pub embedding_enabled: bool,
 }
 
 fn default_db_path() -> String {
-    "~/.agverse/memory.db".to_string()
+    crate::paths::get_memory_db_path()
+        .to_string_lossy()
+        .to_string()
 }
 
 fn default_embedding_model() -> String {
@@ -132,11 +138,14 @@ fn default_block_max_chars() -> usize {
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
-            db_path: "~/.agverse/memory.db".to_string(),
+            db_path: crate::paths::get_memory_db_path()
+                .to_string_lossy()
+                .into_owned(),
             embedding_model: "BAAI/bge-small-en-v1.5".to_string(),
             max_core_blocks: 5,
             default_block_max_chars: 2000,
             consolidation_enabled: true,
+            embedding_enabled: false,
         }
     }
 }
@@ -419,10 +428,7 @@ pub fn resolve_env_value(raw: &str) -> String {
 }
 
 pub fn default_config_path() -> PathBuf {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".agverse").join("config.toml")
+    crate::paths::get_agverse_dir().join("config.toml")
 }
 
 #[cfg(test)]

@@ -25,7 +25,7 @@ use crate::skills::SkillManager;
 use crate::tools::{ToolRegistry, ToolUpdateFn};
 use crate::trace::TraceCollector;
 use crate::types::{
-    AgentEvent, AgentState, Message, MessageDelta, StreamEvent, ToolCall, ToolExecutionMode,
+    AgentEvent, AgentState, Message, MessageDelta, Role, StreamEvent, ToolCall, ToolExecutionMode,
     ToolResultRecord,
 };
 
@@ -230,7 +230,11 @@ impl AgentBuilder {
                 Some(Arc::new(Mutex::new(m)))
             } else {
                 let m =
-                    MemoryManager::new("~/.agent_core/memory.db", "BAAI/bge-small-en-v1.5", 2000)?;
+                    MemoryManager::new(
+                        &crate::paths::get_memory_db_path().to_string_lossy(),
+                        "BAAI/bge-small-en-v1.5",
+                        2000,
+                    )?;
                 Some(Arc::new(Mutex::new(m)))
             }
         } else {
@@ -1023,13 +1027,33 @@ impl Agent {
         let tool_catalog = Context::build_tool_catalog_string(&tool_defs, &danger_map);
         self.context.set_tool_catalog(&tool_catalog);
 
-        // Segment 5: ACTIVE MEMORY — refresh from memory manager if enabled
+        // Segment 5: ACTIVE MEMORY — core memory + recall search
         if let Some(ref mem) = self.memory
             && let m = mem.lock()
         {
-            let core_str = m.core().to_context_string();
-            if !core_str.is_empty() {
-                self.context.set_active_memory(&core_str);
+            let mut mem_str = m.core().to_context_string();
+
+            // Recall search: find relevant past conversations
+            if let Some(last_user) = self.context.raw_messages().iter().rev()
+                .find(|msg| msg.role == Role::User)
+                .and_then(|msg| msg.content.as_deref())
+            {
+                if let Ok(results) = m.search_conversation(last_user, 3) {
+                    if !results.is_empty() {
+                        let recall_str: String = results.iter()
+                            .map(|r| format!("  • [{}] {}", r.role, r.content.chars().take(200).collect::<String>()))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        if !mem_str.is_empty() {
+                            mem_str.push('\n');
+                        }
+                        mem_str.push_str(&format!("Recall:\n{}", recall_str));
+                    }
+                }
+            }
+
+            if !mem_str.is_empty() {
+                self.context.set_active_memory(&mem_str);
             }
         }
 
@@ -1045,33 +1069,35 @@ impl Agent {
     /// Also writes the summary to Recall Memory for long-term retention.
     async fn maybe_llm_compact(&mut self) {
         let current = self.context.current_token_count();
-        let critical = (self.client.model.max_context_tokens as f64 * 0.95) as usize;
+        let threshold = (self.client.model.max_context_tokens as f64 * 0.80) as usize;
 
-        if current < critical {
+        if current < threshold {
             return;
         }
 
-        // Summarize the oldest ~40% of turns
         let num_turns = self.context.len().max(4) * 2 / 5;
         let request = match self.context.prepare_summary(num_turns) {
             Some(r) => r,
             None => return,
         };
 
-        // Build a lightweight summarization request
         let messages = vec![Message::system(&request.prompt)];
         let (result_text, _) = match self.client.chat_completion(&messages, &[]).await {
             Ok(r) => r,
-            Err(_) => return, // summarization failed, skip
+            Err(_) => {
+                self.context.micro_compact(self.context.len().max(4) / 3);
+                return;
+            }
         };
 
-        // Parse the LLM response as TurnSummary
         let summary: crate::compressor::TurnSummary = match serde_json::from_str(&result_text) {
             Ok(s) => s,
-            Err(_) => return, // couldn't parse summary
+            Err(_) => {
+                self.context.micro_compact(self.context.len().max(4) / 3);
+                return;
+            }
         };
 
-        // Apply summary — replace old messages with compressed version
         self.context
             .apply_summary(request.split_index, &summary, num_turns);
     }

@@ -52,6 +52,31 @@ impl MemoryManager {
         })
     }
 
+    /// Create a MemoryManager without embedding model.
+    /// Conversation search falls back to keyword matching.
+    /// Core memory (manual notes) works normally.
+    pub fn without_embedding(
+        db_path: &str,
+        default_block_max_chars: usize,
+    ) -> Result<Self> {
+        let storage = Storage::new(db_path)?;
+
+        let core = CoreMemory::new(storage.clone(), default_block_max_chars)?;
+        let recall = RecallMemory::without_embedding(storage.clone());
+        let archival = ArchivalMemory::without_embedding(storage.clone());
+        let consolidator = MemoryConsolidator::without_embedding(storage);
+
+        let session_id = uuid::Uuid::new_v4().to_string();
+
+        Ok(Self {
+            core,
+            recall,
+            archival,
+            consolidator,
+            session_id,
+        })
+    }
+
     pub fn core(&self) -> &CoreMemory {
         &self.core
     }

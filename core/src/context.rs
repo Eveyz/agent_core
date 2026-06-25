@@ -212,7 +212,7 @@ impl ContextEngine {
             max_tokens,
             tool_result_budget: 4000,
             auto_compact_threshold: 0.8,
-            system_prefix_budget: 2200,
+            system_prefix_budget: (max_tokens as f64 * 0.08) as usize,
             stable_segment_names: Vec::new(),
             compressor: Compressor::new(),
         };
@@ -288,7 +288,7 @@ impl ContextEngine {
             "Loaded Skills",
             5,
             500,
-            RefreshPolicy::OnDemand,
+            RefreshPolicy::PerTurn,
             Stability::Dynamic,
         );
         self.segments.insert("loaded_skills".to_string(), skills);
@@ -540,18 +540,16 @@ impl ContextEngine {
         total
     }
 
-    /// Run the 5-stage compression pipeline.
-    /// Stages 1-3 (snip, dedup, chunk) run automatically.
-    /// Returns compression stats. Stages 4-5 require LLM and are
-    /// handled externally via `prepare_summary()`.
+    /// Run Stage 1-3 compression (snip, dedup, chunk).
+    /// Does NOT drain messages — the caller is responsible for LLM
+    /// summarization (Stage 4) via `prepare_summary()` / `apply_summary()`
+    /// when `should_auto_compact()` returns true after this call.
     pub fn trim_to_fit(&mut self) -> CompressionResult {
         let tokens_before = self.current_token_count();
 
-        // Pre-compute system tokens to avoid borrow conflict in closure
         let system_tokens = rough_token_count(&self.assemble_system_prompt());
         let max_tokens = self.max_tokens;
 
-        // Run pipeline stages 1-3
         let result = self.compressor.run_pipeline(
             &mut self.messages,
             |msgs| {
@@ -563,27 +561,6 @@ impl ContextEngine {
             },
             max_tokens,
         );
-
-        // If still over threshold after stages 1-3, fall back to auto_compact
-        let current = self.current_token_count();
-        let threshold = (self.max_tokens as f64 * self.auto_compact_threshold) as usize;
-        if current > threshold {
-            let target = current.saturating_sub(self.max_tokens);
-            let mut removed_tokens = 0usize;
-            let mut remove_count = 0usize;
-
-            for msg in &self.messages {
-                if removed_tokens >= target {
-                    break;
-                }
-                removed_tokens += message_token_count(msg);
-                remove_count += 1;
-            }
-
-            if remove_count > 0 {
-                self.messages.drain(..remove_count);
-            }
-        }
 
         CompressionResult {
             stages_ran: result.stages_ran,
@@ -765,14 +742,23 @@ pub type Context = ContextEngine;
 
 // ── Token utilities ──────────────────────────────────────────────────
 
-/// Fast approximate token count (chars / 4). Used for budget enforcement.
+/// Accurate token count using tiktoken BPE tokenizer (o200k_base).
+/// Falls back to chars/4 estimate if the tokenizer fails to initialize.
 pub fn rough_token_count(text: &str) -> usize {
-    // 1 token ≈ 4 chars for English, ~1.5 chars for Chinese
-    // Use a weighted approach
-    let chars = text.chars().count();
-    let ascii_count = text.chars().filter(|c| c.is_ascii()).count();
-    let non_ascii = chars - ascii_count;
-    (ascii_count / 4) + (non_ascii / 2)
+    use std::sync::OnceLock;
+    use tiktoken_rs::o200k_base;
+
+    static BPE: OnceLock<Option<tiktoken_rs::CoreBPE>> = OnceLock::new();
+    let bpe = BPE.get_or_init(|| o200k_base().ok());
+    match bpe {
+        Some(b) => b.encode_with_special_tokens(text).len(),
+        None => {
+            let chars = text.chars().count();
+            let ascii_count = text.chars().filter(|c| c.is_ascii()).count();
+            let non_ascii = chars - ascii_count;
+            (ascii_count / 4) + (non_ascii / 2)
+        }
+    }
 }
 
 fn message_token_count(msg: &Message) -> usize {
@@ -1041,17 +1027,20 @@ mod tests {
     }
 
     #[test]
-    fn test_trim_to_fit_removes_old_messages() {
-        let mut engine = ContextEngine::new("test", 100); // very small budget
+    fn test_trim_to_fit_does_not_drain_messages() {
+        // trim_to_fit now only runs Stage 1-3 (snip/dedup/chunk) and does NOT
+        // drain old messages. The LLM summary (Stage 4) is handled by the
+        // caller via maybe_llm_compact. This test verifies that pure user
+        // messages are preserved — no data loss without an explicit compact.
+        let mut engine = ContextEngine::new("test", 100);
         engine.set_max_tokens(100);
 
-        // Add messages until we overflow
         for i in 0..20 {
             engine.add(Message::user(&format!("message number {}", i)));
         }
 
         engine.trim_to_fit();
-        assert!(engine.len() < 20);
+        assert_eq!(engine.len(), 20); // messages preserved, no drain
     }
 
     #[test]

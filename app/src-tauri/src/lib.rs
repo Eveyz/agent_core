@@ -314,7 +314,7 @@ async fn search_files(query: String, path: Option<String>) -> Result<Vec<std::co
                     if let Ok(metadata) = entry.metadata() {
                         let is_dir = metadata.is_dir();
                         
-                        if is_dir && (file_name.starts_with('.') && file_name != ".agent_core" || ignore_dirs.contains(&file_name.as_str())) {
+                        if is_dir && (file_name.starts_with('.') && file_name != ".agverse" || ignore_dirs.contains(&file_name.as_str())) {
                             continue;
                         }
 
@@ -644,10 +644,7 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             // Resolve home directory
-            let home = std::env::var("HOME")
-                .or_else(|_| std::env::var("USERPROFILE"))
-                .unwrap_or_else(|_| ".".to_string());
-            let agverse_dir = std::path::PathBuf::from(&home).join(".agverse");
+            let agverse_dir = agent_core::paths::get_agverse_dir();
             let config_path = agverse_dir.join("config.toml");
             let config_path_str = config_path.to_string_lossy().to_string();
 
@@ -708,7 +705,7 @@ pub fn run() {
             let db_path = if let Some(ref mem_config) = brain.config.memory {
                 mem_config.db_path.clone()
             } else {
-                "~/.agverse/memory.db".to_string()
+                agent_core::paths::get_memory_db_path().to_string_lossy().into_owned()
             };
             let storage = agent_core::memory::storage::Storage::new(&db_path)
                 .expect("Failed to open storage database");

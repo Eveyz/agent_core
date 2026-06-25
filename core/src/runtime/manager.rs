@@ -346,35 +346,13 @@ impl RunManager {
 
     /// List all Run IDs that have persisted event logs (for replay/fork).
     pub fn list_logged_runs(&self) -> Result<Vec<RunId>> {
-        let dir = self
-            .brain
-            .config
-            .memory
-            .as_ref()
-            .map(|m| {
-                // Use the same base as memory db, but in a "runs" subdir
-                let home = std::env::var("HOME")
-                    .or_else(|_| std::env::var("USERPROFILE"))
-                    .unwrap_or_else(|_| ".".to_string());
-                format!("{home}/.agent_core/runs")
-            })
-            .unwrap_or_else(|| {
-                let home = std::env::var("HOME")
-                    .or_else(|_| std::env::var("USERPROFILE"))
-                    .unwrap_or_else(|_| ".".to_string());
-                format!("{home}/.agent_core/runs")
-            });
-        EventLog::list_runs(&dir)
+        let dir = crate::paths::get_runs_dir();
+        EventLog::list_runs(&dir.to_string_lossy())
     }
 
     /// Load a persisted Run's event log for replay.
     pub fn load_run_log(&self, run_id: &str) -> Result<Vec<Envelope>> {
-        let home = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .unwrap_or_else(|_| ".".to_string());
-        let path = std::path::PathBuf::from(&home)
-            .join(".agent_core/runs")
-            .join(format!("{run_id}.jsonl"));
+        let path = crate::paths::get_runs_dir().join(format!("{run_id}.jsonl"));
         EventLog::load(&path)
     }
 
@@ -382,12 +360,7 @@ impl RunManager {
     ///
     /// Used by the frontend to recover events lost to broadcast lag (B2).
     pub fn replay_since(&self, run_id: &str, from_seq: u64) -> Result<Vec<Envelope>> {
-        let home = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .unwrap_or_else(|_| ".".to_string());
-        let path = std::path::PathBuf::from(&home)
-            .join(".agent_core/runs")
-            .join(format!("{run_id}.jsonl"));
+        let path = crate::paths::get_runs_dir().join(format!("{run_id}.jsonl"));
         EventLog::replay_since(&path, from_seq)
     }
 

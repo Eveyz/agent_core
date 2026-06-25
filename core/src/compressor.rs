@@ -232,15 +232,15 @@ impl Compressor {
 
             let hash_key = format!("{}::{}", tool_name, content);
 
-            if let Some((first_idx, _)) = seen.get(&hash_key) {
-                // Replace with reference
+            if let Some((first_idx, first_name)) = seen.get(&hash_key) {
                 let truncated = truncate_preview(&content, 200);
                 messages[i].content = Some(format!(
-                    "[Same output as message #{} ({}): {}]",
-                    first_idx + 1, // 1-indexed for readability
+                    "[Same as #{} — {}... ({} chars)]",
+                    first_idx + 1,
                     truncated,
                     content.len()
                 ));
+                let _ = first_name;
                 deduped += 1;
             } else {
                 seen.insert(hash_key, (i, tool_name));
@@ -253,13 +253,17 @@ impl Compressor {
     // ── Stage 3: chunkCompact ───────────────────────────────────────
 
     /// Merge consecutive tool_call → tool_result pairs into single system messages.
-    /// Each chunk preserves the full semantic unit: "what was called + what was returned".
+    /// Only operates on older messages — the most recent `protect_recent` messages
+    /// are left untouched so the API-required tool_call/tool_result pairing stays
+    /// intact for the active conversation window.
     /// Returns the number of pairs merged.
     pub fn chunk_compact(&self, messages: &mut Vec<Message>) -> usize {
+        let protect = 8.min(messages.len());
+        let mut limit = messages.len().saturating_sub(protect);
         let mut merged = 0;
         let mut i = 0;
 
-        while i + 1 < messages.len() {
+        while i + 1 < limit {
             let (tool_name, tool_args, call_id) = {
                 let msg = &messages[i];
                 if msg.role != crate::types::Role::Assistant {
@@ -300,6 +304,7 @@ impl Compressor {
 
                 // Remove the tool result message
                 messages.remove(i + 1);
+                limit -= 1;
                 merged += 1;
             }
 
@@ -406,15 +411,14 @@ impl Compressor {
         summary_text
     }
 
-    // ── Stage 5: gradientCompact ────────────────────────────────────
+    // ── Stage 1-3 pipeline ──────────────────────────────────────────
 
-    /// Apply tiered compression based on message age:
-    ///   - Most recent N (gradient_keep_recent): keep raw
-    ///   - Next M (gradient_snip_range): snipCompact only
-    ///   - Older: chunk then prepare for summary
+    /// Run Stage 1-3 (snip, dedup, chunk) in order. These are purely
+    /// deterministic — no LLM required. Stage 4 (LLM summary) is handled
+    /// externally by the caller via `prepare_summary_compact` / `apply_summary`.
     ///
     /// Returns a CompressionResult with stats.
-    pub fn gradient_compact(
+    pub fn run_stages_1_3(
         &mut self,
         messages: &mut Vec<Message>,
         token_counter: impl Fn(&[Message]) -> usize,
@@ -423,26 +427,20 @@ impl Compressor {
         let msgs_before = messages.len();
         let mut stages = Vec::new();
 
-        // Stage 1: snipCompact on all messages
         let snipped = self.snip_compact(messages);
         if snipped > 0 {
             stages.push("snipCompact");
         }
 
-        // Stage 2: dedupCompact
         let deduped = self.dedup_compact(messages);
         if deduped > 0 {
             stages.push("dedupCompact");
         }
 
-        // Stage 3: chunkCompact
         let chunked = self.chunk_compact(messages);
         if chunked > 0 {
             stages.push("chunkCompact");
         }
-
-        // Stage 5: gradient — only if still above threshold
-        // (summaryCompact requires LLM, handled externally)
 
         CompressionResult {
             stages_ran: stages,
@@ -473,7 +471,7 @@ impl Compressor {
             };
         }
 
-        self.gradient_compact(messages, token_counter)
+        self.run_stages_1_3(messages, token_counter)
     }
 }
 
@@ -563,7 +561,7 @@ mod tests {
         ];
         let deduped = comp.dedup_compact(&mut msgs);
         assert_eq!(deduped, 1);
-        assert!(msgs[1].content.as_ref().unwrap().contains("Same output"));
+        assert!(msgs[1].content.as_ref().unwrap().contains("Same as"));
         assert_eq!(msgs[2].content.as_deref().unwrap(), &"B".repeat(100));
     }
 
@@ -584,10 +582,19 @@ mod tests {
         let mut msgs = vec![
             make_tool_call_msg("c1", "read_file", r#"{"path":"main.rs"}"#),
             make_tool_result("c1", "read_file", "fn main() {}"),
+            // padding so protect_recent (8) doesn't cover the pair above
+            Message::user("padding 1"),
+            Message::assistant("padding 2"),
+            Message::user("padding 3"),
+            Message::assistant("padding 4"),
+            Message::user("padding 5"),
+            Message::assistant("padding 6"),
+            Message::user("padding 7"),
+            Message::assistant("padding 8"),
         ];
         let merged = comp.chunk_compact(&mut msgs);
         assert_eq!(merged, 1);
-        assert_eq!(msgs.len(), 1); // merged into one system message
+        assert_eq!(msgs[0].role, crate::types::Role::System);
         let content = msgs[0].content.as_ref().unwrap();
         assert!(content.contains("read_file"));
         assert!(content.contains("fn main()"));
@@ -663,12 +670,8 @@ mod tests {
     }
 
     #[test]
-    fn test_gradient_compact() {
-        let mut comp = Compressor {
-            gradient_keep_recent: 2,
-            gradient_snip_range: 2,
-            ..Default::default()
-        };
+    fn test_run_stages_1_3() {
+        let mut comp = Compressor::default();
 
         let mut msgs = vec![
             Message::user("old task"),
@@ -679,7 +682,7 @@ mod tests {
             Message::assistant("done"),
         ];
 
-        let result = comp.gradient_compact(&mut msgs, |m| m.len() * 100);
+        let result = comp.run_stages_1_3(&mut msgs, |m| m.len() * 100);
         assert!(result.stages_ran.contains(&"snipCompact"));
     }
 

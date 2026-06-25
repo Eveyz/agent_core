@@ -369,13 +369,39 @@ async fn spawn_single(
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing 'task'"))?;
 
-    let system_prompt = args["system_prompt"]
-        .as_str()
-        .unwrap_or("You are a focused sub-agent. Complete the given task and return the result. Be concise. \
+    let default_system_prompt = "You are a focused sub-agent. Complete the given task and return the result. Be concise. \
 You have access to tools: read_file, glob, grep, bash, edit, webfetch, and git tools. \
 CRITICAL: ALWAYS use the 'webfetch' tool to fetch web content. NEVER use bash with 'curl' or 'wget'. \
-Do NOT attempt to read or process image files.")
+Do NOT attempt to read or process image files.";
+
+    let mut persona_content = String::new();
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".to_string());
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+    // 1. Global Agent Persona
+    let global_agent = std::path::Path::new(&home).join(format!(".agverse/agents/{}.md", id));
+    if let Ok(c) = std::fs::read_to_string(&global_agent) {
+        persona_content.push_str(&format!("Global Persona ({id}):\n{c}\n\n"));
+    }
+
+    // 2. Local/Project Agent Persona
+    let local_agent = cwd.join(format!(".agverse/agents/{}.md", id));
+    if let Ok(c) = std::fs::read_to_string(&local_agent) {
+        persona_content.push_str(&format!("Project Persona ({id}):\n{c}\n\n"));
+    }
+
+    let base_prompt = args["system_prompt"]
+        .as_str()
+        .unwrap_or(default_system_prompt)
         .to_string();
+
+    let system_prompt = if persona_content.is_empty() {
+        base_prompt
+    } else {
+        format!("{}\n\n=== Subagent Persona ===\n{}", base_prompt, persona_content)
+    };
 
     let max_iterations = args["max_iterations"].as_u64().unwrap_or(5) as usize;
 

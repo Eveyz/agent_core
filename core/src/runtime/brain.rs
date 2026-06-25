@@ -75,17 +75,29 @@ impl Brain {
 
     fn build_memory(config: &Config) -> Option<Arc<Mutex<MemoryManager>>> {
         let mem_config = config.memory.as_ref();
+        let default_db_path = crate::paths::get_memory_db_path().to_string_lossy().into_owned();
         let db_path = mem_config
             .map(|m| m.db_path.as_str())
-            .unwrap_or("~/.agent_core/memory.db");
-        let embedding_model = mem_config
-            .map(|m| m.embedding_model.as_str())
-            .unwrap_or("BAAI/bge-small-en-v1.5");
+            .unwrap_or(&default_db_path);
         let block_max_chars = mem_config
             .map(|m| m.default_block_max_chars)
             .unwrap_or(2000);
+        let embedding_enabled = mem_config
+            .map(|m| m.embedding_enabled)
+            .unwrap_or(false);
 
-        match MemoryManager::new(db_path, embedding_model, block_max_chars) {
+        let result = if embedding_enabled {
+            let embedding_model = mem_config
+                .map(|m| m.embedding_model.as_str())
+                .unwrap_or("BAAI/bge-small-en-v1.5");
+            tracing::info!("initializing memory with embedding model: {embedding_model}");
+            MemoryManager::new(db_path, embedding_model, block_max_chars)
+        } else {
+            tracing::info!("initializing memory without embedding (keyword search mode)");
+            MemoryManager::without_embedding(db_path, block_max_chars)
+        };
+
+        match result {
             Ok(m) => Some(Arc::new(Mutex::new(m))),
             Err(e) => {
                 tracing::warn!("failed to initialize memory system: {e}; continuing without memory");
@@ -95,19 +107,26 @@ impl Brain {
     }
 
     fn build_skill_manager(_config: &Config) -> Result<Option<Arc<Mutex<SkillManager>>>> {
-        // Skill manager is optional and requires a skills directory.
-        // For now, return None — can be wired up via builder.
-        Ok(None)
+        let mut mgr = SkillManager::with_defaults();
+        match mgr.scan() {
+            Ok(count) => {
+                if count > 0 {
+                    tracing::info!("skill manager: {} skills discovered", count);
+                }
+                Ok(Some(Arc::new(Mutex::new(mgr))))
+            }
+            Err(e) => {
+                tracing::warn!("skill manager scan failed: {e}; continuing without skills");
+                Ok(None)
+            }
+        }
     }
 
     fn build_reflector(config: &Config) -> Option<Reflector> {
         if !config.reflector_enabled {
             return None;
         }
-        let home = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .unwrap_or_else(|_| ".".to_string());
-        let skills_dir = std::path::PathBuf::from(&home).join(".agent_core/skills");
+        let skills_dir = crate::paths::get_skills_dir();
         let _ = std::fs::create_dir_all(&skills_dir);
         Some(Reflector::new(skills_dir))
     }
@@ -192,6 +211,10 @@ impl Brain {
         }
 
         crate::tools::todo::register_todo_tools(&mut registry, self.todo_list.clone());
+
+        if let Some(ref sm) = self.skill_manager {
+            crate::tools::skill::register_skill_tools(&mut registry, sm.clone());
+        }
 
         if let Ok(model_config) = self.current_model_config() {
             let available_tools: Vec<String> = registry
