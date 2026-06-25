@@ -226,6 +226,7 @@ impl AgentBuilder {
                     &mem_config.db_path,
                     &mem_config.embedding_model,
                     mem_config.default_block_max_chars,
+                    None,
                 )?;
                 Some(Arc::new(Mutex::new(m)))
             } else {
@@ -234,6 +235,7 @@ impl AgentBuilder {
                         &crate::paths::get_memory_db_path().to_string_lossy(),
                         "BAAI/bge-small-en-v1.5",
                         2000,
+                        None,
                     )?;
                 Some(Arc::new(Mutex::new(m)))
             }

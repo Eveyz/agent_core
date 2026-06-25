@@ -54,6 +54,26 @@ impl ArchivalMemory {
         Ok(id)
     }
 
+    /// Insert with a pre-computed embedding (avoids recomputing on promotion).
+    pub fn insert_with_embedding(
+        &self,
+        content: &str,
+        embedding_bytes: &[u8],
+        metadata: Option<&str>,
+    ) -> Result<String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+
+        let db = self.storage.conn();
+        db.execute(
+            "INSERT INTO archival_memory (id, content, embedding, metadata, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![id, content, embedding_bytes, metadata, now],
+        )
+        .context("failed to insert archival memory")?;
+
+        Ok(id)
+    }
+
     pub fn search(&self, query: &str, top_k: usize) -> Result<Vec<ArchivalRecord>> {
         if let Some(ref model) = self.embedding_model {
             let query_embedding = model.embed_single(query)?;

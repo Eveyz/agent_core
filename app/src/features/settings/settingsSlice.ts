@@ -31,6 +31,8 @@ export interface MemoryConfig {
   max_core_blocks: number;
   default_block_max_chars: number;
   consolidation_enabled: boolean;
+  embedding_enabled?: boolean;
+  mode?: string;
 }
 
 export interface PermissionRule {
@@ -135,6 +137,8 @@ function normalizeMemory(raw: Record<string, unknown>): MemoryConfig {
     max_core_blocks: (raw.max_core_blocks as number) ?? 5,
     default_block_max_chars: (raw.default_block_max_chars as number) ?? 2000,
     consolidation_enabled: (raw.consolidation_enabled as boolean) ?? true,
+    embedding_enabled: (raw.embedding_enabled as boolean) ?? false,
+    mode: (raw.mode as string) ?? 'standard',
   };
 }
 

@@ -1,4 +1,5 @@
 use anyhow::Result;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use super::embedding::{EmbeddingModel, cosine_similarity};
@@ -58,7 +59,7 @@ impl MemoryConsolidator {
             records.push(row?);
         }
 
-        let mut to_delete: Vec<String> = Vec::new();
+        let mut to_delete: HashSet<String> = HashSet::new();
         let threshold = 0.85;
 
         for i in 0..records.len() {
@@ -71,7 +72,7 @@ impl MemoryConsolidator {
                 }
                 let sim = cosine_similarity(&records[i].1, &records[j].1);
                 if sim > threshold {
-                    to_delete.push(records[j].0.clone());
+                    to_delete.insert(records[j].0.clone());
                 }
             }
         }
@@ -105,7 +106,7 @@ impl MemoryConsolidator {
             records.push(row?);
         }
 
-        let mut to_delete: Vec<String> = Vec::new();
+        let mut to_delete: HashSet<String> = HashSet::new();
         let threshold = 0.90;
 
         for i in 0..records.len() {
@@ -118,7 +119,7 @@ impl MemoryConsolidator {
                 }
                 let sim = cosine_similarity(&records[i].1, &records[j].1);
                 if sim > threshold {
-                    to_delete.push(records[j].0.clone());
+                    to_delete.insert(records[j].0.clone());
                 }
             }
         }

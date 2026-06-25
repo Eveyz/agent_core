@@ -76,6 +76,16 @@ impl Brain {
 
     fn build_memory(config: &Config) -> Option<Arc<Mutex<MemoryManager>>> {
         let mem_config = config.memory.as_ref();
+
+        // Determine memory mode — stateless mode skips memory entirely
+        let mode = mem_config
+            .map(|m| crate::config::MemoryMode::from_str(&m.mode))
+            .unwrap_or_default();
+        if mode == crate::config::MemoryMode::Stateless {
+            tracing::info!("memory mode is stateless — skipping memory initialization");
+            return None;
+        }
+
         let default_db_path = crate::paths::get_memory_db_path().to_string_lossy().into_owned();
         let db_path = mem_config
             .map(|m| m.db_path.as_str())
@@ -86,16 +96,18 @@ impl Brain {
         let embedding_enabled = mem_config
             .map(|m| m.embedding_enabled)
             .unwrap_or(false);
+        let salience_config = mem_config
+            .and_then(|m| m.salience.as_ref());
 
         let result = if embedding_enabled {
             let embedding_model = mem_config
                 .map(|m| m.embedding_model.as_str())
                 .unwrap_or("BAAI/bge-small-en-v1.5");
-            tracing::info!("initializing memory with embedding model: {embedding_model}");
-            MemoryManager::new(db_path, embedding_model, block_max_chars)
+            tracing::info!("initializing memory (mode={}) with embedding model: {embedding_model}", mode.as_str());
+            MemoryManager::new(db_path, embedding_model, block_max_chars, salience_config)
         } else {
-            tracing::info!("initializing memory without embedding (keyword search mode)");
-            MemoryManager::without_embedding(db_path, block_max_chars)
+            tracing::info!("initializing memory (mode={}) without embedding (keyword search mode)", mode.as_str());
+            MemoryManager::without_embedding(db_path, block_max_chars, salience_config)
         };
 
         match result {
@@ -212,8 +224,12 @@ impl Brain {
     pub fn build_tool_registry(&self) -> ToolRegistry {
         let mut registry = ToolRegistry::with_defaults();
 
-        if let Some(ref mem) = self.memory {
-            crate::tools::register_memory_tools(&mut registry, mem.clone());
+        // Register memory tools only in Standard and Deep modes
+        let mem_mode = self.memory_mode();
+        if mem_mode != crate::config::MemoryMode::Stateless {
+            if let Some(ref mem) = self.memory {
+                crate::tools::register_memory_tools(&mut registry, mem.clone());
+            }
         }
 
         crate::tools::todo::register_todo_tools(&mut registry, self.todo_list.clone());
@@ -277,6 +293,15 @@ impl Brain {
     /// The permission config (for subagent construction).
     pub fn permission_config(&self) -> &PermissionConfig {
         &self.config.permissions
+    }
+
+    /// The current memory mode (Stateless / Standard / Deep).
+    pub fn memory_mode(&self) -> crate::config::MemoryMode {
+        self.config
+            .memory
+            .as_ref()
+            .map(|m| crate::config::MemoryMode::from_str(&m.mode))
+            .unwrap_or_default()
     }
 }
 

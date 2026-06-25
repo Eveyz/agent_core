@@ -62,6 +62,7 @@ impl Storage {
                 memory_strength REAL DEFAULT 1.0,
                 access_count INTEGER DEFAULT 0,
                 last_accessed_at TEXT,
+                category TEXT DEFAULT 'Conversation',
                 created_at TEXT NOT NULL
             );
 
@@ -150,6 +151,7 @@ impl Storage {
             "ALTER TABLE recall_memory ADD COLUMN memory_strength REAL DEFAULT 1.0",
             "ALTER TABLE recall_memory ADD COLUMN access_count INTEGER DEFAULT 0",
             "ALTER TABLE recall_memory ADD COLUMN last_accessed_at TEXT",
+            "ALTER TABLE recall_memory ADD COLUMN category TEXT DEFAULT 'Conversation'",
             "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT DEFAULT ''",
             "ALTER TABLE sessions ADD COLUMN session_type TEXT DEFAULT 'main'",
             "ALTER TABLE sessions ADD COLUMN project_id TEXT DEFAULT ''",

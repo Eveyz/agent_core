@@ -111,6 +111,40 @@ pub struct RuntimeOverrides {
     pub max_tokens: Option<u32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MemoryMode {
+    /// No memory — no SQLite, no recall, no agverse.md injection.
+    Stateless,
+    /// Standard dual-track: core memory + recall + agverse.md.
+    Standard,
+    /// Deep: standard + background reflection + advanced recall.
+    Deep,
+}
+
+impl Default for MemoryMode {
+    fn default() -> Self {
+        Self::Standard
+    }
+}
+
+impl MemoryMode {
+    pub fn from_str(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "stateless" | "off" | "disabled" => Self::Stateless,
+            "deep" | "advanced" => Self::Deep,
+            _ => Self::Standard,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Stateless => "stateless",
+            Self::Standard => "standard",
+            Self::Deep => "deep",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryConfig {
     #[serde(default = "default_db_path")]
@@ -127,6 +161,16 @@ pub struct MemoryConfig {
     /// When false, conversation search falls back to keyword matching.
     #[serde(default)]
     pub embedding_enabled: bool,
+    /// Memory mode: "stateless", "standard", or "deep".
+    #[serde(default = "default_memory_mode")]
+    pub mode: String,
+    /// Salience scoring configuration (weights, half-life, etc.).
+    #[serde(default)]
+    pub salience: Option<crate::memory::SalienceConfig>,
+}
+
+fn default_memory_mode() -> String {
+    "standard".to_string()
 }
 
 fn default_db_path() -> String {
@@ -158,6 +202,8 @@ impl Default for MemoryConfig {
             default_block_max_chars: 2000,
             consolidation_enabled: true,
             embedding_enabled: false,
+            mode: "standard".to_string(),
+            salience: None,
         }
     }
 }
@@ -557,8 +603,7 @@ consolidation_enabled = false
         assert_eq!(mem.embedding_model, "my-model");
         assert_eq!(mem.max_core_blocks, 3);
         assert_eq!(mem.default_block_max_chars, 1000);
-        assert!(!mem.consolidation_enabled);
-    }
+        assert!(!mem.consolidation_enabled);    }
 
     #[test]
     fn test_default_model_not_found() {

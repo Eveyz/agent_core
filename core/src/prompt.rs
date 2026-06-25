@@ -27,7 +27,6 @@ For complex tasks (3+ steps, multi-file, "implement"/"refactor"/"add feature"):
 4. If the plan changes, call todo_write again with the updated list.
 
 For simple tasks (1-2 tool calls): just do them, skip the todo list.
-
 ### Subagent decision rules:
 - Do it YOURSELF: 1-2 reads, simple searches, single edits, straightforward commands
 - Use subagent_spawn: multi-step research, complex file operations, tasks needing clean context
@@ -217,5 +216,28 @@ impl PromptAssembler {
 impl Default for PromptAssembler {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ── Memory Mode Prompts ───────────────────────────────────────────────
+
+/// Prompt instructions for Stateless memory mode.
+/// Injected into the Active Memory segment when memory is disabled.
+pub const MEMORY_PROMPT_STATELESS: &str = "You have no memory of previous conversations. Do not assume context from prior sessions. Each conversation starts fresh.";
+
+/// Prompt instructions for Standard memory mode.
+/// Injected into the Active Memory segment alongside core memory + recall.
+pub const MEMORY_PROMPT_STANDARD: &str = "You have access to long-term memory. Core memory blocks below contain your persona and user profile — keep them updated using core_memory_append and core_memory_replace tools. When you learn a new user preference or project convention, record it. Use conversation_search to recall relevant past discussions when needed.";
+
+/// Prompt instructions for Deep memory mode.
+/// Same as Standard, with additional emphasis on proactive recall.
+pub const MEMORY_PROMPT_DEEP: &str = "You have access to long-term memory with deep recall. Core memory blocks below contain your persona and user profile — keep them updated using core_memory_append and core_memory_replace tools. When you learn a new user preference or project convention, record it. Proactively use conversation_search and archival_memory_search to recall relevant past discussions and long-term knowledge. The system may also inject background reflection summaries — use them to inform your responses.";
+
+/// Get the memory prompt for a given mode string.
+pub fn memory_mode_prompt(mode: &crate::config::MemoryMode) -> &'static str {
+    match mode {
+        crate::config::MemoryMode::Stateless => MEMORY_PROMPT_STATELESS,
+        crate::config::MemoryMode::Standard => MEMORY_PROMPT_STANDARD,
+        crate::config::MemoryMode::Deep => MEMORY_PROMPT_DEEP,
     }
 }

@@ -18,6 +18,7 @@ pub struct RecallRecord {
     pub memory_strength: f32,
     pub access_count: u32,
     pub last_accessed_at: Option<String>,
+    pub category: MemoryCategory,
     pub created_at: String,
 }
 
@@ -76,10 +77,19 @@ impl RecallMemory {
         let importance =
             importance.unwrap_or_else(|| self.scorer.auto_rate_importance(content, role));
 
+        let category = MemoryCategory::classify(content, role);
+        let category_str = match category {
+            MemoryCategory::Conversation => "Conversation",
+            MemoryCategory::Decision => "Decision",
+            MemoryCategory::Code => "Code",
+            MemoryCategory::Preference => "Preference",
+            MemoryCategory::Trivia => "Trivia",
+        };
+
         let db = self.storage.conn();
         db.execute(
-            "INSERT INTO recall_memory (id, session_id, role, content, embedding, importance, memory_strength, access_count, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1.0, 0, ?7)",
-            rusqlite::params![id, session_id, role, content, embedding_bytes, importance, now],
+            "INSERT INTO recall_memory (id, session_id, role, content, embedding, importance, memory_strength, access_count, category, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1.0, 0, ?7, ?8)",
+            rusqlite::params![id, session_id, role, content, embedding_bytes, importance, category_str, now],
         )
         .context("failed to store recall memory")?;
 
@@ -122,6 +132,7 @@ impl RecallMemory {
                  COALESCE(memory_strength, 1.0), \
                  COALESCE(access_count, 0), \
                  last_accessed_at, \
+                 COALESCE(category, 'Conversation'), \
                  created_at \
                  FROM recall_memory \
                  WHERE content LIKE ?1 \
@@ -131,6 +142,7 @@ impl RecallMemory {
 
         let rows = stmt.query_map(rusqlite::params![pattern, top_k as i64], |row| {
             let embedding_bytes: Vec<u8> = row.get(4)?;
+            let category_str: String = row.get(9)?;
             Ok(RecallRecord {
                 id: row.get(0)?,
                 session_id: row.get(1)?,
@@ -141,7 +153,8 @@ impl RecallMemory {
                 memory_strength: row.get(6)?,
                 access_count: row.get(7)?,
                 last_accessed_at: row.get(8)?,
-                created_at: row.get(9)?,
+                category: MemoryCategory::from_str(&category_str),
+                created_at: row.get(10)?,
             })
         })?;
 
@@ -165,6 +178,7 @@ impl RecallMemory {
                  COALESCE(memory_strength, 1.0), \
                  COALESCE(access_count, 0), \
                  last_accessed_at, \
+                 COALESCE(category, 'Conversation'), \
                  created_at \
                  FROM recall_memory ORDER BY created_at DESC LIMIT 1000",
             )
@@ -176,6 +190,7 @@ impl RecallMemory {
         let rows = stmt.query_map([], |row| {
             let embedding_bytes: Vec<u8> = row.get(4)?;
             let embedding = bytes_to_embedding(&embedding_bytes);
+            let category_str: String = row.get(9)?;
             Ok(RecallRecord {
                 id: row.get(0)?,
                 session_id: row.get(1)?,
@@ -186,7 +201,8 @@ impl RecallMemory {
                 memory_strength: row.get(6)?,
                 access_count: row.get(7)?,
                 last_accessed_at: row.get(8)?,
-                created_at: row.get(9)?,
+                category: MemoryCategory::from_str(&category_str),
+                created_at: row.get(10)?,
             })
         })?;
 
@@ -208,6 +224,7 @@ impl RecallMemory {
                 hours_since,
                 record.memory_strength,
                 record.importance,
+                record.category,
             );
 
             scored.push((score, record));
@@ -236,7 +253,9 @@ impl RecallMemory {
         let mut stmt = db
             .prepare(
                 "SELECT id, content, embedding, importance, \
-                 COALESCE(memory_strength, 1.0), created_at \
+                 COALESCE(memory_strength, 1.0), \
+                 COALESCE(category, 'Conversation'), \
+                 created_at \
                  FROM recall_memory ORDER BY created_at DESC LIMIT 1000",
             )
             .context("failed to prepare scored search")?;
@@ -253,11 +272,12 @@ impl RecallMemory {
                 row.get::<_, f32>(3)?,
                 row.get::<_, f32>(4)?,
                 row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
             ))
         })?;
 
         for row in rows {
-            let (id, content, embedding, importance, memory_strength, created_at) = row?;
+            let (id, content, embedding, importance, memory_strength, category_str, created_at) = row?;
 
             let semantic = cosine_similarity(&query_embedding, &embedding);
 
@@ -266,13 +286,13 @@ impl RecallMemory {
                 .map(|dt| (now - dt.with_timezone(&Utc)).num_hours().max(0) as f32)
                 .unwrap_or(0.0);
 
+            let category = MemoryCategory::from_str(&category_str);
             let recall = self
                 .scorer
-                .recall_score(hours_since, memory_strength, importance);
+                .recall_score(hours_since, memory_strength, importance, category);
             let total =
                 self.scorer
-                    .retrieval_score(semantic, hours_since, memory_strength, importance);
-            let category = MemoryCategory::classify(&content, "user");
+                    .retrieval_score(semantic, hours_since, memory_strength, importance, category);
 
             scored.push((
                 total,
@@ -346,6 +366,7 @@ impl RecallMemory {
                  COALESCE(memory_strength, 1.0), \
                  COALESCE(access_count, 0), \
                  last_accessed_at, \
+                 COALESCE(category, 'Conversation'), \
                  created_at \
                  FROM recall_memory WHERE created_at >= ?1 AND created_at <= ?2 \
                  ORDER BY created_at DESC LIMIT ?3",
@@ -354,6 +375,7 @@ impl RecallMemory {
 
         let rows = stmt.query_map(rusqlite::params![start, end, top_k as i64], |row| {
             let embedding_bytes: Vec<u8> = row.get(4)?;
+            let category_str: String = row.get(9)?;
             Ok(RecallRecord {
                 id: row.get(0)?,
                 session_id: row.get(1)?,
@@ -364,7 +386,8 @@ impl RecallMemory {
                 memory_strength: row.get(6)?,
                 access_count: row.get(7)?,
                 last_accessed_at: row.get(8)?,
-                created_at: row.get(9)?,
+                category: MemoryCategory::from_str(&category_str),
+                created_at: row.get(10)?,
             })
         })?;
 
@@ -417,10 +440,10 @@ impl RecallMemory {
         let db = self.storage.conn();
         let now = Utc::now();
 
-        // Fetch old memories for scoring
         let mut stmt = db
             .prepare(
-                "SELECT id, importance, COALESCE(memory_strength, 1.0), created_at \
+                "SELECT id, importance, COALESCE(memory_strength, 1.0), \
+                 COALESCE(category, 'Conversation'), created_at \
                  FROM recall_memory \
                  WHERE importance < ?1 \
                  ORDER BY created_at ASC LIMIT ?2",
@@ -436,18 +459,20 @@ impl RecallMemory {
                     row.get::<_, f32>(1)?,
                     row.get::<_, f32>(2)?,
                     row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
                 ))
             },
         )?;
 
         for row in rows {
-            let (id, importance, strength, created_at) = row?;
+            let (id, importance, strength, category_str, created_at) = row?;
             let hours_since = chrono::DateTime::parse_from_rfc3339(&created_at)
                 .ok()
                 .map(|dt| (now - dt.with_timezone(&Utc)).num_hours().max(0) as f32)
                 .unwrap_or(0.0);
 
-            let recall = self.scorer.recall_score(hours_since, strength, importance);
+            let category = MemoryCategory::from_str(&category_str);
+            let recall = self.scorer.recall_score(hours_since, strength, importance, category);
             if recall < min_score {
                 to_delete.push(id);
             }
@@ -493,7 +518,9 @@ impl RecallMemory {
 
         let mut stmt = db
             .prepare(
-                "SELECT id, content FROM recall_memory \
+                "SELECT id, content, embedding, role, session_id, importance, \
+                 COALESCE(category, 'Conversation') \
+                 FROM recall_memory \
                  WHERE importance >= ?1 \
                  ORDER BY created_at ASC LIMIT ?2",
             )
@@ -502,13 +529,33 @@ impl RecallMemory {
         let mut promoted = 0;
         let rows = stmt.query_map(
             rusqlite::params![min_importance, max_to_promote as i64],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            |row| {
+                let embedding_bytes: Vec<u8> = row.get(2)?;
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    embedding_bytes,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, f32>(5)?,
+                    row.get::<_, String>(6)?,
+                ))
+            },
         )?;
 
         for row in rows {
-            let (id, content) = row?;
+            let (id, content, embedding_bytes, role, session_id, importance, category_str) = row?;
+            let metadata = serde_json::json!({
+                "promoted_from": "recall",
+                "original_role": role,
+                "original_session_id": session_id,
+                "original_importance": importance,
+                "original_category": category_str,
+            })
+            .to_string();
+
             if archival
-                .insert(&content, Some("promoted from recall"))
+                .insert_with_embedding(&content, &embedding_bytes, Some(&metadata))
                 .is_ok()
             {
                 db.execute(

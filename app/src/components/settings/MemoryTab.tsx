@@ -8,6 +8,8 @@ import BrainIcon from 'lucide-react/dist/esm/icons/brain.mjs';
 import LayersIcon from 'lucide-react/dist/esm/icons/layers.mjs';
 import TypeIcon from 'lucide-react/dist/esm/icons/type.mjs';
 import MergeIcon from 'lucide-react/dist/esm/icons/merge.mjs';
+import ZapIcon from 'lucide-react/dist/esm/icons/zap.mjs';
+import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
 
 interface MemoryBlock {
   id: string;
@@ -17,11 +19,29 @@ interface MemoryBlock {
   updated_at: string;
 }
 
+type MemoryMode = 'stateless' | 'standard' | 'deep';
+
+const MODE_DESCRIPTIONS: Record<MemoryMode, { label: string; desc: string }> = {
+  stateless: {
+    label: 'Stateless',
+    desc: 'No memory. Each conversation starts fresh. No recall, no agverse.md injection.',
+  },
+  standard: {
+    label: 'Standard',
+    desc: 'Dual-track: core memory blocks + vector recall + project docs. Agent can proactively manage memory.',
+  },
+  deep: {
+    label: 'Deep',
+    desc: 'Standard + proactive recall guidance + background reflection readiness. Best for long-term complex projects.',
+  },
+};
+
 export default function MemoryTab() {
   const config = useSelector((state: RootState) => state.settings.config);
   const dispatch = useDispatch<AppDispatch>();
   const [blocks, setBlocks] = useState<MemoryBlock[]>([]);
   const [loading, setLoading] = useState(true);
+  const [switchingMode, setSwitchingMode] = useState(false);
 
   useEffect(() => {
     async function loadBlocks() {
@@ -46,6 +66,7 @@ export default function MemoryTab() {
   }
 
   const memory = config.memory;
+  const currentMode = (memory?.mode as MemoryMode) ?? 'standard';
 
   const handleEnableMemory = async () => {
     if (!config) return;
@@ -57,15 +78,35 @@ export default function MemoryTab() {
         max_core_blocks: 5,
         default_block_max_chars: 2000,
         consolidation_enabled: true,
+        embedding_enabled: false,
+        mode: 'standard',
       }
     };
     try {
       await dispatch(saveConfig(newConfig));
-      // Re-fetch memory blocks
       const data = await invoke<MemoryBlock[]>('get_memory_blocks');
       setBlocks(data);
     } catch (e) {
       console.error('Failed to enable memory', e);
+    }
+  };
+
+  const handleModeChange = async (mode: MemoryMode) => {
+    if (!config || !memory) return;
+    setSwitchingMode(true);
+    const newConfig = {
+      ...config,
+      memory: {
+        ...memory,
+        mode,
+      }
+    };
+    try {
+      await dispatch(saveConfig(newConfig));
+    } catch (e) {
+      console.error('Failed to switch memory mode', e);
+    } finally {
+      setSwitchingMode(false);
     }
   };
 
@@ -92,7 +133,52 @@ export default function MemoryTab() {
 
   return (
     <div className="settings-tab-content">
+      {/* Memory Mode Selector */}
       <div className="settings-section">
+        <h3 className="settings-section-title">
+          <ZapIcon size={14} /> Memory Mode
+        </h3>
+        <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+          {(['stateless', 'standard', 'deep'] as MemoryMode[]).map((mode) => (
+            <button
+              key={mode}
+              onClick={() => handleModeChange(mode)}
+              disabled={switchingMode}
+              style={{
+                flex: 1,
+                padding: '12px',
+                borderRadius: '8px',
+                border: `2px solid ${currentMode === mode ? 'var(--accent-color, #6366f1)' : 'var(--border-color)'}`,
+                background: currentMode === mode ? 'var(--accent-bg, rgba(99, 102, 241, 0.1))' : 'var(--bg-tertiary)',
+                cursor: switchingMode ? 'wait' : 'pointer',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'flex-start',
+                gap: '4px',
+                transition: 'all 0.15s ease',
+                opacity: switchingMode ? 0.6 : 1,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ fontWeight: 600, fontSize: '13px' }}>
+                  {MODE_DESCRIPTIONS[mode].label}
+                </span>
+                {currentMode === mode && <CheckIcon size={14} style={{ color: 'var(--accent-color, #6366f1)' }} />}
+              </div>
+              <span style={{ fontSize: '11px', color: 'var(--text-secondary)', textAlign: 'left', lineHeight: '1.3' }}>
+                {MODE_DESCRIPTIONS[mode].desc}
+              </span>
+            </button>
+          ))}
+        </div>
+        {currentMode !== 'standard' && (
+          <p style={{ fontSize: '11px', marginTop: '8px', opacity: 0.6, color: 'var(--text-secondary)' }}>
+            Restart required for mode changes to take full effect.
+          </p>
+        )}
+      </div>
+
+      <div className="settings-section" style={{ marginTop: '24px' }}>
         <h3 className="settings-section-title">
           <BrainIcon size={14} /> Memory Configuration
         </h3>
@@ -130,49 +216,61 @@ export default function MemoryTab() {
             </span>
           </div>
         </div>
+
+        <div className="settings-field">
+          <BrainIcon size={12} />
+          <label className="settings-label">Vector Embedding</label>
+          <div className="settings-value">
+            <span className={`badge badge-${memory.embedding_enabled ? 'enabled' : 'disabled'}`}>
+              {memory.embedding_enabled ? 'Enabled' : 'Disabled (keyword search)'}
+            </span>
+          </div>
+        </div>
       </div>
 
-      <div className="settings-section" style={{ marginTop: '24px' }}>
-        <h3 className="settings-section-title">
-          <LayersIcon size={14} /> Core Memory Blocks
-        </h3>
-        {loading ? (
-          <div className="settings-empty" style={{ padding: '20px 0', fontSize: '13px' }}>Loading memory blocks...</div>
-        ) : blocks.length === 0 ? (
-          <div className="settings-empty" style={{ padding: '20px 0', fontSize: '13px' }}>No memory blocks found.</div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '12px' }}>
-            {blocks.map(block => (
-              <div key={block.id} style={{ 
-                background: 'var(--bg-tertiary)', 
-                border: '1px solid var(--border-color)', 
-                borderRadius: '8px', 
-                padding: '12px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '8px'
-              }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div style={{ fontWeight: 500, fontSize: '13px', color: 'var(--text-primary)' }}>
-                    {block.label} <span style={{ opacity: 0.5, fontSize: '11px', marginLeft: '4px' }}>({block.id})</span>
-                  </div>
-                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
-                    {new Date(block.updated_at).toLocaleString()}
-                  </div>
-                </div>
-                <div style={{ 
-                  fontSize: '13px', 
-                  color: 'var(--text-secondary)',
-                  whiteSpace: 'pre-wrap',
-                  lineHeight: '1.4'
+      {currentMode !== 'stateless' && (
+        <div className="settings-section" style={{ marginTop: '24px' }}>
+          <h3 className="settings-section-title">
+            <LayersIcon size={14} /> Core Memory Blocks
+          </h3>
+          {loading ? (
+            <div className="settings-empty" style={{ padding: '20px 0', fontSize: '13px' }}>Loading memory blocks...</div>
+          ) : blocks.length === 0 ? (
+            <div className="settings-empty" style={{ padding: '20px 0', fontSize: '13px' }}>No memory blocks found.</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '12px' }}>
+              {blocks.map(block => (
+                <div key={block.id} style={{ 
+                  background: 'var(--bg-tertiary)', 
+                  border: '1px solid var(--border-color)', 
+                  borderRadius: '8px', 
+                  padding: '12px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '8px'
                 }}>
-                  {block.content || <span style={{ opacity: 0.5, fontStyle: 'italic' }}>Empty</span>}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div style={{ fontWeight: 500, fontSize: '13px', color: 'var(--text-primary)' }}>
+                      {block.label} <span style={{ opacity: 0.5, fontSize: '11px', marginLeft: '4px' }}>({block.id})</span>
+                    </div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                      {new Date(block.updated_at).toLocaleString()}
+                    </div>
+                  </div>
+                  <div style={{ 
+                    fontSize: '13px', 
+                    color: 'var(--text-secondary)',
+                    whiteSpace: 'pre-wrap',
+                    lineHeight: '1.4'
+                  }}>
+                    {block.content || <span style={{ opacity: 0.5, fontStyle: 'italic' }}>Empty</span>}
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

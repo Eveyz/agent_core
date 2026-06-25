@@ -126,22 +126,23 @@ impl SalienceScorer {
     ///
     ///   R(t, S, importance) = e^(-t / (effective_half_life))
     ///
-    /// where effective_half_life = S × half_life × decay_modifier(importance)
+    /// where effective_half_life = S × half_life(category) × decay_modifier(importance)
     pub fn recall_score(
         &self,
         hours_since_created: f32,
         memory_strength: f32,
         importance: f32,
+        category: MemoryCategory,
     ) -> f32 {
         if hours_since_created <= 0.0 {
             return 1.0;
         }
 
-        let half_life = self.config.default_half_life_hours;
+        let half_life = self.category_half_life(category);
 
         // High-importance memories decay slower
         let importance_factor = 1.0
-            + (self.config.importance_decay_modifier - 1.0) * ((importance - 0.5) * 2.0).max(0.0); // only above 0.5
+            + (self.config.importance_decay_modifier - 1.0) * ((importance - 0.5) * 2.0).max(0.0);
 
         // Protective: avoid division by zero
         let s = memory_strength.max(0.01);
@@ -159,15 +160,16 @@ impl SalienceScorer {
 
     /// Compute the combined retrieval score:
     ///
-    ///   score = α × semantic + β × recall(t, S, imp) + γ × imp
+    ///   score = α × semantic + β × recall(t, S, imp, cat) + γ × imp
     pub fn retrieval_score(
         &self,
         semantic_similarity: f32,
         hours_since_created: f32,
         memory_strength: f32,
         importance: f32,
+        category: MemoryCategory,
     ) -> f32 {
-        let recall = self.recall_score(hours_since_created, memory_strength, importance);
+        let recall = self.recall_score(hours_since_created, memory_strength, importance, category);
 
         self.config.alpha * semantic_similarity
             + self.config.beta * recall
@@ -287,7 +289,24 @@ pub enum MemoryCategory {
     Trivia,
 }
 
+impl Default for MemoryCategory {
+    fn default() -> Self {
+        Self::Conversation
+    }
+}
+
 impl MemoryCategory {
+    /// Parse from string (for DB deserialization).
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "Decision" => Self::Decision,
+            "Code" => Self::Code,
+            "Preference" => Self::Preference,
+            "Trivia" => Self::Trivia,
+            _ => Self::Conversation,
+        }
+    }
+
     /// Classify content into a category based on heuristics.
     pub fn classify(content: &str, role: &str) -> Self {
         let lower = content.to_lowercase();
@@ -388,7 +407,7 @@ mod tests {
     fn test_recall_score_fresh() {
         let scorer = SalienceScorer::new(SalienceConfig::default());
         // Just created (0 hours) → recall = 1.0
-        let r = scorer.recall_score(0.0, 1.0, 0.5);
+        let r = scorer.recall_score(0.0, 1.0, 0.5, MemoryCategory::Conversation);
         assert!((r - 1.0).abs() < 0.01);
     }
 
@@ -396,7 +415,7 @@ mod tests {
     fn test_recall_score_at_half_life() {
         let scorer = SalienceScorer::new(SalienceConfig::default());
         // At exactly half life, recall ≈ e^(-1) ≈ 0.368
-        let r = scorer.recall_score(168.0, 1.0, 0.5);
+        let r = scorer.recall_score(168.0, 1.0, 0.5, MemoryCategory::Conversation);
         assert!((r - 0.368).abs() < 0.05);
     }
 
@@ -404,16 +423,16 @@ mod tests {
     fn test_recall_score_high_strength_slower_decay() {
         let scorer = SalienceScorer::new(SalienceConfig::default());
         // strength=3.0 → effective HL = 3×168 = 504h
-        let r_normal = scorer.recall_score(168.0, 1.0, 0.5); // ~0.37
-        let r_strong = scorer.recall_score(168.0, 3.0, 0.5); // ~0.72
+        let r_normal = scorer.recall_score(168.0, 1.0, 0.5, MemoryCategory::Conversation); // ~0.37
+        let r_strong = scorer.recall_score(168.0, 3.0, 0.5, MemoryCategory::Conversation); // ~0.72
         assert!(r_strong > r_normal * 1.5);
     }
 
     #[test]
     fn test_recall_score_high_importance_slower_decay() {
         let scorer = SalienceScorer::new(SalienceConfig::default());
-        let r_low = scorer.recall_score(168.0, 1.0, 0.3);
-        let r_high = scorer.recall_score(168.0, 1.0, 0.9);
+        let r_low = scorer.recall_score(168.0, 1.0, 0.3, MemoryCategory::Conversation);
+        let r_high = scorer.recall_score(168.0, 1.0, 0.9, MemoryCategory::Conversation);
         assert!(r_high > r_low);
     }
 
@@ -423,16 +442,25 @@ mod tests {
         config.recall_floor = 0.05;
         let scorer = SalienceScorer::new(config);
         // Very old, low strength → should hit floor
-        let r = scorer.recall_score(10_000.0, 0.5, 0.1);
+        let r = scorer.recall_score(10_000.0, 0.5, 0.1, MemoryCategory::Trivia);
         assert!((r - 0.05).abs() < 0.01);
     }
 
     #[test]
     fn test_retrieval_score_combines_all() {
         let scorer = SalienceScorer::new(SalienceConfig::default());
-        let score = scorer.retrieval_score(0.9, 10.0, 1.5, 0.8);
+        let score = scorer.retrieval_score(0.9, 10.0, 1.5, 0.8, MemoryCategory::Decision);
         assert!(score > 0.0);
         assert!(score <= 1.0);
+    }
+
+    #[test]
+    fn test_recall_score_category_affects_decay() {
+        let scorer = SalienceScorer::new(SalienceConfig::default());
+        // Trivia should decay faster than Decision at the same age
+        let r_trivia = scorer.recall_score(168.0, 1.0, 0.5, MemoryCategory::Trivia);
+        let r_decision = scorer.recall_score(168.0, 1.0, 0.5, MemoryCategory::Decision);
+        assert!(r_decision > r_trivia);
     }
 
     #[test]

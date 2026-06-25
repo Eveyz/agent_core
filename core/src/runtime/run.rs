@@ -179,6 +179,12 @@ impl Run {
             if !core_str.is_empty() {
                 context.set_active_memory(&core_str);
             }
+        } else {
+            // Stateless mode: inject the stateless prompt
+            let mode = brain.memory_mode();
+            if mode == crate::config::MemoryMode::Stateless {
+                context.set_active_memory(crate::prompt::memory_mode_prompt(&mode));
+            }
         }
 
         let recovery_ctx = RecoveryContext::new(&model_config.model_id, max_context_tokens);
@@ -309,8 +315,10 @@ impl Run {
 
         // Store in memory if enabled
         if let Some(ref mem) = self.brain.memory {
-            let m = mem.lock();
-            let _ = m.store_conversation("user", user_input);
+            if self.brain.memory_mode() != crate::config::MemoryMode::Stateless {
+                let m = mem.lock();
+                let _ = m.store_conversation("user", user_input);
+            }
         }
 
         // Skill auto-trigger: check user message against skill triggers
@@ -514,8 +522,10 @@ impl Run {
 
             // Store in memory
             if let Some(ref mem) = self.brain.memory {
-                let m = mem.lock();
-                let _ = m.store_conversation("assistant", &text);
+                if self.brain.memory_mode() != crate::config::MemoryMode::Stateless {
+                    let m = mem.lock();
+                    let _ = m.store_conversation("assistant", &text);
+                }
             }
 
             // Consolidate memory in background (non-blocking, best-effort)
@@ -961,6 +971,14 @@ impl Run {
         {
             let mut mem_str = String::new();
 
+            // Memory mode prompt (guides agent on how to use memory in this mode)
+            let mode = self.brain.memory_mode();
+            let mode_prompt = crate::prompt::memory_mode_prompt(&mode);
+            mem_str.push_str(mode_prompt);
+            mem_str.push_str("\n\n");
+
+            // In Stateless mode, skip all project instructions and memory injection
+            if mode != crate::config::MemoryMode::Stateless {
             // Layered project instructions (agverse.md):
             //   1. Global:   ~/.agverse/agverse.md
             //   2. Project:  {cwd}/agverse.md  (or AGENTS.md)
@@ -1054,15 +1072,15 @@ impl Run {
                     mem_str.push('\n');
                 }
 
-                // Recall search: find relevant past conversations
+                // Recall search: find relevant past conversations (with score threshold)
                 if let Some(last_user) = self.context.raw_messages().iter().rev()
                     .find(|msg| msg.role == Role::User)
                     .and_then(|msg| msg.content.as_deref())
                 {
-                    if let Ok(results) = m.search_conversation(last_user, 3) {
+                    if let Ok(results) = m.search_conversation_filtered(last_user, 3, 0.3) {
                         if !results.is_empty() {
                             let recall_str: String = results.iter()
-                                .map(|r| format!("  • [{}] {}", r.role, r.content.chars().take(200).collect::<String>()))
+                                .map(|r| format!("  • [score={:.2}] {}", r.total_score, r.content.chars().take(200).collect::<String>()))
                                 .collect::<Vec<_>>()
                                 .join("\n");
                             mem_str.push_str(&format!("Recall:\n{recall_str}\n"));
@@ -1070,6 +1088,8 @@ impl Run {
                     }
                 }
             }
+
+            } // end non-stateless block
 
             if !mem_str.is_empty() {
                 self.context.set_active_memory(&mem_str);
