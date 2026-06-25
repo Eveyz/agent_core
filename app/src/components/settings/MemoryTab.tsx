@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { useSelector } from 'react-redux';
+import { useSelector, useDispatch } from 'react-redux';
 import { invoke } from '@tauri-apps/api/core';
-import { RootState } from '../../store';
+import { RootState, AppDispatch } from '../../store';
+import { saveConfig } from '../../features/settings/settingsSlice';
 import DatabaseIcon from 'lucide-react/dist/esm/icons/database.mjs';
 import BrainIcon from 'lucide-react/dist/esm/icons/brain.mjs';
 import LayersIcon from 'lucide-react/dist/esm/icons/layers.mjs';
@@ -18,6 +19,7 @@ interface MemoryBlock {
 
 export default function MemoryTab() {
   const config = useSelector((state: RootState) => state.settings.config);
+  const dispatch = useDispatch<AppDispatch>();
   const [blocks, setBlocks] = useState<MemoryBlock[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -45,10 +47,45 @@ export default function MemoryTab() {
 
   const memory = config.memory;
 
+  const handleEnableMemory = async () => {
+    if (!config) return;
+    const newConfig = {
+      ...config,
+      memory: {
+        db_path: '~/.agent_core/memory.db',
+        embedding_model: 'BAAI/bge-small-en-v1.5',
+        max_core_blocks: 5,
+        default_block_max_chars: 2000,
+        consolidation_enabled: true,
+      }
+    };
+    try {
+      await dispatch(saveConfig(newConfig));
+      // Re-fetch memory blocks
+      const data = await invoke<MemoryBlock[]>('get_memory_blocks');
+      setBlocks(data);
+    } catch (e) {
+      console.error('Failed to enable memory', e);
+    }
+  };
+
   if (!memory) {
     return (
       <div className="settings-tab-content">
-        <div className="settings-empty">Memory is not configured. Add a [memory] section to config.toml to enable it.</div>
+        <div className="settings-empty">
+          <BrainIcon size={32} style={{ marginBottom: '12px', opacity: 0.5 }} />
+          <p>Memory is not configured.</p>
+          <p style={{ fontSize: '12px', marginTop: '8px', opacity: 0.6 }}>
+            Enable it to give your agent long-term memory.
+          </p>
+          <button 
+            className="btn btn-primary" 
+            style={{ marginTop: '16px' }} 
+            onClick={handleEnableMemory}
+          >
+            Enable Memory
+          </button>
+        </div>
       </div>
     );
   }
