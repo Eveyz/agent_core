@@ -285,7 +285,6 @@ function ProviderForm({
                 value={row.key}
                 onChange={(e) => updateModelRow(index, { key: e.target.value })}
                 placeholder="e.g. gpt4o"
-                disabled={!!editKey && !!config?.providers[editKey]?.models[row.key]}
               />
               <input
                 className={inputClass(`model_${index}_id`)}
@@ -312,10 +311,12 @@ function ProviderForm({
                 value={row.reasoning_effort || ''}
                 onChange={(e) => updateModelRow(index, { reasoning_effort: e.target.value || undefined })}
               >
-                <option value="">Default</option>
+                <option value="">Not Set</option>
                 <option value="low">Low</option>
                 <option value="medium">Medium</option>
                 <option value="high">High</option>
+                <option value="xhigh">X-High</option>
+                <option value="max">Max</option>
               </select>
               <div style={{ display: 'flex', justifyContent: 'center' }}>
                 <input
@@ -468,20 +469,33 @@ export default function ProviderTab() {
                     {provider.api_key ? '••••••••••••••••' : '—'}
                   </span>
                 </div>
-                <div className="model-field">
-                  <span className="model-field-label">Context</span>
-                  <span className="model-field-value">{(provider.max_context_tokens ?? 0).toLocaleString()}</span>
-                </div>
               </div>
 
               <div className="provider-models-list">
-                {modelEntries.map(([modelKey, model]) => (
-                  <div key={modelKey} className={`provider-model-item ${`${providerKey}/${modelKey}` === defaultModel ? 'provider-model-default' : ''}`}>
-                    <span className="provider-model-key">{modelKey}</span>
-                    <span className="provider-model-id">{model.model_id}</span>
-                    {`${providerKey}/${modelKey}` === defaultModel && <StarIcon size={10} className="provider-model-star" />}
-                  </div>
-                ))}
+                {modelEntries.map(([modelKey, model]) => {
+                  const ctx = model.max_context_tokens || provider.max_context_tokens;
+                  const out = model.max_tokens || provider.max_tokens;
+                  return (
+                    <div key={modelKey} className={`provider-model-item ${`${providerKey}/${modelKey}` === defaultModel ? 'provider-model-default' : ''}`}>
+                      <div className="provider-model-item-main">
+                        <span className="provider-model-key">{modelKey}</span>
+                      </div>
+                      <div className="provider-model-item-tags">
+                        {ctx ? (
+                          <span className="model-tag" title="Max Context Tokens">Ctx: {ctx >= 1000 ? `${Math.round(ctx / 1000)}k` : ctx}</span>
+                        ) : null}
+                        {out ? (
+                          <span className="model-tag" title="Max Output Tokens">Out: {out >= 1000 ? `${Math.round(out / 1000)}k` : out}</span>
+                        ) : null}
+                        {model.reasoning_effort && <span className="model-tag" title="Reasoning Effort">Reason: {model.reasoning_effort}</span>}
+                        {model.thinking_enabled && <span className="model-tag" title="Thinking Enabled">Thinking</span>}
+                      </div>
+                      {`${providerKey}/${modelKey}` === defaultModel && (
+                        <StarIcon size={14} className="provider-model-star" />
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           );

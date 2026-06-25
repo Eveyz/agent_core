@@ -193,7 +193,16 @@ impl RunManager {
                 loop {
                     match log_rx.recv().await {
                         Ok(env) => {
+                            let is_terminal = matches!(
+                                env.event,
+                                RunEvent::RunCompleted { .. }
+                                    | RunEvent::RunCancelled { .. }
+                                    | RunEvent::RunFailed { .. }
+                            );
                             event_log.append(env);
+                            if is_terminal {
+                                break;
+                            }
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
@@ -409,23 +418,17 @@ impl RunManager {
         anyhow::bail!("worktree not found: {worktree_path}")
     }
 
-    /// Switch the active model for future Runs. Requires exclusive access to Brain.
+    /// Switch the active model for future Runs.
     pub fn switch_model(&mut self, name: &str) -> Result<()> {
-        if let Some(brain_mut) = Arc::get_mut(&mut self.brain) {
-            brain_mut.switch_model(name)
-        } else {
-            anyhow::bail!("Cannot switch model while runs are active (Brain is shared)")
-        }
+        let brain_mut = Arc::make_mut(&mut self.brain);
+        brain_mut.switch_model(name)
     }
 
-    /// Update the active configuration. Requires exclusive access to Brain.
+    /// Update the active configuration.
     pub fn update_config(&mut self, config: crate::config::Config) -> Result<()> {
-        if let Some(brain_mut) = Arc::get_mut(&mut self.brain) {
-            brain_mut.update_config(config);
-            Ok(())
-        } else {
-            anyhow::bail!("Cannot update config while runs are active (Brain is shared)")
-        }
+        let brain_mut = Arc::make_mut(&mut self.brain);
+        brain_mut.update_config(config);
+        Ok(())
     }
 }
 

@@ -3,6 +3,8 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use super::Tool;
+use reqwest::header;
+use robotstxt::DefaultMatcher;
 
 const USER_AGENTS: &[&str] = &[
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
@@ -55,13 +57,45 @@ Use when you need to retrieve and analyze web content."
         // Pick a random User-Agent
         let ua = USER_AGENTS[rand::random::<usize>() % USER_AGENTS.len()];
 
+        let mut headers = header::HeaderMap::new();
+        headers.insert(header::ACCEPT, header::HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"));
+        headers.insert(header::ACCEPT_LANGUAGE, header::HeaderValue::from_static("en-US,en;q=0.9"));
+        headers.insert("Sec-Fetch-Dest", header::HeaderValue::from_static("document"));
+        headers.insert("Sec-Fetch-Mode", header::HeaderValue::from_static("navigate"));
+        headers.insert("Sec-Fetch-Site", header::HeaderValue::from_static("none"));
+        headers.insert("Upgrade-Insecure-Requests", header::HeaderValue::from_static("1"));
+
         let client = reqwest::Client::builder()
             .user_agent(ua)
+            .default_headers(headers)
             .timeout(std::time::Duration::from_secs_f64(timeout_secs))
             .gzip(true)
             .brotli(true)
             .build()
             .context("failed to create HTTP client")?;
+
+        // Check robots.txt
+        if let Ok(parsed_url) = url::Url::parse(&url_to_fetch) {
+            let origin = parsed_url.origin().ascii_serialization();
+            if !origin.is_empty() && origin != "null" {
+                let robots_url = format!("{}/robots.txt", origin);
+                // We use a shorter timeout for robots.txt so we don't hang too long
+                if let Ok(robots_resp) = client.get(&robots_url).timeout(std::time::Duration::from_secs(5)).send().await {
+                    if robots_resp.status().is_success() {
+                        if let Ok(robots_body) = robots_resp.text().await {
+                            let mut matcher = DefaultMatcher::default();
+                            // Use "*" as the user-agent since we are pretending to be a generic browser
+                            if !matcher.one_agent_allowed_by_robots(&robots_body, "*", parsed_url.as_str()) {
+                                return Ok(format!(
+                                    "Access denied by robots.txt for URL: {url_to_fetch}\n\n\
+                                     The site explicitly forbids automated access to this path."
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         let response = match client.get(&url_to_fetch).send().await {
             Ok(r) => r,

@@ -611,6 +611,9 @@ impl PermissionPolicy {
             if command.map_or(false, is_destructive_command) {
                 return DangerLevel::Destructive;
             }
+            if command.map_or(false, is_readonly_command) {
+                return DangerLevel::ReadOnly;
+            }
             return DangerLevel::System;
         }
 
@@ -836,6 +839,40 @@ fn is_destructive_tokens(prog: &str, args: &[&str]) -> bool {
 /// `env`/`nohup`/`xargs` to reach the real program. It cannot defeat arbitrary
 /// shell quoting/`$()` substitution, but it closes the common bypasses
 /// (`rm\t-rf`, `rm${IFS}-rf`, `doas`, `chmod 0777`, `install -m 777`, …).
+pub fn is_readonly_command(cmd: &str) -> bool {
+    let lower = cmd.trim().to_lowercase();
+    
+    // Any shell metacharacters indicate potentially complex/unsafe commands.
+    // E.g. >, >>, <, |, &, ;, $(, `
+    if lower.contains('>') || lower.contains('<') || lower.contains('|')
+        || lower.contains('&') || lower.contains(';') || lower.contains('`')
+        || lower.contains("$(") {
+        return false;
+    }
+
+    let tokens: Vec<&str> = lower.split_whitespace().collect();
+    if let Some(idx) = effective_program_index(&tokens) {
+        let prog = tokens[idx];
+        let readonly_programs = [
+            "ls", "cat", "echo", "pwd", "grep", "find", "rg", "head", "tail", "less", "more",
+            "wc", "stat", "file", "which", "whereis", "whoami", "id", "groups", "uname",
+            "date", "cal", "uptime", "w", "who", "du", "df", "ps", "top", "htop", "env",
+            "printenv", "diff", "cmp", "tree"
+        ];
+        
+        if readonly_programs.contains(&prog) {
+            // Ensure no arguments try to read outside the sandbox via absolute paths or parent dirs
+            for arg in &tokens[idx + 1..] {
+                if arg.contains("..") || arg.starts_with('/') || arg.starts_with('~') {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+    false
+}
+
 pub fn is_destructive_command(cmd: &str) -> bool {
     let lower = normalize_command(cmd).to_lowercase();
 

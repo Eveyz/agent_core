@@ -43,6 +43,7 @@ pub use suggestion::{
 };
 
 /// The reflector: reads a trace, runs the digester, and emits suggestions.
+#[derive(Clone)]
 pub struct Reflector {
     skills_dir: PathBuf,
     /// Maximum number of suggestions to emit per trace (keeps output bounded).

@@ -370,12 +370,9 @@ fn get_config(state: State<'_, AppState>) -> Result<agent_core::config::Config, 
 }
 
 #[tauri::command]
-async fn save_config(state: State<'_, AppState>, config: agent_core::config::Config) -> Result<(), String> {
+async fn save_config(state: State<'_, AppState>, mut config: agent_core::config::Config) -> Result<(), String> {
+    config.rebuild_models();
     let mut manager = state.run_manager.lock().await;
-    let runs = manager.list_runs().await;
-    if !runs.is_empty() {
-        return Err("Cannot save config while runs are active".to_string());
-    }
     manager.update_config(config.clone()).map_err(|e| e.to_string())?;
     config.save(&state.config_path).map_err(|e| e.to_string())
 }
@@ -383,11 +380,6 @@ async fn save_config(state: State<'_, AppState>, config: agent_core::config::Con
 #[tauri::command]
 async fn switch_model(state: State<'_, AppState>, name: String) -> Result<(), String> {
     let mut manager = state.run_manager.lock().await;
-    // Check if there are active runs
-    let runs = manager.list_runs().await;
-    if !runs.is_empty() {
-        return Err("Cannot switch model while runs are active".to_string());
-    }
     manager.switch_model(&name).map_err(|e| e.to_string())
 }
 
@@ -641,6 +633,27 @@ async fn get_project_sessions(
     .map_err(|e| format!("get_project_sessions task failed: {e}"))?
 }
 
+#[tauri::command]
+async fn get_memory_blocks() -> Result<Vec<agent_core::memory::block::MemoryBlock>, String> {
+    let db_path = agent_core::paths::get_memory_db_path().to_string_lossy().into_owned();
+    let storage = agent_core::memory::storage::Storage::new(&db_path).map_err(|e| e.to_string())?;
+    
+    // CoreMemory doesn't require embedding model, so we can instantiate it directly
+    // Use a default max_chars like 8000
+    let core = agent_core::memory::block::CoreMemory::new(storage, 8000).map_err(|e| e.to_string())?;
+    
+    let blocks = core.list().into_iter().cloned().collect();
+    Ok(blocks)
+}
+
+#[tauri::command]
+async fn get_skills() -> Result<Vec<agent_core::skills::manifest::SkillManifest>, String> {
+    let mut manager = agent_core::skills::SkillManager::with_defaults();
+    manager.scan().map_err(|e| e.to_string())?;
+    let skills = manager.list().into_iter().cloned().collect();
+    Ok(skills)
+}
+
 // ── App entry point ──────────────────────────────────────────────────
 
 pub fn run() {
@@ -743,7 +756,8 @@ pub fn run() {
             create_session, delete_session, rename_session,
             save_session_messages, resume_session,
             list_projects, create_project, delete_project, rename_project, open_in_explorer,
-            list_git_branches, switch_git_branch, get_project_sessions
+            list_git_branches, switch_git_branch, get_project_sessions,
+            get_memory_blocks, get_skills
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

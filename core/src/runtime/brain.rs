@@ -31,6 +31,7 @@ use crate::tools::ToolRegistry;
 ///
 /// Cloneable via `Arc` — each Run holds an `Arc<Brain>`.
 /// Contains only immutable/shared state; per-request state lives in [`crate::runtime::Run`].
+#[derive(Clone)]
 pub struct Brain {
     /// The full configuration (models, permissions, memory, mcp).
     pub config: Config,

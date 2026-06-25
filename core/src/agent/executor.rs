@@ -52,6 +52,7 @@ impl<'a> ToolOrchestrator<'a> {
                 .get("path")
                 .or(args.get("file_path"))
                 .or(args.get("file"))
+                .or(args.get("working_dir"))
                 .and_then(|v| v.as_str());
             let host = args
                 .get("url")

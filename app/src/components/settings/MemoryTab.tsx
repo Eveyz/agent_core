@@ -1,4 +1,6 @@
+import { useState, useEffect } from 'react';
 import { useSelector } from 'react-redux';
+import { invoke } from '@tauri-apps/api/core';
 import { RootState } from '../../store';
 import DatabaseIcon from 'lucide-react/dist/esm/icons/database.mjs';
 import BrainIcon from 'lucide-react/dist/esm/icons/brain.mjs';
@@ -6,8 +8,32 @@ import LayersIcon from 'lucide-react/dist/esm/icons/layers.mjs';
 import TypeIcon from 'lucide-react/dist/esm/icons/type.mjs';
 import MergeIcon from 'lucide-react/dist/esm/icons/merge.mjs';
 
+interface MemoryBlock {
+  id: string;
+  label: string;
+  content: string;
+  max_chars: number;
+  updated_at: string;
+}
+
 export default function MemoryTab() {
   const config = useSelector((state: RootState) => state.settings.config);
+  const [blocks, setBlocks] = useState<MemoryBlock[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function loadBlocks() {
+      try {
+        const data = await invoke<MemoryBlock[]>('get_memory_blocks');
+        setBlocks(data);
+      } catch (err) {
+        console.error('Failed to load memory blocks', err);
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadBlocks();
+  }, []);
 
   if (!config) {
     return (
@@ -67,6 +93,48 @@ export default function MemoryTab() {
             </span>
           </div>
         </div>
+      </div>
+
+      <div className="settings-section" style={{ marginTop: '24px' }}>
+        <h3 className="settings-section-title">
+          <LayersIcon size={14} /> Core Memory Blocks
+        </h3>
+        {loading ? (
+          <div className="settings-empty" style={{ padding: '20px 0', fontSize: '13px' }}>Loading memory blocks...</div>
+        ) : blocks.length === 0 ? (
+          <div className="settings-empty" style={{ padding: '20px 0', fontSize: '13px' }}>No memory blocks found.</div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '12px' }}>
+            {blocks.map(block => (
+              <div key={block.id} style={{ 
+                background: 'var(--bg-tertiary)', 
+                border: '1px solid var(--border-color)', 
+                borderRadius: '8px', 
+                padding: '12px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '8px'
+              }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ fontWeight: 500, fontSize: '13px', color: 'var(--text-primary)' }}>
+                    {block.label} <span style={{ opacity: 0.5, fontSize: '11px', marginLeft: '4px' }}>({block.id})</span>
+                  </div>
+                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
+                    {new Date(block.updated_at).toLocaleString()}
+                  </div>
+                </div>
+                <div style={{ 
+                  fontSize: '13px', 
+                  color: 'var(--text-secondary)',
+                  whiteSpace: 'pre-wrap',
+                  lineHeight: '1.4'
+                }}>
+                  {block.content || <span style={{ opacity: 0.5, fontStyle: 'italic' }}>Empty</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

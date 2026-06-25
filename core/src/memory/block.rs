@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use super::storage::Storage;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MemoryBlock {
     pub id: String,
     pub label: String,
