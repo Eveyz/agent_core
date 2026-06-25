@@ -20,6 +20,7 @@ use crate::config::{Config, ModelConfig};
 use crate::error_recovery::RecoveryEngine;
 use crate::hooks::HookRegistry;
 use crate::memory::MemoryManager;
+use crate::memory::reflection::ReflectionDaemon;
 use crate::permission::{PermissionConfig, PermissionPolicy};
 use crate::prompt;
 use crate::reflector::Reflector;
@@ -37,6 +38,8 @@ pub struct Brain {
     pub config: Config,
     /// Shared memory manager (if memory is enabled).
     pub memory: Option<Arc<Mutex<MemoryManager>>>,
+    /// Background reflection daemon (Deep mode only, if reflection_model is set).
+    pub reflection_daemon: Option<Arc<ReflectionDaemon>>,
     /// Shared skill manager (if skills are enabled).
     pub skill_manager: Option<Arc<Mutex<SkillManager>>>,
     /// Shared todo list (planning state, visible across Runs).
@@ -52,6 +55,7 @@ impl Brain {
     /// Build a Brain from a loaded Config.
     pub fn from_config(config: Config) -> Result<Self> {
         let memory = Self::build_memory(&config);
+        let reflection_daemon = Self::build_reflection_daemon(&config, &memory);
         let skill_manager = Self::build_skill_manager(&config)?;
         let reflector = Self::build_reflector(&config);
 
@@ -60,6 +64,7 @@ impl Brain {
         Ok(Self {
             config,
             memory,
+            reflection_daemon,
             skill_manager,
             todo_list: Arc::new(Mutex::new(TodoList::new())),
             reflector,
@@ -117,6 +122,34 @@ impl Brain {
                 None
             }
         }
+    }
+
+    fn build_reflection_daemon(
+        config: &Config,
+        memory: &Option<Arc<Mutex<MemoryManager>>>,
+    ) -> Option<Arc<ReflectionDaemon>> {
+        let mem_config = config.memory.as_ref()?;
+        let mode = crate::config::MemoryMode::from_str(&mem_config.mode);
+        if mode != crate::config::MemoryMode::Deep {
+            return None;
+        }
+
+        let reflection = mem_config.reflection.as_ref()?;
+        let model_key = reflection.reflection_model.as_ref()?;
+        let model_config = config.get_model(model_key)?;
+        let memory = memory.clone()?;
+
+        let client = OpenAIClient::new(model_config.clone());
+        let trigger_count = reflection.trigger_message_count;
+
+        tracing::info!(
+            "reflection daemon enabled: model={}, trigger={} messages",
+            model_key,
+            trigger_count
+        );
+
+        let daemon = ReflectionDaemon::spawn(client, memory, trigger_count);
+        Some(Arc::new(daemon))
     }
 
     fn build_skill_manager(_config: &Config) -> Result<Option<Arc<Mutex<SkillManager>>>> {

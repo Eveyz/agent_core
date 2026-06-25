@@ -25,6 +25,11 @@ export interface ProviderConfig {
   models: Record<string, ProviderModelEntry>;
 }
 
+export interface ReflectionConfig {
+  trigger_message_count?: number;
+  reflection_model?: string;
+}
+
 export interface MemoryConfig {
   db_path: string;
   embedding_model: string;
@@ -33,6 +38,7 @@ export interface MemoryConfig {
   consolidation_enabled: boolean;
   embedding_enabled?: boolean;
   mode?: string;
+  reflection?: ReflectionConfig;
 }
 
 export interface PermissionRule {
@@ -131,6 +137,7 @@ function normalizeProvider(raw: Record<string, unknown>): ProviderConfig {
 }
 
 function normalizeMemory(raw: Record<string, unknown>): MemoryConfig {
+  const reflection = (raw.reflection as Record<string, unknown>) ?? {};
   return {
     db_path: (raw.db_path as string) ?? '~/.agent_core/memory.db',
     embedding_model: (raw.embedding_model as string) ?? 'BAAI/bge-small-en-v1.5',
@@ -139,6 +146,10 @@ function normalizeMemory(raw: Record<string, unknown>): MemoryConfig {
     consolidation_enabled: (raw.consolidation_enabled as boolean) ?? true,
     embedding_enabled: (raw.embedding_enabled as boolean) ?? false,
     mode: (raw.mode as string) ?? 'standard',
+    reflection: {
+      trigger_message_count: (reflection.trigger_message_count as number) ?? 20,
+      reflection_model: (reflection.reflection_model as string) ?? undefined,
+    },
   };
 }
 

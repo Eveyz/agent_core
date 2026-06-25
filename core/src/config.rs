@@ -167,6 +167,25 @@ pub struct MemoryConfig {
     /// Salience scoring configuration (weights, half-life, etc.).
     #[serde(default)]
     pub salience: Option<crate::memory::SalienceConfig>,
+    /// Reflection daemon config (Deep mode only).
+    #[serde(default)]
+    pub reflection: Option<ReflectionConfig>,
+}
+
+/// Configuration for the background reflection daemon (Deep mode).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReflectionConfig {
+    /// Number of conversation messages to accumulate before triggering reflection.
+    #[serde(default = "default_trigger_count")]
+    pub trigger_message_count: usize,
+    /// Model key (e.g. "deepseek/deepseek-chat") from config.models to use for reflection.
+    /// If not set, reflection is disabled even in Deep mode.
+    #[serde(default)]
+    pub reflection_model: Option<String>,
+}
+
+fn default_trigger_count() -> usize {
+    20
 }
 
 fn default_memory_mode() -> String {
@@ -204,6 +223,7 @@ impl Default for MemoryConfig {
             embedding_enabled: false,
             mode: "standard".to_string(),
             salience: None,
+            reflection: None,
         }
     }
 }

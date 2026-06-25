@@ -227,11 +227,11 @@ pub const MEMORY_PROMPT_STATELESS: &str = "You have no memory of previous conver
 
 /// Prompt instructions for Standard memory mode.
 /// Injected into the Active Memory segment alongside core memory + recall.
-pub const MEMORY_PROMPT_STANDARD: &str = "You have access to long-term memory. Core memory blocks below contain your persona and user profile — keep them updated using core_memory_append and core_memory_replace tools. When you learn a new user preference or project convention, record it. Use conversation_search to recall relevant past discussions when needed.";
+pub const MEMORY_PROMPT_STANDARD: &str = "You have access to long-term memory. Core memory blocks below contain your persona and user profile — keep them updated. When recording a new preference or convention, PREFER core_memory_replace over core_memory_append to avoid contradictory rules; only use append for genuinely new information that doesn't overlap with existing content. When you learn a new user preference or project convention, record it. Use conversation_search to recall relevant past discussions when needed.";
 
 /// Prompt instructions for Deep memory mode.
 /// Same as Standard, with additional emphasis on proactive recall.
-pub const MEMORY_PROMPT_DEEP: &str = "You have access to long-term memory with deep recall. Core memory blocks below contain your persona and user profile — keep them updated using core_memory_append and core_memory_replace tools. When you learn a new user preference or project convention, record it. Proactively use conversation_search and archival_memory_search to recall relevant past discussions and long-term knowledge. The system may also inject background reflection summaries — use them to inform your responses.";
+pub const MEMORY_PROMPT_DEEP: &str = "You have access to long-term memory with deep recall. Core memory blocks below contain your persona and user profile — keep them updated. When recording a new preference or convention, PREFER core_memory_replace over core_memory_append to avoid contradictory rules; only use append for genuinely new information that doesn't overlap with existing content. Proactively use conversation_search and archival_memory_search to recall relevant past discussions and long-term knowledge. The system may also inject background reflection summaries — use them to inform your responses.";
 
 /// Get the memory prompt for a given mode string.
 pub fn memory_mode_prompt(mode: &crate::config::MemoryMode) -> &'static str {

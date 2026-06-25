@@ -30,7 +30,7 @@ pub mod worktree;
 // Legacy agent types — still used by the CLI. New code should use the
 // `runtime` module (Brain + Run + RunManager) instead.
 pub use agent::{Agent, AgentBuilder, ContextProcessor, TransformContextFn};
-pub use config::{Config, MemoryConfig, MemoryMode, ModelConfig, RuntimeOverrides, resolve_env_value};
+pub use config::{Config, MemoryConfig, MemoryMode, ModelConfig, ReflectionConfig, RuntimeOverrides, resolve_env_value};
 pub use context::{CacheHint, Context, ContextEngine, ContextSegment, RefreshPolicy, Stability};
 pub use memory::{
     MemoryCategory, MemoryManager, MemoryStats, SalienceConfig, SalienceScorer, ScoredRecord,

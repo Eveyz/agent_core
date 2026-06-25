@@ -321,6 +321,11 @@ impl Run {
             }
         }
 
+        // Feed to reflection daemon (non-blocking, Deep mode only)
+        if let Some(ref daemon) = self.brain.reflection_daemon {
+            daemon.try_send("user", user_input);
+        }
+
         // Skill auto-trigger: check user message against skill triggers
         if let Some(ref sm) = self.brain.skill_manager {
             let matched: Vec<(String, String)> = {
@@ -526,6 +531,11 @@ impl Run {
                     let m = mem.lock();
                     let _ = m.store_conversation("assistant", &text);
                 }
+            }
+
+            // Feed to reflection daemon (non-blocking, Deep mode only)
+            if let Some(ref daemon) = self.brain.reflection_daemon {
+                daemon.try_send("assistant", &text);
             }
 
             // Consolidate memory in background (non-blocking, best-effort)

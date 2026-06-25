@@ -3,6 +3,7 @@ pub mod block;
 pub mod consolidation;
 pub mod embedding;
 pub mod recall;
+pub mod reflection;
 pub mod salience;
 pub mod storage;
 

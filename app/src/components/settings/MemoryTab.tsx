@@ -80,6 +80,10 @@ export default function MemoryTab() {
         consolidation_enabled: true,
         embedding_enabled: false,
         mode: 'standard',
+        reflection: {
+          trigger_message_count: 20,
+          reflection_model: undefined,
+        },
       }
     };
     try {
@@ -109,6 +113,36 @@ export default function MemoryTab() {
       setSwitchingMode(false);
     }
   };
+
+  const handleReflectionModelChange = async (modelKey: string) => {
+    if (!config || !memory) return;
+    const newConfig = {
+      ...config,
+      memory: {
+        ...memory,
+        reflection: {
+          trigger_message_count: memory.reflection?.trigger_message_count ?? 20,
+          reflection_model: modelKey || undefined,
+        },
+      }
+    };
+    try {
+      await dispatch(saveConfig(newConfig));
+    } catch (e) {
+      console.error('Failed to set reflection model', e);
+    }
+  };
+
+  // Build list of available models from providers
+  const availableModels: { key: string; label: string }[] = [];
+  if (config) {
+    for (const [providerKey, provider] of Object.entries(config.providers)) {
+      for (const [modelKey, model] of Object.entries(provider.models)) {
+        const fullKey = `${providerKey}/${modelKey}`;
+        availableModels.push({ key: fullKey, label: `${fullKey} (${model.model_id})` });
+      }
+    }
+  }
 
   if (!memory) {
     return (
@@ -177,6 +211,42 @@ export default function MemoryTab() {
           </p>
         )}
       </div>
+
+      {/* Reflection Model Selector (Deep mode only) */}
+      {currentMode === 'deep' && (
+        <div className="settings-section" style={{ marginTop: '16px' }}>
+          <h3 className="settings-section-title">
+            <BrainIcon size={14} /> Reflection Model
+          </h3>
+          <p style={{ fontSize: '12px', marginTop: '8px', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
+            Select a model for background fact extraction. Every {memory.reflection?.trigger_message_count ?? 20} messages, the daemon will use this model to extract durable facts and store them in archival memory. Leave unselected to disable LLM reflection.
+          </p>
+          <select
+            value={memory.reflection?.reflection_model ?? ''}
+            onChange={(e) => handleReflectionModelChange(e.target.value)}
+            style={{
+              marginTop: '8px',
+              width: '100%',
+              padding: '8px 10px',
+              borderRadius: '6px',
+              border: '1px solid var(--border-color)',
+              background: 'var(--bg-tertiary)',
+              color: 'var(--text-primary)',
+              fontSize: '13px',
+            }}
+          >
+            <option value="">— Disabled (no LLM reflection) —</option>
+            {availableModels.map((m) => (
+              <option key={m.key} value={m.key}>{m.label}</option>
+            ))}
+          </select>
+          {memory.reflection?.reflection_model && (
+            <p style={{ fontSize: '11px', marginTop: '6px', opacity: 0.6, color: 'var(--text-secondary)' }}>
+              Restart required for changes to take effect.
+            </p>
+          )}
+        </div>
+      )}
 
       <div className="settings-section" style={{ marginTop: '24px' }}>
         <h3 className="settings-section-title">
