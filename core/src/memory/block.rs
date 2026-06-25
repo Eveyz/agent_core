@@ -31,25 +31,32 @@ impl CoreMemory {
     }
 
     fn load(&mut self) -> Result<()> {
-        let db = self.storage.conn();
-        let mut stmt = db
-            .prepare("SELECT id, label, content, max_chars, updated_at FROM memory_blocks")
-            .context("failed to prepare memory_blocks query")?;
+        {
+            let db = self.storage.conn();
+            let mut stmt = db
+                .prepare("SELECT id, label, content, max_chars, updated_at FROM memory_blocks")
+                .context("failed to prepare memory_blocks query")?;
 
-        let rows = stmt.query_map([], |row| {
-            Ok(MemoryBlock {
-                id: row.get(0)?,
-                label: row.get(1)?,
-                content: row.get(2)?,
-                max_chars: row.get::<_, i64>(3)? as usize,
-                updated_at: row.get(4)?,
-            })
-        })?;
+            let rows = stmt.query_map([], |row| {
+                Ok(MemoryBlock {
+                    id: row.get(0)?,
+                    label: row.get(1)?,
+                    content: row.get(2)?,
+                    max_chars: row.get::<_, i64>(3)? as usize,
+                    updated_at: row.get(4)?,
+                })
+            })?;
 
-        self.blocks.clear();
-        for row in rows {
-            let block = row?;
-            self.blocks.insert(block.id.clone(), block);
+            self.blocks.clear();
+            for row in rows {
+                let block = row?;
+                self.blocks.insert(block.id.clone(), block);
+            }
+        }
+
+        if self.blocks.is_empty() {
+            self.create("human", "User Info", "")?;
+            self.create("persona", "Agent Persona", "")?;
         }
 
         Ok(())

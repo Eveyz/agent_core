@@ -1,93 +1,70 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useCallback, useState, useLayoutEffect } from 'react';
 
-export function useAutoScroll<T extends HTMLElement>() {
-  const ref = useRef<T | null>(null);
+export function useAutoScroll<T extends HTMLElement, U extends HTMLElement = HTMLDivElement>(dependencies: any[]) {
+  const scrollRef = useRef<T | null>(null);
+  const contentRef = useRef<U | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
+  
+  // A synchronous lock to track if we should snap to bottom
+  const isAutoScrollEnabled = useRef(true);
 
-  // While true, every content mutation snaps to the bottom. Used when opening a
-  // session so async rendering (markdown, code blocks, tool calls) keeps the view
-  // pinned to the latest message until it settles.
-  const stickRef = useRef(false);
-  const stickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // PERF-3: rAF-throttled scroll check to avoid layout thrashing.
-  // Previously, the MutationObserver callback read scrollHeight and wrote
-  // scrollTop synchronously on every DOM mutation (every token), causing
-  // forced sync layout. Now we batch into a single rAF per frame.
-  const scrollRafRef = useRef<number | null>(null);
-
-  const snapToBottom = useCallback(() => {
-    requestAnimationFrame(() => {
-      const el = ref.current;
-      if (!el) return;
-      el.scrollTop = el.scrollHeight;
-      setIsAtBottom(true);
-    });
+  // Expose a way to force scroll to bottom, e.g. on session switch
+  const scrollToBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    isAutoScrollEnabled.current = true;
+    setIsAtBottom(true);
   }, []);
 
-  const scrollToBottom = useCallback(() => {
-    snapToBottom();
-  }, [snapToBottom]);
-
-  const forceStickToBottom = useCallback(() => {
-    stickRef.current = true;
-    snapToBottom();
-    if (stickTimerRef.current) clearTimeout(stickTimerRef.current);
-    stickTimerRef.current = setTimeout(() => {
-      stickRef.current = false;
-    }, 400);
-  }, [snapToBottom]);
-
-  useEffect(() => {
-    const el = ref.current;
+  // 1. Synchronously snap to bottom whenever dependencies change (e.g. new chat messages)
+  // useLayoutEffect runs before the browser paints, ensuring no flicker.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
     if (!el) return;
 
-    const refreshStick = () => {
-      if (!stickRef.current) return;
+    if (isAutoScrollEnabled.current) {
       el.scrollTop = el.scrollHeight;
-      if (stickTimerRef.current) clearTimeout(stickTimerRef.current);
-      stickTimerRef.current = setTimeout(() => {
-        stickRef.current = false;
-      }, 400);
-    };
+    }
+  }, dependencies);
+
+  // 2. Track user scrolling to disable/enable the lock
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
 
     const handleScroll = () => {
-      if (stickRef.current) return;
-      const threshold = el.clientHeight;
-      const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < threshold;
+      // 20px threshold allows for subpixel rendering and small layout shifts
+      const threshold = 20;
+      const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
+      
+      isAutoScrollEnabled.current = isNearBottom;
       setIsAtBottom(isNearBottom);
     };
 
-    el.addEventListener('scroll', handleScroll);
-
-    // PERF-3: rAF-throttled scroll-to-bottom during streaming.
-    // The callback is scheduled via rAF so it runs at most once per frame,
-    // after layout has settled — no forced sync layout.
-    const checkAndScroll = () => {
-      scrollRafRef.current = null;
-      if (stickRef.current) {
-        refreshStick();
-        return;
-      }
-      const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 200;
-      if (isNearBottom) {
-        el.scrollTop = el.scrollHeight;
-      }
-    };
-
-    const observer = new MutationObserver(() => {
-      if (scrollRafRef.current !== null) return; // already scheduled
-      scrollRafRef.current = requestAnimationFrame(checkAndScroll);
-    });
-
-    observer.observe(el, { childList: true, subtree: true });
-    return () => {
-      observer.disconnect();
-      el.removeEventListener('scroll', handleScroll);
-      if (stickTimerRef.current) clearTimeout(stickTimerRef.current);
-      if (scrollRafRef.current !== null) cancelAnimationFrame(scrollRafRef.current);
-    };
+    // passive: true improves scroll performance
+    el.addEventListener('scroll', handleScroll, { passive: true });
+    
+    return () => el.removeEventListener('scroll', handleScroll);
   }, []);
 
-  return { ref, scrollToBottom, forceStickToBottom, isAtBottom };
+  // 3. Catch async dimension changes like images loading
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    const targetEl = contentRef.current || el;
+
+    const resizeObserver = new ResizeObserver(() => {
+      if (isAutoScrollEnabled.current) {
+        el.scrollTop = el.scrollHeight;
+      }
+    });
+
+    resizeObserver.observe(targetEl);
+
+    return () => resizeObserver.disconnect();
+  }, []);
+
+  return { scrollRef, contentRef, scrollToBottom, isAtBottom };
 }

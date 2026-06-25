@@ -12,29 +12,7 @@ import StarIcon from 'lucide-react/dist/esm/icons/star.mjs';
 import SaveIcon from 'lucide-react/dist/esm/icons/save.mjs';
 import XIcon from 'lucide-react/dist/esm/icons/x.mjs';
 
-interface ProviderModelEntry {
-  model_id: string;
-  temperature?: number;
-  max_tokens?: number;
-  system_prompt?: string;
-  max_context_tokens?: number;
-  reasoning_effort?: string;
-  thinking_enabled?: boolean;
-}
 
-interface ProviderData {
-  name?: string;
-  base_url: string;
-  api_key: string;
-  max_context_tokens?: number;
-  temperature?: number;
-  max_tokens?: number;
-  react_enabled: boolean;
-  system_prompt?: string;
-  max_iterations: number;
-  request_timeout_secs: number;
-  models: Record<string, ProviderModelEntry>;
-}
 
 interface ModelRow {
   key: string;
@@ -192,7 +170,7 @@ function ProviderForm({
       name: form.provider_key.trim(),
       base_url: form.base_url,
       api_key: form.api_key,
-      max_context_tokens: form.max_context_tokens,
+      max_context_tokens: 32768,
       temperature: undefined,
       max_tokens: undefined,
       react_enabled: true,

@@ -6,6 +6,9 @@ export interface ProviderModelEntry {
   temperature?: number;
   max_tokens?: number;
   system_prompt?: string;
+  max_context_tokens?: number;
+  reasoning_effort?: string;
+  thinking_enabled?: boolean;
 }
 
 export interface ProviderConfig {

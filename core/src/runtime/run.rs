@@ -304,9 +304,6 @@ impl Run {
         self.emit(RunEvent::RunStarted);
         self.transition(RunState::Running);
 
-        // Load recent session memories as context
-        self.load_recent_memories();
-
         // Add user message to context
         self.context.add(Message::user(user_input));
 
@@ -1145,100 +1142,39 @@ impl Run {
 
     // ── Session memory ────────────────────────────────────────────
 
-    /// Load the 3 most recent session memory files and inject as a system message.
-    /// This gives the agent continuity across sessions without embedding search.
-    fn load_recent_memories(&mut self) {
-        let mem_dir = crate::paths::get_memories_dir();
-
-        let entries = match std::fs::read_dir(&mem_dir) {
-            Ok(e) => e,
-            Err(_) => return,
-        };
-
-        let mut files: Vec<_> = entries
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
-            .collect();
-        files.sort_by_key(|e| std::cmp::Reverse(e.path()));
-        files.truncate(3);
-
-        let mut parts = Vec::new();
-        for entry in &files {
-            if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                let trimmed: String = content.chars().take(1000).collect();
-                parts.push(trimmed);
-            }
-        }
-
-        if !parts.is_empty() {
-            let combined = format!(
-                "== Previous Session Memories ==\n{}\n== End Memories ==\n",
-                parts.join("\n---\n")
-            );
-            self.context.add(Message::system(&combined));
-        }
-    }
-
-    /// Write a brief memory file after Run completion.
-    /// Extracts user messages and assistant final answers into a compact
-    /// markdown file stored in ~/.agverse/memories/. Loaded on next startup.
-    fn write_session_memory(&self, final_text: &str) {
-        let mem_dir = crate::paths::get_memories_dir();
-        let _ = std::fs::create_dir_all(&mem_dir);
-
-        // Extract conversation summary from context messages
-        let messages = self.context.raw_messages();
-        let mut summary = String::new();
-        let mut turn = 0;
-        for msg in messages {
-            match msg.role {
-                Role::User => {
-                    turn += 1;
-                    let content = msg.content.as_deref().unwrap_or("");
-                    let preview: String = content.chars().take(200).collect();
-                    summary.push_str(&format!("{turn}. User: {preview}\n"));
-                }
-                Role::Assistant => {
-                    let content = msg.content.as_deref().unwrap_or("");
-                    if !content.is_empty() {
-                        let preview: String = content.chars().take(200).collect();
-                        summary.push_str(&format!("   → {preview}\n"));
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        // Also include the final answer
-        if !final_text.is_empty() && summary.len() < 100 {
-            summary.push_str(&format!("Result: {}\n", final_text.chars().take(300).collect::<String>()));
-        }
-
-        if summary.is_empty() {
+    /// Write a brief memory block after Run completion into the global agverse.md.
+    /// Extracts user messages and assistant final answers into a compact markdown format.
+    fn write_session_memory(&self, _final_text: &str) {
+        let global_path = crate::paths::get_global_agverse_md_path();
+        
+        // If the file already exists, we do nothing. We let the Agent intelligently manage it via tools.
+        if global_path.exists() {
             return;
         }
 
-        let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-        let filename = format!("session_{timestamp}.md");
-        let path = mem_dir.join(&filename);
-        let content = format!(
-            "# Session Memory — {timestamp}\n\n{summary}\n",
-        );
-        if let Err(e) = std::fs::write(&path, content) {
-            tracing::warn!("failed to write session memory: {e}");
+        if let Some(parent) = global_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
         }
 
-        // Keep only the 20 most recent memory files
-        if let Ok(entries) = std::fs::read_dir(&mem_dir) {
-            let mut files: Vec<_> = entries
-                .filter_map(|e| e.ok())
-                .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
-                .collect();
-            files.sort_by_key(|e| e.path());
-            while files.len() > 20 {
-                let old = files.remove(0);
-                let _ = std::fs::remove_file(old.path());
-            }
+        let template = "\
+# 项目概览 (Project Overview)
+
+# 技术栈与命令 (Tech Stack & Commands)
+
+# 架构决策 (Architecture Decisions)
+
+# 编码规范 (Coding Conventions)
+
+# 个人偏好 / 用户规则 (User Preferences)
+
+# Agent 行为规则 (Agent Instructions)
+- If new user preferences, architectural rules, or global instructions are discovered during the conversation, use file editing tools (like replace_file_content or edit) to intelligently update this `~/.agverse/agverse.md` file and classify the new information into the correct section above.
+
+# 自动记忆 (Auto Memories)
+";
+
+        if let Err(e) = std::fs::write(&global_path, template) {
+            tracing::warn!("failed to write agverse.md template: {e}");
         }
     }
 

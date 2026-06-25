@@ -52,7 +52,7 @@ export default function MemoryTab() {
     const newConfig = {
       ...config,
       memory: {
-        db_path: '~/.agent_core/memory.db',
+        db_path: '~/.agverse/memory.db',
         embedding_model: 'BAAI/bge-small-en-v1.5',
         max_core_blocks: 5,
         default_block_max_chars: 2000,

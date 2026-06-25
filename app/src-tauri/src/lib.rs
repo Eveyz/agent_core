@@ -635,8 +635,15 @@ async fn get_project_sessions(
 
 #[tauri::command]
 async fn get_memory_blocks() -> Result<Vec<agent_core::memory::block::MemoryBlock>, String> {
-    let db_path = agent_core::paths::get_memory_db_path().to_string_lossy().into_owned();
-    let storage = agent_core::memory::storage::Storage::new(&db_path).map_err(|e| e.to_string())?;
+    let config_path = agent_core::paths::get_agverse_dir().join("config.toml");
+    let config = agent_core::config::Config::load(&config_path.to_string_lossy()).ok();
+    
+    let raw_db_path = config
+        .and_then(|c| c.memory)
+        .map(|m| m.db_path)
+        .unwrap_or_else(|| agent_core::paths::get_memory_db_path().to_string_lossy().into_owned());
+
+    let storage = agent_core::memory::storage::Storage::new(&raw_db_path).map_err(|e| e.to_string())?;
     
     // CoreMemory doesn't require embedding model, so we can instantiate it directly
     // Use a default max_chars like 8000

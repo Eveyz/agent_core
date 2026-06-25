@@ -72,7 +72,7 @@ function App() {
   const activeProject = projects.find((p) => p.id === activeProjectId);
   const [activeTab, setActiveTab] = useState<'code' | 'write'>('code');
 
-  const { ref: scrollRef, scrollToBottom, forceStickToBottom, isAtBottom } = useAutoScroll<HTMLDivElement>();
+  const { scrollRef, contentRef, scrollToBottom, isAtBottom } = useAutoScroll<HTMLDivElement, HTMLDivElement>([entriesLength, activeSessionId, isProcessing]);
 
   useAgentEventListener();
 
@@ -106,6 +106,7 @@ function App() {
   const pendingApprovalCount = useSelector(selectPendingApprovalCount);
   const runId = useSelector((state: RootState) => state.chat.runId);
   const viewingSubagentPath = useSelector((state: RootState) => state.chat.viewingSubagentPath, shallowEqual);
+
   const activeSubagentId = viewingSubagentPath.length > 0 ? viewingSubagentPath[viewingSubagentPath.length - 1].id : null;
   const activeSubagent = useSelector((state: RootState) =>
     activeSubagentId ? selectSubagentById(state, activeSubagentId) : undefined
@@ -128,10 +129,10 @@ function App() {
     if (prevSessionIdRef.current !== activeSessionId) {
       prevSessionIdRef.current = activeSessionId;
       if (activeSessionId) {
-        forceStickToBottom();
+        scrollToBottom();
       }
     }
-  }, [activeSessionId, forceStickToBottom]);
+  }, [activeSessionId, scrollToBottom]);
 
   // Esc key to abort agent during processing
   useEffect(() => {
@@ -343,15 +344,17 @@ function App() {
           <>
             <TodoPanel />
             <div className="chat-history" ref={scrollRef}>
-              {entryIds.map((id) => (
-                <EntryRow
-                  key={id}
-                  entryId={id}
-                  defaultModel={defaultModel}
-                  handleRetry={handleRetry}
-                  isProcessing={isProcessing}
-                />
-              ))}
+              <div ref={contentRef} style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+                {entryIds.map((id) => (
+                  <EntryRow
+                    key={id}
+                    entryId={id}
+                    defaultModel={defaultModel}
+                    handleRetry={handleRetry}
+                    isProcessing={isProcessing}
+                  />
+                ))}
+              </div>
             </div>
             {!isAtBottom && (
               <button className="scroll-to-bottom-btn" onClick={scrollToBottom} title="Scroll to latest">

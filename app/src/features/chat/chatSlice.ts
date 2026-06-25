@@ -113,6 +113,7 @@ const initialState: ChatState = {
   _resumedFromBackend: false,
   _thinkBuffers: {},
   _pendingGap: null,
+  todo: [],
 };
 
 // ── Event payload types ──────────────────────────────────────────────
@@ -947,7 +948,7 @@ function processSingleEvent(state: ChatState, payload: string | Record<string, u
       handleSubagentEnd(state, ev.subagent_id ?? '', ev.success ?? false, ev.iterations_used);
       break;
     case 'todo_updated':
-      state.todo = ev.items ?? [];
+      state.todo = (ev.items as TodoItem[]) ?? [];
       break;
     default:
       break;

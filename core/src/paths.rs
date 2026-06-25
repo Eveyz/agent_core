@@ -12,10 +12,6 @@ pub fn get_memory_db_path() -> PathBuf {
     get_agverse_dir().join("memory.db")
 }
 
-/// Gets the session memories directory. Usually `~/.agverse/memories/`.
-pub fn get_memories_dir() -> PathBuf {
-    get_agverse_dir().join("memories")
-}
 
 /// Gets the run event logs directory. Usually `~/.agverse/runs/`.
 pub fn get_runs_dir() -> PathBuf {
