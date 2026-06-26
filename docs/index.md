@@ -35,6 +35,7 @@
 | PLAN-0001 | Agent Self-Planning Todo System | Draft | zniverse | 2026-06-25 |
 | PLAN-0002 | Memory & Reflector 激活计划 | Draft | zniverse | 2026-06-25 |
 | PLAN-0003 | Context Engine 修复与激活 | Draft | zniverse | 2026-06-25 |
+| PLAN-0005 | Prompt Cache Hit Rate Optimization | Draft | agent_core | 2026-06-26 |
 
 ## RUN (Runbooks)
 
