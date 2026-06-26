@@ -1,0 +1,212 @@
+/* Prompt suggestion cards */
+.prompt-suggestions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  width: 100%;
+}
+.prompt-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px 16px;
+  background: var(--overlay-0_02);
+  border: 1px solid var(--overlay-0_06);
+  border-radius: 12px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.45;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  outline: none;
+}
+.prompt-card:hover {
+  background: var(--overlay-0_04);
+  border-color: rgba(139, 92, 246, 0.2);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3), 0 0 20px rgba(139, 92, 246, 0.06);
+  color: var(--text-main);
+}
+.prompt-card:active {
+  transform: translateY(0);
+}
+.prompt-card-icon {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--overlay-0_03);
+  border: 1px solid var(--overlay-0_06);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(139, 92, 246, 0.7);
+  transition: all 0.25s ease;
+}
+.prompt-card:hover .prompt-card-icon {
+  background: rgba(139, 92, 246, 0.08);
+  border-color: rgba(139, 92, 246, 0.15);
+  color: rgba(139, 92, 246, 0.9);
+}
+.prompt-card-text {
+  padding-top: 4px;
+}
+
+@media (max-width: 720px) {
+  .prompt-suggestions {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Input Area */
+.input-area {
+  padding: 0 40px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+  z-index: 1;
+}
+
+.input-container {
+  width: 100%;
+  max-width: 800px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  display: flex;
+  flex-direction: column;
+  transition: border-color 0.2s;
+}
+.input-container:focus-within {
+  border-color: var(--accent);
+}
+
+.chat-input {
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: transparent;
+  caret-color: var(--text-main);
+  padding: 16px 16px 8px;
+  font-family: inherit;
+  font-size: 14.5px;
+  line-height: 1.5;
+  resize: none;
+  outline: none;
+  min-height: 60px;
+  max-height: 200px;
+  position: relative;
+  z-index: 1;
+}
+.chat-input::placeholder {
+  color: var(--text-muted);
+}
+
+/* Highlight overlay behind textarea */
+.highlight-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 16px 16px 8px;
+  font-family: inherit;
+  font-size: 14.5px;
+  line-height: 1.5;
+  color: var(--text-main);
+  pointer-events: none;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow: hidden;
+  margin: 0;
+  min-height: 60px;
+  max-height: 200px;
+  z-index: 0;
+}
+
+.mention-token {
+  background: rgba(82, 168, 255, 0.15);
+  color: var(--accent);
+  border-radius: 3px;
+  box-shadow: 0 0 0 2px rgba(82, 168, 255, 0.15);
+}
+
+.input-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 16px 12px;
+}
+
+.input-actions-left {
+  display: flex;
+  align-items: center;
+}
+
+.input-actions-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.model-selector-wrapper {
+  position: relative;
+}
+
+.model-selector {
+  color: var(--text-muted);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  background: var(--overlay-0_04);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 3px 8px;
+  transition: all 0.15s;
+}
+
+.model-selector:hover {
+  border-color: var(--overlay-0_1);
+  background: var(--overlay-0_06);
+}
+
+.model-selector-text {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.model-selector-name {
+  color: var(--text-main);
+  font-weight: 500;
+}
+
+.model-selector-id {
+  color: var(--text-dim);
+  font-family: 'Fira Code', 'Menlo', monospace;
+  font-size: 10px;
+}
+
+.model-selector-chevron {
+  transition: transform 0.15s;
+}
+
+.model-selector-chevron.open {
+  transform: rotate(180deg);
+}
+
+.model-save-indicator {
+  font-size: 10px;
+  color: var(--accent);
+  margin-left: 6px;
+  animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+

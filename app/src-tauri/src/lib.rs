@@ -634,23 +634,9 @@ async fn get_project_sessions(
 }
 
 #[tauri::command]
-async fn get_memory_blocks() -> Result<Vec<agent_core::memory::block::MemoryBlock>, String> {
-    let config_path = agent_core::paths::get_agverse_dir().join("config.toml");
-    let config = agent_core::config::Config::load(&config_path.to_string_lossy()).ok();
-    
-    let raw_db_path = config
-        .and_then(|c| c.memory)
-        .map(|m| m.db_path)
-        .unwrap_or_else(|| agent_core::paths::get_memory_db_path().to_string_lossy().into_owned());
-
-    let storage = agent_core::memory::storage::Storage::new(&raw_db_path).map_err(|e| e.to_string())?;
-    
-    // CoreMemory doesn't require embedding model, so we can instantiate it directly
-    // Use a default max_chars like 8000
-    let core = agent_core::memory::block::CoreMemory::new(storage, 8000).map_err(|e| e.to_string())?;
-    
-    let blocks = core.list().into_iter().cloned().collect();
-    Ok(blocks)
+async fn get_agverse_md() -> Result<String, String> {
+    let path = agent_core::paths::get_global_agverse_md_path();
+    std::fs::read_to_string(&path).map_err(|e| format!("Failed to read agverse.md: {e}"))
 }
 
 #[tauri::command]
@@ -764,7 +750,7 @@ pub fn run() {
             save_session_messages, resume_session,
             list_projects, create_project, delete_project, rename_project, open_in_explorer,
             list_git_branches, switch_git_branch, get_project_sessions,
-            get_memory_blocks, get_skills
+            get_agverse_md, get_skills
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

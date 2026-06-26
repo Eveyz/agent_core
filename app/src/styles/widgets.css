@@ -1,0 +1,495 @@
+/* ── Stage 2: subagent drill-down UI ──────────────────────────────── */
+.subagent-header {
+  cursor: default;
+}
+
+.subagent-view-btn {
+  margin-left: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-dim);
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.subagent-view-btn:hover {
+  color: #d2a8ff;
+  border-color: rgba(160, 216, 255, 0.4);
+  background: var(--overlay-0_04);
+}
+
+.header-breadcrumb {
+  display: inline-flex;
+  align-items: center;
+  font-size: 13px;
+}
+
+.header-breadcrumb-sep {
+  color: var(--text-dim);
+  margin: 0 6px;
+}
+
+.header-breadcrumb-name {
+  color: #d2a8ff;
+  font-weight: 500;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subagent-detail-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 8px 16px;
+}
+
+.subagent-detail-title {
+  color: #d2a8ff;
+  font-weight: 600;
+  font-family: 'Fira Code', 'Menlo', monospace;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Edit File Widget ─────────────────────────────────────────────── */
+.edit-file-block {
+  /* inherits .step-block */
+}
+
+.edit-file-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.edit-diff-body {
+  margin-top: 6px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--overlay-0_02);
+}
+
+.edit-diff-path {
+  padding: 6px 10px;
+  font-size: 11px;
+  font-family: 'Fira Code', 'Menlo', monospace;
+  color: var(--text-dim);
+  background: var(--overlay-0_04);
+  border-bottom: 1px solid var(--border-color);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.edit-diff-table {
+  font-family: 'Fira Code', 'Menlo', monospace;
+  font-size: 12px;
+  overflow-x: auto;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.diff-row {
+  display: grid;
+  grid-template-columns: 3em 1fr 3em 1fr;
+  align-items: baseline;
+}
+
+.diff-lineno {
+  text-align: right;
+  padding: 0 6px;
+  color: var(--text-dim);
+  user-select: none;
+  font-size: 11px;
+  min-width: 2.5em;
+}
+
+.diff-linecontent {
+  padding: 0 8px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  min-width: 0;
+}
+
+.diff-row.diff-context .diff-linecontent {
+  color: var(--text-muted);
+}
+
+.diff-row.diff-add .diff-new-content {
+  background: rgba(34, 197, 94, 0.12);
+  color: #4ade80;
+}
+
+.diff-row.diff-del .diff-old-content {
+  background: rgba(239, 68, 68, 0.12);
+  color: #f87171;
+}
+
+.diff-row.diff-add .diff-old-content,
+.diff-row.diff-del .diff-new-content {
+  background: transparent;
+}
+
+/* ── Subagent Spawn Widget ────────────────────────────────────────── */
+.spawn-block {
+  /* inherits .step-block */
+}
+
+.spawn-label {
+  font-weight: 500;
+}
+
+.spawn-children {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-left: 20px;
+}
+
+/* ── Edit File label: highlighted filename + colored stats ────────── */
+.edit-file-name {
+  color: #d2a8ff;
+  font-weight: 600;
+  font-family: 'Fira Code', 'Menlo', monospace;
+}
+
+.edit-file-range {
+  color: var(--text-dim);
+  font-family: 'Fira Code', 'Menlo', monospace;
+  font-size: 11px;
+}
+
+.edit-file-stats {
+  font-family: 'Fira Code', 'Menlo', monospace;
+  font-size: 11px;
+}
+
+.edit-file-stats .stat-add {
+  color: #4ade80;
+  font-weight: 600;
+}
+
+.edit-file-stats .stat-del {
+  color: #f87171;
+  font-weight: 600;
+}
+
+/* ── Session processing spinner ───────────────────────────────────── */
+.session-processing-spinner {
+  color: var(--text-muted);
+  animation: session-spin 1s linear infinite;
+  flex-shrink: 0;
+  opacity: 1 !important;
+  margin-right: 4px;
+}
+
+@keyframes session-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Dialog Manager Styles */
+.dialog-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: var(--overlay-0_3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100000;
+  backdrop-filter: blur(2px);
+}
+
+.dialog-content {
+  background: var(--bg-main);
+  border: 1px solid var(--overlay-0_1);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  width: 100%;
+  max-width: 400px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.dialog-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.dialog-message {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.dialog-input {
+  background: var(--bg-user-msg);
+  border: 1px solid var(--overlay-0_1);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+  color: var(--text-main);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+}
+.dialog-input:focus {
+  border-color: var(--text-dim);
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.btn-cancel, .btn-confirm {
+  padding: 6px 14px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  transition: background 0.2s;
+}
+
+.btn-cancel {
+  background: transparent;
+  color: var(--text-dim);
+}
+.btn-cancel:hover {
+  background: var(--overlay-0_08);
+  color: var(--text-main);
+}
+
+.btn-allow {
+  background: var(--text-main);
+  color: var(--bg-main);
+}
+.btn-allow:hover {
+  opacity: 0.9;
+}
+
+.btn-deny {
+  background: #ef4444;
+  color: white;
+}
+.btn-deny:hover {
+  background: #dc2626;
+}
+
+/* AgentTurn.tsx Extracted Styles */
+.iteration-body {
+  margin-left: 6px;
+  padding-left: 12px;
+  border-left: 1px solid var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+  padding-bottom: 4px;
+}
+
+.step-label-bold {
+  font-weight: 500;
+}
+
+.tool-icon-margin {
+  margin-right: 5px;
+}
+
+.approval-badge-style {
+  font-size: 10px;
+  padding: 1px 6px;
+  font-weight: bold;
+}
+
+.approval-actions-style {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.spawn-block-children-style {
+  margin-left: 16px;
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.typing-dot-style {
+  display: inline-block;
+  margin-left: 4px;
+}
+
+.error-block-style {
+  color: #ef4444;
+  font-size: 13px;
+  padding: 10px 14px;
+  background: var(--danger-bg, rgba(239,68,68,0.06));
+  border: 1px solid var(--danger-border, rgba(239,68,68,0.2));
+  border-radius: 8px;
+  margin-top: 12px;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.step-row-pointer {
+  cursor: pointer;
+}
+
+.step-row-default {
+  cursor: default;
+}
+
+.tool-name-flex {
+  display: flex;
+  align-items: center;
+  flex: 1;
+}
+
+.tool-time-muted {
+  opacity: 0.5;
+  font-weight: normal;
+  margin-left: 4px;
+}
+
+.tool-controls-flex {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tool-no-output {
+  opacity: 0.5;
+  font-style: italic;
+  font-size: 12px;
+}
+
+.ml-4 {
+  margin-left: 4px;
+}
+
+.mt-4 {
+  margin-top: 4px;
+}
+
+.mt-0 {
+  margin-top: 0;
+}
+
+/* ── TodoPanel ──────────────────────────────────────────────────── */
+.todo-panel {
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.06));
+  background: var(--bg-secondary, rgba(255,255,255,0.02));
+  font-size: 13px;
+}
+
+.todo-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.todo-title {
+  font-weight: 600;
+  color: var(--text-primary, #e0e0e0);
+}
+
+.todo-progress-text {
+  font-size: 11px;
+  color: var(--text-secondary, #888);
+}
+
+.todo-progress-bar {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border-color, rgba(255,255,255,0.08));
+  margin-bottom: 6px;
+  overflow: hidden;
+}
+
+.todo-progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent-color, #6b8afd);
+  transition: width 0.3s ease;
+}
+
+.todo-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.todo-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  color: var(--text-primary, #e0e0e0);
+}
+
+.todo-item-completed .todo-desc {
+  text-decoration: line-through;
+  color: var(--text-secondary, #888);
+}
+
+.todo-item-in-progress .todo-desc {
+  color: var(--accent-color, #6b8afd);
+}
+
+.todo-item-blocked .todo-desc {
+  color: var(--danger-color, #e57373);
+}
+
+.todo-icon {
+  flex-shrink: 0;
+}
+
+.todo-icon-completed {
+  color: #4caf50;
+}
+
+.todo-icon-in-progress {
+  color: var(--accent-color, #6b8afd);
+  animation: spin 1.5s linear infinite;
+}
+
+.todo-icon-blocked {
+  color: var(--danger-color, #e57373);
+}
+
+.todo-icon-pending {
+  color: var(--text-secondary, #888);
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}

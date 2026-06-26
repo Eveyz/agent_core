@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import { invoke } from '@tauri-apps/api/core';
 import { RootState, AppDispatch } from '../../store';
 import { saveConfig } from '../../features/settings/settingsSlice';
+import { parseMarkdown } from '../chat/MarkdownContent';
 import DatabaseIcon from 'lucide-react/dist/esm/icons/database.mjs';
 import BrainIcon from 'lucide-react/dist/esm/icons/brain.mjs';
 import LayersIcon from 'lucide-react/dist/esm/icons/layers.mjs';
@@ -10,52 +11,53 @@ import TypeIcon from 'lucide-react/dist/esm/icons/type.mjs';
 import MergeIcon from 'lucide-react/dist/esm/icons/merge.mjs';
 import ZapIcon from 'lucide-react/dist/esm/icons/zap.mjs';
 import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
-
-interface MemoryBlock {
-  id: string;
-  label: string;
-  content: string;
-  max_chars: number;
-  updated_at: string;
-}
+import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
+import SearchIcon from 'lucide-react/dist/esm/icons/search.mjs';
+import StarIcon from 'lucide-react/dist/esm/icons/star.mjs';
+import ServerIcon from 'lucide-react/dist/esm/icons/server.mjs';
+import FileTextIcon from 'lucide-react/dist/esm/icons/file-text.mjs';
+import RefreshIcon from 'lucide-react/dist/esm/icons/refresh-cw.mjs';
 
 type MemoryMode = 'stateless' | 'standard' | 'deep';
 
 const MODE_DESCRIPTIONS: Record<MemoryMode, { label: string; desc: string }> = {
   stateless: {
     label: 'Stateless',
-    desc: 'No memory. Each conversation starts fresh. No recall, no agverse.md injection.',
+    desc: 'No memory. Each conversation starts fresh.',
   },
   standard: {
     label: 'Standard',
-    desc: 'Dual-track: core memory blocks + vector recall + project docs. Agent can proactively manage memory.',
+    desc: 'agverse.md core memory + vector recall tools.',
   },
   deep: {
     label: 'Deep',
-    desc: 'Standard + proactive recall guidance + background reflection readiness. Best for long-term complex projects.',
+    desc: 'Standard + background reflection daemon for auto fact extraction.',
   },
 };
 
 export default function MemoryTab() {
   const config = useSelector((state: RootState) => state.settings.config);
   const dispatch = useDispatch<AppDispatch>();
-  const [blocks, setBlocks] = useState<MemoryBlock[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [agverseContent, setAgverseContent] = useState<string>('');
+  const [loadingMd, setLoadingMd] = useState(true);
   const [switchingMode, setSwitchingMode] = useState(false);
 
-  useEffect(() => {
-    async function loadBlocks() {
-      try {
-        const data = await invoke<MemoryBlock[]>('get_memory_blocks');
-        setBlocks(data);
-      } catch (err) {
-        console.error('Failed to load memory blocks', err);
-      } finally {
-        setLoading(false);
-      }
+  const loadAgverseMd = useCallback(async () => {
+    setLoadingMd(true);
+    try {
+      const content = await invoke<string>('get_agverse_md');
+      setAgverseContent(content);
+    } catch (err) {
+      console.error('Failed to load agverse.md', err);
+      setAgverseContent('');
+    } finally {
+      setLoadingMd(false);
     }
-    loadBlocks();
   }, []);
+
+  useEffect(() => {
+    loadAgverseMd();
+  }, [loadAgverseMd]);
 
   if (!config) {
     return (
@@ -88,8 +90,7 @@ export default function MemoryTab() {
     };
     try {
       await dispatch(saveConfig(newConfig));
-      const data = await invoke<MemoryBlock[]>('get_memory_blocks');
-      setBlocks(data);
+      await loadAgverseMd();
     } catch (e) {
       console.error('Failed to enable memory', e);
     }
@@ -132,17 +133,6 @@ export default function MemoryTab() {
       console.error('Failed to set reflection model', e);
     }
   };
-
-  // Build list of available models from providers
-  const availableModels: { key: string; label: string }[] = [];
-  if (config) {
-    for (const [providerKey, provider] of Object.entries(config.providers)) {
-      for (const [modelKey, model] of Object.entries(provider.models)) {
-        const fullKey = `${providerKey}/${modelKey}`;
-        availableModels.push({ key: fullKey, label: `${fullKey} (${model.model_id})` });
-      }
-    }
-  }
 
   if (!memory) {
     return (
@@ -214,38 +204,11 @@ export default function MemoryTab() {
 
       {/* Reflection Model Selector (Deep mode only) */}
       {currentMode === 'deep' && (
-        <div className="settings-section" style={{ marginTop: '16px' }}>
-          <h3 className="settings-section-title">
-            <BrainIcon size={14} /> Reflection Model
-          </h3>
-          <p style={{ fontSize: '12px', marginTop: '8px', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
-            Select a model for background fact extraction. Every {memory.reflection?.trigger_message_count ?? 20} messages, the daemon will use this model to extract durable facts and store them in archival memory. Leave unselected to disable LLM reflection.
-          </p>
-          <select
-            value={memory.reflection?.reflection_model ?? ''}
-            onChange={(e) => handleReflectionModelChange(e.target.value)}
-            style={{
-              marginTop: '8px',
-              width: '100%',
-              padding: '8px 10px',
-              borderRadius: '6px',
-              border: '1px solid var(--border-color)',
-              background: 'var(--bg-tertiary)',
-              color: 'var(--text-primary)',
-              fontSize: '13px',
-            }}
-          >
-            <option value="">— Disabled (no LLM reflection) —</option>
-            {availableModels.map((m) => (
-              <option key={m.key} value={m.key}>{m.label}</option>
-            ))}
-          </select>
-          {memory.reflection?.reflection_model && (
-            <p style={{ fontSize: '11px', marginTop: '6px', opacity: 0.6, color: 'var(--text-secondary)' }}>
-              Restart required for changes to take effect.
-            </p>
-          )}
-        </div>
+        <ReflectionModelSelector
+          config={config}
+          currentModel={memory.reflection?.reflection_model ?? ''}
+          onChange={handleReflectionModelChange}
+        />
       )}
 
       <div className="settings-section" style={{ marginTop: '24px' }}>
@@ -298,48 +261,202 @@ export default function MemoryTab() {
         </div>
       </div>
 
+      {/* Core Memory (agverse.md) — live markdown view */}
       {currentMode !== 'stateless' && (
         <div className="settings-section" style={{ marginTop: '24px' }}>
-          <h3 className="settings-section-title">
-            <LayersIcon size={14} /> Core Memory Blocks
-          </h3>
-          {loading ? (
-            <div className="settings-empty" style={{ padding: '20px 0', fontSize: '13px' }}>Loading memory blocks...</div>
-          ) : blocks.length === 0 ? (
-            <div className="settings-empty" style={{ padding: '20px 0', fontSize: '13px' }}>No memory blocks found.</div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <h3 className="settings-section-title" style={{ marginBottom: 0 }}>
+              <FileTextIcon size={14} /> Core Memory (agverse.md)
+            </h3>
+            <button
+              onClick={loadAgverseMd}
+              disabled={loadingMd}
+              style={{
+                background: 'transparent',
+                border: '1px solid var(--border-color)',
+                borderRadius: '6px',
+                padding: '3px 8px',
+                cursor: loadingMd ? 'wait' : 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                fontSize: '11px',
+                color: 'var(--text-secondary)',
+              }}
+            >
+              <RefreshIcon size={12} className={loadingMd ? 'settings-spinner' : ''} />
+              Refresh
+            </button>
+          </div>
+          {loadingMd ? (
+            <div className="settings-empty" style={{ padding: '20px 0', fontSize: '13px' }}>Loading...</div>
+          ) : agverseContent ? (
+            <div
+              className="agverse-md-view assistant-msg"
+              style={{ fontSize: '12px', lineHeight: '1.5', padding: '8px 0' }}
+              dangerouslySetInnerHTML={parseMarkdown(agverseContent)}
+            />
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '12px' }}>
-              {blocks.map(block => (
-                <div key={block.id} style={{ 
-                  background: 'var(--bg-tertiary)', 
-                  border: '1px solid var(--border-color)', 
-                  borderRadius: '8px', 
-                  padding: '12px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '8px'
-                }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div style={{ fontWeight: 500, fontSize: '13px', color: 'var(--text-primary)' }}>
-                      {block.label} <span style={{ opacity: 0.5, fontSize: '11px', marginLeft: '4px' }}>({block.id})</span>
-                    </div>
-                    <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>
-                      {new Date(block.updated_at).toLocaleString()}
-                    </div>
-                  </div>
-                  <div style={{ 
-                    fontSize: '13px', 
-                    color: 'var(--text-secondary)',
-                    whiteSpace: 'pre-wrap',
-                    lineHeight: '1.4'
-                  }}>
-                    {block.content || <span style={{ opacity: 0.5, fontStyle: 'italic' }}>Empty</span>}
-                  </div>
-                </div>
-              ))}
+            <div className="settings-empty" style={{ padding: '20px 0', fontSize: '13px' }}>
+              agverse.md not found. It will be created on first conversation.
             </div>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+// ── Reflection Model Dropdown (reuses model-selector CSS) ────────────
+
+function ReflectionModelSelector({
+  config,
+  currentModel,
+  onChange,
+}: {
+  config: NonNullable<ReturnType<typeof useSelector<RootState, any>>>;
+  currentModel: string;
+  onChange: (key: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState('');
+  const dropdownRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setSearch('');
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  useEffect(() => {
+    if (open && searchInputRef.current) {
+      searchInputRef.current.focus();
+    }
+  }, [open]);
+
+  const groupedModels = useMemo(() => {
+    const map = new Map<string, { key: string; displayName: string }[]>();
+    if (!config) return map;
+    Object.entries(config.providers).forEach(([providerKey, provider]: [string, any]) => {
+      const items: { key: string; displayName: string }[] = [];
+      Object.entries(provider.models).forEach(([modelKey]: [string, any]) => {
+        items.push({
+          key: `${providerKey}/${modelKey}`,
+          displayName: modelKey,
+        });
+      });
+      if (items.length > 0) {
+        map.set(provider.name || providerKey, items);
+      }
+    });
+    return map;
+  }, [config]);
+
+  const filteredGroups = useMemo(() => {
+    if (!search.trim()) return groupedModels;
+    const q = search.toLowerCase();
+    const result = new Map<string, { key: string; displayName: string }[]>();
+    groupedModels.forEach((models, provider) => {
+      const matched = models.filter((m) => m.displayName.toLowerCase().includes(q));
+      if (matched.length > 0) result.set(provider, matched);
+    });
+    return result;
+  }, [groupedModels, search]);
+
+  const handleSelect = useCallback((key: string) => {
+    setOpen(false);
+    setSearch('');
+    onChange(key);
+  }, [onChange]);
+
+  const currentDisplay = currentModel
+    ? currentModel.includes('/')
+      ? currentModel.slice(currentModel.lastIndexOf('/') + 1)
+      : currentModel
+    : 'Disabled';
+
+  return (
+    <div className="settings-section" style={{ marginTop: '16px' }}>
+      <h3 className="settings-section-title">
+        <BrainIcon size={14} /> Reflection Model
+      </h3>
+      <p style={{ fontSize: '12px', marginTop: '8px', color: 'var(--text-secondary)', lineHeight: '1.4' }}>
+        Background daemon extracts durable facts and writes them to agverse.md. Leave unselected to disable.
+      </p>
+
+      <div ref={dropdownRef} className="model-selector-wrapper" style={{ marginTop: '8px', position: 'relative' }}>
+        <button
+          className="model-selector"
+          onClick={() => setOpen(!open)}
+          style={{ width: '100%', justifyContent: 'space-between', padding: '6px 10px' }}
+        >
+          <span className="model-selector-text">
+            {currentModel ? (
+              <span className="model-selector-name">{currentDisplay}</span>
+            ) : (
+              <span style={{ color: 'var(--text-dim)' }}>— Disabled —</span>
+            )}
+          </span>
+          <ChevronDownIcon size={12} className={`model-selector-chevron ${open ? 'open' : ''}`} />
+        </button>
+
+        {open && (
+          <div className="model-dropdown" style={{ bottom: 'auto', top: 'calc(100% + 6px)', width: '100%' }}>
+            <div className="model-dropdown-search">
+              <SearchIcon size={14} />
+              <input
+                ref={searchInputRef}
+                className="model-dropdown-search-input"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search models..."
+              />
+            </div>
+
+            <div className="model-dropdown-list">
+              {/* Disabled option */}
+              <button
+                className={`model-dropdown-item ${!currentModel ? 'selected' : ''}`}
+                onClick={() => handleSelect('')}
+              >
+                <span className="model-dropdown-item-key" style={{ color: 'var(--text-dim)' }}>— Disabled —</span>
+                {!currentModel && <StarIcon size={12} className="model-dropdown-item-star" />}
+              </button>
+
+              {Array.from(filteredGroups.entries()).map(([provider, models]) => (
+                <div key={provider} className="model-dropdown-group">
+                  <div className="model-dropdown-group-header">
+                    <ServerIcon size={12} />
+                    <span>{provider}</span>
+                  </div>
+                  {models.map((model) => (
+                    <button
+                      key={model.key}
+                      className={`model-dropdown-item ${model.key === currentModel ? 'selected' : ''}`}
+                      onClick={() => handleSelect(model.key)}
+                    >
+                      <span className="model-dropdown-item-key">{model.displayName}</span>
+                      {model.key === currentModel && <StarIcon size={12} className="model-dropdown-item-star" />}
+                    </button>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {currentModel && (
+        <p style={{ fontSize: '11px', marginTop: '6px', opacity: 0.6, color: 'var(--text-secondary)' }}>
+          Restart required for changes to take effect.
+        </p>
       )}
     </div>
   );

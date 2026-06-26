@@ -1,0 +1,330 @@
+/* Layout */
+.app-container {
+  display: flex;
+  width: 100%;
+  height: 100%;
+}
+
+/* Sidebar */
+.sidebar {
+  width: 260px;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.mac-controls {
+  display: flex;
+  gap: 8px;
+  padding: 16px;
+}
+
+.mac-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+.mac-dot.red { background: #FF5F56; }
+.mac-dot.yellow { background: #FFBD2E; }
+.mac-dot.green { background: #27C93F; }
+
+.sidebar-header-actions {
+  padding: 0 16px 16px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.icon-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border-radius: 4px;
+}
+.icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-main);
+}
+
+.toggle-group {
+  margin: 0 16px 16px;
+  display: flex;
+  background: var(--bg-main);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.toggle-btn {
+  flex: 1;
+  background: transparent;
+  border: none;
+  padding: 6px 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.toggle-btn.active {
+  background: var(--bg-hover);
+  color: var(--text-main);
+}
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  padding: 0 8px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  color: var(--text-main);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 13px;
+}
+.nav-item:hover {
+  background: var(--bg-hover);
+}
+.nav-item svg {
+  color: var(--text-muted);
+}
+
+.projects-header {
+  padding: 24px 16px 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  display: flex;
+  justify-content: space-between;
+}
+
+/* ── Projects & Sessions (Cursor-style) ─────────────────────────── */
+
+.projects-section {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.projects-section .projects-header {
+  padding: 8px 16px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  user-select: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.projects-list {
+  overflow-y: auto;
+  flex: 1;
+  padding-bottom: 8px;
+}
+
+.project-group {
+  /* container for a project + its sessions */
+}
+
+/* Project row: [chevron] [folder icon] name                    [menu] */
+.sidebar-project-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 12px;
+  cursor: pointer;
+  user-select: none;
+  border-radius: var(--radius-sm);
+  margin: 1px 6px;
+}
+.sidebar-project-row:hover {
+  background: var(--overlay-0_06);
+}
+
+.sidebar-row-content {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-chevron {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+}
+
+.sidebar-row-text {
+  font-size: 13px;
+  color: var(--text-main);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-row-actions {
+  display: flex;
+  align-items: center;
+  opacity: 0;
+  transition: opacity 0.15s;
+  flex-shrink: 0;
+  margin-left: 4px;
+}
+.sidebar-project-row:hover .sidebar-row-actions {
+  opacity: 1;
+}
+
+.sidebar-context-trigger {
+  background: none;
+  border: none;
+  padding: 2px 3px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.sidebar-context-trigger:hover {
+  background: var(--overlay-0_08);
+  color: var(--text-main);
+}
+
+/* Session list (inside expanded project) */
+.session-list-container {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.2s ease-out;
+}
+.session-list-container.expanded {
+  grid-template-rows: 1fr;
+}
+.session-list {
+  overflow: hidden;
+  /* minimal indent to show hierarchy */
+}
+
+/* New session row */
+.session-row {
+  display: flex;
+  align-items: center;
+  padding: 3px 12px 3px 39px;
+  cursor: pointer;
+  user-select: none;
+  border-radius: 4px;
+  margin: 1px 6px;
+  font-size: 13px;
+  color: var(--text-dim);
+  transition: background 0.1s;
+}
+.session-row:hover {
+  background: var(--overlay-0_06);
+  color: var(--text-main);
+}
+
+.session-new-icon {
+  font-size: 16px;
+  font-weight: 300;
+  margin-right: 4px;
+  line-height: 1;
+  color: var(--text-muted);
+}
+
+.session-row-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.session-row .session-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  flex-shrink: 0;
+}
+.session-row:hover .session-row-actions {
+  opacity: 1;
+}
+.session-delete-btn {
+  color: var(--text-muted);
+}
+.session-delete-btn:hover {
+  color: #ef4444;
+}
+
+/* Active session — gray background, no left border, full width */
+.session-row-active {
+  background: var(--overlay-0_09) !important;
+  color: var(--text-main) !important;
+}
+
+/* ── Context Menu ───────────────────────────────────────────────── */
+
+.context-menu {
+  position: fixed;
+  z-index: 10000;
+  background: var(--bg-main);
+  border: 1px solid var(--overlay-0_1);
+  border-radius: var(--radius-md);
+  padding: 4px;
+  min-width: 160px;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.02), 0 4px 8px -4px rgba(0, 0, 0, 0.04), 0 16px 24px -8px rgba(0, 0, 0, 0.06);
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  font-size: 12px;
+  color: var(--text-main);
+  cursor: pointer;
+  border-radius: 4px;
+}
+.context-menu-item:hover {
+  background: var(--overlay-0_08);
+}
+
+.context-menu-separator {
+  height: 1px;
+  background: var(--overlay-0_06);
+  margin: 3px 6px;
+}
+
+.context-menu-danger {
+  color: #f87171;
+}
+.context-menu-danger:hover {
+  background: rgba(248, 113, 113, 0.1);
+}
+
+.sidebar-bottom {
+  margin-top: auto;
+  padding: 16px 8px;
+}
+

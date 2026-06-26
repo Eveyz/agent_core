@@ -25,7 +25,7 @@ use crate::skills::SkillManager;
 use crate::tools::{ToolRegistry, ToolUpdateFn};
 use crate::trace::TraceCollector;
 use crate::types::{
-    AgentEvent, AgentState, Message, MessageDelta, Role, StreamEvent, ToolCall, ToolExecutionMode,
+    AgentEvent, AgentState, Message, MessageDelta, StreamEvent, ToolCall, ToolExecutionMode,
     ToolResultRecord,
 };
 
@@ -304,15 +304,7 @@ impl AgentBuilder {
         let tool_catalog = Context::build_tool_catalog_string(&tool_defs, &danger_map);
         context.set_tool_catalog(&tool_catalog);
 
-        // Segment 5: ACTIVE MEMORY
-        if let Some(ref mem) = memory
-            && let m = mem.lock()
-        {
-            let core_memory_str = m.core().to_context_string();
-            if !core_memory_str.is_empty() {
-                context.set_active_memory(&core_memory_str);
-            }
-        }
+        // Segment 5: ACTIVE MEMORY — managed per-turn in refresh_context_segments
 
         // Segment 6: LOADED SKILLS — catalog of available skills
         if let Some(ref mgr) = self.skill_manager {
@@ -655,7 +647,6 @@ impl Agent {
 
             if let Some(mem) = self.memory.clone() {
                 mem.lock().store_conversation("assistant", &text);
-                self.refresh_core_memory_in_context();
                 self.maybe_consolidate();
             }
 
@@ -1004,15 +995,6 @@ impl Agent {
         Ok((text_buffer, tool_calls, message_id))
     }
 
-    fn refresh_core_memory_in_context(&mut self) {
-        if let Some(ref mem) = self.memory
-            && let m = mem.lock()
-        {
-            let core_str = m.core().to_context_string();
-            self.context.set_active_memory(&core_str);
-        }
-    }
-
     /// Refresh per-turn context segments: environment, tool catalog,
     /// active memory, and execution plan.
     fn refresh_context_segments(&mut self) {
@@ -1029,34 +1011,26 @@ impl Agent {
         let tool_catalog = Context::build_tool_catalog_string(&tool_defs, &danger_map);
         self.context.set_tool_catalog(&tool_catalog);
 
-        // Segment 5: ACTIVE MEMORY — core memory + recall search
-        if let Some(ref mem) = self.memory
-            && let m = mem.lock()
+        // Segment 5: ACTIVE MEMORY — agverse.md is the sole core memory.
+        // Recall is tool-only (conversation_search), not auto-injected.
         {
-            let mut mem_str = m.core().to_context_string();
+            let mode = self.config.memory.as_ref()
+                .map(|m| crate::config::MemoryMode::from_str(&m.mode))
+                .unwrap_or_default();
+            let mode_prompt = crate::prompt::memory_mode_prompt(&mode);
+            let mut mem_str = mode_prompt.to_string();
 
-            // Recall search: find relevant past conversations
-            if let Some(last_user) = self.context.raw_messages().iter().rev()
-                .find(|msg| msg.role == Role::User)
-                .and_then(|msg| msg.content.as_deref())
-            {
-                if let Ok(results) = m.search_conversation(last_user, 3) {
-                    if !results.is_empty() {
-                        let recall_str: String = results.iter()
-                            .map(|r| format!("  • [{}] {}", r.role, r.content.chars().take(200).collect::<String>()))
-                            .collect::<Vec<_>>()
-                            .join("\n");
-                        if !mem_str.is_empty() {
-                            mem_str.push('\n');
-                        }
-                        mem_str.push_str(&format!("Recall:\n{}", recall_str));
+            if mode != crate::config::MemoryMode::Stateless {
+                let global_path = crate::paths::get_global_agverse_md_path();
+                if let Ok(content) = std::fs::read_to_string(&global_path) {
+                    if !mem_str.is_empty() {
+                        mem_str.push_str("\n\n");
                     }
+                    mem_str.push_str(&format!("Project Instructions:\n## Global Project\n{content}"));
                 }
             }
 
-            if !mem_str.is_empty() {
-                self.context.set_active_memory(&mem_str);
-            }
+            self.context.set_active_memory(&mem_str);
         }
 
         // Segment 7: EXECUTION PLAN — inject current todo list

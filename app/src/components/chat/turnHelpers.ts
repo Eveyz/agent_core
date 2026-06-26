@@ -102,9 +102,9 @@ export function parseUnifiedDiff(diffStr: string): DiffRow[] {
 
   for (const line of lines) {
     if (line.startsWith('@@')) {
-      const m = line.match(/@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+      const m = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
       if (m) {
-        oldLine = parseInt(m[1] ? line.match(/@@ -(\d+)/)![1] : '0', 10);
+        oldLine = parseInt(m[1], 10);
         newLine = parseInt(m[2], 10);
       }
       inHunk = true;

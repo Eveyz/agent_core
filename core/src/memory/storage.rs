@@ -146,6 +146,39 @@ impl Storage {
             ",
         )?;
 
+        // FTS5 full-text search indexes + triggers for automatic sync
+        db.execute_batch(
+            "
+            CREATE VIRTUAL TABLE IF NOT EXISTS recall_memory_fts USING fts5(content, tokenize='unicode61');
+            CREATE VIRTUAL TABLE IF NOT EXISTS archival_memory_fts USING fts5(content, tokenize='unicode61');
+
+            CREATE TRIGGER IF NOT EXISTS recall_fts_ai AFTER INSERT ON recall_memory BEGIN
+                INSERT INTO recall_memory_fts(rowid, content) VALUES (new.rowid, new.content);
+            END;
+            CREATE TRIGGER IF NOT EXISTS recall_fts_ad AFTER DELETE ON recall_memory BEGIN
+                DELETE FROM recall_memory_fts WHERE rowid = old.rowid;
+            END;
+            CREATE TRIGGER IF NOT EXISTS recall_fts_au AFTER UPDATE ON recall_memory BEGIN
+                DELETE FROM recall_memory_fts WHERE rowid = old.rowid;
+                INSERT INTO recall_memory_fts(rowid, content) VALUES (new.rowid, new.content);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS archival_fts_ai AFTER INSERT ON archival_memory BEGIN
+                INSERT INTO archival_memory_fts(rowid, content) VALUES (new.rowid, new.content);
+            END;
+            CREATE TRIGGER IF NOT EXISTS archival_fts_ad AFTER DELETE ON archival_memory BEGIN
+                DELETE FROM archival_memory_fts WHERE rowid = old.rowid;
+            END;
+            CREATE TRIGGER IF NOT EXISTS archival_fts_au AFTER UPDATE ON archival_memory BEGIN
+                DELETE FROM archival_memory_fts WHERE rowid = old.rowid;
+                INSERT INTO archival_memory_fts(rowid, content) VALUES (new.rowid, new.content);
+            END;
+
+            INSERT OR IGNORE INTO recall_memory_fts(rowid, content) SELECT rowid, content FROM recall_memory;
+            INSERT OR IGNORE INTO archival_memory_fts(rowid, content) SELECT rowid, content FROM archival_memory;
+            ",
+        )?;
+
         // Migrate existing databases: add columns if missing (idempotent)
         let migrations = &[
             "ALTER TABLE recall_memory ADD COLUMN memory_strength REAL DEFAULT 1.0",

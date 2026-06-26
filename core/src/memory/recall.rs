@@ -115,47 +115,126 @@ impl RecallMemory {
     pub fn search(&self, query: &str, top_k: usize) -> Result<Vec<RecallRecord>> {
         if let Some(ref model) = self.embedding_model {
             let query_embedding = model.embed_single(query)?;
-            self.search_by_vector(&query_embedding, top_k)
+            self.search_by_vector(&query_embedding, query, top_k)
         } else {
             self.search_by_keyword(query, top_k)
         }
     }
 
+    /// Build an FTS5 MATCH query string from user input.
+    /// Returns None if no usable terms remain after filtering.
+    fn build_fts_query(text: &str) -> Option<String> {
+        let terms: Vec<String> = text
+            .split_whitespace()
+            .filter(|s| s.chars().count() >= 2)
+            .map(|s| {
+                s.chars()
+                    .filter(|c| c.is_alphanumeric() || !c.is_ascii())
+                    .collect::<String>()
+            })
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        if terms.is_empty() {
+            return None;
+        }
+
+        Some(
+            terms
+                .iter()
+                .map(|t| format!("{t}*"))
+                .collect::<Vec<_>>()
+                .join(" OR "),
+        )
+    }
+
+    /// Collect candidate IDs from FTS5 keyword match + recent records.
+    /// Returns a Vec of record IDs to score.
+    fn collect_candidates(
+        db: &rusqlite::Connection,
+        query_text: &str,
+        fts_limit: usize,
+        recent_limit: usize,
+    ) -> Vec<i64> {
+        let mut candidates = std::collections::HashSet::new();
+
+        // Source 1: FTS5 keyword match
+        if let Some(fts_query) = Self::build_fts_query(query_text) {
+            if let Ok(mut stmt) = db.prepare_cached(
+                "SELECT rowid FROM recall_memory_fts WHERE recall_memory_fts MATCH ?1 LIMIT ?2",
+            ) {
+                if let Ok(rows) =
+                    stmt.query_map(rusqlite::params![fts_query, fts_limit as i64], |row| {
+                        row.get::<_, i64>(0)
+                    })
+                {
+                    for row in rows.flatten() {
+                        candidates.insert(row);
+                    }
+                }
+            }
+        }
+
+        // Source 2: Most recent records (always include for recency-based recall)
+        if let Ok(mut stmt) =
+            db.prepare_cached("SELECT rowid FROM recall_memory ORDER BY created_at DESC LIMIT ?1")
+        {
+            if let Ok(rows) =
+                stmt.query_map(rusqlite::params![recent_limit as i64], |row| {
+                    row.get::<_, i64>(0)
+                })
+            {
+                for row in rows.flatten() {
+                    candidates.insert(row);
+                }
+            }
+        }
+
+        candidates.into_iter().collect()
+    }
+
     /// Keyword-based search fallback (no embedding model).
-    /// Uses SQLite LIKE to find records containing query terms.
+    /// Uses FTS5 full-text search instead of LIKE for better performance.
     fn search_by_keyword(&self, query: &str, top_k: usize) -> Result<Vec<RecallRecord>> {
         let db = self.storage.conn();
+
+        // Try FTS5 first
+        if let Some(fts_query) = Self::build_fts_query(query) {
+            let mut stmt = db.prepare_cached(
+                "SELECT r.id, r.session_id, r.role, r.content, r.embedding, r.importance, \
+                 COALESCE(r.memory_strength, 1.0), COALESCE(r.access_count, 0), \
+                 r.last_accessed_at, COALESCE(r.category, 'Conversation'), r.created_at \
+                 FROM recall_memory_fts f \
+                 JOIN recall_memory r ON r.rowid = f.rowid \
+                 WHERE recall_memory_fts MATCH ?1 \
+                 ORDER BY rank LIMIT ?2",
+            )?;
+
+            let rows = stmt.query_map(rusqlite::params![fts_query, top_k as i64], |row| {
+                Self::parse_recall_row(row)
+            })?;
+
+            let mut results = Vec::new();
+            for row in rows {
+                results.push(row?);
+            }
+            if !results.is_empty() {
+                return Ok(results);
+            }
+        }
+
+        // Fallback: LIKE search
         let pattern = format!("%{}%", query);
-        let mut stmt = db
-            .prepare(
-                "SELECT id, session_id, role, content, embedding, importance, \
-                 COALESCE(memory_strength, 1.0), \
-                 COALESCE(access_count, 0), \
-                 last_accessed_at, \
-                 COALESCE(category, 'Conversation'), \
-                 created_at \
-                 FROM recall_memory \
-                 WHERE content LIKE ?1 \
-                 ORDER BY created_at DESC LIMIT ?2",
-            )
-            .context("failed to prepare keyword search query")?;
+        let mut stmt = db.prepare_cached(
+            "SELECT id, session_id, role, content, embedding, importance, \
+             COALESCE(memory_strength, 1.0), COALESCE(access_count, 0), \
+             last_accessed_at, COALESCE(category, 'Conversation'), created_at \
+             FROM recall_memory WHERE content LIKE ?1 \
+             ORDER BY created_at DESC LIMIT ?2",
+        )?;
 
         let rows = stmt.query_map(rusqlite::params![pattern, top_k as i64], |row| {
-            let embedding_bytes: Vec<u8> = row.get(4)?;
-            let category_str: String = row.get(9)?;
-            Ok(RecallRecord {
-                id: row.get(0)?,
-                session_id: row.get(1)?,
-                role: row.get(2)?,
-                content: row.get(3)?,
-                embedding: bytes_to_embedding(&embedding_bytes),
-                importance: row.get(5)?,
-                memory_strength: row.get(6)?,
-                access_count: row.get(7)?,
-                last_accessed_at: row.get(8)?,
-                category: MemoryCategory::from_str(&category_str),
-                created_at: row.get(10)?,
-            })
+            Self::parse_recall_row(row)
         })?;
 
         let mut results = Vec::new();
@@ -165,60 +244,79 @@ impl RecallMemory {
         Ok(results)
     }
 
+    /// Parse a row into a RecallRecord.
+    fn parse_recall_row(row: &rusqlite::Row) -> rusqlite::Result<RecallRecord> {
+        let embedding_bytes: Vec<u8> = row.get(4)?;
+        let category_str: String = row.get(9)?;
+        Ok(RecallRecord {
+            id: row.get(0)?,
+            session_id: row.get(1)?,
+            role: row.get(2)?,
+            content: row.get(3)?,
+            embedding: bytes_to_embedding(&embedding_bytes),
+            importance: row.get(5)?,
+            memory_strength: row.get(6)?,
+            access_count: row.get(7)?,
+            last_accessed_at: row.get(8)?,
+            category: MemoryCategory::from_str(&category_str),
+            created_at: row.get(10)?,
+        })
+    }
+
     /// Search by query embedding vector.
+    /// Uses FTS5 pre-filtering to reduce candidate set from 1000 to ~150.
     pub fn search_by_vector(
         &self,
         query_embedding: &[f32],
+        query_text: &str,
         top_k: usize,
     ) -> Result<Vec<RecallRecord>> {
         let db = self.storage.conn();
-        let mut stmt = db
-            .prepare(
-                "SELECT id, session_id, role, content, embedding, importance, \
-                 COALESCE(memory_strength, 1.0), \
-                 COALESCE(access_count, 0), \
-                 last_accessed_at, \
-                 COALESCE(category, 'Conversation'), \
-                 created_at \
-                 FROM recall_memory ORDER BY created_at DESC LIMIT 1000",
-            )
-            .context("failed to prepare recall search query")?;
+
+        // Phase 1: Collect candidates via FTS5 + recent records
+        let rowids = Self::collect_candidates(&db, query_text, 50, 100);
+
+        if rowids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Phase 2: Load full records for candidates
+        let placeholders = rowids
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let sql = format!(
+            "SELECT id, session_id, role, content, embedding, importance, \
+             COALESCE(memory_strength, 1.0), COALESCE(access_count, 0), \
+             last_accessed_at, COALESCE(category, 'Conversation'), created_at \
+             FROM recall_memory WHERE rowid IN ({})",
+            placeholders
+        );
+
+        let params: Vec<&dyn rusqlite::ToSql> = rowids
+            .iter()
+            .map(|r| r as &dyn rusqlite::ToSql)
+            .collect();
+
+        let mut stmt = db.prepare(&sql)?;
+        let rows = stmt.query_map(params.as_slice(), |row| Self::parse_recall_row(row))?;
 
         let now = Utc::now();
         let mut scored: Vec<(f32, RecallRecord)> = Vec::new();
 
-        let rows = stmt.query_map([], |row| {
-            let embedding_bytes: Vec<u8> = row.get(4)?;
-            let embedding = bytes_to_embedding(&embedding_bytes);
-            let category_str: String = row.get(9)?;
-            Ok(RecallRecord {
-                id: row.get(0)?,
-                session_id: row.get(1)?,
-                role: row.get(2)?,
-                content: row.get(3)?,
-                embedding,
-                importance: row.get(5)?,
-                memory_strength: row.get(6)?,
-                access_count: row.get(7)?,
-                last_accessed_at: row.get(8)?,
-                category: MemoryCategory::from_str(&category_str),
-                created_at: row.get(10)?,
-            })
-        })?;
-
         for row in rows {
             let record = row?;
 
-            // Semantic similarity
             let semantic = cosine_similarity(query_embedding, &record.embedding);
 
-            // Hours since creation
             let hours_since = chrono::DateTime::parse_from_rfc3339(&record.created_at)
                 .ok()
                 .map(|dt| (now - dt.with_timezone(&Utc)).num_hours().max(0) as f32)
                 .unwrap_or(0.0);
 
-            // Combined salience score
             let score = self.scorer.retrieval_score(
                 semantic,
                 hours_since,
@@ -230,7 +328,6 @@ impl RecallMemory {
             scored.push((score, record));
         }
 
-        // Sort by score descending
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(top_k);
 
@@ -240,6 +337,7 @@ impl RecallMemory {
     // ── Scored search (returns breakdown) ───────────────────────────
 
     /// Search and return scored records with score breakdown.
+    /// Uses FTS5 pre-filtering to reduce candidate set.
     pub fn search_scored(
         &self,
         query: &str,
@@ -250,20 +348,41 @@ impl RecallMemory {
         let query_embedding = model.embed_single(query)?;
 
         let db = self.storage.conn();
-        let mut stmt = db
-            .prepare(
-                "SELECT id, content, embedding, importance, \
-                 COALESCE(memory_strength, 1.0), \
-                 COALESCE(category, 'Conversation'), \
-                 created_at \
-                 FROM recall_memory ORDER BY created_at DESC LIMIT 1000",
-            )
-            .context("failed to prepare scored search")?;
 
+        // Phase 1: Collect candidates via FTS5 + recent records
+        let rowids = Self::collect_candidates(&db, query, 50, 100);
+
+        if rowids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Phase 2: Load and score candidates
+        let placeholders = rowids
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let sql = format!(
+            "SELECT id, content, embedding, importance, \
+             COALESCE(memory_strength, 1.0), \
+             COALESCE(category, 'Conversation'), \
+             created_at \
+             FROM recall_memory WHERE rowid IN ({})",
+            placeholders
+        );
+
+        let params: Vec<&dyn rusqlite::ToSql> = rowids
+            .iter()
+            .map(|r| r as &dyn rusqlite::ToSql)
+            .collect();
+
+        let mut stmt = db.prepare(&sql)?;
         let now = Utc::now();
         let mut scored: Vec<(f32, super::salience::ScoredRecord)> = Vec::new();
 
-        let rows = stmt.query_map([], |row| {
+        let rows = stmt.query_map(params.as_slice(), |row| {
             let embedding_bytes: Vec<u8> = row.get(2)?;
             Ok((
                 row.get::<_, String>(0)?,
@@ -344,9 +463,29 @@ impl RecallMemory {
     }
 
     /// Bump strength for multiple records (e.g., top-K search results).
+    /// Holds a single lock for the entire batch.
     pub fn bump_strength_batch(&self, ids: &[&str]) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let now = Utc::now().to_rfc3339();
+        let db = self.storage.conn();
+
         for id in ids {
-            let _ = self.bump_strength(id);
+            let current_strength: f32 = db
+                .query_row(
+                    "SELECT COALESCE(memory_strength, 1.0) FROM recall_memory WHERE id = ?1",
+                    rusqlite::params![id],
+                    |row| row.get(0),
+                )
+                .unwrap_or(1.0);
+
+            let new_strength = self.scorer.bump_strength(current_strength);
+
+            let _ = db.execute(
+                "UPDATE recall_memory SET memory_strength = ?1, access_count = access_count + 1, last_accessed_at = ?2 WHERE id = ?3",
+                rusqlite::params![new_strength, now, id],
+            );
         }
         Ok(())
     }

@@ -1,0 +1,184 @@
+/* Subagent Cards */
+.subagents-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.subagent-card {
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--overlay-0_02);
+  overflow: hidden;
+  transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.subagent-card:hover {
+  border-color: rgba(160, 216, 255, 0.3);
+  box-shadow: 0 0 15px rgba(160, 216, 255, 0.1), inset 0 0 10px rgba(160, 216, 255, 0.05);
+}
+
+.subagent-card.subagent-working {
+  border-color: rgba(250, 204, 21, 0.25);
+}
+
+.subagent-card.subagent-working:hover {
+  border-color: rgba(250, 204, 21, 0.4);
+  box-shadow: 0 0 15px rgba(250, 204, 21, 0.1), inset 0 0 10px rgba(250, 204, 21, 0.05);
+}
+
+.subagent-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.subagent-header:hover {
+  background: var(--overlay-0_03);
+}
+
+.subagent-id {
+  color: #d2a8ff;
+  font-weight: 600;
+  font-family: 'Fira Code', 'Menlo', monospace;
+}
+
+.subagent-badge-pending {
+  background: rgba(249, 115, 22, 0.15);
+  color: #fb923c;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  border: 1px solid rgba(249, 115, 22, 0.3);
+  text-transform: uppercase;
+  margin-left: 6px;
+  animation: pulse-orange 2s infinite;
+}
+
+@keyframes pulse-orange {
+  0% { box-shadow: 0 0 0 0 rgba(249, 115, 22, 0.4); }
+  70% { box-shadow: 0 0 0 4px rgba(249, 115, 22, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(249, 115, 22, 0); }
+}
+
+.subagent-card.subagent-needs-approval {
+  border-color: rgba(249, 115, 22, 0.4);
+  box-shadow: 0 0 10px rgba(249, 115, 22, 0.1);
+}
+
+.subagent-status {
+  color: var(--text-dim);
+  margin-left: auto;
+  font-size: 11px;
+}
+
+.subagent-body {
+  padding: 0 12px 10px;
+  border-top: 1px solid var(--overlay-0_04);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 250px;
+  overflow-y: auto;
+}
+
+.subagent-body::-webkit-scrollbar { width: 4px; }
+.subagent-body::-webkit-scrollbar-thumb { background: var(--overlay-0_1); border-radius: 2px; }
+
+.subagent-task {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding-top: 6px;
+  font-style: italic;
+}
+
+.subagent-body .thinking-toggle {
+  font-size: 11px;
+  padding: 3px 8px;
+}
+
+.subagent-body .thinking-block {
+  font-size: 12.5px;
+}
+
+.subagent-body .tool-result-block {
+  font-size: 11px;
+}
+
+.subagent-body .assistant-msg {
+  font-size: 13px;
+}
+
+/* Black hole spinner */
+.black-hole-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--spinner-core);
+  position: relative;
+  flex-shrink: 0;
+}
+.black-hole-spinner::before {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0%,
+    var(--spinner-corona-1) 25%,
+    var(--spinner-corona-2) 50%,
+    transparent 75%,
+    transparent 100%
+  );
+  animation: accretion-spin 1.2s linear infinite;
+  mask: radial-gradient(circle, transparent 55%, black 56%);
+  -webkit-mask: radial-gradient(circle, transparent 55%, black 56%);
+}
+.black-hole-spinner::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 180deg,
+    transparent 0%,
+    var(--spinner-corona-3) 30%,
+    transparent 60%
+  );
+  animation: accretion-spin 2s linear infinite reverse;
+  mask: radial-gradient(circle, transparent 60%, black 61%);
+  -webkit-mask: radial-gradient(circle, transparent 60%, black 61%);
+}
+@keyframes accretion-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Light wave shimmer text */
+.light-wave-text {
+  background: linear-gradient(
+    90deg,
+    #666 0%,
+    #999 25%,
+    #e8e8ec 50%,
+    #999 75%,
+    #666 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: light-wave 2.5s linear infinite;
+}
+@keyframes light-wave {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+

@@ -173,14 +173,9 @@ impl Run {
         context.set_tool_catalog(&tool_catalog);
 
         // Segment 5: ACTIVE MEMORY
-        if let Some(ref mem) = brain.memory {
-            let m = mem.lock();
-            let core_str = m.core().to_context_string();
-            if !core_str.is_empty() {
-                context.set_active_memory(&core_str);
-            }
-        } else {
-            // Stateless mode: inject the stateless prompt
+        // agverse.md is loaded per-turn in refresh_context_segments.
+        // In Stateless mode, inject the stateless prompt.
+        {
             let mode = brain.memory_mode();
             if mode == crate::config::MemoryMode::Stateless {
                 context.set_active_memory(crate::prompt::memory_mode_prompt(&mode));
@@ -1073,32 +1068,6 @@ impl Run {
                 mem_str.push_str(&format!("Project Instructions:\n{}\n\n", parts.join("\n\n")));
             }
 
-            // Core memory + recall search (if memory system is enabled)
-            if let Some(ref mem) = self.brain.memory {
-                let m = mem.lock();
-                let core_str = m.core().to_context_string();
-                if !core_str.is_empty() {
-                    mem_str.push_str(&core_str);
-                    mem_str.push('\n');
-                }
-
-                // Recall search: find relevant past conversations (with score threshold)
-                if let Some(last_user) = self.context.raw_messages().iter().rev()
-                    .find(|msg| msg.role == Role::User)
-                    .and_then(|msg| msg.content.as_deref())
-                {
-                    if let Ok(results) = m.search_conversation_filtered(last_user, 3, 0.3) {
-                        if !results.is_empty() {
-                            let recall_str: String = results.iter()
-                                .map(|r| format!("  • [score={:.2}] {}", r.total_score, r.content.chars().take(200).collect::<String>()))
-                                .collect::<Vec<_>>()
-                                .join("\n");
-                            mem_str.push_str(&format!("Recall:\n{recall_str}\n"));
-                        }
-                    }
-                }
-            }
-
             } // end non-stateless block
 
             if !mem_str.is_empty() {
@@ -1187,20 +1156,39 @@ impl Run {
         }
 
         let template = "\
-# 项目概览 (Project Overview)
+# OS-Level Memory Architecture
 
-# 技术栈与命令 (Tech Stack & Commands)
+You operate using an OS-level memory management system. Proactively manage your own context window to prevent memory bloat and maintain long-term reasoning capabilities.
 
-# 架构决策 (Architecture Decisions)
+## Core Memory (RAM)
+This file (`~/.agverse/agverse.md`) is your Core Memory. It is 100% injected into your context on every turn. It is your ultimate source of truth for Project Overview, Architecture Decisions, Coding Conventions, and User Preferences.
 
-# 编码规范 (Coding Conventions)
+## Archival Memory (Disk)
+An underlying SQLite database contains historical conversation logs (Recall Memory) and long-term knowledge (Archival Memory). Use `conversation_search` and `archival_memory_search` tools to retrieve information when needed.
 
-# 个人偏好 / 用户规则 (User Preferences)
+## Memory Management Directives (CRITICAL)
+Your primary responsibility is to keep this Core Memory highly condensed, strictly structured, and up-to-date. You are forbidden from allowing this file to become a dump for raw conversational logs.
 
-# Agent 行为规则 (Agent Instructions)
-- If new user preferences, architectural rules, or global instructions are discovered during the conversation, use file editing tools (like replace_file_content or edit) to intelligently update this `~/.agverse/agverse.md` file and classify the new information into the correct section above.
+When you interact with the user, silently evaluate if the new information alters the global state:
+- **Write/Replace:** If the user makes a new architectural decision, introduces a coding convention, or updates a global preference, use the `edit` tool to update the corresponding section below.
+- **Compaction (Delete):** If an existing rule is deprecated, overridden, or resolved, delete or overwrite the old information to free up Core Memory space. Do not append contradictory rules.
+- **Offload to Archival (Ignore):** If the information is a specific debugging step, a one-off script, or a transient thought, do NOT write it here. Trust that Archival Memory will capture it for future retrieval.
 
-# 自动记忆 (Auto Memories)
+Never mention your memory management process to the user unless explicitly asked. Maintain a seamless conversational flow while quietly updating this file in the background.
+
+---
+
+# Project Overview
+
+# Tech Stack & Commands
+
+# Architecture Decisions
+
+# Coding Conventions
+
+# User Preferences
+
+# Agent Instructions
 ";
 
         if let Err(e) = std::fs::write(&global_path, template) {
