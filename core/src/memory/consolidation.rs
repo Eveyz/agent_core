@@ -43,25 +43,28 @@ impl MemoryConsolidator {
     }
 
     fn dedup_recall_memory(&self) -> Result<usize> {
-        let db = self.storage.conn();
-        let mut stmt = db.prepare(
-            "SELECT id, embedding FROM recall_memory ORDER BY created_at DESC LIMIT 5000",
-        )?;
+        // Phase 1: read records from SQLite (lock held briefly)
+        let mut records: Vec<(String, Vec<f32>)> = {
+            let db = self.storage.conn();
+            let mut stmt = db.prepare(
+                "SELECT id, embedding FROM recall_memory ORDER BY created_at DESC LIMIT 5000",
+            )?;
+            let mut records = Vec::new();
+            let rows = stmt.query_map([], |row| {
+                let id: String = row.get(0)?;
+                let embedding_bytes: Vec<u8> = row.get(1)?;
+                let embedding = super::embedding::bytes_to_embedding(&embedding_bytes);
+                Ok((id, embedding))
+            })?;
+            for row in rows {
+                records.push(row?);
+            }
+            records
+        }; // storage.db lock released — O(n²) runs lock-free
 
-        let mut records: Vec<(String, Vec<f32>)> = Vec::new();
-        let rows = stmt.query_map([], |row| {
-            let id: String = row.get(0)?;
-            let embedding_bytes: Vec<u8> = row.get(1)?;
-            let embedding = super::embedding::bytes_to_embedding(&embedding_bytes);
-            Ok((id, embedding))
-        })?;
-
-        for row in rows {
-            records.push(row?);
-        }
-
-        let mut to_delete: HashSet<String> = HashSet::new();
+        // Phase 2: O(n²) dedup computation (lock-free)
         let threshold = 0.85;
+        let mut to_delete: HashSet<String> = HashSet::new();
 
         for i in 0..records.len() {
             if to_delete.contains(&records[i].0) {
@@ -78,37 +81,44 @@ impl MemoryConsolidator {
             }
         }
 
+        // Phase 3: batch delete (lock held briefly)
         let count = to_delete.len();
-        for id in &to_delete {
-            db.execute(
-                "DELETE FROM recall_memory WHERE id = ?1",
-                rusqlite::params![id],
-            )?;
+        if count > 0 {
+            let db = self.storage.conn();
+            for id in &to_delete {
+                db.execute(
+                    "DELETE FROM recall_memory WHERE id = ?1",
+                    rusqlite::params![id],
+                )?;
+            }
         }
 
         Ok(count)
     }
 
     fn dedup_archival_memory(&self) -> Result<usize> {
-        let db = self.storage.conn();
-        let mut stmt = db.prepare(
-            "SELECT id, embedding FROM archival_memory ORDER BY created_at DESC LIMIT 5000",
-        )?;
+        // Phase 1: read records (lock held briefly)
+        let mut records: Vec<(String, Vec<f32>)> = {
+            let db = self.storage.conn();
+            let mut stmt = db.prepare(
+                "SELECT id, embedding FROM archival_memory ORDER BY created_at DESC LIMIT 5000",
+            )?;
+            let mut records = Vec::new();
+            let rows = stmt.query_map([], |row| {
+                let id: String = row.get(0)?;
+                let embedding_bytes: Vec<u8> = row.get(1)?;
+                let embedding = super::embedding::bytes_to_embedding(&embedding_bytes);
+                Ok((id, embedding))
+            })?;
+            for row in rows {
+                records.push(row?);
+            }
+            records
+        }; // lock released
 
-        let mut records: Vec<(String, Vec<f32>)> = Vec::new();
-        let rows = stmt.query_map([], |row| {
-            let id: String = row.get(0)?;
-            let embedding_bytes: Vec<u8> = row.get(1)?;
-            let embedding = super::embedding::bytes_to_embedding(&embedding_bytes);
-            Ok((id, embedding))
-        })?;
-
-        for row in rows {
-            records.push(row?);
-        }
-
-        let mut to_delete: HashSet<String> = HashSet::new();
+        // Phase 2: O(n²) computation (lock-free)
         let threshold = 0.90;
+        let mut to_delete: HashSet<String> = HashSet::new();
 
         for i in 0..records.len() {
             if to_delete.contains(&records[i].0) {
@@ -125,12 +135,16 @@ impl MemoryConsolidator {
             }
         }
 
+        // Phase 3: batch delete (lock held briefly)
         let count = to_delete.len();
-        for id in &to_delete {
-            db.execute(
-                "DELETE FROM archival_memory WHERE id = ?1",
-                rusqlite::params![id],
-            )?;
+        if count > 0 {
+            let db = self.storage.conn();
+            for id in &to_delete {
+                db.execute(
+                    "DELETE FROM archival_memory WHERE id = ?1",
+                    rusqlite::params![id],
+                )?;
+            }
         }
 
         Ok(count)

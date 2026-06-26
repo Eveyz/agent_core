@@ -290,6 +290,100 @@ impl MemoryManager {
         Ok(results)
     }
 
+    /// BM25 + Salience reranking — no embedding model needed.
+    ///
+    /// Pipeline:
+    ///   BM25 top 150 → RRF from rank → Salience decay → sort → top_k → bump
+    pub fn search_conversation_bm25_with_salience(
+        &self,
+        query: &str,
+        top_k: usize,
+    ) -> Result<Vec<recall::RecallRecord>> {
+        let bm25 = match self.bm25.as_ref() {
+            Some(b) => b,
+            None => return self.recall.search_by_keyword(query, top_k),
+        };
+
+        let bm25_ids = bm25.search(query, 150).unwrap_or_default();
+        if bm25_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let db = self.recall.storage_conn();
+        let placeholders = bm25_ids
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let sql = format!(
+            "SELECT id, session_id, role, content, embedding, importance, \
+             COALESCE(memory_strength, 1.0), COALESCE(access_count, 0), \
+             last_accessed_at, COALESCE(category, 'Conversation'), created_at \
+             FROM recall_memory WHERE id IN ({})",
+            placeholders
+        );
+
+        let params: Vec<String> = bm25_ids.clone();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params
+            .iter()
+            .map(|s| s as &dyn rusqlite::types::ToSql)
+            .collect();
+
+        let mut stmt = db
+            .prepare_cached(&sql)
+            .context("failed to prepare bm25+salience query")?;
+        let rows = stmt.query_map(
+            param_refs.as_slice(),
+            |row| recall::RecallMemory::parse_recall_row_static(row),
+        )?;
+
+        // RRF from BM25 rank only
+        let rrf_map: std::collections::HashMap<String, f32> = bm25_ids
+            .iter()
+            .enumerate()
+            .map(|(rank, id)| (id.clone(), 60.0 / (60.0 + rank as f32 + 1.0)))
+            .collect();
+
+        let now = chrono::Utc::now();
+        let scorer = self.recall.scorer();
+        let mut scored: Vec<(f32, recall::RecallRecord)> = Vec::new();
+
+        for row in rows {
+            let record = row?;
+            let s_rrf = rrf_map.get(&record.id).copied().unwrap_or(0.1);
+
+            let hours_since = chrono::DateTime::parse_from_rfc3339(&record.created_at)
+                .ok()
+                .map(|dt| {
+                    (now - dt.with_timezone(&chrono::Utc))
+                        .num_hours()
+                        .max(0) as f32
+                })
+                .unwrap_or(0.0);
+
+            let score = scorer.hybrid_score(
+                s_rrf,
+                hours_since,
+                record.importance,
+                record.category,
+            );
+            scored.push((score, record));
+        }
+
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(top_k);
+
+        let results: Vec<recall::RecallRecord> =
+            scored.into_iter().map(|(_, r)| r).collect();
+
+        let ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
+        let _ = self.recall.bump_strength_batch(&ids);
+
+        Ok(results)
+    }
+
     /// Hybrid search: BM25 + HNSW → RRF → Salience (multiplicative decay).
     fn search_conversation_hybrid(
         &self,
@@ -524,7 +618,10 @@ impl MemoryManager {
         self.session_id = uuid::Uuid::new_v4().to_string();
     }
 
-    /// Search conversation records with optional role filter.
+    /// Get memory stats.
+    pub fn stats(&self) -> Result<recall::MemoryStats> {
+        self.recall.stats()
+    }
     pub fn search_conversation_filtered(
         &self,
         query: &str,

@@ -49,13 +49,14 @@ impl Tool for ConversationSearchTool {
         let query = args["query"].as_str().context("missing 'query'")?;
         let top_k = args["top_k"].as_u64().unwrap_or(5) as usize;
 
-        // BM25 keyword search via tantivy — no embedding model needed.
-        // Falls back to SQLite FTS5 when BM25 index is not available.
+        // BM25 keyword search + Salience reranking (forgetting curve).
+        // BM25 handles retrieval; Salience handles importance weighting
+        // and memory reinforcement — no embedding model on the hot path.
         let memory = match try_lock_memory(&self.memory) {
             Ok(m) => m,
             Err(busy_msg) => return Ok(busy_msg),
         };
-        let results = memory.search_conversation_bm25(query, top_k)?;
+        let results = memory.search_conversation_bm25_with_salience(query, top_k)?;
 
         let items: Vec<Value> = results
             .iter()
