@@ -54,6 +54,21 @@ impl RecallMemory {
         &self.scorer
     }
 
+    /// Access the embedding model (for HNSW index sync).
+    pub fn embedding_model(&self) -> Option<&Arc<EmbeddingModel>> {
+        self.embedding_model.as_ref()
+    }
+
+    /// Access the DB connection (for hybrid search reads).
+    pub fn storage_conn(&self) -> parking_lot::MutexGuard<rusqlite::Connection> {
+        self.storage.conn()
+    }
+
+    /// Parse a recall row statically (for use from MemoryManager).
+    pub fn parse_recall_row_static(row: &rusqlite::Row) -> rusqlite::Result<RecallRecord> {
+        Self::parse_recall_row(row)
+    }
+
     // ── Store ───────────────────────────────────────────────────────
 
     /// Store a memory with automatic importance rating.

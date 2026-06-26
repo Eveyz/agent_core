@@ -80,7 +80,7 @@ export default function MemoryTab() {
         max_core_blocks: 5,
         default_block_max_chars: 2000,
         consolidation_enabled: true,
-        embedding_enabled: false,
+        embedding_enabled: true,
         mode: 'standard',
         reflection: {
           trigger_message_count: 20,
@@ -254,7 +254,25 @@ export default function MemoryTab() {
           <BrainIcon size={12} />
           <label className="settings-label">Vector Embedding</label>
           <div className="settings-value">
-            <span className={`badge badge-${memory.embedding_enabled ? 'enabled' : 'disabled'}`}>
+            <span
+              className={`badge badge-${memory.embedding_enabled ? 'enabled' : 'disabled'}`}
+              style={{ cursor: 'pointer' }}
+              onClick={async () => {
+                if (!config || !memory) return;
+                const newConfig = {
+                  ...config,
+                  memory: {
+                    ...memory,
+                    embedding_enabled: !memory.embedding_enabled,
+                  }
+                };
+                try {
+                  await dispatch(saveConfig(newConfig));
+                } catch (e) {
+                  console.error('Failed to toggle embedding', e);
+                }
+              }}
+            >
               {memory.embedding_enabled ? 'Enabled' : 'Disabled (keyword search)'}
             </span>
           </div>

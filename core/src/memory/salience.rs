@@ -1,16 +1,23 @@
 //! Time-decay salience scoring with Ebbinghaus forgetting curve,
 //! importance auto-rating, and access-count reinforcement.
 //!
-//! Core formula:
-//! ```text
-//! recall(t, S) = e^(-t / (S × half_life))
-//! score = α · semantic_similarity + β · recall(t,S) + γ · importance
+//! Two scoring modes:
+//!
+//! 1. Legacy (retrieval_score):
+//!    score = α · semantic + β · recall(t,S) + γ · importance
+//!    Used when BM25/HNSW are not enabled (FTS5 fallback).
+//!
+//! 2. Hybrid (hybrid_score) — multiplicative decay:
+//!    base = α · S_rrf + γ · importance
+//!    score = base × e^(-λ · t)
+//!    where λ = ln(2) / half_life(category)
+//!    Ensures score → 0 as t → ∞, no memory fixation.
 //!
 //! Where:
 //!   t  = hours since creation
 //!   S  = memory_strength (starts at 1.0, grows with accesses)
+//!   S_rrf = RRF normalized score in (0, 1]
 //!   half_life = configurable per category (default 168h = 1 week)
-//! ```
 
 use serde::{Deserialize, Serialize};
 
@@ -176,6 +183,35 @@ impl SalienceScorer {
             + self.config.gamma * importance
     }
 
+    /// Hybrid salience score for BM25 + HNSW + RRF pipeline.
+    ///
+    /// Uses multiplicative time decay to ensure score → 0 as t → ∞:
+    ///
+    ///   base = α × S_rrf + γ × importance
+    ///   score = base × e^(-λ × t)
+    ///
+    /// where λ = ln(2) / half_life(category)
+    ///   S_rrf = RRF normalized score in (0, 1]
+    ///   importance = auto_rate_importance output in [0, 1]
+    ///
+    /// Unlike retrieval_score(), this does NOT use memory_strength or beta
+    /// — the multiplicative decay handles forgetting, and memory_strength
+    /// reinforcement is still applied via bump_strength() on access.
+    pub fn hybrid_score(
+        &self,
+        s_rrf: f32,
+        hours_since_created: f32,
+        importance: f32,
+        category: MemoryCategory,
+    ) -> f32 {
+        let base = self.config.alpha * s_rrf + self.config.gamma * importance;
+
+        let half_life = self.category_half_life(category);
+        let lambda = std::f32::consts::LN_2 / half_life.max(1e-6);
+
+        base * (-lambda * hours_since_created).exp()
+    }
+
     // ── Strength reinforcement ──────────────────────────────────────
 
     /// Bump memory strength on access. Returns new strength.
@@ -254,6 +290,26 @@ impl SalienceScorer {
         let upper_count = content.chars().filter(|c| c.is_uppercase()).count();
         if upper_count > 5 {
             score += 0.03;
+        }
+
+        // URL / link signals — linked content tends to carry durable info
+        if content.contains("http://") || content.contains("https://") || content.contains("://") {
+            score += 0.10;
+        }
+
+        // Error / traceback signals — debugging insights worth remembering
+        if content.contains("Traceback")
+            || content.contains("panic:")
+            || content.contains("error[")
+            || content.contains("Error:")
+            || content.contains("error_code")
+        {
+            score += 0.08;
+        }
+
+        // Code block signals (Markdown fenced code)
+        if content.contains("```") {
+            score += 0.06;
         }
 
         score.clamp(0.0, 1.0)

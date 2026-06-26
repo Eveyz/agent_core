@@ -159,7 +159,7 @@ pub struct MemoryConfig {
     pub consolidation_enabled: bool,
     /// Enable embedding-based vector search (requires downloading a model).
     /// When false, conversation search falls back to keyword matching.
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub embedding_enabled: bool,
     /// Memory mode: "stateless", "standard", or "deep".
     #[serde(default = "default_memory_mode")]
@@ -170,6 +170,12 @@ pub struct MemoryConfig {
     /// Reflection daemon config (Deep mode only).
     #[serde(default)]
     pub reflection: Option<ReflectionConfig>,
+    /// BM25 full-text search config (Standard & Deep).
+    #[serde(default)]
+    pub bm25: Option<Bm25Config>,
+    /// HNSW approximate nearest neighbor config (Standard & Deep).
+    #[serde(default)]
+    pub hnsw: Option<HnswConfig>,
 }
 
 /// Configuration for the background reflection daemon (Deep mode).
@@ -187,6 +193,36 @@ pub struct ReflectionConfig {
 fn default_trigger_count() -> usize {
     20
 }
+
+/// Configuration for BM25 full-text search (powered by tantivy).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Bm25Config {
+    /// Enable BM25-based keyword recall. Default: true.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// BM25 k1 parameter — controls term frequency saturation.
+    #[serde(default = "default_bm25_k1")]
+    pub k1: f32,
+    /// BM25 b parameter — controls document length normalization.
+    #[serde(default = "default_bm25_b")]
+    pub b: f32,
+}
+
+fn default_bm25_k1() -> f32 { 1.2 }
+fn default_bm25_b() -> f32 { 0.75 }
+
+/// Configuration for HNSW approximate nearest neighbor search.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HnswConfig {
+    /// Enable HNSW-based vector recall. Default: true.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Number of candidates to retrieve during HNSW search (ef_search).
+    #[serde(default = "default_hnsw_ef")]
+    pub ef_search: usize,
+}
+
+fn default_hnsw_ef() -> usize { 150 }
 
 fn default_memory_mode() -> String {
     "standard".to_string()
@@ -220,10 +256,12 @@ impl Default for MemoryConfig {
             max_core_blocks: 5,
             default_block_max_chars: 2000,
             consolidation_enabled: true,
-            embedding_enabled: false,
+            embedding_enabled: true,
             mode: "standard".to_string(),
             salience: None,
             reflection: None,
+            bm25: None,
+            hnsw: None,
         }
     }
 }
