@@ -67,6 +67,17 @@ impl<'a> ToolOrchestrator<'a> {
                 host,
             );
 
+            eprintln!(
+                "[executor] tool={} decision={:?} approval_resolver={}",
+                call.function.name,
+                match &decision {
+                    PermissionDecision::Allow => "Allow",
+                    PermissionDecision::Ask(_, _) => "Ask",
+                    PermissionDecision::Deny(_) => "Deny",
+                },
+                self.approval_resolver.is_some()
+            );
+
             match decision {
                 PermissionDecision::Deny(reason) => {
                     results[i] = format!("Permission denied: {}", reason);
@@ -75,6 +86,11 @@ impl<'a> ToolOrchestrator<'a> {
                 PermissionDecision::Ask(_reason, prompt) => {
                     // Create oneshot channel for approval
                     let (tx, rx) = tokio::sync::oneshot::channel();
+                    let using_resolver = self.approval_resolver.is_some();
+                    eprintln!(
+                        "[executor] Ask pid={} tool={} resolver={}",
+                        prompt.prompt_id, prompt.tool_name, using_resolver
+                    );
                     if let Some(ref resolver) = self.approval_resolver {
                         resolver.insert(prompt.prompt_id.clone(), tx);
                     } else {
@@ -103,6 +119,12 @@ impl<'a> ToolOrchestrator<'a> {
                         choice = rx => choice.map_err(|_| ()),
                         _ = self.cancel_token.cancelled() => Err(()),
                     };
+
+                    eprintln!(
+                        "[executor] approval_outcome tool={} resolved={}",
+                        call.function.name,
+                        outcome.is_ok()
+                    );
 
                     match outcome {
                         Ok(choice) => {
@@ -224,6 +246,10 @@ impl<'a> ToolOrchestrator<'a> {
                     continue;
                 }
                 PreToolResult::Proceed(modified_args) => {
+                    eprintln!(
+                        "[executor] ToolExecutionStart tool={} call_id={}",
+                        call.function.name, call.id
+                    );
                     on_event(
                         AgentEvent::ToolExecutionStart {
                             tool_call_id: call.id.clone(),

@@ -23,6 +23,23 @@ use parking_lot::Mutex;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
+
+/// Try to acquire the MemoryManager lock with a timeout.
+/// Returns `Ok(guard)` on success, or a JSON busy-message string to return to the LLM.
+pub fn try_lock_memory(
+    memory: &Arc<Mutex<MemoryManager>>,
+) -> std::result::Result<parking_lot::MutexGuard<'_, MemoryManager>, String> {
+    memory
+        .try_lock_for(Duration::from_secs(3))
+        .ok_or_else(|| {
+            serde_json::json!({
+                "error": "memory_store_busy",
+                "message": "Memory store is temporarily busy (may be consolidating). Retry the same call in a moment — do NOT change the query or parameters."
+            })
+            .to_string()
+        })
+}
 
 /// Callback for streaming tool progress updates.
 pub type ToolUpdateFn = Arc<dyn Fn(&str) + Send + Sync>;

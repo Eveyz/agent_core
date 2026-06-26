@@ -105,6 +105,18 @@ pub fn default_rules_with_danger() -> Vec<(ToolPermissionPattern, DangerLevel, A
             DangerLevel::ReadOnly,
             ApprovalLevel::Allow,
         ),
+        // conversation_search / conversation_search_date don't match
+        // the *_memory_* glob above — add explicit Allow rules.
+        (
+            ToolPermissionPattern::simple("conversation_search"),
+            DangerLevel::ReadOnly,
+            ApprovalLevel::Allow,
+        ),
+        (
+            ToolPermissionPattern::simple("conversation_search_date"),
+            DangerLevel::ReadOnly,
+            ApprovalLevel::Allow,
+        ),
         // ── Todo / Task / Skill (safe metadata ops) ──────────────────
         (
             ToolPermissionPattern::simple("todo_write"),

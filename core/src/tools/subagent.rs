@@ -16,17 +16,20 @@ pub fn register_subagent_tools(
     session_mgr: Option<Arc<Mutex<SessionManager>>>,
     permission_config: PermissionConfig,
 ) {
+    let parent_max_iterations = model_config.max_iterations;
     registry.register(Box::new(SubagentSpawnTool::new(
         model_config.clone(),
         available_tool_names.clone(),
         session_mgr.clone(),
         permission_config.clone(),
+        parent_max_iterations,
     )));
     registry.register(Box::new(SubagentSpawnAllTool::new(
         model_config,
         available_tool_names,
         session_mgr,
         permission_config,
+        parent_max_iterations,
     )));
 }
 
@@ -37,6 +40,7 @@ struct SubagentSpawnTool {
     available_tools: Vec<String>,
     session_mgr: Option<Arc<Mutex<SessionManager>>>,
     permission_config: PermissionConfig,
+    parent_max_iterations: usize,
 }
 
 impl SubagentSpawnTool {
@@ -45,12 +49,14 @@ impl SubagentSpawnTool {
         available_tools: Vec<String>,
         session_mgr: Option<Arc<Mutex<SessionManager>>>,
         permission_config: PermissionConfig,
+        parent_max_iterations: usize,
     ) -> Self {
         Self {
             model_config,
             available_tools,
             session_mgr,
             permission_config,
+            parent_max_iterations,
         }
     }
 }
@@ -65,7 +71,7 @@ impl Tool for SubagentSpawnTool {
         "Spawn a sub-agent with isolated context for a specific task. \
 Use for: multi-step research, tasks needing clean context, parallel work. \
 Do NOT use for: simple reads, single commands, quick searches — handle those yourself. \
-Args: id (string), task (string), system_prompt (optional), tools (optional array of tool names, default: all parent tools), max_iterations (optional, default: 5)"
+Args: id (string), task (string), system_prompt (optional), tools (optional array of tool names, default: all parent tools), max_iterations (optional, default: parent agent's max_iterations)"
     }
 
     fn parameters_schema(&self) -> Value {
@@ -91,7 +97,7 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
                 },
                 "max_iterations": {
                     "type": "integer",
-                    "description": "Max iterations (default: 5)"
+                    "description": "Max iterations (default: inherited from parent agent)"
                 }
             },
             "required": ["id", "task"]
@@ -114,6 +120,7 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
             &self.available_tools,
             event_sender,
             &self.permission_config,
+            self.parent_max_iterations,
         )
         .await?;
 
@@ -134,6 +141,7 @@ struct SubagentSpawnAllTool {
     available_tools: Vec<String>,
     session_mgr: Option<Arc<Mutex<SessionManager>>>,
     permission_config: PermissionConfig,
+    parent_max_iterations: usize,
 }
 
 impl SubagentSpawnAllTool {
@@ -142,12 +150,14 @@ impl SubagentSpawnAllTool {
         available_tools: Vec<String>,
         session_mgr: Option<Arc<Mutex<SessionManager>>>,
         permission_config: PermissionConfig,
+        parent_max_iterations: usize,
     ) -> Self {
         Self {
             model_config,
             available_tools,
             session_mgr,
             permission_config,
+            parent_max_iterations,
         }
     }
 }
@@ -228,7 +238,7 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
             let max_iterations = task_spec["max_iterations"]
                 .as_u64()
                 .map(|v| v as usize)
-                .unwrap_or(usize::MAX);
+                .unwrap_or(self.parent_max_iterations);
 
             task_infos.push((id, task, tools, max_iterations));
         }
@@ -238,6 +248,7 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
         // canceling the parent leaves child subagents running as detached
         // tasks (process leak).
         let mut join_set = tokio::task::JoinSet::new();
+        let parent_max_iterations = self.parent_max_iterations;
         for (id, task, tools, max_iterations) in task_infos {
             let model_config = self.model_config.clone();
             let permission_config = self.permission_config.clone();
@@ -264,6 +275,7 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                     &available_tools,
                     sub_sender,
                     &permission_config,
+                    parent_max_iterations,
                 )
                 .await;
 
@@ -361,6 +373,7 @@ async fn spawn_single(
     available_tools: &[String],
     event_sender: Option<EventSender>,
     permission_config: &PermissionConfig,
+    parent_max_iterations: usize,
 ) -> Result<(SpawnResult, Vec<crate::types::Message>)> {
     let id = args["id"]
         .as_str()
@@ -403,7 +416,7 @@ Do NOT attempt to read or process image files.";
         format!("{}\n\n=== Subagent Persona ===\n{}", base_prompt, persona_content)
     };
 
-    let max_iterations = args["max_iterations"].as_u64().unwrap_or(5) as usize;
+    let max_iterations = args["max_iterations"].as_u64().unwrap_or(parent_max_iterations as u64) as usize;
 
     // Determine tool names from args
     let tool_names: Vec<String> = if let Some(arr) = args["tools"].as_array() {

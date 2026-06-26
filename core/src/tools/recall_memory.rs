@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 use crate::memory::MemoryManager;
-use crate::tools::Tool;
+use crate::tools::{Tool, try_lock_memory};
 
 pub struct ConversationSearchTool {
     memory: Arc<Mutex<MemoryManager>>,
@@ -49,8 +49,13 @@ impl Tool for ConversationSearchTool {
         let query = args["query"].as_str().context("missing 'query'")?;
         let top_k = args["top_k"].as_u64().unwrap_or(5) as usize;
 
-        let memory = self.memory.lock();
-        let results = memory.search_conversation(query, top_k)?;
+        // BM25 keyword search via tantivy — no embedding model needed.
+        // Falls back to SQLite FTS5 when BM25 index is not available.
+        let memory = match try_lock_memory(&self.memory) {
+            Ok(m) => m,
+            Err(busy_msg) => return Ok(busy_msg),
+        };
+        let results = memory.search_conversation_bm25(query, top_k)?;
 
         let items: Vec<Value> = results
             .iter()
@@ -117,7 +122,10 @@ impl Tool for ConversationSearchDateTool {
         let end = args["end_date"].as_str().context("missing 'end_date'")?;
         let top_k = args["top_k"].as_u64().unwrap_or(10) as usize;
 
-        let memory = self.memory.lock();
+        let memory = match try_lock_memory(&self.memory) {
+            Ok(m) => m,
+            Err(busy_msg) => return Ok(busy_msg),
+        };
         let results = memory.recall().search_by_date(start, end, top_k)?;
 
         let items: Vec<Value> = results

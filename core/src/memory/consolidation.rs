@@ -5,6 +5,7 @@ use std::sync::Arc;
 use super::embedding::{EmbeddingModel, cosine_similarity};
 use super::storage::Storage;
 
+#[derive(Clone)]
 pub struct MemoryConsolidator {
     storage: Storage,
     embedding_model: Option<Arc<EmbeddingModel>>,

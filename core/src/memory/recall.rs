@@ -210,7 +210,7 @@ impl RecallMemory {
 
     /// Keyword-based search fallback (no embedding model).
     /// Uses FTS5 full-text search instead of LIKE for better performance.
-    fn search_by_keyword(&self, query: &str, top_k: usize) -> Result<Vec<RecallRecord>> {
+    pub fn search_by_keyword(&self, query: &str, top_k: usize) -> Result<Vec<RecallRecord>> {
         let db = self.storage.conn();
 
         // Try FTS5 first

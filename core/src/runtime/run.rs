@@ -245,6 +245,11 @@ impl Run {
         self.working_dir.as_deref()
     }
 
+    /// Access the per-Run approval resolver (used by RunManager for direct resolution).
+    pub fn approval_resolver(&self) -> &ApprovalResolver {
+        &self.approval_resolver
+    }
+
     // ── State machine helpers ─────────────────────────────────────
 
     fn transition(&mut self, to: RunState) {
@@ -472,12 +477,33 @@ impl Run {
     }
 
     fn resolve_approval(&mut self, prompt_id: &str, choice: crate::permission::ApprovalChoice) {
+        // Try the per-Run resolver first (used when ToolOrchestrator has
+        // approval_resolver set, which is the new default path).
         if self.approval_resolver.resolve(prompt_id, choice.clone()) {
+            eprintln!("[resolve_approval] resolved via per-Run resolver pid={}", prompt_id);
             self.emit(RunEvent::ApprovalResolved {
                 prompt_id: prompt_id.to_string(),
                 choice,
             });
+            return;
         }
+        // Fallback: global map — used by the deprecated Agent path, subagents,
+        // and any code that still sets approval_resolver: None.
+        #[allow(deprecated)]
+        {
+            let pending_arc = crate::permission::global_pending_approvals();
+            let mut pending = pending_arc.lock();
+            if let Some(tx) = pending.remove(prompt_id) {
+                eprintln!("[resolve_approval] resolved via global map pid={}", prompt_id);
+                let _ = tx.send(choice.clone());
+                self.emit(RunEvent::ApprovalResolved {
+                    prompt_id: prompt_id.to_string(),
+                    choice,
+                });
+                return;
+            }
+        }
+        eprintln!("[resolve_approval] NOT found pid={}", prompt_id);
     }
 
     fn resolve_input(&mut self, _prompt_id: &str, _answer: &str) {
@@ -489,10 +515,9 @@ impl Run {
     async fn run_turn(&mut self, turn_index: usize) -> Result<TurnOutcome, RunError> {
         // Stage: Refresh
         self.refresh_context_segments();
-        self.context.trim_to_fit();
 
-        // Stage: Compact
-        self.maybe_llm_compact().await;
+        // Stage: Compact (on-demand only — avoid per-turn cache invalidation)
+        self.maybe_compact().await;
 
         // Stage: Model
         let (text, tool_calls, message_id) = match self.model_turn().await {
@@ -533,21 +558,33 @@ impl Run {
                 daemon.try_send("assistant", &text);
             }
 
-            // Consolidate memory in background (non-blocking, best-effort)
+            // Consolidate memory in background (non-blocking, best-effort).
+            // Runs every 20 turns to amortize O(n²) cosine-similarity cost.
+            // Skipped in Stateless mode (no memory to consolidate).
+            // Clone the consolidator BEFORE acquiring the lock so the lock
+            // is held only briefly; the heavy CPU work runs lock-free.
             if let Some(ref mem) = self.brain.memory {
-                let mem = mem.clone();
-                self.join_set.spawn(async move {
-                    let result = mem.lock().consolidate();
-                    if let Ok(report) = result {
-                        if report.deduped_recall > 0 || report.deduped_archival > 0 {
-                            tracing::info!(
-                                deduped_recall = report.deduped_recall,
-                                deduped_archival = report.deduped_archival,
-                                "memory consolidated"
-                            );
+                if self.brain.memory_mode() != crate::config::MemoryMode::Stateless
+                    && turn_index % 20 == 0
+                {
+                    let mem = mem.clone();
+                    self.join_set.spawn(async move {
+                        let consolidator = {
+                            let guard = mem.lock();
+                            guard.consolidator_clone()
+                        }; // lock released here — consolidate() runs without it
+                        let result = consolidator.consolidate();
+                        if let Ok(report) = result {
+                            if report.deduped_recall > 0 || report.deduped_archival > 0 {
+                                tracing::info!(
+                                    deduped_recall = report.deduped_recall,
+                                    deduped_archival = report.deduped_archival,
+                                    "memory consolidated"
+                                );
+                            }
                         }
-                    }
-                });
+                    });
+                }
             }
 
             // Process steering messages
@@ -606,6 +643,11 @@ impl Run {
         let run_id = self.id.clone();
         let seq = self.seq.clone();
         let turn_id = self.current_turn_id.clone();
+        // Clone the approval resolver before constructing the orchestrator to
+        // avoid borrowing conflicts with `&mut self.permission_policy` etc.
+        // Using the per-Run resolver eliminates the actor deadlock that the
+        // old global-map fallback path was vulnerable to.
+        let approval_resolver = self.approval_resolver.clone();
         let tool_results = {
             let mut orchestrator = ToolOrchestrator {
                 registry: &self.registry,
@@ -613,7 +655,7 @@ impl Run {
                 hook_registry: &mut self.hook_registry,
                 tool_execution_mode: self.tool_execution_mode,
                 cancel_token: self.cancel.clone(),
-                approval_resolver: None, // Use global map to avoid actor deadlock
+                approval_resolver: Some(approval_resolver),
             };
             orchestrator
                 .execute_tools(&tool_calls, &move |ev, parent_call_id: &str| {
@@ -1102,14 +1144,54 @@ impl Run {
         }
     }
 
-    async fn maybe_llm_compact(&mut self) {
+    /// Compact strategy (Stage: Compact).
+    ///
+    /// Two-tier approach optimized for DeepSeek prefix caching:
+    ///
+    /// 1. **Chunked drop (preferred)**: When token usage exceeds 80% of the
+    ///    context window, batch-drop the oldest 50% of conversation turns.
+    ///    This causes a single-turn cache miss but leaves a stable prefix
+    ///    for the next 10+ turns — maximizing long-term cache hits with
+    ///    zero LLM overhead.
+    ///
+    /// 2. **LLM summarize (fallback)**: If chunked_drop wasn't sufficient
+    ///    (e.g., a single tool result is dominating), fall back to the
+    ///    LLM-based summary compact with `micro_compact()` as last resort.
+    async fn maybe_compact(&mut self) {
+        const COMPACT_THRESHOLD: f64 = 0.80;
+        const CHUNK_KEEP_RECENT: usize = 20;
+
         let current = self.context.current_token_count();
-        let threshold = (self.client.model.max_context_tokens as f64 * 0.80) as usize;
+        let threshold =
+            (self.client.model.max_context_tokens as f64 * COMPACT_THRESHOLD) as usize;
 
         if current < threshold {
             return;
         }
 
+        // Tier 1: Chunked drop — zero-cost, cache-friendly bulk removal.
+        let keep = (self.context.len() / 2).max(4).min(CHUNK_KEEP_RECENT);
+        if self.context.chunked_drop(keep) > 0 {
+            tracing::info!(
+                compact = "chunked_drop",
+                tokens_before = current,
+                tokens_after = self.context.current_token_count(),
+                "Chunked drop compact applied"
+            );
+            // Check if this brought us below the threshold.
+            if self.context.current_token_count() < threshold {
+                return;
+            }
+        }
+
+        // Also run trim_to_fit for snip/dedup/chunk compression.
+        let _result = self.context.trim_to_fit();
+
+        if self.context.current_token_count() < threshold {
+            return;
+        }
+
+        // Tier 2: LLM summarize — expensive, but handles pathological cases.
         let num_turns = self.context.len().max(4) * 2 / 5;
         let request = match self.context.prepare_summary(num_turns) {
             Some(r) => r,
@@ -1127,7 +1209,14 @@ impl Run {
         };
 
         let summary: crate::compressor::TurnSummary = match serde_json::from_str(&result_text) {
-            Ok(s) => s,
+            Ok(s) => {
+                tracing::info!(
+                    compact = "llm_summary",
+                    turns_summarized = num_turns,
+                    "LLM compact applied"
+                );
+                s
+            }
             Err(_) => {
                 // JSON parse failed — fallback to micro_compact
                 self.context.micro_compact(self.context.len().max(4) / 3);

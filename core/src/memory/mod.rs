@@ -201,6 +201,95 @@ impl MemoryManager {
         Ok(results)
     }
 
+    /// Search with a pre-computed query embedding (lock-friendly).
+    ///
+    /// Unlike `search_conversation()` which embeds the query internally
+    /// (blocking the lock for 10-50ms per call), this accepts an already-
+    /// computed embedding so the hot path Inside the MemoryManager lock
+    /// is purely I/O and CPU-light ranking.
+    pub fn search_conversation_precomputed(
+        &self,
+        query_emb: &[f32],
+        query: &str,
+        top_k: usize,
+    ) -> Result<Vec<recall::RecallRecord>> {
+        let normalized = hnsw::normalize_embedding(query_emb);
+        if self.bm25.is_some() && self.hnsw.is_some() {
+            return self.search_conversation_hybrid_precomputed(query_emb, query, top_k);
+        }
+        // Fallback: pass through to recall's vector search
+        self.recall.search_by_vector(query_emb, query, top_k)
+    }
+
+    /// Pure BM25 keyword search — no embedding model needed.
+    ///
+    /// Uses the tantivy BM25 index for candidate retrieval, loads full
+    /// records from SQLite, and returns them in BM25 relevance order.
+    /// Falls back to SQLite FTS5 when BM25 is not available.
+    pub fn search_conversation_bm25(
+        &self,
+        query: &str,
+        top_k: usize,
+    ) -> Result<Vec<recall::RecallRecord>> {
+        let bm25 = match self.bm25.as_ref() {
+            Some(b) => b,
+            None => return self.recall.search_by_keyword(query, top_k),
+        };
+
+        // Phase 1: BM25 candidate retrieval
+        let bm25_ids = bm25.search(query, 150).unwrap_or_default();
+        if bm25_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Phase 2: Load records from SQLite by ID, preserve BM25 order
+        let db = self.recall.storage_conn();
+        let placeholders = bm25_ids
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let sql = format!(
+            "SELECT id, session_id, role, content, embedding, importance, \
+             COALESCE(memory_strength, 1.0), COALESCE(access_count, 0), \
+             last_accessed_at, COALESCE(category, 'Conversation'), created_at \
+             FROM recall_memory WHERE id IN ({})",
+            placeholders
+        );
+
+        let params: Vec<String> = bm25_ids.clone();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params
+            .iter()
+            .map(|s| s as &dyn rusqlite::types::ToSql)
+            .collect();
+
+        let mut stmt = db
+            .prepare_cached(&sql)
+            .context("failed to prepare bm25 search query")?;
+        let rows = stmt.query_map(
+            param_refs.as_slice(),
+            |row| recall::RecallMemory::parse_recall_row_static(row),
+        )?;
+
+        // Collect records, sort into BM25 order, truncate
+        let rank: std::collections::HashMap<String, usize> = bm25_ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (id.clone(), i))
+            .collect();
+
+        let mut results: Vec<recall::RecallRecord> = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        results.sort_by_key(|r| rank.get(&r.id).copied().unwrap_or(usize::MAX));
+        results.truncate(top_k);
+
+        Ok(results)
+    }
+
     /// Hybrid search: BM25 + HNSW → RRF → Salience (multiplicative decay).
     fn search_conversation_hybrid(
         &self,
@@ -303,73 +392,245 @@ impl MemoryManager {
         Ok(results)
     }
 
-    /// Search conversation and return only results above a minimum score threshold.
-    /// Falls back to unfiltered search when scored search is unavailable (no embedding).
-    pub fn search_conversation_filtered(
+    /// Same as `search_conversation_hybrid` but accepts a pre-computed embedding.
+    /// Avoids the 10-50ms embedding call inside the lock.
+    fn search_conversation_hybrid_precomputed(
         &self,
+        query_emb: &[f32],
         query: &str,
         top_k: usize,
-        min_score: f32,
-    ) -> Result<Vec<ScoredRecord>> {
-        match self.recall.search_scored(query, top_k) {
-            Ok(scored) => {
-                let filtered: Vec<_> = scored
-                    .into_iter()
-                    .filter(|s| s.total_score >= min_score)
-                    .collect();
-                let ids: Vec<&str> = filtered.iter().map(|r| r.id.as_str()).collect();
-                let _ = self.recall.bump_strength_batch(&ids);
-                Ok(filtered)
-            }
-            Err(_) => {
-                // Fallback: unfiltered keyword search, wrap as ScoredRecord
-                let results = self.recall.search(query, top_k)?;
-                let ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
-                let _ = self.recall.bump_strength_batch(&ids);
-                Ok(results
-                    .into_iter()
-                    .map(|r| ScoredRecord {
-                        id: r.id,
-                        content: r.content,
-                        total_score: 1.0,
-                        semantic_score: 0.0,
-                        recall_score: 0.0,
-                        importance: r.importance,
-                        memory_strength: r.memory_strength,
-                        hours_since_created: 0.0,
-                        category: r.category,
-                    })
-                    .collect())
-            }
+    ) -> Result<Vec<recall::RecallRecord>> {
+        let bm25 = self.bm25.as_ref().unwrap();
+        let hnsw = self.hnsw.as_ref().unwrap();
+
+        let bm25_ids = bm25.search(query, 150).unwrap_or_default();
+        let normalized = hnsw::normalize_embedding(query_emb);
+        let hnsw_ids = hnsw.search(&normalized, 150);
+
+        let lists = vec![bm25_ids, hnsw_ids];
+        let fused = rrf::fuse_normalized(&lists, 60);
+
+        let candidates: Vec<String> = fused
+            .into_iter()
+            .take(100)
+            .map(|(id, _)| id)
+            .collect();
+
+        if candidates.is_empty() {
+            return Ok(Vec::new());
         }
+
+        let db = self.recall.storage_conn();
+        let placeholders = candidates
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let sql = format!(
+            "SELECT id, session_id, role, content, embedding, importance, \
+             COALESCE(memory_strength, 1.0), COALESCE(access_count, 0), \
+             last_accessed_at, COALESCE(category, 'Conversation'), created_at \
+             FROM recall_memory WHERE id IN ({})",
+            placeholders
+        );
+
+        let params: Vec<String> = candidates.clone();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params
+            .iter()
+            .map(|s| s as &dyn rusqlite::types::ToSql)
+            .collect();
+
+        let mut stmt = db.prepare(&sql)?;
+        let rows = stmt.query_map(param_refs.as_slice(), |row| recall::RecallMemory::parse_recall_row_static(row))?;
+
+        let rrf_map: std::collections::HashMap<String, f32> = candidates
+            .iter()
+            .enumerate()
+            .map(|(rank, id)| (id.clone(), 60.0 / (60.0 + rank as f32 + 1.0)))
+            .collect();
+
+        let now = chrono::Utc::now();
+        let mut scored: Vec<(f32, recall::RecallRecord)> = Vec::new();
+
+        for row in rows {
+            let record = row?;
+            let s_rrf = rrf_map.get(&record.id).copied().unwrap_or(0.1);
+
+            let hours_since = chrono::DateTime::parse_from_rfc3339(&record.created_at)
+                .ok()
+                .map(|dt| (now - dt.with_timezone(&chrono::Utc)).num_hours().max(0) as f32)
+                .unwrap_or(0.0);
+
+            let score = self.recall.scorer().hybrid_score(
+                s_rrf,
+                hours_since,
+                record.importance,
+                record.category,
+            );
+
+            scored.push((score, record));
+        }
+
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(top_k);
+
+        let results: Vec<recall::RecallRecord> = scored.into_iter().map(|(_, r)| r).collect();
+
+        let ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
+        let _ = self.recall.bump_strength_batch(&ids);
+
+        Ok(results)
     }
 
+    /// Store a piece of knowledge in archival memory.
+    pub fn store_archival(&self, content: &str, metadata: Option<&str>) -> Result<String> {
+        self.archival.insert(content, metadata)
+    }
+
+    /// Search archival memory.
+    pub fn search_archival(&self, query: &str, top_k: usize) -> Result<Vec<archival::ArchivalRecord>> {
+        self.archival.search(query, top_k)
+    }
+
+    /// Delete from archival memory.
+    pub fn delete_archival(&self, id: &str) -> Result<bool> {
+        self.archival.delete(id)
+    }
+
+    /// Run memory consolidation (dedup). Call periodically.
     pub fn consolidate(&self) -> Result<consolidation::ConsolidationReport> {
         self.consolidator.consolidate()
     }
 
+    /// Clone the consolidator (lock-free reference).
+    pub fn consolidator_clone(&self) -> MemoryConsolidator {
+        self.consolidator.clone()
+    }
+
+    /// Access the core memory block manager.
+    pub fn core_memory(&self) -> &CoreMemory {
+        &self.core
+    }
+
+    /// Get current session id.
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
 
+    /// Start a new session (generates a fresh session ID).
     pub fn new_session(&mut self) {
         self.session_id = uuid::Uuid::new_v4().to_string();
     }
 
-    /// Prune cold memories with low recall and importance.
-    pub fn prune(&self, min_score: f32, min_importance: f32, max: usize) -> Result<usize> {
-        self.recall
-            .prune_cold_memories(min_score, min_importance, max)
+    /// Search conversation records with optional role filter.
+    pub fn search_conversation_filtered(
+        &self,
+        query: &str,
+        top_k: usize,
+        role_filter: Option<&str>,
+    ) -> Result<Vec<recall::RecallRecord>> {
+        let bm25 = match self.bm25.as_ref() {
+            Some(b) => b,
+            None => return self.recall.search_by_keyword(query, top_k),
+        };
+
+        let bm25_ids = bm25.search(query, 150).unwrap_or_default();
+        if bm25_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let db = self.recall.storage_conn();
+        let placeholders = bm25_ids
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let sql = if role_filter.is_some() {
+            format!(
+                "SELECT id, session_id, role, content, embedding, importance, \
+                 COALESCE(memory_strength, 1.0), COALESCE(access_count, 0), \
+                 last_accessed_at, COALESCE(category, 'Conversation'), created_at \
+                 FROM recall_memory WHERE id IN ({}) AND role = ?{}",
+                placeholders,
+                bm25_ids.len() + 1
+            )
+        } else {
+            format!(
+                "SELECT id, session_id, role, content, embedding, importance, \
+                 COALESCE(memory_strength, 1.0), COALESCE(access_count, 0), \
+                 last_accessed_at, COALESCE(category, 'Conversation'), created_at \
+                 FROM recall_memory WHERE id IN ({})",
+                placeholders
+            )
+        };
+
+        let mut params: Vec<String> = bm25_ids.clone();
+        if let Some(role) = role_filter {
+            params.push(role.to_string());
+        }
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params
+            .iter()
+            .map(|s| s as &dyn rusqlite::types::ToSql)
+            .collect();
+
+        let mut stmt = db.prepare(&sql)?;
+        let rows = stmt.query_map(
+            param_refs.as_slice(),
+            |row| recall::RecallMemory::parse_recall_row_static(row),
+        )?;
+
+        let rank: std::collections::HashMap<String, usize> = bm25_ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (id.clone(), i))
+            .collect();
+
+        let mut results: Vec<recall::RecallRecord> = Vec::new();
+        for row in rows {
+            results.push(row?);
+        }
+        results.sort_by_key(|r| rank.get(&r.id).copied().unwrap_or(usize::MAX));
+        results.truncate(top_k);
+
+        Ok(results)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn setup_test_memory() -> (TempDir, MemoryManager) {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("test.db");
+        let memory = MemoryManager::without_embedding(
+            db_path.to_str().unwrap(),
+            4096,
+            None,
+        ).unwrap();
+        (dir, memory)
     }
 
-    /// Promote high-importance old memories to archival storage.
-    pub fn promote_to_archival(&self, min_importance: f32, max: usize) -> Result<usize> {
-        self.recall
-            .promote_to_archival(&self.archival, min_importance, max)
+    #[test]
+    fn test_store_and_search_conversation() {
+        let (_dir, memory) = setup_test_memory();
+        memory.store_conversation("user", "Hello world").unwrap();
+        memory.store_conversation("assistant", "Hi there").unwrap();
+
+        let results = memory.search_conversation("hello", 5).unwrap();
+        assert!(!results.is_empty());
     }
 
-    /// Get memory stats.
-    pub fn stats(&self) -> Result<recall::MemoryStats> {
-        self.recall.stats()
+    #[test]
+    fn test_store_and_search_archival() {
+        let (_dir, memory) = setup_test_memory();
+        memory.store_archival("Rust is a systems programming language", None).unwrap();
+        let results = memory.search_archival("Rust", 5).unwrap();
+        assert!(!results.is_empty());
     }
 }

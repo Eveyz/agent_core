@@ -60,6 +60,11 @@ impl ArchivalMemory {
         }
     }
 
+    /// Access the embedding model (if configured).
+    pub fn embedding_model(&self) -> Option<&Arc<EmbeddingModel>> {
+        self.embedding_model.as_ref()
+    }
+
     pub fn insert(&self, content: &str, metadata: Option<&str>) -> Result<String> {
         let id = uuid::Uuid::new_v4().to_string();
         let embedding_bytes = if let Some(ref model) = self.embedding_model {
@@ -109,7 +114,7 @@ impl ArchivalMemory {
         }
     }
 
-    fn search_by_vector(&self, query_embedding: &[f32], query_text: &str, top_k: usize) -> Result<Vec<ArchivalRecord>> {
+    pub fn search_by_vector(&self, query_embedding: &[f32], query_text: &str, top_k: usize) -> Result<Vec<ArchivalRecord>> {
         let db = self.storage.conn();
 
         // FTS5 pre-filter: collect candidate rowids
@@ -183,7 +188,7 @@ impl ArchivalMemory {
         Ok(scored.into_iter().map(|(_, r)| r).collect())
     }
 
-    fn search_by_keyword(&self, query: &str, top_k: usize) -> Result<Vec<ArchivalRecord>> {
+    pub fn search_by_keyword(&self, query: &str, top_k: usize) -> Result<Vec<ArchivalRecord>> {
         let db = self.storage.conn();
 
         // Try FTS5 first

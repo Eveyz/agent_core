@@ -607,7 +607,7 @@ impl Tool for TaskExecuteTool {
         let config = SubagentConfig {
             system_prompt,
             tools: custom_tools,
-            max_iterations: 100,
+            max_iterations: 50,
             max_context_tokens: 32000,
         };
 

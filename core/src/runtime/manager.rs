@@ -21,7 +21,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio::task::JoinHandle;
 
+use crate::permission::ApprovalChoice;
 use crate::reflector::Reflector;
+use crate::runtime::approval::ApprovalResolver;
 use crate::runtime::brain::Brain;
 use crate::runtime::command::RunCommand;
 use crate::runtime::event::{Envelope, RunEvent, RunId};
@@ -48,6 +50,9 @@ pub struct RunHandle {
     join_handle: Option<JoinHandle<()>>,
     /// Shared state for querying (read-only, updated by the Run task).
     state: Arc<RwLock<RunState>>,
+    /// Per-Run approval resolver — resolved directly by `approve_tool`
+    /// to avoid actor deadlock (bypassing the command channel).
+    pub approval_resolver: ApprovalResolver,
 }
 
 impl RunHandle {
@@ -161,6 +166,9 @@ impl RunManager {
             working_dir,
             history,
         )?;
+        // Clone the approval resolver before spawning so we can store
+        // it in the RunHandle for direct (non-command-channel) resolution.
+        let approval_resolver = run.approval_resolver().clone();
 
         // Emit RunCreated event (seq 0 — the bootstrap event).
         let _ = event_tx.send(Envelope {
@@ -293,6 +301,7 @@ impl RunManager {
             event_tx,
             join_handle: Some(join_handle),
             state: shared_state,
+            approval_resolver,
         };
 
         self.runs.lock().await.insert(run_id.clone(), handle);
@@ -343,6 +352,36 @@ impl RunManager {
         for handle in runs.values() {
             let _ = handle.command(RunCommand::Cancel);
         }
+    }
+
+    /// Resolve a pending approval directly through the per-Run resolver.
+    ///
+    /// This bypasses the command channel to avoid actor deadlock: when a
+    /// Run is blocked inside `run_turn()` waiting for an approval oneshot,
+    /// it cannot process `RunCommand::Approve` from its command channel.
+    /// By resolving the `ApprovalResolver` directly (shared via `RunHandle`),
+    /// we wake the waiting oneshot without touching the command channel.
+    ///
+    /// Returns `true` if the approval was found and resolved.
+    pub async fn resolve_approval(
+        &self,
+        run_id: Option<&str>,
+        prompt_id: &str,
+        choice: ApprovalChoice,
+    ) -> bool {
+        let runs = self.runs.lock().await;
+        if let Some(id) = run_id {
+            if let Some(handle) = runs.get(id) {
+                return handle.approval_resolver.resolve(prompt_id, choice);
+            }
+        } else {
+            for handle in runs.values() {
+                if handle.approval_resolver.resolve(prompt_id, choice.clone()) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Remove completed Runs from the tracking map (garbage collection).

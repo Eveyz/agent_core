@@ -188,6 +188,11 @@ async fn steer_run(state: State<'_, AppState>, run_id: String, message: String) 
 }
 
 /// Approve a tool execution that's waiting for approval.
+///
+/// Resolution order:
+/// 1. Global pending approvals map (backward compat + subagent)
+/// 2. Per-Run `ApprovalResolver` (direct path — no actor deadlock)
+/// 3. Command channel broadcast (legacy fallback for paused runs)
 #[tauri::command]
 async fn approve_tool(
     state: State<'_, AppState>,
@@ -205,17 +210,34 @@ async fn approve_tool(
 
     let manager = state.run_manager.lock().await;
 
-    // Try global pending approvals first (used by subagents)
+    eprintln!(
+        "[approve_tool] pid={} choice={} run_id={:?}",
+        prompt_id, choice, run_id
+    );
+
+    // 1. Try global pending approvals first (used by subagents + legacy paths)
     {
         let pending_arc = agent_core::permission::global_pending_approvals();
         let mut pending = pending_arc.lock();
         if let Some(tx) = pending.remove(&prompt_id) {
+            eprintln!("[approve_tool] resolved via global map");
             let _ = tx.send(choice_enum.clone());
             return Ok(());
         }
     }
 
-    // If run_id is provided, route to that specific run.
+    // 2. Try per-Run resolver directly (no command channel, no actor deadlock)
+    if manager
+        .resolve_approval(run_id.as_deref(), &prompt_id, choice_enum.clone())
+        .await
+    {
+        eprintln!("[approve_tool] resolved via per-Run resolver");
+        return Ok(());
+    }
+
+    eprintln!("[approve_tool] NOT resolved, falling back to command channel");
+
+    // 3. Legacy command-channel fallback (for paused/edge-case runs)
     if let Some(id) = run_id {
         manager
             .command(&id, RunCommand::Approve {
@@ -225,13 +247,14 @@ async fn approve_tool(
             .await
             .map_err(|e| e.to_string())
     } else {
-        // Broadcast to all active runs since we don't know which one owns the prompt
         let runs = manager.list_runs().await;
         for id in runs {
-            let _ = manager.command(&id, RunCommand::Approve {
-                prompt_id: prompt_id.clone(),
-                choice: choice_enum.clone(),
-            }).await;
+            let _ = manager
+                .command(&id, RunCommand::Approve {
+                    prompt_id: prompt_id.clone(),
+                    choice: choice_enum.clone(),
+                })
+                .await;
         }
         Ok(())
     }

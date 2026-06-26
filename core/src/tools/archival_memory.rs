@@ -5,7 +5,8 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 use crate::memory::MemoryManager;
-use crate::tools::Tool;
+use crate::memory::embedding::EmbeddingModel;
+use crate::tools::{Tool, try_lock_memory};
 
 pub struct ArchivalMemoryInsertTool {
     memory: Arc<Mutex<MemoryManager>>,
@@ -48,7 +49,10 @@ impl Tool for ArchivalMemoryInsertTool {
         let content = args["content"].as_str().context("missing 'content'")?;
         let metadata = args["metadata"].as_str();
 
-        let memory = self.memory.lock();
+        let memory = match try_lock_memory(&self.memory) {
+            Ok(m) => m,
+            Err(busy_msg) => return Ok(busy_msg),
+        };
         let id = memory.archival().insert(content, metadata)?;
 
         Ok(json!({
@@ -102,8 +106,12 @@ impl Tool for ArchivalMemorySearchTool {
         let query = args["query"].as_str().context("missing 'query'")?;
         let top_k = args["top_k"].as_u64().unwrap_or(5) as usize;
 
-        let memory = self.memory.lock();
-        let results = memory.archival().search(query, top_k)?;
+        // Pure keyword search via SQLite FTS5 — no embedding model needed.
+        let memory = match try_lock_memory(&self.memory) {
+            Ok(m) => m,
+            Err(busy_msg) => return Ok(busy_msg),
+        };
+        let results = memory.archival().search_by_keyword(query, top_k)?;
 
         let items: Vec<Value> = results
             .iter()
@@ -157,7 +165,10 @@ impl Tool for ArchivalMemoryDeleteTool {
     async fn execute(&self, args: Value) -> Result<String> {
         let id = args["id"].as_str().context("missing 'id'")?;
 
-        let memory = self.memory.lock();
+        let memory = match try_lock_memory(&self.memory) {
+            Ok(m) => m,
+            Err(busy_msg) => return Ok(busy_msg),
+        };
         let deleted = memory.archival().delete(id)?;
 
         Ok(json!({

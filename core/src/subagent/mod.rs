@@ -22,7 +22,7 @@ impl Default for SubagentConfig {
         Self {
             system_prompt: "You are a focused sub-agent. Complete the given task and return the result. Be concise.".to_string(),
             tools: Vec::new(),
-            max_iterations: 5,
+            max_iterations: 50,
             max_context_tokens: 32000,
         }
     }
@@ -116,6 +116,9 @@ impl Subagent {
             }
         });
 
+        let mut last_text = String::new();
+        let mut tool_call_count = 0;
+
         for iteration in 0..self.config.max_iterations {
             // Emit SubagentTurnStart
             if let Some(ref tx) = event_sender {
@@ -136,6 +139,8 @@ impl Subagent {
                 .await?;
 
             let (text, tool_calls) = self.collect_stream(stream, event_sender.as_ref()).await?;
+            last_text = text.clone();
+            tool_call_count += tool_calls.len();
 
             if tool_calls.is_empty() {
                 guard.complete();
@@ -259,12 +264,32 @@ impl Subagent {
             });
         }
 
+        let truncated_output = if last_text.len() > 1000 {
+            format!("{}... [truncated, total {} chars]", &last_text[..1000], last_text.len())
+        } else if last_text.is_empty() {
+            "(no output produced)".to_string()
+        } else {
+            last_text.clone()
+        };
+
         Ok(SubagentResult {
             subagent_id: self.id.clone(),
             role_name: self.role_name.clone(),
             output: format!(
-                "Subagent '{}' reached max iterations ({})",
-                self.id, self.config.max_iterations
+                "=== Subagent Suspended (max iterations reached) ===\n\
+                 Task: {}\n\
+                 Iterations used: {} / {}\n\
+                 Tool calls executed: {}\n\
+                 Last output from subagent:\n\
+                 {}\n\
+                 ---\n\
+                 The subagent was suspended at its iteration limit. \
+                 To continue, spawn a new subagent referencing this progress.",
+                task,
+                self.config.max_iterations,
+                self.config.max_iterations,
+                tool_call_count,
+                truncated_output,
             ),
             iterations_used: self.config.max_iterations,
             success: false,

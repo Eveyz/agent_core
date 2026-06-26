@@ -396,6 +396,7 @@ impl AgentBuilder {
             skill_manager: self.skill_manager,
             current_session_id: None,
             trace,
+            consolidate_counter: 0,
         })
     }
 }
@@ -427,6 +428,8 @@ pub struct Agent {
     current_session_id: Option<String>,
     /// Optional execution-trace sink (pure side-channel).
     trace: Option<Arc<Mutex<TraceCollector>>>,
+    /// Incrementing turn counter used to gate periodic tasks (e.g. consolidation).
+    consolidate_counter: u64,
 }
 
 /// Result of a single recovery attempt within `model_turn`.
@@ -602,12 +605,13 @@ impl Agent {
         // ── Stage: Refresh ───────────────────────────────────────────
         tracing::debug!(turn = turn_index, stage = Stage::Refresh.as_str());
         self.refresh_context_segments();
-        self.context.trim_to_fit();
 
         // ── Stage: Compact ───────────────────────────────────────────
-        // LLM compaction: if still near limit, summarize old turns.
+        // On-demand compact optimized for DeepSeek prefix caching.
+        // Uses chunked_drop (zero-cost, cache-friendly) as primary
+        // strategy, with LLM summarization as fallback.
         tracing::debug!(turn = turn_index, stage = Stage::Compact.as_str());
-        self.maybe_llm_compact().await;
+        self.maybe_compact().await;
 
         // ── Stage: Model ─────────────────────────────────────────────
         // Invoke the model with loop-level recovery (Phase A). This
@@ -1040,17 +1044,45 @@ impl Agent {
         }
     }
 
-    /// Stage 4 LLM compaction: if tokens are critically high (>95%),
-    /// request an LLM summary of old turns and apply it.
-    /// Also writes the summary to Recall Memory for long-term retention.
-    async fn maybe_llm_compact(&mut self) {
+    /// Compact strategy.
+    ///
+    /// Two-tier approach optimized for DeepSeek prefix caching:
+    /// 1. Chunked drop (preferred) — batch-drop oldest 50% of turns.
+    /// 2. LLM summarize (fallback) — when chunked_drop isn't sufficient.
+    async fn maybe_compact(&mut self) {
+        const COMPACT_THRESHOLD: f64 = 0.80;
+        const CHUNK_KEEP_RECENT: usize = 20;
+
         let current = self.context.current_token_count();
-        let threshold = (self.client.model.max_context_tokens as f64 * 0.80) as usize;
+        let threshold =
+            (self.client.model.max_context_tokens as f64 * COMPACT_THRESHOLD) as usize;
 
         if current < threshold {
             return;
         }
 
+        // Tier 1: Chunked drop — zero-cost, cache-friendly bulk removal.
+        let keep = (self.context.len() / 2).max(4).min(CHUNK_KEEP_RECENT);
+        if self.context.chunked_drop(keep) > 0 {
+            tracing::info!(
+                compact = "chunked_drop",
+                tokens_before = current,
+                tokens_after = self.context.current_token_count(),
+                "Chunked drop compact applied"
+            );
+            if self.context.current_token_count() < threshold {
+                return;
+            }
+        }
+
+        // Also run trim_to_fit for snip/dedup/chunk compression.
+        let _result = self.context.trim_to_fit();
+
+        if self.context.current_token_count() < threshold {
+            return;
+        }
+
+        // Tier 2: LLM summarize — expensive, handles pathological cases.
         let num_turns = self.context.len().max(4) * 2 / 5;
         let request = match self.context.prepare_summary(num_turns) {
             Some(r) => r,
@@ -1067,7 +1099,14 @@ impl Agent {
         };
 
         let summary: crate::compressor::TurnSummary = match serde_json::from_str(&result_text) {
-            Ok(s) => s,
+            Ok(s) => {
+                tracing::info!(
+                    compact = "llm_summary",
+                    turns_summarized = num_turns,
+                    "LLM compact applied"
+                );
+                s
+            }
             Err(_) => {
                 self.context.micro_compact(self.context.len().max(4) / 3);
                 return;
@@ -1078,14 +1117,25 @@ impl Agent {
             .apply_summary(request.split_index, &summary, num_turns);
     }
 
-    fn maybe_consolidate(&self) {
+    fn maybe_consolidate(&mut self) {
+        const CONSOLIDATE_INTERVAL: u64 = 20;
+
+        self.consolidate_counter += 1;
+        if self.consolidate_counter % CONSOLIDATE_INTERVAL != 0 {
+            return;
+        }
+
         if let Some(ref mem) = self.memory {
             let should_consolidate = !mem.lock().session_id().is_empty();
 
             if should_consolidate {
                 let memory = mem.clone();
                 tokio::spawn(async move {
-                    let result = memory.lock().consolidate();
+                    let consolidator = {
+                        let guard = memory.lock();
+                        guard.consolidator_clone()
+                    }; // lock released — heavy CPU work runs lock-free
+                    let result = consolidator.consolidate();
                     match result {
                         Ok(report) => {
                             if report.deduped_recall > 0 || report.deduped_archival > 0 {

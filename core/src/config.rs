@@ -77,7 +77,7 @@ fn default_true() -> bool {
 }
 
 fn default_max_iterations() -> usize {
-    100
+    50
 }
 
 fn default_max_context_tokens() -> usize {
@@ -96,7 +96,7 @@ impl Default for ModelConfig {
             max_tokens: None,
             react_enabled: true,
             system_prompt: None,
-            max_iterations: 100,
+            max_iterations: 50,
             request_timeout_secs: 1800,
             fallback_model: None,
             reasoning_effort: None,
@@ -354,7 +354,7 @@ impl Config {
                 max_tokens: None,
                 react_enabled: true,
                 system_prompt: None,
-                max_iterations: 100,
+                max_iterations: 50,
                 request_timeout_secs: 1800,
                 models: provider_models,
             },
@@ -373,7 +373,7 @@ impl Config {
                 max_tokens: None,
                 react_enabled: true,
                 system_prompt: None,
-                max_iterations: 100,
+                max_iterations: 50,
                 request_timeout_secs: 1800,
                 fallback_model: None,
                 reasoning_effort: None,
@@ -615,7 +615,7 @@ gpt = { model_id = "gpt-4o-mini" }
         assert_eq!(model.temperature, None);
         assert_eq!(model.max_tokens, None);
         assert!(model.react_enabled);
-        assert_eq!(model.max_iterations, 100);
+        assert_eq!(model.max_iterations, 50);
         assert_eq!(model.system_prompt, None);
     }
 
@@ -811,7 +811,7 @@ gpt = { model_id = "gpt-4o" }
         assert_eq!(default.temperature, None);
         assert_eq!(default.max_tokens, None);
         assert!(default.react_enabled);
-        assert_eq!(default.max_iterations, 100);
+        assert_eq!(default.max_iterations, 50);
     }
 
     #[test]

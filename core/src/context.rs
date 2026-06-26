@@ -727,6 +727,33 @@ impl ContextEngine {
         Some(summary)
     }
 
+    /// Chunked drop: batch-remove the oldest conversation turns.
+    ///
+    /// Keeps the `keep_recent` most recent messages and drops everything
+    /// before them. Returns the number of messages dropped (0 if nothing
+    /// was dropped).
+    ///
+    /// # Cache behavior
+    ///
+    /// This is the preferred compact strategy for DeepSeek-prefixed models:
+    /// - The one-time drop causes a single-turn cache miss (system-only hit).
+    /// - For the next 10+ turns the new shorter prefix is fully stable and
+    ///   enjoys full cache hits.
+    /// - Zero LLM overhead — no summarization cost, latency, or hallucination.
+    ///
+    /// The alternative (LLM summarization) also causes a cache miss on
+    /// compaction but adds 2-5 seconds of latency, risks hallucinated
+    /// summaries, and produces non-deterministic content that may
+    /// destabilize subsequent cache prefixes.
+    pub fn chunked_drop(&mut self, keep_recent: usize) -> usize {
+        if self.messages.len() <= keep_recent {
+            return 0;
+        }
+        let drop_count = self.messages.len() - keep_recent;
+        self.messages.drain(..drop_count);
+        drop_count
+    }
+
     pub fn should_auto_compact(&self) -> bool {
         let current = self.current_token_count();
         let threshold = (self.max_tokens as f64 * self.auto_compact_threshold) as usize;
@@ -1137,7 +1164,7 @@ mod tests {
     fn test_trim_to_fit_does_not_drain_messages() {
         // trim_to_fit now only runs Stage 1-3 (snip/dedup/chunk) and does NOT
         // drain old messages. The LLM summary (Stage 4) is handled by the
-        // caller via maybe_llm_compact. This test verifies that pure user
+        // caller via maybe_compact. This test verifies that pure user
         // messages are preserved — no data loss without an explicit compact.
         let mut engine = ContextEngine::new("test", 100);
         engine.set_max_tokens(100);
@@ -1160,6 +1187,41 @@ mod tests {
         assert!(summary.is_some());
         assert!(engine.len() <= 4); // summary msg + 3 kept
         assert!(summary.unwrap().contains("Context summary"));
+    }
+
+    #[test]
+    fn test_chunked_drop_batch_removal() {
+        let mut engine = ContextEngine::new("test", 128000);
+        for i in 0..20 {
+            engine.add(Message::user(&format!("msg {}", i)));
+        }
+        assert_eq!(engine.len(), 20);
+
+        // Keep 5 most recent — drops first 15
+        let dropped = engine.chunked_drop(5);
+        assert_eq!(dropped, 15);
+        assert_eq!(engine.len(), 5);
+        // Verify we kept the right messages (messages() prepends system prompt)
+        let msgs = engine.messages();
+        // Skip system message, check range [1..]
+        let user_msgs: Vec<_> = msgs.iter().skip(1).collect();
+        assert_eq!(user_msgs.len(), 5);
+        let first_of_kept = &user_msgs[0].content;
+        assert!(first_of_kept.as_ref().unwrap().contains("msg 15"));
+        let last_of_kept = &user_msgs.last().unwrap().content;
+        assert!(last_of_kept.as_ref().unwrap().contains("msg 19"));
+    }
+
+    #[test]
+    fn test_chunked_drop_no_op_when_under_limit() {
+        let mut engine = ContextEngine::new("test", 128000);
+        for i in 0..5 {
+            engine.add(Message::user(&format!("msg {}", i)));
+        }
+        // keep_recent = 10 > len = 5 — no-op
+        let dropped = engine.chunked_drop(10);
+        assert_eq!(dropped, 0);
+        assert_eq!(engine.len(), 5);
     }
 
     #[test]
