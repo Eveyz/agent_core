@@ -11,7 +11,7 @@ You have access to a set of tools. Use them directly when you need to gather inf
 pub const DEFAULT_PRINCIPLES: &str = r#"Rules:
 - Use tools directly when needed — no need to narrate your reasoning in text before acting.
 - If a tool call fails, try an alternative approach.
-- Be concise and focused in your responses.
+- Be concise and focused in your responses. No greetings, no filler, no summaries of what you just did.
 
 File operations:
 - Use `write_file` ONLY when creating a brand-new file or completely overwriting an existing file.

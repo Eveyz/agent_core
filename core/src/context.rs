@@ -260,13 +260,15 @@ impl ContextEngine {
         self.segments.insert("environment".to_string(), env);
 
         // Segment 4: TOOL CATALOG — available tools
+        // Stable: tool list doesn't change within a session, so it stays
+        // in the frozen system prompt for maximum cache hits.
         let tools = ContextSegment::new(
             "tool_catalog",
             "Tool Catalog",
             3,
             0, // dynamic — uses remaining budget
             RefreshPolicy::OnRegister,
-            Stability::SemiStable,
+            Stability::Stable,
         );
         self.stable_segment_names.push("tool_catalog".to_string());
         self.segments.insert("tool_catalog".to_string(), tools);
@@ -331,8 +333,12 @@ impl ContextEngine {
 
     /// Update the TOOL CATALOG segment (available tools list).
     /// Called when tools are registered/unregistered.
+    /// No-op if the content hasn't changed (avoids unnecessary cache invalidation).
     pub fn set_tool_catalog(&mut self, text: &str) {
         if let Some(seg) = self.segments.get_mut("tool_catalog") {
+            if seg.content == text {
+                return;
+            }
             seg.set_content(text);
         }
     }
@@ -375,7 +381,8 @@ impl ContextEngine {
 
     // ── System prompt assembly ──────────────────────────────────────
 
-    /// Assemble the full system prompt from all segments, respecting budgets.
+    /// Assemble the **frozen** system prompt from Stable segments only.
+    /// This content never changes within a session, enabling prompt cache hits.
     pub fn assemble_system_prompt(&self) -> String {
         let mut segments: Vec<&ContextSegment> = self.segments.values().collect();
         segments.sort_by_key(|s| s.priority);
@@ -387,6 +394,10 @@ impl ContextEngine {
             if !seg.enabled || seg.content.is_empty() {
                 continue;
             }
+            // Only Stable segments go into the frozen system prompt.
+            if seg.stability != Stability::Stable {
+                continue;
+            }
             let text = seg.assemble();
             if text.is_empty() {
                 continue;
@@ -394,14 +405,12 @@ impl ContextEngine {
 
             let seg_tokens = rough_token_count(&text);
 
-            // Check if we're still within the system prefix budget
             let remaining = self.system_prefix_budget.saturating_sub(used_tokens);
             if remaining == 0 && !parts.is_empty() {
-                break; // budget exhausted
+                break;
             }
 
             if seg_tokens > remaining && !parts.is_empty() {
-                // Truncate this segment to fit remaining budget
                 let truncated = truncate_to_token_budget(&seg.content, remaining);
                 if !truncated.is_empty() {
                     parts.push(format!("== {} (truncated) ==\n{}\n", seg.label, truncated));
@@ -414,6 +423,38 @@ impl ContextEngine {
         }
 
         parts.join("\n")
+    }
+
+    /// Assemble the **dynamic** context injection from non-Stable segments.
+    /// This content changes every turn and is injected into the last user
+    /// message to preserve the cacheability of the system prompt + conversation
+    /// history prefix.
+    pub fn assemble_context_injection(&self) -> String {
+        let mut segments: Vec<&ContextSegment> = self.segments.values().collect();
+        segments.sort_by_key(|s| s.priority);
+
+        let mut parts = Vec::new();
+
+        for seg in &segments {
+            if !seg.enabled || seg.content.is_empty() {
+                continue;
+            }
+            // Only non-Stable segments go into the context injection.
+            if seg.stability == Stability::Stable {
+                continue;
+            }
+            let text = seg.assemble();
+            if text.is_empty() {
+                continue;
+            }
+            parts.push(text);
+        }
+
+        if parts.is_empty() {
+            return String::new();
+        }
+
+        format!("<context_injection>\n{}\n</context_injection>", parts.join("\n"))
     }
 
     /// Number of tokens in the stable prefix (identity + principles + env + tool_catalog).
@@ -520,20 +561,47 @@ impl ContextEngine {
         &self.messages
     }
 
-    /// Build the full message array: system (assembled from segments) + conversation.
+    /// Build the full message array: system (frozen) + conversation history
+    /// with dynamic context injection appended to the last user message.
+    ///
+    /// This structure maximizes prompt cache hits:
+    /// - The system message is frozen (Stable segments only).
+    /// - Conversation history is untouched → prefix is cacheable.
+    /// - Dynamic content (environment, memory, plan) is injected into the
+    ///   last user message, which is always a cache miss anyway.
     pub fn messages(&self) -> Vec<Message> {
         let mut result = Vec::new();
         let system_content = self.assemble_system_prompt();
         if !system_content.is_empty() {
             result.push(Message::system(&system_content));
         }
-        result.extend(self.messages.iter().cloned());
+
+        let injection = self.assemble_context_injection();
+
+        let n = self.messages.len();
+        for (i, msg) in self.messages.iter().enumerate() {
+            let mut msg = msg.clone();
+            // Inject dynamic context into the last user message.
+            if i == n - 1
+                && msg.role == crate::types::Role::User
+                && !injection.is_empty()
+            {
+                if let Some(ref content) = msg.content {
+                    msg.content = Some(format!("{content}\n\n{injection}"));
+                } else {
+                    msg.content = Some(injection.clone());
+                }
+            }
+            result.push(msg);
+        }
+
         result
     }
 
     pub fn current_token_count(&self) -> usize {
         let system_tokens = rough_token_count(&self.assemble_system_prompt());
-        let mut total = system_tokens;
+        let injection_tokens = rough_token_count(&self.assemble_context_injection());
+        let mut total = system_tokens + injection_tokens;
         for msg in &self.messages {
             total += message_token_count(msg);
         }
@@ -548,12 +616,13 @@ impl ContextEngine {
         let tokens_before = self.current_token_count();
 
         let system_tokens = rough_token_count(&self.assemble_system_prompt());
+        let injection_tokens = rough_token_count(&self.assemble_context_injection());
         let max_tokens = self.max_tokens;
 
         let result = self.compressor.run_pipeline(
             &mut self.messages,
             |msgs| {
-                let mut total = system_tokens;
+                let mut total = system_tokens + injection_tokens;
                 for msg in msgs {
                     total += message_token_count(msg);
                 }
@@ -876,13 +945,22 @@ mod tests {
         engine.set_active_memory("User prefers Rust.");
         engine.set_execution_plan("Todo: [ ] fix bug");
 
+        // Frozen system prompt: only Stable segments (identity, principles, tool_catalog)
         let prompt = engine.assemble_system_prompt();
         assert!(prompt.contains("I am a helper"));
         assert!(prompt.contains("Always be honest"));
-        assert!(prompt.contains("/tmp"));
         assert!(prompt.contains("read_file"));
-        assert!(prompt.contains("User prefers Rust"));
-        assert!(prompt.contains("fix bug"));
+        // Dynamic segments should NOT be in the frozen system prompt
+        assert!(!prompt.contains("/tmp"));
+        assert!(!prompt.contains("User prefers Rust"));
+        assert!(!prompt.contains("fix bug"));
+
+        // Dynamic context injection: environment, active_memory, execution_plan
+        let injection = engine.assemble_context_injection();
+        assert!(injection.contains("/tmp"));
+        assert!(injection.contains("User prefers Rust"));
+        assert!(injection.contains("fix bug"));
+        assert!(injection.contains("<context_injection>"));
     }
 
     #[test]
@@ -908,6 +986,35 @@ mod tests {
         assert_eq!(msgs[1].role, Role::User);
         assert_eq!(msgs[2].role, Role::Assistant);
         assert!(msgs[0].content.as_ref().unwrap().contains("identity here"));
+    }
+
+    #[test]
+    fn test_context_injection_appended_to_last_user_message() {
+        let mut engine = ContextEngine::new("identity", 128000);
+        engine.set_environment("CWD: /tmp");
+        engine.set_active_memory("User likes Rust");
+        engine.add(Message::user("first question"));
+        engine.add(Message::assistant("answer"));
+        engine.add(Message::user("second question"));
+
+        let msgs = engine.messages();
+        // system + 3 conversation messages
+        assert_eq!(msgs.len(), 4);
+
+        // Last user message should contain the injection
+        let last_user = &msgs[3];
+        assert_eq!(last_user.role, Role::User);
+        let content = last_user.content.as_ref().unwrap();
+        assert!(content.contains("second question"));
+        assert!(content.contains("<context_injection>"));
+        assert!(content.contains("User likes Rust"));
+
+        // First user message should NOT contain injection
+        let first_user = &msgs[1];
+        assert_eq!(first_user.role, Role::User);
+        let first_content = first_user.content.as_ref().unwrap();
+        assert!(first_content.contains("first question"));
+        assert!(!first_content.contains("<context_injection>"));
     }
 
     #[test]
