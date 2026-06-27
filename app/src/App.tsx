@@ -72,6 +72,7 @@ function App() {
 
   const activeProject = projects.find((p) => p.id === activeProjectId);
   const [activeTab, setActiveTab] = useState<'code' | 'write'>('code');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const { scrollRef, contentRef, scrollToBottom, isAtBottom } = useAutoScroll<HTMLDivElement, HTMLDivElement>({
     deps: [entriesLength, activeSessionId],
@@ -284,11 +285,20 @@ function App() {
 
   return (
     <div className="app-container">
-      <Sidebar activeTab={activeTab} onTabChange={setActiveTab} onOpenSettings={handleOpenSettings} />
+      <Sidebar
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        onOpenSettings={handleOpenSettings}
+        collapsed={sidebarCollapsed}
+        onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+      />
       <SettingsModal />
 
       <main className="main-area">
-        <CustomTitleBar />
+        <CustomTitleBar
+          sidebarCollapsed={sidebarCollapsed}
+          onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
+        />
         <CosmicBackground />
         <header className="main-header">
           <div className="header-title">

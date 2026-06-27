@@ -122,10 +122,14 @@ export const Sidebar = memo(function Sidebar({
   activeTab,
   onTabChange,
   onOpenSettings,
+  collapsed,
+  onToggleCollapse,
 }: {
   activeTab: 'code' | 'write';
   onTabChange: (tab: 'code' | 'write') => void;
   onOpenSettings: () => void;
+  collapsed: boolean;
+  onToggleCollapse: () => void;
 }) {
   const dispatch = useAppDispatch();
   const projects = useSelector((state: RootState) => state.project.projects);
@@ -250,7 +254,7 @@ export const Sidebar = memo(function Sidebar({
   }, [dispatch, confirm]);
 
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar ${collapsed ? 'sidebar-collapsed' : ''}`}>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px 6px' }}>
         <button className="icon-btn"><LayoutGridIcon size={16} /></button>
@@ -381,6 +385,15 @@ export const Sidebar = memo(function Sidebar({
         <div className="nav-item"><SmartphoneIcon size={14} /> Connect phone</div>
         <div className="nav-item" onClick={onOpenSettings}><SettingsIcon size={14} /> Settings</div>
       </div>
+
+      {/* Collapse button */}
+      <button
+        className="sidebar-collapse-btn"
+        onClick={onToggleCollapse}
+        title={collapsed ? '展开侧边栏' : '收起侧边栏'}
+      >
+        <ChevronRightIcon size={16} style={{ transform: collapsed ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }} />
+      </button>
 
       {dialogElement}
     </aside>

@@ -4,10 +4,14 @@ import XIcon from 'lucide-react/dist/esm/icons/x.mjs';
 import MinusIcon from 'lucide-react/dist/esm/icons/minus.mjs';
 import Maximize2Icon from 'lucide-react/dist/esm/icons/maximize-2.mjs';
 import Minimize2Icon from 'lucide-react/dist/esm/icons/minimize-2.mjs';
+import PanelLeftIcon from 'lucide-react/dist/esm/icons/panel-left.mjs';
 
 const TITLE_BAR_HEIGHT = 36;
 
-export function CustomTitleBar() {
+export function CustomTitleBar({ sidebarCollapsed, onToggleSidebar }: {
+  sidebarCollapsed: boolean;
+  onToggleSidebar: () => void;
+}) {
   const [isMaximized, setIsMaximized] = useState(false);
 
   useEffect(() => {
@@ -131,20 +135,33 @@ export function CustomTitleBar() {
       {/* Center: flex spacer (draggable) */}
       <div style={{ flex: 1 }} />
 
-      {/* Right: status area (non-draggable if needed) */}
+      {/* Right: sidebar toggle + status */}
       <div
         style={{
           display: 'flex',
           alignItems: 'center',
-          gap: 8,
-          fontSize: 12,
-          color: 'rgba(255,255,255,0.3)',
+          gap: 4,
           // @ts-ignore
           WebkitAppRegion: 'no-drag',
           // @ts-ignore
           appRegion: 'no-drag',
         } as React.CSSProperties}
-      />
+      >
+        <button
+          onClick={onToggleSidebar}
+          title={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
+          style={{
+            ...btnBase,
+            color: 'rgba(255,255,255,0.4)',
+            width: 28,
+            height: 28,
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.08)')}
+          onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+        >
+          <PanelLeftIcon size={16} style={{ transform: sidebarCollapsed ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }} />
+        </button>
+      </div>
     </div>
   );
 }
