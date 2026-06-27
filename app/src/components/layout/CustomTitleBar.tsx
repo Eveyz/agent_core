@@ -4,7 +4,7 @@ import XIcon from 'lucide-react/dist/esm/icons/x.mjs';
 import MinusIcon from 'lucide-react/dist/esm/icons/minus.mjs';
 import Maximize2Icon from 'lucide-react/dist/esm/icons/maximize-2.mjs';
 import Minimize2Icon from 'lucide-react/dist/esm/icons/minimize-2.mjs';
-import PanelLeftIcon from 'lucide-react/dist/esm/icons/panel-left.mjs';
+import ChevronLeftIcon from 'lucide-react/dist/esm/icons/chevron-left.mjs';
 
 const TITLE_BAR_HEIGHT = 36;
 
@@ -159,7 +159,7 @@ export function CustomTitleBar({ sidebarCollapsed, onToggleSidebar }: {
           onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255,255,255,0.08)')}
           onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
         >
-          <PanelLeftIcon size={16} style={{ transform: sidebarCollapsed ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }} />
+          <ChevronLeftIcon size={16} style={{ transform: sidebarCollapsed ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }} />
         </button>
       </div>
     </div>
