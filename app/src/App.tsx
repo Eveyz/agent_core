@@ -10,6 +10,7 @@ import TerminalSquareIcon from 'lucide-react/dist/esm/icons/terminal-square.mjs'
 import FolderIcon from 'lucide-react/dist/esm/icons/folder.mjs';
 import Maximize2Icon from 'lucide-react/dist/esm/icons/maximize-2.mjs';
 import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
+import PanelRightIcon from 'lucide-react/dist/esm/icons/panel-right.mjs';
 import { RootState } from './store';
 import {
   agentEventReceived,
@@ -46,6 +47,7 @@ import { ChatInput } from './components/chat/ChatInput';
 import TodoPanel from './components/chat/TodoPanel';
 import SettingsModal from './components/settings/SettingsModal';
 import { CustomTitleBar } from './components/layout/CustomTitleBar';
+import { WindowControls } from './components/layout/WindowControls';
 import './App.css';
 
 function getActiveSessionTitle(projectState: RootState['project']): string {
@@ -285,24 +287,37 @@ function App() {
 
   return (
     <div className="app-container">
-      <CustomTitleBar
-        sidebarCollapsed={sidebarCollapsed}
-        onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
-      />
       <div className="app-body">
-        <Sidebar
-          activeTab={activeTab}
-          onTabChange={setActiveTab}
-          onOpenSettings={handleOpenSettings}
-          collapsed={sidebarCollapsed}
-          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
-        />
+        <div className={`sidebar-column${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
+          <CustomTitleBar
+            sidebarCollapsed={sidebarCollapsed}
+            onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
+          />
+          <Sidebar
+            activeTab={activeTab}
+            onTabChange={setActiveTab}
+            onOpenSettings={handleOpenSettings}
+            collapsed={sidebarCollapsed}
+          />
+        </div>
         <SettingsModal />
 
         <main className="main-area">
           <CosmicBackground />
         <header className="main-header">
           <div className="header-title">
+            {sidebarCollapsed && (
+              <>
+                <WindowControls />
+                <button
+                  className="sidebar-expand-btn"
+                  onClick={() => setSidebarCollapsed(false)}
+                  title="展开侧边栏"
+                >
+                  <PanelRightIcon size={16} />
+                </button>
+              </>
+            )}
             {isEditingTitle && viewingSubagentPath.length === 0 ? (
               <>
                 <input
@@ -402,6 +417,7 @@ function App() {
     </div>
   </div>
 );
+	}
 
 function convertSubagentBlocks(blocks: SubagentBlock[]): TurnBlock[] {
   return blocks.map((b): TurnBlock => {

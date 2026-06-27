@@ -14,6 +14,22 @@
   overflow: hidden;
 }
 
+/* Sidebar column (wrapper: title bar + sidebar) */
+.sidebar-column {
+  display: flex;
+  flex-direction: column;
+  width: 260px;
+  flex-shrink: 0;
+  min-height: 0;
+  overflow: hidden;
+  transition: width 0.2s ease-out;
+}
+
+.sidebar-column.sidebar-collapsed {
+  width: 0;
+  min-width: 0;
+}
+
 /* Sidebar */
 .sidebar {
   width: 260px;
@@ -21,7 +37,8 @@
   border-right: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
-  flex-shrink: 0;
+  flex: 1;
+  min-height: 0;
   transition: width 0.2s ease-out, min-width 0.2s ease-out;
   position: relative;
   overflow: hidden;
@@ -33,33 +50,26 @@
   border-right: none;
 }
 
-.sidebar-collapsed > *:not(.sidebar-collapse-btn) {
-  visibility: hidden;
-  opacity: 0;
-  transition: visibility 0s 0.2s, opacity 0.2s;
+.sidebar-collapse-btn {
+  display: none;
 }
 
-.sidebar-collapse-btn {
-  position: absolute;
-  bottom: 16px;
-  right: -12px;
+/* Expand button (visible when sidebar is collapsed, inside header-title) */
+.sidebar-expand-btn {
   width: 24px;
   height: 24px;
-  border-radius: 50%;
+  border-radius: 6px;
   border: 1px solid var(--border-color);
-  background: var(--bg-sidebar);
+  background: var(--bg-main);
   color: var(--text-muted);
   cursor: pointer;
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   justify-content: center;
-  z-index: 10;
-  transition: all 0.2s;
-  visibility: visible !important;
-  opacity: 1 !important;
+  transition: all 0.15s;
 }
-
-.sidebar-collapse-btn:hover {
+.sidebar-expand-btn:hover {
   background: var(--bg-hover);
   color: var(--text-main);
 }
