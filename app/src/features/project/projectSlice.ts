@@ -368,7 +368,6 @@ export const projectSlice = createSlice({
           if (s) {
             s.title = newTitle;
             s.updated_at = new Date().toISOString();
-            state.sessions[projectId].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
           }
         }
       })
@@ -378,8 +377,8 @@ export const projectSlice = createSlice({
           const s = list.find((s) => s.id === sessionId);
           if (s) {
             s.message_count = action.payload.messageCount;
+            // 更新 updated_at 但不排序——避免 working 中 session 频繁跳到顶部
             s.updated_at = new Date().toISOString();
-            list.sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
             break;
           }
         }

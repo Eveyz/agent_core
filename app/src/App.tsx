@@ -72,7 +72,10 @@ function App() {
   const activeProject = projects.find((p) => p.id === activeProjectId);
   const [activeTab, setActiveTab] = useState<'code' | 'write'>('code');
 
-  const { scrollRef, contentRef, scrollToBottom, isAtBottom } = useAutoScroll<HTMLDivElement, HTMLDivElement>([entriesLength, activeSessionId, isProcessing]);
+  const { scrollRef, contentRef, scrollToBottom, isAtBottom } = useAutoScroll<HTMLDivElement, HTMLDivElement>({
+    deps: [entriesLength, activeSessionId],
+    isProcessing,
+  });
 
   useAgentEventListener();
 
