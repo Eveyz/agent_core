@@ -13,8 +13,47 @@
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
+  transition: width 0.2s ease-out, min-width 0.2s ease-out;
+  position: relative;
+  overflow: hidden;
 }
 
+.sidebar-collapsed {
+  width: 0;
+  min-width: 0;
+  border-right: none;
+}
+
+.sidebar-collapsed > *:not(.sidebar-collapse-btn) {
+  visibility: hidden;
+  opacity: 0;
+  transition: visibility 0s 0.2s, opacity 0.2s;
+}
+
+.sidebar-collapse-btn {
+  position: absolute;
+  bottom: 16px;
+  right: -12px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px solid var(--border-color);
+  background: var(--bg-sidebar);
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  transition: all 0.2s;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+.sidebar-collapse-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-main);
+}
 .mac-controls {
   display: flex;
   gap: 8px;
@@ -326,46 +365,5 @@
 .sidebar-bottom {
   margin-top: auto;
   padding: 16px 8px;
-}
-
-.sidebar-collapse-btn {
-  position: absolute;
-  bottom: 16px;
-  right: -12px;
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  border: 1px solid var(--border-color);
-  background: var(--bg-sidebar);
-  color: var(--text-muted);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 10;
-  transition: all 0.2s;
-}
-
-.sidebar-collapse-btn:hover {
-  background: var(--bg-hover);
-  color: var(--text-main);
-}
-
-/* Collapsed state */
-.sidebar-collapsed {
-  width: 0 !important;
-  min-width: 0 !important;
-  overflow: hidden !important;
-  padding: 0 !important;
-  border-right: none !important;
-}
-
-.sidebar-collapsed > * {
-  visibility: hidden;
-}
-
-.sidebar-collapsed .sidebar-collapse-btn {
-  visibility: visible;
-  right: -12px;
 }
 
