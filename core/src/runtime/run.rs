@@ -45,7 +45,7 @@ use crate::runtime::guard::EventGuard;
 use crate::runtime::state::RunState;
 use crate::runtime::supervisor::ProcessSupervisor;
 use crate::tools::ToolRegistry;
-use crate::types::{Message, MessageDelta, Role, StreamEvent, ToolCall, ToolExecutionMode};
+use crate::types::{CacheUsage, Message, MessageDelta, Role, StreamEvent, ToolCall, ToolExecutionMode};
 
 /// Result of running a single turn.
 enum TurnOutcome {
@@ -114,6 +114,9 @@ pub struct Run {
     /// Used for worktree isolation — each concurrent Run can work in its own
     /// git worktree without file conflicts.
     working_dir: Option<String>,
+
+    /// Last stable prefix fingerprint — used to detect drift across turns.
+    last_prefix_fingerprint: String,
 }
 
 impl Run {
@@ -190,6 +193,9 @@ impl Run {
             context.add(msg);
         }
 
+        // Compute initial stable prefix fingerprint
+        let last_prefix_fingerprint = context.stable_prefix_fingerprint();
+
         Ok(Self {
             id,
             session_id,
@@ -215,6 +221,7 @@ impl Run {
             approval_resolver: ApprovalResolver::new(),
             working_dir,
             max_iterations,
+            last_prefix_fingerprint,
         })
     }
 
@@ -516,11 +523,22 @@ impl Run {
         // Stage: Refresh
         self.refresh_context_segments();
 
+        // Stage: Verify stable prefix hasn't drifted
+        let current_fp = self.context.stable_prefix_fingerprint();
+        if current_fp != self.last_prefix_fingerprint {
+            self.emit(RunEvent::CacheInfo {
+                hit_tokens: 0,
+                miss_tokens: 0,
+                hit_rate: -1.0, // -1 signals "prefix drifted"
+            });
+            self.last_prefix_fingerprint = current_fp;
+        }
+
         // Stage: Compact (on-demand only — avoid per-turn cache invalidation)
         self.maybe_compact().await;
 
         // Stage: Model
-        let (text, tool_calls, message_id) = match self.model_turn().await {
+        let (text, tool_calls, message_id, cache_usage) = match self.model_turn().await {
             Ok(r) => r,
             Err(e) => {
                 if self.cancel.is_cancelled() {
@@ -532,6 +550,15 @@ impl Run {
                 )));
             }
         };
+
+        // Emit cache telemetry
+        if cache_usage.total() > 0 {
+            self.emit(RunEvent::CacheInfo {
+                hit_tokens: cache_usage.hit_tokens,
+                miss_tokens: cache_usage.miss_tokens,
+                hit_rate: cache_usage.hit_rate(),
+            });
+        }
 
         // Stage: Dispatch
         if tool_calls.is_empty() {
@@ -745,7 +772,7 @@ impl Run {
 
     // ── Model interaction ────────────────────────────────────────
 
-    async fn model_turn(&mut self) -> Result<(String, Vec<ToolCall>, String), String> {
+    async fn model_turn(&mut self) -> Result<(String, Vec<ToolCall>, String, CacheUsage), String> {
         const MAX_RECOVERY_ATTEMPTS: u32 = 3;
 
         for _attempt in 0..MAX_RECOVERY_ATTEMPTS {
@@ -753,15 +780,18 @@ impl Run {
                 return Err("aborted".to_string());
             }
 
-            let messages = self.build_messages();
+            let mut messages = self.build_messages();
             let tools = self.registry.tool_definitions();
+
+            // Apply hygiene: truncate oversized tool results, replace long args
+            crate::hygiene::sanitize(&mut messages);
 
             // BeforeModel hook: SkipModel short-circuit
             let snapshot = self.snapshot_messages_for_hook(&messages);
             if let Some(preset) = self.hook_registry.fire_before_model(&snapshot) {
                 self.recovery_ctx.record_success();
                 self.hook_registry.fire_after_model(&preset, 0);
-                return Ok((preset, Vec::new(), uuid::Uuid::new_v4().to_string()));
+                return Ok((preset, Vec::new(), uuid::Uuid::new_v4().to_string(), CacheUsage::default()));
             }
 
             let stream = self
@@ -770,7 +800,7 @@ impl Run {
                 .await
                 .map_err(|e| format!("LLM request failed: {e}"))?;
 
-            let collected: Result<(String, Vec<ToolCall>, String), String> = {
+            let collected: Result<(String, Vec<ToolCall>, String, CacheUsage), String> = {
                 let cancel = self.cancel.clone();
                 let event_tx = self.event_tx.clone();
                 let res = self.collect_stream(stream, &event_tx).await;
@@ -786,11 +816,11 @@ impl Run {
             };
 
             match collected {
-                Ok((text, tool_calls, message_id)) => {
+                Ok((text, tool_calls, message_id, cache_usage)) => {
                     self.recovery_ctx.record_success();
                     self.hook_registry.fire_after_model(&text, tool_calls.len());
 
-                    return Ok((text, tool_calls, message_id));
+                    return Ok((text, tool_calls, message_id, cache_usage));
                 }
                 Err(msg) => {
                     self.recovery_ctx.record_error(&msg);
@@ -809,10 +839,11 @@ impl Run {
         &self,
         stream: impl futures::Stream<Item = Result<StreamEvent>>,
         event_tx: &broadcast::Sender<Envelope>,
-    ) -> Result<(String, Vec<ToolCall>, String)> {
+    ) -> Result<(String, Vec<ToolCall>, String, CacheUsage)> {
         let mut text_buffer = String::new();
         let mut accumulator = ToolCallAccumulator::new();
         let mut has_tool_calls = false;
+        let mut cache_usage = CacheUsage::default();
         // Token accumulator: batches text/thinking deltas to cut IPC traffic.
         let mut tokens = TokenAccumulator::new();
         // Stable id for this model response; carried on every streaming delta
@@ -874,6 +905,13 @@ impl Run {
                     accumulator.push(event);
                 }
                 StreamEvent::Done => break,
+                StreamEvent::CompleteWithUsage { prompt_cache_hit_tokens, prompt_cache_miss_tokens } => {
+                    cache_usage = CacheUsage {
+                        hit_tokens: prompt_cache_hit_tokens.unwrap_or(0),
+                        miss_tokens: prompt_cache_miss_tokens.unwrap_or(0),
+                    };
+                    break;
+                }
             }
         }
 
@@ -901,7 +939,7 @@ impl Run {
             vec![]
         };
 
-        Ok((text_buffer, tool_calls, message_id))
+        Ok((text_buffer, tool_calls, message_id, cache_usage))
     }
 
     /// Force an LLM compaction of the oldest turns regardless of current token

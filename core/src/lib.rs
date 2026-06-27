@@ -8,6 +8,7 @@ pub mod context;
 pub mod cron;
 pub mod error_recovery;
 pub mod hooks;
+pub mod hygiene;
 pub mod mcp;
 pub mod memory;
 pub mod paths;

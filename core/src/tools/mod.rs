@@ -126,17 +126,20 @@ impl ToolRegistry {
     }
 
     pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
-        self.tools
+        let mut defs: Vec<_> = self
+            .tools
             .values()
             .map(|t| ToolDefinition {
                 tool_type: "function".to_string(),
                 function: FunctionSchema {
                     name: t.name().to_string(),
                     description: t.description().to_string(),
-                    parameters: t.parameters_schema(),
+                    parameters: canonicalize_json_object(&t.parameters_schema()),
                 },
             })
-            .collect()
+            .collect();
+        defs.sort_by(|a, b| a.function.name.cmp(&b.function.name));
+        defs
     }
 
     pub fn validate_args(&self, name: &str, args: &Value) -> Result<()> {
@@ -302,4 +305,25 @@ pub fn register_memory_tools(registry: &mut ToolRegistry, memory: Arc<Mutex<Memo
     registry.register(Box::new(archival_memory::ArchivalMemoryDeleteTool::new(
         memory,
     )));
+}
+
+/// Recursively canonicalize a JSON object by sorting keys alphabetically.
+/// This ensures tool parameter schemas produce identical byte representations
+/// across calls, which is critical for prompt cache hit rate.
+fn canonicalize_json_object(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut canonical = serde_json::Map::new();
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            for key in keys {
+                canonical.insert(key.clone(), canonicalize_json_object(&map[key]));
+            }
+            serde_json::Value::Object(canonical)
+        }
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(canonicalize_json_object).collect())
+        }
+        _ => value.clone(),
+    }
 }

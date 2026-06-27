@@ -470,6 +470,35 @@ impl ContextEngine {
         total + self.stable_segment_names.len() * 2
     }
 
+    /// Compute a fingerprint (hash) of the stable prefix segments.
+    /// Returns a hex-encoded string that can be compared across turns
+    /// to detect unintended drift in the cacheable prefix.
+    /// Only includes segments marked as Stability::Stable to match what
+    /// assemble_system_prompt() actually includes in the frozen prompt.
+    pub fn stable_prefix_fingerprint(&self) -> String {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let mut segments: Vec<&ContextSegment> = self.segments.values().collect();
+        segments.sort_by_key(|s| s.priority);
+        for seg in &segments {
+            if seg.enabled && !seg.content.is_empty() && seg.stability == Stability::Stable {
+                seg.name.hash(&mut hasher);
+                seg.content.hash(&mut hasher);
+            }
+        }
+        format!("{:016x}", hasher.finish())
+    }
+
+    /// Verify the stable prefix hasn't drifted since the last fingerprint.
+    /// Returns Ok(()) if identical, or a Vec of drifted segment names.
+    pub fn verify_prefix_stability(&self, last_fingerprint: &str) -> Result<(), Vec<String>> {
+        let current = self.stable_prefix_fingerprint();
+        if current == last_fingerprint {
+            return Ok(());
+        }
+        Err(self.stable_segment_names.clone())
+    }
+
     /// Get KV cache hints for local model optimization.
     /// This tells the inference engine which parts of the prompt are
     /// stable and can be cached across turns (llama.cpp `llama_kv_cache_seq_rm`).

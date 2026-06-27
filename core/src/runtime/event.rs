@@ -152,6 +152,14 @@ pub enum RunEvent {
     TodoUpdated {
         items: Vec<TodoItemPayload>,
     },
+
+    // ── Cache telemetry ────────────────────────────────────────────
+    /// Per-turn cache hit/miss statistics from the model API response.
+    CacheInfo {
+        hit_tokens: u64,
+        miss_tokens: u64,
+        hit_rate: f64,
+    },
 }
 
 /// A lightweight todo item sent to the frontend via `TodoUpdated`.

@@ -80,7 +80,12 @@ fn parse_sse_data(data: &str) -> Result<StreamEvent> {
     if let Some(finish_reason) = choice["finish_reason"].as_str()
         && (finish_reason == "stop" || finish_reason == "tool_calls")
     {
-        return Ok(StreamEvent::Done);
+        let hit = v["usage"]["prompt_cache_hit_tokens"].as_u64();
+        let miss = v["usage"]["prompt_cache_miss_tokens"].as_u64();
+        return Ok(StreamEvent::CompleteWithUsage {
+            prompt_cache_hit_tokens: hit,
+            prompt_cache_miss_tokens: miss,
+        });
     }
 
     if let Some(tool_calls) = delta["tool_calls"].as_array()

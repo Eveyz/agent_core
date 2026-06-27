@@ -985,6 +985,7 @@ impl Agent {
                             accumulator.push(event);
                         }
                         StreamEvent::Done => break,
+                        StreamEvent::CompleteWithUsage { .. } => break,
                     }
                 }
             }
