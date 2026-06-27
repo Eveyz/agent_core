@@ -45,6 +45,7 @@ import { AgentTurnUI } from './components/chat/AgentTurn';
 import { ChatInput } from './components/chat/ChatInput';
 import TodoPanel from './components/chat/TodoPanel';
 import SettingsModal from './components/settings/SettingsModal';
+import { CustomTitleBar } from './components/layout/CustomTitleBar';
 import './App.css';
 
 function getActiveSessionTitle(projectState: RootState['project']): string {
@@ -161,6 +162,21 @@ function App() {
     invoke('steer_run', { runId, message }).catch((e) => console.error('Failed to steer run:', e));
   }, [runId]);
 
+  // Show window after app loads (tauri.conf.json has visible: false)
+  useEffect(() => {
+    const showWindow = async () => {
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window');
+        const win = getCurrentWindow();
+        await win.show();
+        await win.setFocus();
+      } catch (e) {
+        // Not in Tauri environment (dev mode)
+      }
+    };
+    showWindow();
+  }, []);
+
   useEffect(() => {
     dispatch(fetchConfig());
     dispatch(fetchProjects());
@@ -272,6 +288,7 @@ function App() {
       <SettingsModal />
 
       <main className="main-area">
+        <CustomTitleBar />
         <CosmicBackground />
         <header className="main-header">
           <div className="header-title">
