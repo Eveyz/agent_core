@@ -285,21 +285,22 @@ function App() {
 
   return (
     <div className="app-container">
-      <Sidebar
-        activeTab={activeTab}
-        onTabChange={setActiveTab}
-        onOpenSettings={handleOpenSettings}
-        collapsed={sidebarCollapsed}
-        onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+      <CustomTitleBar
+        sidebarCollapsed={sidebarCollapsed}
+        onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
       />
-      <SettingsModal />
-
-      <main className="main-area">
-        <CustomTitleBar
-          sidebarCollapsed={sidebarCollapsed}
-          onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
+      <div className="app-body">
+        <Sidebar
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          onOpenSettings={handleOpenSettings}
+          collapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
         />
-        <CosmicBackground />
+        <SettingsModal />
+
+        <main className="main-area">
+          <CosmicBackground />
         <header className="main-header">
           <div className="header-title">
             {isEditingTitle && viewingSubagentPath.length === 0 ? (
@@ -399,8 +400,8 @@ function App() {
         )}
       </main>
     </div>
-  );
-}
+  </div>
+);
 
 function convertSubagentBlocks(blocks: SubagentBlock[]): TurnBlock[] {
   return blocks.map((b): TurnBlock => {
