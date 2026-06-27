@@ -573,7 +573,15 @@ impl Run {
                             let guard = mem.lock();
                             guard.consolidator_clone()
                         }; // lock released here — consolidate() runs without it
-                        let result = consolidator.consolidate();
+                        // Run O(n²) dedup on tokio's blocking thread pool
+                        // so it doesn't tie up an async worker for seconds.
+                        let result = tokio::task::spawn_blocking(move || {
+                            consolidator.consolidate()
+                        })
+                        .await
+                        .unwrap_or_else(|e| {
+                            Err(anyhow::anyhow!("consolidation panicked: {e}"))
+                        });
                         if let Ok(report) = result {
                             if report.deduped_recall > 0 || report.deduped_archival > 0 {
                                 tracing::info!(

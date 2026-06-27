@@ -1135,7 +1135,15 @@ impl Agent {
                         let guard = memory.lock();
                         guard.consolidator_clone()
                     }; // lock released — heavy CPU work runs lock-free
-                    let result = consolidator.consolidate();
+                    // Run O(n²) dedup on tokio's blocking thread pool
+                    // so it doesn't tie up an async worker for seconds.
+                    let result = tokio::task::spawn_blocking(move || {
+                        consolidator.consolidate()
+                    })
+                    .await
+                    .unwrap_or_else(|e| {
+                        Err(anyhow::anyhow!("consolidation panicked: {e}"))
+                    });
                     match result {
                         Ok(report) => {
                             if report.deduped_recall > 0 || report.deduped_archival > 0 {

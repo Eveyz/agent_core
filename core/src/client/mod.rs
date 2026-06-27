@@ -63,6 +63,7 @@ impl OpenAIClient {
             .no_gzip()
             .no_deflate()
             .no_brotli()
+            .no_proxy()
             .build()
             .expect("failed to build http client")
     }
