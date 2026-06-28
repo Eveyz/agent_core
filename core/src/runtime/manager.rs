@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio::task::JoinHandle;
+use tokio_util::sync::CancellationToken;
 
 use crate::permission::ApprovalChoice;
 use crate::reflector::Reflector;
@@ -53,6 +54,10 @@ pub struct RunHandle {
     /// Per-Run approval resolver — resolved directly by `approve_tool`
     /// to avoid actor deadlock (bypassing the command channel).
     pub approval_resolver: ApprovalResolver,
+    /// CancellationToken — cancelled immediately on `cancel_run()` so that
+    /// hot-path checks in collect_stream() and ToolOrchestrator respond
+    /// without waiting for the next poll_commands() turn boundary.
+    pub cancel_token: CancellationToken,
 }
 
 impl RunHandle {
@@ -169,6 +174,9 @@ impl RunManager {
         // Clone the approval resolver before spawning so we can store
         // it in the RunHandle for direct (non-command-channel) resolution.
         let approval_resolver = run.approval_resolver().clone();
+        // Clone the cancel token so cancel_run() can trigger immediate
+        // cancellation without waiting for the next poll_commands() cycle.
+        let cancel_token = run.cancel_token();
 
         // Emit RunCreated event (seq 0 — the bootstrap event).
         let _ = event_tx.send(Envelope {
@@ -302,6 +310,7 @@ impl RunManager {
             join_handle: Some(join_handle),
             state: shared_state,
             approval_resolver,
+            cancel_token,
         };
 
         self.runs.lock().await.insert(run_id.clone(), handle);
@@ -342,14 +351,32 @@ impl RunManager {
     }
 
     /// Cancel a specific Run.
+    ///
+    /// **Two-phase cancellation**: (1) the CancellationToken is cancelled
+    /// immediately, so hot-path checks in collect_stream() and
+    /// ToolOrchestrator bail out on the next iteration/boundary without
+    /// waiting for poll_commands() to drain the command channel. (2) the
+    /// RunCommand::Cancel is queued so that poll_commands() still performs
+    /// the proper state transition to RunCancelled and cleanup on the next
+    /// turn boundary.
     pub async fn cancel_run(&self, run_id: &str) -> Result<()> {
-        self.command(run_id, RunCommand::Cancel).await
+        let runs = self.runs.lock().await;
+        let handle = runs
+            .get(run_id)
+            .with_context(|| format!("run '{run_id}' not found"))?;
+        // Fast path: set the token immediately so in-flight work stops now.
+        handle.cancel_token.cancel();
+        // Slow path: queue the command for proper state transition.
+        handle.command(RunCommand::Cancel)
     }
 
     /// Cancel all active Runs (used on app shutdown).
     pub async fn cancel_all(&self) {
         let runs = self.runs.lock().await;
         for handle in runs.values() {
+            // Fast path: cancel the token immediately.
+            handle.cancel_token.cancel();
+            // Slow path: queue the command for state transition.
             let _ = handle.command(RunCommand::Cancel);
         }
     }

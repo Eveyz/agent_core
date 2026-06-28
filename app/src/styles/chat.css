@@ -87,7 +87,7 @@
 /* Scroll-to-bottom floating button */
 .scroll-to-bottom-btn {
   position: absolute;
-  bottom: 140px;
+  bottom: 80px;
   left: 50%;
   transform: translateX(-50%);
   width: 36px;
@@ -115,8 +115,6 @@
   width: 100%;
   max-width: 800px;
   margin: 0 auto;
-  content-visibility: auto;
-  contain-intrinsic-size: auto 200px;
 }
 
 .message-row.user-row {
@@ -169,9 +167,6 @@
   width: 100%;
 }
 
-.agent-turn > .assistant-msg {
-  /* margin removed to rely on flex gap for uniform spacing */
-}
 
 .turn-header {
   font-size: 12px;
@@ -779,6 +774,102 @@
 .assistant-msg pre code {
   background-color: transparent;
   padding: 0;
+}
+
+/* Code Block Component Styles */
+.code-block-wrapper {
+  margin: 12px 0;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  background-color: #0d1117;
+  max-width: 100%;
+}
+
+.code-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background-color: #161b22;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.code-block-language {
+  font-family: 'Geist Mono', 'SF Mono', 'Menlo', monospace;
+  font-size: 12px;
+  font-weight: 500;
+  color: #8b949e;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.code-block-copy-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: #8b949e;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+}
+
+.code-block-copy-btn:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+  color: #c9d1d9;
+}
+
+.code-block-content {
+  overflow-x: auto;
+  padding: 0;
+  max-width: 100%;
+}
+
+.code-block-content::-webkit-scrollbar {
+  height: 8px;
+}
+
+.code-block-content::-webkit-scrollbar-track {
+  background: #0d1117;
+}
+
+.code-block-content::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 4px;
+}
+
+.code-block-content::-webkit-scrollbar-thumb:hover {
+  background: #484f58;
+}
+
+.code-block-content pre {
+  margin: 0;
+  padding: 12px;
+  background-color: #0d1117;
+  border-radius: 0;
+  overflow-x: auto;
+  min-width: fit-content;
+  white-space: pre;
+}
+
+.code-block-content code {
+  font-family: 'Geist Mono', 'SF Mono', 'Menlo', 'Consolas', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  background-color: transparent;
+  padding: 0;
+}
+
+/* Shiki syntax highlighting overrides */
+.code-block-content .shiki {
+  background-color: #0d1117 !important;
+}
+
+.code-block-content .shiki code {
+  color: inherit;
 }
 
 /* Markdown Table Styles */

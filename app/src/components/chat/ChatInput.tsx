@@ -21,9 +21,12 @@ import {
 } from 'react-icons/si';
 
 import { ModelSelector } from './ModelSelector';
+import { SkillSelector } from './SkillSelector';
 import { useAutocomplete } from '../../hooks/useAutocomplete';
 import { useGitBranch } from '../../hooks/useGitBranch';
 import { useTokenCount, useTurnCount } from '../../hooks/useTokenCount';
+import type { SkillManifest } from '../../features/chat/types';
+import '../../styles/skill-selector.css';
 
 export const ChatInput = memo(function ChatInput({
   isProcessing,
@@ -43,6 +46,7 @@ export const ChatInput = memo(function ChatInput({
   const overlayRef = useRef<HTMLPreElement>(null);
   const isComposingRef = useRef(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const [skillSelectorOpen, setSkillSelectorOpen] = useState(false);
 
   const activeProjectId = useSelector((state: RootState) => state.project.activeProjectId);
   const activeSessionId = useSelector((state: RootState) => state.project.activeSessionId);
@@ -92,10 +96,38 @@ export const ChatInput = memo(function ChatInput({
     onAbort();
   }, [onAbort]);
 
+  const handleSkillSelect = useCallback((skill: SkillManifest) => {
+    setInput((prev) => {
+      const el = textareaRef.current;
+      const cursorPos = el?.selectionStart ?? prev.length;
+      const before = prev.slice(0, cursorPos);
+      const after = prev.slice(cursorPos);
+      return `${before}@skill:${skill.name} ${after}`;
+    });
+    // Restore cursor position after state update
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) {
+        const insertLen = `@skill:${skill.name} `.length;
+        const cursorPos = el.selectionStart;
+        const newPos = cursorPos + insertLen;
+        el.setSelectionRange(newPos, newPos);
+        el.focus();
+      }
+    });
+  }, [setInput, textareaRef]);
+
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       // IME composition: Enter confirms the candidate, doesn't send
       if (e.nativeEvent.isComposing || isComposingRef.current) {
+        return;
+      }
+
+      // Cmd/Ctrl+K to open skill selector
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        setSkillSelectorOpen(true);
         return;
       }
 
@@ -211,6 +243,11 @@ export const ChatInput = memo(function ChatInput({
         <div className="input-actions">
           <div className="input-actions-left">
             <button className="icon-btn"><PlusIcon size={16} /></button>
+            <SkillSelector 
+              onSelect={handleSkillSelect} 
+              externalOpen={skillSelectorOpen}
+              onExternalOpenChange={setSkillSelectorOpen}
+            />
           </div>
           <div className="input-actions-right">
             <ModelSelector currentModel={currentModel} />

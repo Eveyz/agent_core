@@ -38,6 +38,7 @@ const initialState: ChatState = {
   _thinkBuffers: {},
   _pendingGap: null,
   todo: [],
+  skillsCache: null,
 };
 
 // ── Resync thunk ─────────────────────────────────────────────────────
@@ -66,6 +67,29 @@ export const resyncRun = createAsyncThunk<
     dispatch(setResyncing(false));
   }
 });
+
+// ── Skills thunk ───────────────────────────────────────────────────────
+
+export const fetchSkills = createAsyncThunk(
+  'chat/fetchSkills',
+  async (_, { getState, dispatch }) => {
+    const state = getState() as { chat: ChatState };
+    const cached = state.chat.skillsCache;
+    if (cached && Date.now() - cached.loadedAt < 25000) {
+      return cached.skills; // skip fetch if cache fresh
+    }
+    const skills = await invoke<import('./types').SkillManifest[]>('get_skills');
+    dispatch(cacheSkills(skills));
+    return skills;
+  }
+);
+
+export const invalidateSkillsCache = createAsyncThunk(
+  'chat/invalidateSkillsCache',
+  async () => {
+    await invoke('invalidate_skills_cache');
+  }
+);
 
 // ── Slice ────────────────────────────────────────────────────────────
 
@@ -189,6 +213,15 @@ export const chatSlice = createSlice({
     },
     clearPendingGap: (state) => {
       state._pendingGap = null;
+    },
+    cacheSkills: (state, action: PayloadAction<import('./types').SkillManifest[]>) => {
+      state.skillsCache = {
+        skills: action.payload,
+        loadedAt: Date.now(),
+      };
+    },
+    clearSkillsCache: (state) => {
+      state.skillsCache = null;
     },
   },
   extraReducers: (builder) => {
@@ -327,5 +360,7 @@ export const {
   clearSubagentView,
   setResyncing,
   clearPendingGap,
+  cacheSkills,
+  clearSkillsCache,
 } = chatSlice.actions;
 export default chatSlice.reducer;

@@ -3,41 +3,39 @@ import { invoke } from '@tauri-apps/api/core';
 import WrenchIcon from 'lucide-react/dist/esm/icons/wrench.mjs';
 import BookOpenIcon from 'lucide-react/dist/esm/icons/book-open.mjs';
 import ZapIcon from 'lucide-react/dist/esm/icons/zap.mjs';
-
-interface SkillManifest {
-  name: string;
-  description: string;
-  version: string;
-  triggers: string[];
-  tags: string[];
-  read_when: string[];
-}
+import RefreshIcon from 'lucide-react/dist/esm/icons/refresh-cw.mjs';
+import { useSkills } from '../../hooks/useSkills';
+import type { SkillManifest } from '../../features/chat/types';
 
 export default function SkillsTab() {
-  const [skills, setSkills] = useState<SkillManifest[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { skills, loading, refresh, invalidate } = useSkills();
+  const [refreshing, setRefreshing] = useState(false);
 
-  useEffect(() => {
-    async function loadSkills() {
-      try {
-        const data = await invoke<SkillManifest[]>('get_skills');
-        setSkills(data);
-      } catch (err) {
-        console.error('Failed to load skills', err);
-      } finally {
-        setLoading(false);
-      }
-    }
-    loadSkills();
-  }, []);
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    await invalidate();
+    await refresh();
+    setRefreshing(false);
+  };
 
   return (
     <div className="settings-tab-content">
       <div className="settings-section">
-        <h3 className="settings-section-title">
-          <WrenchIcon size={14} /> Skills
-        </h3>
-        
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+          <h3 className="settings-section-title" style={{ margin: 0 }}>
+            <WrenchIcon size={14} /> Skills
+          </h3>
+          <button
+            className="icon-btn"
+            onClick={handleRefresh}
+            disabled={loading || refreshing}
+            title="Refresh skills"
+            style={{ opacity: loading || refreshing ? 0.5 : 1 }}
+          >
+            <RefreshIcon size={14} className={refreshing ? 'spinning' : ''} />
+          </button>
+        </div>
+
         {loading ? (
           <div className="settings-empty">Loading skills...</div>
         ) : skills.length === 0 ? (

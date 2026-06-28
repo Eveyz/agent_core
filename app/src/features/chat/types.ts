@@ -57,6 +57,15 @@ export interface ChatEntry {
   subagentIds?: string[];
 }
 
+export interface SkillManifest {
+  name: string;
+  description: string;
+  version?: string;
+  triggers?: string[];
+  tags?: string[];
+  [key: string]: unknown;
+}
+
 export interface ChatState {
   entries: ChatEntry[];
   isProcessing: boolean;
@@ -76,6 +85,10 @@ export interface ChatState {
   _thinkBuffers: Record<string, string>;
   _pendingGap: { runId: string; fromSeq: number } | null;
   todo: TodoItem[];
+  skillsCache: {
+    skills: SkillManifest[];
+    loadedAt: number;
+  } | null;
 }
 
 export interface DeltaPayload {

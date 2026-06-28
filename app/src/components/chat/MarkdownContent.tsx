@@ -1,6 +1,7 @@
 import { useMemo, memo } from 'react';
 import DOMPurify from 'dompurify';
 import { Marked } from 'marked';
+import { CodeBlock } from './CodeBlock';
 
 // ── Marked configuration ──────────────────────────────────────────────
 // Configure a singleton Marked instance with GFM, line breaks, and no
@@ -36,6 +37,37 @@ export function parseMarkdown(raw: string): { __html: string } {
   return { __html: DOMPurify.sanitize(htmlStr, PURIFY_CONFIG) };
 }
 
+// Extract code blocks from markdown for custom rendering
+export function extractCodeBlocks(raw: string): Array<{ code: string; language: string; index: number }> {
+  const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g;
+  const codeBlocks: Array<{ code: string; language: string; index: number }> = [];
+  let match;
+  let index = 0;
+  
+  while ((match = codeBlockRegex.exec(raw)) !== null) {
+    codeBlocks.push({
+      code: match[2],
+      language: match[1] || 'plaintext',
+      index: index++,
+    });
+  }
+  
+  return codeBlocks;
+}
+
+// Replace code blocks with placeholders for HTML rendering
+export function replaceCodeBlocksWithPlaceholders(raw: string): string {
+  return raw.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, lang, code) => {
+    return `<pre class="code-block-placeholder" data-language="${lang || 'plaintext'}">${escapeHtml(code)}</pre>`;
+  });
+}
+
+function escapeHtml(text: string): string {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
 // ── Streaming fast-path threshold ────────────────────────────────────
 // While streaming, re-parsing the full markdown on every token is O(n²).
 // We render plain text while the block is still streaming (cheap, and
@@ -52,7 +84,7 @@ const streamingStyle: React.CSSProperties = {
 };
 
 /**
- * Markdown renderer with a streaming fast-path.
+ * Markdown renderer with a streaming fast-path and custom code block rendering.
  *
  * Pass `isStreaming` for blocks whose `content` is still being appended to.
  * While streaming we skip markdown parsing entirely (plain text with preserved
@@ -82,14 +114,67 @@ export const MarkdownContent = memo(function MarkdownContent({
   }
 
   const renderAsMarkdown = !isStreaming || content.length > STREAM_PLAINTEXT_LIMIT;
-  const html = useMemo(
-    () => (renderAsMarkdown ? parseMarkdown(content) : null),
-    [renderAsMarkdown, content],
-  );
+  
+  // Parse markdown and extract code blocks for custom rendering
+  const segments = useMemo(() => {
+    if (!renderAsMarkdown) return null;
+    
+    const segments: Array<{ type: 'text' | 'code'; content: string; language?: string }> = [];
+    const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g;
+    let lastIndex = 0;
+    let match;
+    
+    while ((match = codeBlockRegex.exec(content)) !== null) {
+      // Add text before code block
+      if (match.index > lastIndex) {
+        const textContent = content.substring(lastIndex, match.index);
+        if (textContent.trim()) {
+          segments.push({ type: 'text', content: textContent });
+        }
+      }
+      
+      // Add code block
+      segments.push({
+        type: 'code',
+        content: match[2],
+        language: match[1] || 'plaintext',
+      });
+      
+      lastIndex = match.index + match[0].length;
+    }
+    
+    // Add remaining text
+    if (lastIndex < content.length) {
+      const textContent = content.substring(lastIndex);
+      if (textContent.trim()) {
+        segments.push({ type: 'text', content: textContent });
+      }
+    }
+    
+    return segments;
+  }, [renderAsMarkdown, content]);
 
-  if (html) {
-    return <div className={className} dangerouslySetInnerHTML={html} />;
+  if (segments) {
+    return (
+      <div className={className}>
+        {segments.map((segment, idx) => {
+          if (segment.type === 'code') {
+            return (
+              <CodeBlock
+                key={`code-${idx}`}
+                code={segment.content}
+                language={segment.language || 'plaintext'}
+              />
+            );
+          } else {
+            const html = parseMarkdown(segment.content);
+            return <div key={`text-${idx}`} dangerouslySetInnerHTML={html} />;
+          }
+        })}
+      </div>
+    );
   }
+  
   // Streaming fast path: cheap plain-text render, no parse.
   return (
     <div className={className} style={streamingStyle}>

@@ -22,6 +22,10 @@ export function useAutoScroll<
   // 记录上一帧的 scrollTop，用于检测用户是否在主动滚动
   const lastScrollTop = useRef(0);
 
+  // 检测用户是否正在主动滚动（用于减少渲染干扰）
+  const isUserScrolling = useRef(false);
+  const userScrollEndTimeout = useRef<number | null>(null);
+
 
   // 暴露给外部强制贴底（切换会话、新消息时调用）
   const scrollToBottom = useCallback(() => {
@@ -74,6 +78,17 @@ export function useAutoScroll<
           // 用户向上滚动，禁用自动滚动
           isAutoScrollEnabled.current = false;
           setIsAtBottom(false);
+          isUserScrolling.current = true;
+
+          // 清除之前的超时
+          if (userScrollEndTimeout.current) {
+            clearTimeout(userScrollEndTimeout.current);
+          }
+
+          // 设置超时，500ms 后认为用户停止滚动
+          userScrollEndTimeout.current = window.setTimeout(() => {
+            isUserScrolling.current = false;
+          }, 500);
         }
 
         // 检测是否接近底部
@@ -84,6 +99,14 @@ export function useAutoScroll<
           // 用户滚回底部，重新启用自动滚动
           isAutoScrollEnabled.current = true;
           setIsAtBottom(true);
+          isUserScrolling.current = false;
+        }
+
+        // 用户滚动期间完全禁用自动滚动操作，避免干扰自然惯性
+        if (isUserScrolling.current) {
+          // 只更新状态，不执行任何滚动操作
+          id = requestAnimationFrame(tick);
+          return;
         }
 
         // 只有在启用自动滚动且不在底部时才滚动
@@ -101,7 +124,12 @@ export function useAutoScroll<
     // 启动循环
     id = requestAnimationFrame(tick);
 
-    return () => cancelAnimationFrame(id);
+    return () => {
+      cancelAnimationFrame(id);
+      if (userScrollEndTimeout.current) {
+        clearTimeout(userScrollEndTimeout.current);
+      }
+    };
   }, [isProcessing]);
 
   // 3. 监听用户手动滚动，决定是否解除自动贴底

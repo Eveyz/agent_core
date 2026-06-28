@@ -7,6 +7,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use std::sync::Arc;
 use parking_lot::Mutex;
 use tokio::sync::Mutex as AsyncMutex;
+use std::time::Instant;
 
 struct AppState {
     /// The RunManager owns the Brain and tracks all active Runs.
@@ -662,12 +663,33 @@ async fn get_agverse_md() -> Result<String, String> {
     std::fs::read_to_string(&path).map_err(|e| format!("Failed to read agverse.md: {e}"))
 }
 
+// ── Skills cache ───────────────────────────────────────────────────────
+
+static SKILL_CACHE: Mutex<Option<(Instant, Vec<agent_core::skills::manifest::SkillManifest>)>> = Mutex::new(None);
+const SKILL_CACHE_TTL: u64 = 30; // seconds
+
 #[tauri::command]
 async fn get_skills() -> Result<Vec<agent_core::skills::manifest::SkillManifest>, String> {
+    // Check cache hit
+    if let Some((cached_at, cached)) = SKILL_CACHE.lock().as_ref() {
+        if cached_at.elapsed().as_secs() < SKILL_CACHE_TTL {
+            return Ok(cached.clone());
+        }
+    }
+    // Cache miss — scan from disk
     let mut manager = agent_core::skills::SkillManager::with_defaults();
     manager.scan().map_err(|e| e.to_string())?;
-    let skills = manager.list().into_iter().cloned().collect();
+    let skills: Vec<agent_core::skills::manifest::SkillManifest> = manager.list().into_iter().cloned().collect();
+    // Update cache
+    *SKILL_CACHE.lock() = Some((Instant::now(), skills.clone()));
     Ok(skills)
+}
+
+#[tauri::command]
+fn invalidate_skills_cache() -> Result<(), String> {
+    // Clear the cache
+    *SKILL_CACHE.lock() = None;
+    Ok(())
 }
 
 // ── App entry point ──────────────────────────────────────────────────
@@ -773,7 +795,7 @@ pub fn run() {
             save_session_messages, resume_session,
             list_projects, create_project, delete_project, rename_project, open_in_explorer,
             list_git_branches, switch_git_branch, get_project_sessions,
-            get_agverse_md, get_skills
+            get_agverse_md, get_skills, invalidate_skills_cache
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
