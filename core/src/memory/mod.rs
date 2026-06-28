@@ -309,7 +309,16 @@ impl MemoryManager {
             return Ok(Vec::new());
         }
 
-        let db = self.recall.storage_conn();
+        // RRF from BM25 rank only
+        let rrf_map: std::collections::HashMap<String, f32> = bm25_ids
+            .iter()
+            .enumerate()
+            .map(|(rank, id)| (id.clone(), 60.0 / (60.0 + rank as f32 + 1.0)))
+            .collect();
+
+        let now = chrono::Utc::now();
+        let scorer = self.recall.scorer();
+
         let placeholders = bm25_ids
             .iter()
             .enumerate()
@@ -331,55 +340,53 @@ impl MemoryManager {
             .map(|s| s as &dyn rusqlite::types::ToSql)
             .collect();
 
-        let mut stmt = db
-            .prepare_cached(&sql)
-            .context("failed to prepare bm25+salience query")?;
-        let rows = stmt.query_map(
-            param_refs.as_slice(),
-            |row| recall::RecallMemory::parse_recall_row_static(row),
-        )?;
+        // Block-scope db so it drops before bump_strength_batch
+        // (which acquires its own storage_conn — same mutex = deadlock).
+        let (results, bump_ids) = {
+            let db = self.recall.storage_conn();
+            let mut stmt = db
+                .prepare_cached(&sql)
+                .context("failed to prepare bm25+salience query")?;
+            let rows = stmt.query_map(
+                param_refs.as_slice(),
+                |row| recall::RecallMemory::parse_recall_row_static(row),
+            )?;
 
-        // RRF from BM25 rank only
-        let rrf_map: std::collections::HashMap<String, f32> = bm25_ids
-            .iter()
-            .enumerate()
-            .map(|(rank, id)| (id.clone(), 60.0 / (60.0 + rank as f32 + 1.0)))
-            .collect();
+            let mut scored: Vec<(f32, recall::RecallRecord)> = Vec::new();
 
-        let now = chrono::Utc::now();
-        let scorer = self.recall.scorer();
-        let mut scored: Vec<(f32, recall::RecallRecord)> = Vec::new();
+            for row in rows {
+                let record = row?;
+                let s_rrf = rrf_map.get(&record.id).copied().unwrap_or(0.1);
 
-        for row in rows {
-            let record = row?;
-            let s_rrf = rrf_map.get(&record.id).copied().unwrap_or(0.1);
+                let hours_since = chrono::DateTime::parse_from_rfc3339(&record.created_at)
+                    .ok()
+                    .map(|dt| {
+                        (now - dt.with_timezone(&chrono::Utc))
+                            .num_hours()
+                            .max(0) as f32
+                    })
+                    .unwrap_or(0.0);
 
-            let hours_since = chrono::DateTime::parse_from_rfc3339(&record.created_at)
-                .ok()
-                .map(|dt| {
-                    (now - dt.with_timezone(&chrono::Utc))
-                        .num_hours()
-                        .max(0) as f32
-                })
-                .unwrap_or(0.0);
+                let score = scorer.hybrid_score(
+                    s_rrf,
+                    hours_since,
+                    record.importance,
+                    record.category,
+                );
+                scored.push((score, record));
+            }
 
-            let score = scorer.hybrid_score(
-                s_rrf,
-                hours_since,
-                record.importance,
-                record.category,
-            );
-            scored.push((score, record));
-        }
+            scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+            scored.truncate(top_k);
 
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(top_k);
+            let results: Vec<recall::RecallRecord> =
+                scored.into_iter().map(|(_, r)| r).collect();
+            let bump_ids: Vec<String> = results.iter().map(|r| r.id.clone()).collect();
+            (results, bump_ids)
+        }; // db + stmt + rows dropped here
 
-        let results: Vec<recall::RecallRecord> =
-            scored.into_iter().map(|(_, r)| r).collect();
-
-        let ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
-        let _ = self.recall.bump_strength_batch(&ids);
+        let id_refs: Vec<&str> = bump_ids.iter().map(|s| s.as_str()).collect();
+        let _ = self.recall.bump_strength_batch(&id_refs);
 
         Ok(results)
     }
@@ -419,69 +426,68 @@ impl MemoryManager {
             return Ok(Vec::new());
         }
 
-        // Phase 4: Load from SQLite
-        let db = self.recall.storage_conn();
-        let placeholders = candidates
-            .iter()
-            .enumerate()
-            .map(|(i, _)| format!("?{}", i + 1))
-            .collect::<Vec<_>>()
-            .join(", ");
+        // Phase 4-5: Load from SQLite + score (block-scoped for db drop)
+        let (results, bump_ids) = {
+            let db = self.recall.storage_conn();
+            let placeholders = candidates
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", i + 1))
+                .collect::<Vec<_>>()
+                .join(", ");
 
-        let sql = format!(
-            "SELECT id, session_id, role, content, embedding, importance, \
-             COALESCE(memory_strength, 1.0), COALESCE(access_count, 0), \
-             last_accessed_at, COALESCE(category, 'Conversation'), created_at \
-             FROM recall_memory WHERE id IN ({})",
-            placeholders
-        );
-
-        let params: Vec<String> = candidates.clone();
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params
-            .iter()
-            .map(|s| s as &dyn rusqlite::types::ToSql)
-            .collect();
-
-        let mut stmt = db.prepare(&sql).context("failed to prepare hybrid search query")?;
-        let rows = stmt.query_map(param_refs.as_slice(), |row| recall::RecallMemory::parse_recall_row_static(row))?;
-
-        // Phase 5: Salience scoring with RRF scores + multiplicative decay
-        let rrf_map: std::collections::HashMap<String, f32> = candidates
-            .iter()
-            .enumerate()
-            .map(|(rank, id)| (id.clone(), 60.0 / (60.0 + rank as f32 + 1.0)))
-            .collect();
-
-        let now = chrono::Utc::now();
-        let mut scored: Vec<(f32, recall::RecallRecord)> = Vec::new();
-
-        for row in rows {
-            let record = row?;
-            let s_rrf = rrf_map.get(&record.id).copied().unwrap_or(0.1);
-
-            let hours_since = chrono::DateTime::parse_from_rfc3339(&record.created_at)
-                .ok()
-                .map(|dt| (now - dt.with_timezone(&chrono::Utc)).num_hours().max(0) as f32)
-                .unwrap_or(0.0);
-
-            let score = self.recall.scorer().hybrid_score(
-                s_rrf,
-                hours_since,
-                record.importance,
-                record.category,
+            let sql = format!(
+                "SELECT id, session_id, role, content, embedding, importance, \
+                 COALESCE(memory_strength, 1.0), COALESCE(access_count, 0), \
+                 last_accessed_at, COALESCE(category, 'Conversation'), created_at \
+                 FROM recall_memory WHERE id IN ({})",
+                placeholders
             );
 
-            scored.push((score, record));
-        }
+            let params: Vec<String> = candidates.clone();
+            let param_refs: Vec<&dyn rusqlite::types::ToSql> = params
+                .iter()
+                .map(|s| s as &dyn rusqlite::types::ToSql)
+                .collect();
 
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(top_k);
+            let mut stmt = db.prepare(&sql).context("failed to prepare hybrid search query")?;
+            let rows = stmt.query_map(param_refs.as_slice(), |row| recall::RecallMemory::parse_recall_row_static(row))?;
 
-        let results: Vec<recall::RecallRecord> = scored.into_iter().map(|(_, r)| r).collect();
+            let rrf_map: std::collections::HashMap<String, f32> = candidates
+                .iter()
+                .enumerate()
+                .map(|(rank, id)| (id.clone(), 60.0 / (60.0 + rank as f32 + 1.0)))
+                .collect();
 
-        // Reinforcement
-        let ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
-        let _ = self.recall.bump_strength_batch(&ids);
+            let now = chrono::Utc::now();
+            let mut scored: Vec<(f32, recall::RecallRecord)> = Vec::new();
+
+            for row in rows {
+                let record = row?;
+                let s_rrf = rrf_map.get(&record.id).copied().unwrap_or(0.1);
+                let hours_since = chrono::DateTime::parse_from_rfc3339(&record.created_at)
+                    .ok()
+                    .map(|dt| (now - dt.with_timezone(&chrono::Utc)).num_hours().max(0) as f32)
+                    .unwrap_or(0.0);
+                let score = self.recall.scorer().hybrid_score(
+                    s_rrf,
+                    hours_since,
+                    record.importance,
+                    record.category,
+                );
+                scored.push((score, record));
+            }
+
+            scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+            scored.truncate(top_k);
+
+            let results: Vec<recall::RecallRecord> = scored.into_iter().map(|(_, r)| r).collect();
+            let bump_ids: Vec<String> = results.iter().map(|r| r.id.clone()).collect();
+            (results, bump_ids)
+        }; // db dropped — bump_strength_batch can now safely acquire it
+
+        let id_refs: Vec<&str> = bump_ids.iter().map(|s| s.as_str()).collect();
+        let _ = self.recall.bump_strength_batch(&id_refs);
 
         Ok(results)
     }
@@ -514,66 +520,67 @@ impl MemoryManager {
             return Ok(Vec::new());
         }
 
-        let db = self.recall.storage_conn();
-        let placeholders = candidates
-            .iter()
-            .enumerate()
-            .map(|(i, _)| format!("?{}", i + 1))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let (results, bump_ids) = {
+            let db = self.recall.storage_conn();
+            let placeholders = candidates
+                .iter()
+                .enumerate()
+                .map(|(i, _)| format!("?{}", i + 1))
+                .collect::<Vec<_>>()
+                .join(", ");
 
-        let sql = format!(
-            "SELECT id, session_id, role, content, embedding, importance, \
-             COALESCE(memory_strength, 1.0), COALESCE(access_count, 0), \
-             last_accessed_at, COALESCE(category, 'Conversation'), created_at \
-             FROM recall_memory WHERE id IN ({})",
-            placeholders
-        );
-
-        let params: Vec<String> = candidates.clone();
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = params
-            .iter()
-            .map(|s| s as &dyn rusqlite::types::ToSql)
-            .collect();
-
-        let mut stmt = db.prepare(&sql)?;
-        let rows = stmt.query_map(param_refs.as_slice(), |row| recall::RecallMemory::parse_recall_row_static(row))?;
-
-        let rrf_map: std::collections::HashMap<String, f32> = candidates
-            .iter()
-            .enumerate()
-            .map(|(rank, id)| (id.clone(), 60.0 / (60.0 + rank as f32 + 1.0)))
-            .collect();
-
-        let now = chrono::Utc::now();
-        let mut scored: Vec<(f32, recall::RecallRecord)> = Vec::new();
-
-        for row in rows {
-            let record = row?;
-            let s_rrf = rrf_map.get(&record.id).copied().unwrap_or(0.1);
-
-            let hours_since = chrono::DateTime::parse_from_rfc3339(&record.created_at)
-                .ok()
-                .map(|dt| (now - dt.with_timezone(&chrono::Utc)).num_hours().max(0) as f32)
-                .unwrap_or(0.0);
-
-            let score = self.recall.scorer().hybrid_score(
-                s_rrf,
-                hours_since,
-                record.importance,
-                record.category,
+            let sql = format!(
+                "SELECT id, session_id, role, content, embedding, importance, \
+                 COALESCE(memory_strength, 1.0), COALESCE(access_count, 0), \
+                 last_accessed_at, COALESCE(category, 'Conversation'), created_at \
+                 FROM recall_memory WHERE id IN ({})",
+                placeholders
             );
 
-            scored.push((score, record));
-        }
+            let params: Vec<String> = candidates.clone();
+            let param_refs: Vec<&dyn rusqlite::types::ToSql> = params
+                .iter()
+                .map(|s| s as &dyn rusqlite::types::ToSql)
+                .collect();
 
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(top_k);
+            let mut stmt = db.prepare(&sql)?;
+            let rows = stmt.query_map(param_refs.as_slice(), |row| recall::RecallMemory::parse_recall_row_static(row))?;
 
-        let results: Vec<recall::RecallRecord> = scored.into_iter().map(|(_, r)| r).collect();
+            let rrf_map: std::collections::HashMap<String, f32> = candidates
+                .iter()
+                .enumerate()
+                .map(|(rank, id)| (id.clone(), 60.0 / (60.0 + rank as f32 + 1.0)))
+                .collect();
 
-        let ids: Vec<&str> = results.iter().map(|r| r.id.as_str()).collect();
-        let _ = self.recall.bump_strength_batch(&ids);
+            let now = chrono::Utc::now();
+            let mut scored: Vec<(f32, recall::RecallRecord)> = Vec::new();
+
+            for row in rows {
+                let record = row?;
+                let s_rrf = rrf_map.get(&record.id).copied().unwrap_or(0.1);
+                let hours_since = chrono::DateTime::parse_from_rfc3339(&record.created_at)
+                    .ok()
+                    .map(|dt| (now - dt.with_timezone(&chrono::Utc)).num_hours().max(0) as f32)
+                    .unwrap_or(0.0);
+                let score = self.recall.scorer().hybrid_score(
+                    s_rrf,
+                    hours_since,
+                    record.importance,
+                    record.category,
+                );
+                scored.push((score, record));
+            }
+
+            scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+            scored.truncate(top_k);
+
+            let results: Vec<recall::RecallRecord> = scored.into_iter().map(|(_, r)| r).collect();
+            let bump_ids: Vec<String> = results.iter().map(|r| r.id.clone()).collect();
+            (results, bump_ids)
+        }; // db dropped — safe for bump_strength_batch
+
+        let id_refs: Vec<&str> = bump_ids.iter().map(|s| s.as_str()).collect();
+        let _ = self.recall.bump_strength_batch(&id_refs);
 
         Ok(results)
     }
