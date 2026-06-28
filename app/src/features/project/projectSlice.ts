@@ -331,7 +331,9 @@ export const projectSlice = createSlice({
       })
       // ── Sessions listing ──
       .addCase(fetchProjectSessions.fulfilled, (state, action) => {
-        state.sessions[action.payload.projectId] = action.payload.sessions;
+        state.sessions[action.payload.projectId] = action.payload.sessions.sort(
+          (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+        );
       })
       // ── Session CRUD ──
       .addCase(createSession.fulfilled, (state, action) => {
@@ -373,12 +375,15 @@ export const projectSlice = createSlice({
       })
       .addCase(saveSessionMessages.fulfilled, (state, action) => {
         const sessionId = action.payload.sessionId;
-        for (const [, list] of Object.entries(state.sessions)) {
+        for (const [projectId, list] of Object.entries(state.sessions)) {
           const s = list.find((s) => s.id === sessionId);
           if (s) {
             s.message_count = action.payload.messageCount;
-            // 更新 updated_at 但不排序——避免 working 中 session 频繁跳到顶部
             s.updated_at = new Date().toISOString();
+            // Re-sort sessions by updated_at to move active session to top
+            state.sessions[projectId] = list.sort(
+              (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+            );
             break;
           }
         }

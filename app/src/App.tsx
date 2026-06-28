@@ -136,7 +136,8 @@ function App() {
     if (prevSessionIdRef.current !== activeSessionId) {
       prevSessionIdRef.current = activeSessionId;
       if (activeSessionId) {
-        scrollToBottom();
+        // Delay scroll to ensure content has rendered
+        setTimeout(() => scrollToBottom(), 100);
       }
     }
   }, [activeSessionId, scrollToBottom]);
@@ -192,9 +193,12 @@ function App() {
     dispatch(resumeSession(activeSessionId)).then((result) => {
       if (!resumeSession.fulfilled.match(result)) {
         dispatch(setActiveSession(null));
+      } else {
+        // Scroll to bottom after session is loaded from backend
+        setTimeout(() => scrollToBottom(), 150);
       }
     });
-  }, [projectsLoaded, dispatch, activeProjectId, activeSessionId]);
+  }, [projectsLoaded, dispatch, activeProjectId, activeSessionId, scrollToBottom]);
 
   const handleSend = useCallback(
     async (msg: string) => {

@@ -287,7 +287,7 @@
 .session-row {
   display: flex;
   align-items: center;
-  padding: 3px 12px 3px 39px;
+  padding: 3px 12px 3px 32px;
   cursor: pointer;
   user-select: none;
   border-radius: 4px;
@@ -295,6 +295,8 @@
   font-size: 13px;
   color: var(--text-dim);
   transition: background 0.1s;
+  position: relative;
+  padding-right: 80px;
 }
 .session-row:hover {
   background: var(--overlay-0_06);
@@ -317,16 +319,30 @@
   min-width: 0;
 }
 
+.session-row-time {
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  white-space: nowrap;
+  position: absolute;
+  right: 12px;
+}
+
 .session-row .session-row-actions {
-  display: flex;
+  display: none;
   align-items: center;
   gap: 1px;
-  opacity: 0;
-  transition: opacity 0.15s;
   flex-shrink: 0;
+  position: absolute;
+  right: 12px;
 }
+
+.session-row:hover .session-row-time {
+  display: none;
+}
+
 .session-row:hover .session-row-actions {
-  opacity: 1;
+  display: flex;
 }
 .session-delete-btn {
   color: var(--text-muted);

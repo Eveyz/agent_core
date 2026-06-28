@@ -21,8 +21,8 @@ import {
 import { useAppDispatch } from "../../hooks/useAppDispatch";
 import { useSaveSession } from "../../hooks/useSaveSession";
 import { useConfirmDialog } from "../ui/DialogManager";
+import { formatTimeAgo } from "../../utils/time";
 import PlusIcon from "lucide-react/dist/esm/icons/plus.mjs";
-import LayoutGridIcon from "lucide-react/dist/esm/icons/layout-grid.mjs";
 import MessageSquareIcon from "lucide-react/dist/esm/icons/message-square.mjs";
 import FolderIcon from "lucide-react/dist/esm/icons/folder.mjs";
 import SettingsIcon from "lucide-react/dist/esm/icons/settings.mjs";
@@ -471,23 +471,28 @@ export const Sidebar = memo(function Sidebar({
                               className="session-processing-spinner"
                             />
                           ) : (
-                            <span className="session-row-actions">
-                              <SessionContextMenu
-                                sessionId={session.id}
-                                projectId={project.id}
-                                onDelete={handleDeleteSession}
-                              />
-                              <button
-                                className="sidebar-context-trigger session-delete-btn"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleDeleteSession(session.id, project.id);
-                                }}
-                                title="Delete session"
-                              >
-                                <TrashIcon size={12} />
-                              </button>
-                            </span>
+                            <>
+                              <span className="session-row-time">
+                                {formatTimeAgo(session.updated_at)}
+                              </span>
+                              <span className="session-row-actions">
+                                <SessionContextMenu
+                                  sessionId={session.id}
+                                  projectId={project.id}
+                                  onDelete={handleDeleteSession}
+                                />
+                                <button
+                                  className="sidebar-context-trigger session-delete-btn"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDeleteSession(session.id, project.id);
+                                  }}
+                                  title="Delete session"
+                                >
+                                  <TrashIcon size={12} />
+                                </button>
+                              </span>
+                            </>
                           )}
                         </div>
                       );
