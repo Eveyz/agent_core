@@ -19,20 +19,22 @@ export function useAutoScroll<
   // 是否允许自动贴底（用户上滚时变为 false）
   const isAutoScrollEnabled = useRef(true);
 
+  // 记录上一帧的 scrollTop，用于检测用户是否在主动滚动
+  const lastScrollTop = useRef(0);
+
+
   // 暴露给外部强制贴底（切换会话、新消息时调用）
   const scrollToBottom = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
 
-    // 同步立刻滚一次（内容已在 DOM 时立即生效）
-    el.scrollTop = el.scrollHeight;
-
-    // 再跟 2 帧 rAF 作为兜底（覆盖 React 异步渲染还没完成的边缘情况）
-    requestAnimationFrame(() => {
-      if (scrollRef.current) {
-        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-      }
+    // 使用 smooth 行为实现平滑滚动
+    el.scrollTo({
+      top: el.scrollHeight,
+      behavior: 'smooth'
     });
+
+    // 兜底：如果 smooth 滚动被中断，在下一帧强制贴底
     requestAnimationFrame(() => {
       if (scrollRef.current) {
         scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -44,10 +46,11 @@ export function useAutoScroll<
   }, []);
 
   // 1. 依赖变化时同步贴底（新消息、切换会话等非流式场景）
+  //    注意：处理中时不执行此逻辑，避免与 rAF 循环冲突
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    if (isAutoScrollEnabled.current) {
+    if (isAutoScrollEnabled.current && !isProcessing) {
       el.scrollTop = el.scrollHeight;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -62,12 +65,35 @@ export function useAutoScroll<
 
     const tick = () => {
       const el = scrollRef.current;
-      if (el && isAutoScrollEnabled.current) {
-        // 只有在确实不在底部时才设置，避免无意义写入
+      if (el) {
         const maxScroll = el.scrollHeight - el.clientHeight;
-        if (el.scrollTop < maxScroll - 1) {
+        const currentScrollTop = el.scrollTop;
+
+        // 检测用户是否在主动向上滚动
+        if (currentScrollTop < lastScrollTop.current - 5) {
+          // 用户向上滚动，禁用自动滚动
+          isAutoScrollEnabled.current = false;
+          setIsAtBottom(false);
+        }
+
+        // 检测是否接近底部
+        const threshold = 20;
+        const isNearBottom = maxScroll - currentScrollTop <= threshold;
+
+        if (isNearBottom && !isAutoScrollEnabled.current) {
+          // 用户滚回底部，重新启用自动滚动
+          isAutoScrollEnabled.current = true;
+          setIsAtBottom(true);
+        }
+
+        // 只有在启用自动滚动且不在底部时才滚动
+        if (isAutoScrollEnabled.current && currentScrollTop < maxScroll - 1) {
+          // 流式输出时使用 instant 滚动，避免 smooth 滚动在 rAF 循环中造成抖动
           el.scrollTop = maxScroll;
         }
+
+        // 更新上一帧的 scrollTop
+        lastScrollTop.current = currentScrollTop;
       }
       id = requestAnimationFrame(tick);
     };
@@ -91,18 +117,13 @@ export function useAutoScroll<
 
       isAutoScrollEnabled.current = isNearBottom;
       setIsAtBottom(isNearBottom);
-
-      // 用户滑回底部时，立即贴底一次，避免等下一帧 rAF 才跳
-      if (isNearBottom && isProcessing) {
-        el.scrollTop = maxScroll;
-      }
     };
 
     // passive: true 不阻塞滚动
     el.addEventListener('scroll', handleScroll, { passive: true });
 
     return () => el.removeEventListener('scroll', handleScroll);
-  }, []);
+  }, [scrollRef]);
 
   return { scrollRef, contentRef, scrollToBottom, isAtBottom };
 }
