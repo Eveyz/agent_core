@@ -994,12 +994,29 @@ mod tests {
     }
 
     #[test]
-    fn test_safe_command_asks_by_default() {
+    fn test_safe_command_auto_allowed() {
+        // Safe shell commands (ls, cat, grep, …) are auto-allowed by the
+        // built-in readonly-command whitelist — they no longer prompt.
         let mut policy = make_policy();
         let result = policy.check(
             "bash",
             r#"{"command":"ls -la"}"#,
             Some("ls -la"),
+            None,
+            None,
+        );
+        assert!(result.is_allowed());
+    }
+
+    #[test]
+    fn test_unknown_bash_command_asks_by_default() {
+        // Non-readonly, non-destructive commands fall through to the
+        // System→Ask catch-all and prompt for approval.
+        let mut policy = make_policy();
+        let result = policy.check(
+            "bash",
+            r#"{"command":"make build"}"#,
+            Some("make build"),
             None,
             None,
         );

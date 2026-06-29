@@ -155,6 +155,7 @@ impl Storage {
                 skills TEXT NOT NULL DEFAULT '[]',
                 permission_level TEXT NOT NULL,
                 max_concurrency INTEGER,
+                model TEXT DEFAULT '',
                 enabled INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL
             );
@@ -215,6 +216,7 @@ impl Storage {
             "ALTER TABLE sessions ADD COLUMN process_time_ms INTEGER DEFAULT 0",
             "ALTER TABLE sessions ADD COLUMN thought_time_ms INTEGER DEFAULT 0",
             "ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'build'",
+            "ALTER TABLE cronjobs ADD COLUMN model TEXT DEFAULT ''",
         ];
         for migration in migrations {
             let _ = db.execute_batch(migration);

@@ -16,6 +16,7 @@ pub struct CronJob {
     pub skills: Vec<String>,
     pub permission_level: String,
     pub max_concurrency: Option<u32>,
+    pub model: Option<String>,
     pub enabled: bool,
     pub created_at: DateTime<Utc>,
 }
@@ -36,8 +37,8 @@ impl CronjobStore {
     pub fn insert(db: &Connection, job: &CronJob) -> SqlResult<()> {
         let skills_json = serde_json::to_string(&job.skills).unwrap_or_else(|_| "[]".to_string());
         db.execute(
-            "INSERT INTO cronjobs (id, name, cadence_type, cadence_value, prompt, project, skills, permission_level, max_concurrency, enabled, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO cronjobs (id, name, cadence_type, cadence_value, prompt, project, skills, permission_level, max_concurrency, model, enabled, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 job.id,
                 job.name,
@@ -48,6 +49,7 @@ impl CronjobStore {
                 skills_json,
                 job.permission_level,
                 job.max_concurrency,
+                job.model,
                 job.enabled as i32,
                 job.created_at.to_rfc3339(),
             ],
@@ -58,8 +60,8 @@ impl CronjobStore {
     pub fn update(db: &Connection, job: &CronJob) -> SqlResult<()> {
         let skills_json = serde_json::to_string(&job.skills).unwrap_or_else(|_| "[]".to_string());
         db.execute(
-            "UPDATE cronjobs SET name=?1, cadence_type=?2, cadence_value=?3, prompt=?4, project=?5, skills=?6, permission_level=?7, max_concurrency=?8, enabled=?9
-             WHERE id=?10",
+            "UPDATE cronjobs SET name=?1, cadence_type=?2, cadence_value=?3, prompt=?4, project=?5, skills=?6, permission_level=?7, max_concurrency=?8, model=?9, enabled=?10
+             WHERE id=?11",
             params![
                 job.name,
                 job.cadence_type,
@@ -69,6 +71,7 @@ impl CronjobStore {
                 skills_json,
                 job.permission_level,
                 job.max_concurrency,
+                job.model,
                 job.enabled as i32,
                 job.id,
             ],
@@ -82,11 +85,11 @@ impl CronjobStore {
     }
 
     pub fn list(db: &Connection) -> SqlResult<Vec<CronJob>> {
-        let mut stmt = db.prepare("SELECT id, name, cadence_type, cadence_value, prompt, project, skills, permission_level, max_concurrency, enabled, created_at FROM cronjobs")?;
+        let mut stmt = db.prepare("SELECT id, name, cadence_type, cadence_value, prompt, project, skills, permission_level, max_concurrency, model, enabled, created_at FROM cronjobs")?;
         let rows = stmt.query_map([], |row| {
             let skills_str: String = row.get(6)?;
             let skills: Vec<String> = serde_json::from_str(&skills_str).unwrap_or_default();
-            let created_at_str: String = row.get(10)?;
+            let created_at_str: String = row.get(11)?;
             let created_at = DateTime::parse_from_rfc3339(&created_at_str).unwrap_or_default().with_timezone(&Utc);
 
             Ok(CronJob {
@@ -99,7 +102,8 @@ impl CronjobStore {
                 skills,
                 permission_level: row.get(7)?,
                 max_concurrency: row.get(8)?,
-                enabled: row.get::<_, i32>(9)? != 0,
+                model: row.get(9)?,
+                enabled: row.get::<_, i32>(10)? != 0,
                 created_at,
             })
         })?;

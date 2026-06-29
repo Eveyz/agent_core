@@ -285,15 +285,18 @@ mod tests {
 
     #[test]
     fn test_bash_defaults_to_ask() {
-        // Destructive deny is now programmatic (is_destructive_command in
-        // PermissionPolicy::check), so the only built-in bash rule is the
-        // System→Ask catch-all.
+        // Two built-in bash rules now exist: a readonly-command whitelist
+        // (ReadOnly/Allow) and a System→Ask catch-all for everything else.
+        // Destructive commands are denied programmatically in
+        // `PermissionPolicy::check` via `is_destructive_command`.
         let rules = default_rules_with_danger();
-        let bash = rules
+        // The catch-all has no command constraints (`commands` is None);
+        // the whitelist rule carries `Some([...])`.
+        let catch_all = rules
             .iter()
-            .find(|(p, _, _)| p.tool_pattern == "bash")
+            .find(|(p, _, _)| p.tool_pattern == "bash" && p.commands.is_none())
             .unwrap();
-        assert_eq!(bash.1, DangerLevel::System);
-        assert_eq!(bash.2, ApprovalLevel::Ask);
+        assert_eq!(catch_all.1, DangerLevel::System);
+        assert_eq!(catch_all.2, ApprovalLevel::Ask);
     }
 }

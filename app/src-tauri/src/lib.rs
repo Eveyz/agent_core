@@ -741,6 +741,7 @@ async fn create_cronjob(
     skills: Vec<String>,
     permission_level: String,
     max_concurrency: Option<u32>,
+    model: Option<String>,
 ) -> Result<agent_core::CronJob, String> {
     let job = agent_core::CronJob {
         id: uuid::Uuid::new_v4().to_string(),
@@ -752,6 +753,7 @@ async fn create_cronjob(
         skills,
         permission_level,
         max_concurrency,
+        model,
         enabled: true,
         created_at: chrono::Utc::now(),
     };
