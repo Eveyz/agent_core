@@ -1,10 +1,6 @@
-import PanelRightIcon from 'lucide-react/dist/esm/icons/panel-right.mjs';
-import BoxIcon from 'lucide-react/dist/esm/icons/box.mjs';
-import MessageSquareIcon from 'lucide-react/dist/esm/icons/message-square.mjs';
-import TerminalSquareIcon from 'lucide-react/dist/esm/icons/terminal-square.mjs';
-import FolderIcon from 'lucide-react/dist/esm/icons/folder.mjs';
-import Maximize2Icon from 'lucide-react/dist/esm/icons/maximize-2.mjs';
+import PanelRightOpenIcon from 'lucide-react/dist/esm/icons/panel-right-open.mjs';
 import PlusIcon from 'lucide-react/dist/esm/icons/plus.mjs';
+import PanelRightIcon from 'lucide-react/dist/esm/icons/panel-right.mjs';
 import { SessionTitle } from './SessionTitle';
 import { useAppDispatch } from '../../hooks/useAppDispatch';
 import { createSession } from '../../features/project/projectSlice';
@@ -16,6 +12,8 @@ interface AppHeaderProps {
   activeProjectId: string | null;
   sidebarCollapsed: boolean;
   onExpandSidebar: () => void;
+  rightSidebarExpanded?: boolean;
+  onToggleRightSidebar?: () => void;
 }
 
 export function AppHeader({
@@ -25,6 +23,8 @@ export function AppHeader({
   activeProjectId,
   sidebarCollapsed,
   onExpandSidebar,
+  rightSidebarExpanded,
+  onToggleRightSidebar,
 }: AppHeaderProps) {
   const dispatch = useAppDispatch();
 
@@ -58,21 +58,11 @@ export function AppHeader({
         />
       </div>
       <div className="header-actions">
-        <button className="icon-btn" disabled title="Coming soon">
-          <BoxIcon size={14} />
-        </button>
-        <button className="icon-btn" disabled title="Coming soon">
-          <MessageSquareIcon size={14} />
-        </button>
-        <button className="icon-btn" disabled title="Coming soon">
-          <TerminalSquareIcon size={14} />
-        </button>
-        <button className="icon-btn" disabled title="Coming soon">
-          <FolderIcon size={14} />
-        </button>
-        <button className="icon-btn" disabled title="Coming soon">
-          <Maximize2Icon size={14} />
-        </button>
+        {onToggleRightSidebar && !rightSidebarExpanded && (
+          <button className="icon-btn" onClick={onToggleRightSidebar} title="展开右侧栏">
+            <PanelRightOpenIcon size={16} />
+          </button>
+        )}
       </div>
     </header>
   );

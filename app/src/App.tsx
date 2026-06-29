@@ -37,6 +37,8 @@ import { AppHeader } from './components/layout/AppHeader';
 import { ChatArea } from './components/layout/ChatArea';
 import { SubagentDetailPage } from './components/chat/SubagentDetailPage';
 import { getActiveSessionTitle } from './utils/chatUtils';
+import { useResizableSidebar } from './hooks/useResizableSidebar';
+import { RightSidebar } from './components/layout/RightSidebar';
 
 import './App.css';
 
@@ -58,6 +60,10 @@ function App() {
   const activeProject = projects.find((p) => p.id === activeProjectId);
   const [activeTab, setActiveTab] = useState<'code' | 'write'>('code');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [rightSidebarExpanded, setRightSidebarExpanded] = useState(false);
+
+  const { sidebarRef: leftSidebarRef, onMouseDown: startLeftDrag } = useResizableSidebar(260, 200, 600, 'left');
+  const { sidebarRef: rightSidebarRef, onMouseDown: startRightDrag } = useResizableSidebar(550, 300, 1200, 'right');
 
   const { scrollRef, contentRef, scrollToBottom, isAtBottom } = useAutoScroll<HTMLDivElement, HTMLDivElement>({
     deps: [entriesLength, activeSessionId],
@@ -216,7 +222,11 @@ function App() {
   return (
     <div className="app-container">
       <div className="app-body">
-        <div className={`sidebar-column${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
+        <div 
+          ref={leftSidebarRef}
+          className={`sidebar-column${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}
+          style={sidebarCollapsed ? undefined : { width: 260 }}
+        >
           <CustomTitleBar
             sidebarCollapsed={sidebarCollapsed}
             onToggleSidebar={() => setSidebarCollapsed(!sidebarCollapsed)}
@@ -228,6 +238,7 @@ function App() {
             collapsed={sidebarCollapsed}
           />
         </div>
+        {!sidebarCollapsed && <div className="resizer-handle" onMouseDown={startLeftDrag} />}
         <SettingsModal />
 
         <main className="main-area">
@@ -239,6 +250,8 @@ function App() {
             activeProjectId={activeProjectId}
             sidebarCollapsed={sidebarCollapsed}
             onExpandSidebar={() => setSidebarCollapsed(false)}
+            rightSidebarExpanded={rightSidebarExpanded}
+            onToggleRightSidebar={() => setRightSidebarExpanded(!rightSidebarExpanded)}
           />
 
           {viewingSubagentPath.length > 0 && activeSubagent ? (
@@ -272,6 +285,13 @@ function App() {
             disabledMessage="the input chat is disabled for the subagent"
           />
         </main>
+        
+        {rightSidebarExpanded && <div className="resizer-handle" onMouseDown={startRightDrag} />}
+        <RightSidebar 
+          sidebarRef={rightSidebarRef} 
+          isExpanded={rightSidebarExpanded} 
+          onToggle={() => setRightSidebarExpanded(false)} 
+        />
       </div>
     </div>
   );

@@ -404,8 +404,14 @@ impl SessionManager {
     ) -> Result<()> {
         let db = self.storage.conn();
         let now = Utc::now().to_rfc3339();
-        // Truncate payload values to keep storage small but allow subagent metadata
-        let truncated = Self::truncate_payload(payload, 2000);
+        // Truncate payload values to keep storage small but allow subagent metadata.
+        // Skip truncation for assistant text — the full response is needed for
+        // session restore to avoid garbled / truncated display text.
+        let truncated = if event_type == "assistant" {
+            payload.clone()
+        } else {
+            Self::truncate_payload(payload, 2000)
+        };
         let payload_str = serde_json::to_string(&truncated)?;
         db.execute(
             "INSERT INTO session_event_log (session_id, turn_index, event_type, payload, started_at, ended_at, created_at) \

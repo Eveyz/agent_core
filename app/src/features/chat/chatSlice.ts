@@ -306,7 +306,13 @@ export const chatSlice = createSlice({
             }
           }
 
-          if (!blocks.some((b) => b.type === 'assistant')) {
+          // Prefer full message content over event_log (which may be truncated).
+          // The event_log assistant block serves as a fallback — if msg.content
+          // is available, use it for a complete restore.
+          const assistantBlock = blocks.find((b) => b.type === 'assistant');
+          if (assistantBlock && msg.content) {
+            assistantBlock.text = msg.content;
+          } else if (!assistantBlock) {
             blocks.push({ type: 'assistant', text: msg.content, isStreaming: false });
           }
 

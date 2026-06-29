@@ -6,6 +6,7 @@
   position: relative;
   overflow: hidden;
   background: var(--bg-main);
+  min-width: 380px;
 }
 
 .main-header {
@@ -828,6 +829,8 @@
 
 .code-block-content {
   overflow-x: auto;
+  overflow-y: auto;
+  max-height: 60vh;
   padding: 0;
   max-width: 100%;
 }
@@ -875,7 +878,8 @@
 }
 
 /* Dual-theme token switching: Shiki emits both --shiki-light and
- * --shiki-dark color vars per token; pick the right one per app theme.
+ * --shiki-dark CSS variables per token when colorsRendering: 'css-vars'
+ * is set; pick the right one per app theme.
  * Dark is the default (:root); [data-theme="light"] overrides. */
 .code-block-content .shiki,
 .code-block-content .shiki span {

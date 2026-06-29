@@ -14,11 +14,9 @@
   overflow: hidden;
 }
 
-/* Sidebar column (wrapper: title bar + sidebar) */
 .sidebar-column {
   display: flex;
   flex-direction: column;
-  width: 260px;
   flex-shrink: 0;
   min-height: 0;
   overflow: hidden;
@@ -32,14 +30,13 @@
 
 /* Sidebar */
 .sidebar {
-  width: 260px;
+  width: 100%;
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
-  transition: width 0.2s ease-out, min-width 0.2s ease-out;
   position: relative;
   overflow: hidden;
 }
@@ -418,3 +415,297 @@
   padding: 16px 8px;
 }
 
+/* ── Resizer ────────────────────────────────────────────────────── */
+.resizer-handle {
+  width: 6px; /* Wider hit area for easier grabbing */
+  background: transparent;
+  cursor: col-resize;
+  flex-shrink: 0;
+  z-index: 10;
+  position: relative;
+  margin-left: -3px;
+  margin-right: -3px;
+}
+.resizer-handle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+  background: transparent;
+  transition: background 0.15s;
+}
+.resizer-handle:hover::after,
+.resizer-handle:active::after {
+  background: var(--overlay-0_1);
+}
+
+/* ── Right Sidebar ──────────────────────────────────────────────── */
+.right-sidebar {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-sidebar);
+  border-left: 1px solid var(--border-color);
+  flex-shrink: 0;
+  min-height: 0;
+  overflow: hidden;
+  transition: width 0.2s ease-out;
+}
+
+.right-sidebar-collapsed {
+  width: 0 !important;
+  min-width: 0 !important;
+  border-left: none !important;
+}
+
+.right-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-main);
+  padding: 0 8px;
+  height: 40px;
+  flex-shrink: 0;
+}
+
+.right-sidebar-tabs {
+  display: flex;
+  gap: 16px;
+  height: 100%;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+  scrollbar-width: none; /* Firefox */
+}
+
+.right-sidebar-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.tab-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+  flex-shrink: 0;
+  white-space: nowrap;
+  height: 100%;
+  padding: 0 4px;
+}
+.tab-btn:hover {
+  color: var(--text-main);
+}
+.tab-btn.active {
+  color: var(--text-main);
+  font-weight: 500;
+}
+.tab-btn.active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--text-main);
+}
+
+.right-sidebar-toggle {
+  color: var(--text-muted);
+}
+.right-sidebar-toggle:hover {
+  color: var(--text-main);
+}
+
+.right-sidebar-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.placeholder-pane,
+.empty-message {
+  padding: 24px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+/* ── Review Tab ─────────────────────────────────────────────────── */
+.review-tab-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.review-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+
+.review-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.review-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.review-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.review-diff-pane {
+  flex: 1;
+  min-width: 0;
+  border-right: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.review-files-pane {
+  width: 250px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.files-changed-header {
+  padding: 12px 12px 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.files-changed-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.file-item {
+  padding: 6px 12px;
+  font-size: 13px;
+  color: var(--text-main);
+  cursor: pointer;
+  user-select: none;
+}
+.file-item:hover {
+  background: var(--overlay-0_06);
+}
+.file-item.active {
+  background: var(--overlay-0_09);
+}
+
+/* ── Overview Tab ───────────────────────────────────────────────── */
+.overview-tab-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.overview-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color);
+}
+.overview-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+.overview-body {
+  padding: 16px;
+  flex: 1;
+  overflow-y: auto;
+}
+.tree-root {
+  font-weight: 600;
+  margin-bottom: 8px;
+  color: var(--text-main);
+}
+.tree-children {
+  padding-left: 16px;
+  border-left: 1px solid var(--overlay-0_1);
+}
+.tree-item {
+  padding: 4px 0;
+  font-size: 13px;
+}
+
+/* ── Dragging Utility ────────────────────────────────────────────── */
+body.is-resizing,
+body.is-resizing * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  cursor: col-resize !important;
+  transition: none !important;
+}
+
+/* ── File Tree Component ─────────────────────────────────────────── */
+.file-tree-container {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0;
+}
+.file-tree-row {
+  display: flex;
+  align-items: center;
+  padding: 4px 8px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+  color: var(--text-main);
+  border-radius: var(--radius-sm);
+  margin: 1px 4px;
+}
+.file-tree-row:hover {
+  background: var(--overlay-0_06);
+}
+.file-tree-icon-wrap {
+  width: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+}
+.file-tree-type-icon {
+  width: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 4px;
+  color: var(--text-muted);
+}
+.file-tree-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-tree-loading {
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 4px 8px;
+}
