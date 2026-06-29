@@ -37,6 +37,7 @@ import MoreHorizontalIcon from "lucide-react/dist/esm/icons/more-horizontal.mjs"
 import LoaderIcon from "lucide-react/dist/esm/icons/loader.mjs";
 import ClockIcon from "lucide-react/dist/esm/icons/clock.mjs";
 import { CronjobModal } from "../ui/CronjobModal";
+import { NewAgentModal } from "../ui/NewAgentModal";
 
 // ── Context menu hook ────────────────────────────────────────────────
 
@@ -221,6 +222,7 @@ export const Sidebar = memo(function Sidebar({
   );
   const [creatingSession, setCreatingSession] = useState(false);
   const [isCronModalOpen, setIsCronModalOpen] = useState(false);
+  const [isNewAgentOpen, setIsNewAgentOpen] = useState(false);
   const { confirm, prompt, dialogElement } = useConfirmDialog();
 
   const toggleSessionsExpand = useCallback(
@@ -387,6 +389,12 @@ export const Sidebar = memo(function Sidebar({
 
       {/* Quick actions */}
       <div className="sidebar-nav" style={{ marginBottom: "4px" }}>
+        <div
+          className="nav-item"
+          onClick={() => setIsNewAgentOpen(true)}
+        >
+          <BotIcon size={14} /> + New Agent
+        </div>
         <div
           className="nav-item"
           onClick={() => setIsCronModalOpen(true)}
@@ -567,6 +575,7 @@ export const Sidebar = memo(function Sidebar({
       </div>
 
       <CronjobModal isOpen={isCronModalOpen} onClose={() => setIsCronModalOpen(false)} />
+      <NewAgentModal isOpen={isNewAgentOpen} onClose={() => setIsNewAgentOpen(false)} />
       {dialogElement}
     </aside>
   );
