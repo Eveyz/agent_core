@@ -175,6 +175,7 @@ mod tests {
             run_id: "run-1".into(),
             turn_id: None,
             parent_call_id: None,
+            ts: chrono::Utc::now(),
             event: RunEvent::RunCreated {
                 id: "run-1".into(),
                 session_id: None,
@@ -186,6 +187,7 @@ mod tests {
             run_id: "run-1".into(),
             turn_id: None,
             parent_call_id: None,
+            ts: chrono::Utc::now(),
             event: RunEvent::RunStarted,
         });
 
@@ -210,7 +212,8 @@ mod tests {
                 run_id: "run-2".into(),
                 turn_id: None,
                 parent_call_id: None,
-                event: RunEvent::RunCreated {
+                ts: chrono::Utc::now(),
+            event: RunEvent::RunCreated {
                     id: "run-2".into(),
                     session_id: None,
                 },
@@ -221,7 +224,8 @@ mod tests {
                 run_id: "run-2".into(),
                 turn_id: None,
                 parent_call_id: None,
-                event: RunEvent::StateChanged {
+                ts: chrono::Utc::now(),
+            event: RunEvent::StateChanged {
                     from: RunState::Created,
                     to: RunState::Running,
                 },
@@ -232,7 +236,8 @@ mod tests {
                 run_id: "run-2".into(),
                 turn_id: None,
                 parent_call_id: None,
-                event: RunEvent::RunCompleted {
+                ts: chrono::Utc::now(),
+            event: RunEvent::RunCompleted {
                     final_text: "done".into(),
                 },
             });
@@ -257,7 +262,8 @@ mod tests {
                 run_id: "run-a".into(),
                 turn_id: None,
                 parent_call_id: None,
-                event: RunEvent::RunStarted,
+                ts: chrono::Utc::now(),
+            event: RunEvent::RunStarted,
             });
             let mut log2 = EventLog::new("run-b", dir.path().to_str().unwrap());
             log2.append(Envelope {
@@ -266,7 +272,8 @@ mod tests {
                 run_id: "run-b".into(),
                 turn_id: None,
                 parent_call_id: None,
-                event: RunEvent::RunStarted,
+                ts: chrono::Utc::now(),
+            event: RunEvent::RunStarted,
             });
         }
 

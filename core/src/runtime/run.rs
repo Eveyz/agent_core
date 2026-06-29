@@ -290,6 +290,7 @@ impl Run {
     fn wrap(&self, event: RunEvent) -> Envelope {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
         Envelope {
+            ts: chrono::Utc::now(),
             seq,
             event_id: uuid::Uuid::new_v4().to_string(),
             run_id: self.id.clone(),
@@ -673,7 +674,8 @@ impl Run {
                     run_id: run_id.clone(),
                     turn_id: turn_id.clone(),
                     parent_call_id: None,
-                    event: RunEvent::ToolEnded {
+                    ts: chrono::Utc::now(),
+            event: RunEvent::ToolEnded {
                         subagent_id: None,
                         call_id: cid.clone(),
                         name: String::new(),
@@ -711,7 +713,8 @@ impl Run {
                             run_id: run_id.clone(),
                             turn_id: turn_id.clone(),
                             parent_call_id: Some(parent_call_id.to_string()),
-                            event: run_ev,
+                            ts: chrono::Utc::now(),
+            event: run_ev,
                         });
                     }
                 })

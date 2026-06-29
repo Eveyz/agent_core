@@ -211,6 +211,8 @@ pub struct Envelope {
     /// tool block.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_call_id: Option<String>,
+    #[serde(default = "chrono::Utc::now")]
+    pub ts: chrono::DateTime<chrono::Utc>,
     /// The actual event payload.
     #[serde(flatten)]
     pub event: RunEvent,
@@ -497,6 +499,8 @@ mod tests {
             run_id: "run-1".to_string(),
             turn_id: None,
             parent_call_id: None,
+            ts: chrono::Utc::now(),
+            ts: chrono::Utc::now(),
             event: RunEvent::RunStarted,
         };
         let json = serde_json::to_value(&env).unwrap();
@@ -515,6 +519,8 @@ mod tests {
             run_id: "r".to_string(),
             turn_id: Some("turn-1".to_string()),
             parent_call_id: None,
+            ts: chrono::Utc::now(),
+            ts: chrono::Utc::now(),
             event: RunEvent::ModelStreaming {
                 subagent_id: Some("sa-1".to_string()),
                 message_id: "m-1".to_string(),

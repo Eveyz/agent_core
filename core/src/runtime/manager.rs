@@ -202,6 +202,7 @@ impl RunManager {
             run_id: run_id.clone(),
             turn_id: None,
             parent_call_id: None,
+            ts: chrono::Utc::now(),
             event: RunEvent::RunCreated {
                 id: run_id.clone(),
                 session_id: session_id.clone(),
@@ -213,6 +214,7 @@ impl RunManager {
         let state_clone = shared_state.clone();
         let event_tx_clone = event_tx.clone();
         let log_run_id = run_id.clone();
+        let seq_for_reflect = seq.clone();
         let event_tx_for_log = event_tx.clone();
         let brain_for_reflect = self.brain.clone();
         let reflect_run_id = run_id.clone();
@@ -295,6 +297,22 @@ impl RunManager {
                                         suggestion = %sug.id,
                                         "reflector suggestion needs approval: {diff}"
                                     );
+                                    let _ = event_tx_clone.send(Envelope {
+                                        seq: seq_for_reflect.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                                        event_id: uuid::Uuid::new_v4().to_string(),
+                                        run_id: reflect_run_id.clone(),
+                                        turn_id: None,
+                                        parent_call_id: None,
+                                        ts: chrono::Utc::now(),
+                                        event: RunEvent::ApprovalRequired {
+                                            subagent_id: None,
+                                            prompt_id: sug.id.clone(),
+                                            tool_name: "reflector".into(),
+                                            tool_input: serde_json::json!({ "diff": diff }),
+                                            danger_level: "low".into(),
+                                            explanation: format!("Reflector suggests: {}", sug.rationale),
+                                        },
+                                    });
                                 }
                                 Ok(crate::reflector::SuggestionAction::Forbidden) => {
                                     tracing::debug!(

@@ -110,14 +110,25 @@ impl Reflector {
                 "turn_started" => Some(DigestEvent {
                     kind: DigestEventKind::TurnStart,
                     tool_name: None,
+                    args: None,
                     is_error: false,
                     message: None,
                     turn_index: env.get("index").and_then(|v| v.as_u64()).map(|n| n as usize),
                     ts,
                 }),
+                "tool_started" => Some(DigestEvent {
+                    kind: DigestEventKind::ToolStart,
+                    tool_name: env.get("name").and_then(|v| v.as_str()).map(String::from),
+                    args: env.get("args").cloned(),
+                    is_error: false,
+                    message: None,
+                    turn_index: None,
+                    ts,
+                }),
                 "tool_ended" => Some(DigestEvent {
                     kind: DigestEventKind::ToolEnd,
                     tool_name: env.get("name").and_then(|v| v.as_str()).map(String::from),
+                    args: None,
                     is_error: env.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false),
                     message: None,
                     turn_index: None,
@@ -126,6 +137,7 @@ impl Reflector {
                 "error" => Some(DigestEvent {
                     kind: DigestEventKind::Error,
                     tool_name: None,
+                    args: None,
                     is_error: true,
                     message: env.get("message").and_then(|v| v.as_str()).map(String::from),
                     turn_index: None,
@@ -307,6 +319,7 @@ impl TraceRecord {
             Some(DigestEvent {
                 kind: DigestEventKind::ToolEnd,
                 tool_name: Some(snap.tool_name),
+                args: None,
                 is_error: snap.is_error,
                 message: None,
                 turn_index: None,
@@ -316,6 +329,7 @@ impl TraceRecord {
             Some(DigestEvent {
                 kind: DigestEventKind::TurnStart,
                 tool_name: None,
+                args: None,
                 is_error: false,
                 message: None,
                 turn_index: Some(turn),
@@ -325,6 +339,7 @@ impl TraceRecord {
             Some(DigestEvent {
                 kind: DigestEventKind::Error,
                 tool_name: None,
+                args: None,
                 is_error: true,
                 message: Some(msg),
                 turn_index: None,

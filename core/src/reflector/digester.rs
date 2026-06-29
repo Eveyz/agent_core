@@ -15,6 +15,7 @@ use std::collections::HashMap;
 pub struct DigestEvent {
     pub kind: DigestEventKind,
     pub tool_name: Option<String>,
+    pub args: Option<serde_json::Value>,
     pub is_error: bool,
     pub message: Option<String>,
     pub turn_index: Option<usize>,
@@ -24,6 +25,7 @@ pub struct DigestEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DigestEventKind {
     TurnStart,
+    ToolStart,
     ToolEnd,
     Error,
 }
@@ -196,6 +198,7 @@ mod tests {
         DigestEvent {
             kind: DigestEventKind::ToolEnd,
             tool_name: Some(name.to_string()),
+            args: None,
             is_error,
             message: None,
             turn_index: None,
@@ -207,6 +210,7 @@ mod tests {
         DigestEvent {
             kind: DigestEventKind::TurnStart,
             tool_name: None,
+            args: None,
             is_error: false,
             message: None,
             turn_index: Some(i),
@@ -218,6 +222,7 @@ mod tests {
         DigestEvent {
             kind: DigestEventKind::Error,
             tool_name: None,
+            args: None,
             is_error: true,
             message: Some(msg.to_string()),
             turn_index: None,
