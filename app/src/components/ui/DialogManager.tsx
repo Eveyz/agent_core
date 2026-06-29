@@ -103,7 +103,7 @@ export const DialogManager = memo(function DialogManager({
           />
         )}
         <div className="dialog-actions">
-          <button className={`btn-cancel ${state.danger ? 'btn-deny' : ''}`} onClick={handleCancel}>
+          <button className="btn-cancel" onClick={handleCancel}>
             {cancelLabel}
           </button>
           <button

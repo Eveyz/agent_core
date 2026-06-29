@@ -181,6 +181,7 @@ export default function MemoryTab() {
                 gap: '4px',
                 transition: 'all 0.15s ease',
                 opacity: switchingMode ? 0.6 : 1,
+                color: 'var(--text-main)',
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
