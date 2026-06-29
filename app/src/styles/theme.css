@@ -40,6 +40,15 @@
   --overlay-0_5: rgba(255, 255, 255, 0.5);
   --overlay-0_55: rgba(255, 255, 255, 0.55);
   --overlay-0_6: rgba(255, 255, 255, 0.6);
+
+  /* Code block (GitHub dark) */
+  --code-bg: #0d1117;
+  --code-header-bg: #161b22;
+  --code-text: #c9d1d9;
+  --code-lang-color: #8b949e;
+  --code-scrollbar-track: #0d1117;
+  --code-scrollbar-thumb: #30363d;
+  --code-scrollbar-thumb-hover: #484f58;
 }
 
 [data-theme="light"] {
@@ -77,6 +86,15 @@
   --overlay-0_5: rgba(0, 0, 0, 0.5);
   --overlay-0_55: rgba(0, 0, 0, 0.55);
   --overlay-0_6: rgba(0, 0, 0, 0.6);
+
+  /* Code block (GitHub light) */
+  --code-bg: #f6f8fa;
+  --code-header-bg: #eaeef2;
+  --code-text: #24292e;
+  --code-lang-color: #57606a;
+  --code-scrollbar-track: #f6f8fa;
+  --code-scrollbar-thumb: #d0d7de;
+  --code-scrollbar-thumb-hover: #afb8c1;
 }
 
 * {
@@ -99,4 +117,3 @@ body {
   height: 100vh;
   display: flex;
 }
-

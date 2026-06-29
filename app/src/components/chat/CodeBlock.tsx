@@ -1,56 +1,113 @@
 import React, { useState, useEffect } from 'react';
-import { Check, Copy } from 'lucide-react';
-import { createHighlighter } from 'shiki';
+import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
+import CopyIcon from 'lucide-react/dist/esm/icons/copy.mjs';
+import { createHighlighter, type Highlighter, type BundledLanguage } from 'shiki';
 
-// Initialize shiki highlighter
+// Languages loaded eagerly on first use. These cover the vast majority of
+// code blocks; any other language is loaded on demand the first time it
+// appears. Loading every grammar up front was a major contributor to the
+// first-open freeze — a smaller core set keeps cold-start short.
+const CORE_LANGS = [
+  'rust', 'typescript', 'javascript', 'python', 'json', 'bash',
+  'toml', 'yaml', 'html', 'css', 'sql', 'markdown',
+];
+
 let highlighterPromise: ReturnType<typeof createHighlighter> | null = null;
 
-function getShikiHighlighter() {
+function getShikiHighlighter(): Promise<Highlighter> {
   if (!highlighterPromise) {
     highlighterPromise = createHighlighter({
-      themes: ['github-dark'],
-      langs: [
-        'rust',
-        'python',
-        'javascript',
-        'typescript',
-        'json',
-        'toml',
-        'yaml',
-        'html',
-        'css',
-        'sql',
-        'bash',
-        'c',
-        'cpp',
-        'java',
-        'go',
-        'ruby',
-        'php',
-        'swift',
-        'kotlin',
-        'scala',
-        'r',
-        'lua',
-        'perl',
-        'elixir',
-        'erlang',
-        'haskell',
-        'clojure',
-        'dart',
-        'protobuf',
-        'xml',
-        'markdown',
-        'makefile',
-        'cmake',
-        'dockerfile',
-        'diff',
-        'git-commit',
-        'ini',
-      ],
+      themes: ['github-dark', 'github-light'],
+      langs: CORE_LANGS,
     });
   }
   return highlighterPromise;
+}
+
+// Track in-flight language loads so concurrent code blocks for the same
+// (rare) language don't trigger duplicate grammar fetches.
+const loadingLangs = new Map<string, Promise<void>>();
+
+async function ensureLanguage(highlighter: Highlighter, lang: string): Promise<boolean> {
+  const normalized = (lang || 'plaintext').toLowerCase();
+  if (normalized === 'plaintext' || normalized === 'text' || normalized === '') return true;
+  if (highlighter.getLoadedLanguages().includes(normalized)) return true;
+  let inflight = loadingLangs.get(normalized);
+  if (!inflight) {
+    inflight = highlighter
+      .loadLanguage(normalized as BundledLanguage)
+      .then(() => undefined)
+      .catch(() => undefined);
+    loadingLangs.set(normalized, inflight);
+  }
+  await inflight;
+  return highlighter.getLoadedLanguages().includes(normalized);
+}
+
+// ── Co-operative highlighting queue ──────────────────────────────────
+// codeToHtml is synchronous and CPU-bound. Restoring a long session mounts
+// dozens of CodeBlocks at once; if they all highlight back-to-back the main
+// thread blocks and the UI freezes. Instead we process a small batch per
+// idle frame and yield in between, so buttons stay responsive while the
+// session is still being syntax-highlighted.
+type HighlightJob = { code: string; lang: string; resolve: (html: string) => void };
+
+const HIGHLIGHT_BATCH_SIZE = 3;
+let highlightQueue: HighlightJob[] = [];
+let drainScheduled = false;
+
+function plainHtml(code: string): string {
+  return `<pre><code>${escapeHtml(code)}</code></pre>`;
+}
+
+function runDrain(): void {
+  // Reset the flag first so jobs enqueued while this batch runs can
+  // schedule a fresh drain. Previously the flag was never cleared here,
+  // which stalled the queue after the first batch — leaving every code
+  // block past the first three stuck in the unstyled loading fallback.
+  drainScheduled = false;
+  const batch = highlightQueue.splice(0, HIGHLIGHT_BATCH_SIZE);
+  if (batch.length === 0) {
+    return;
+  }
+  getShikiHighlighter().then(async (highlighter) => {
+    for (const job of batch) {
+      try {
+        const ok = await ensureLanguage(highlighter, job.lang);
+        const html = ok
+          ? highlighter.codeToHtml(job.code, {
+              lang: (job.lang || 'plaintext') as BundledLanguage,
+              themes: { light: 'github-light', dark: 'github-dark' },
+            })
+          : plainHtml(job.code);
+        job.resolve(html);
+      } catch (error) {
+        console.error('Shiki highlighting error:', error);
+        job.resolve(plainHtml(job.code));
+      }
+    }
+    if (highlightQueue.length > 0) scheduleDrain();
+  });
+}
+
+function scheduleDrain(): void {
+  if (drainScheduled) return;
+  drainScheduled = true;
+  const ric = (window as unknown as {
+    requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+  }).requestIdleCallback;
+  if (typeof ric === 'function') {
+    ric(runDrain, { timeout: 200 });
+  } else {
+    setTimeout(runDrain, 16);
+  }
+}
+
+function enqueueHighlight(code: string, lang: string): Promise<string> {
+  return new Promise<string>((resolve) => {
+    highlightQueue.push({ code, lang, resolve });
+    scheduleDrain();
+  });
 }
 
 // Language display name mapping
@@ -119,33 +176,15 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({ code, language, className 
 
   useEffect(() => {
     let mounted = true;
+    setLoading(true);
 
-    async function highlight() {
-      try {
-        const highlighter = await getShikiHighlighter();
-        if (!mounted) return;
-
-        const lang = language.toLowerCase() || 'plaintext';
-        const html = highlighter.codeToHtml(code, {
-          lang,
-          theme: 'github-dark',
-        });
-        
-        if (mounted) {
-          setHighlightedCode(html);
-          setLoading(false);
-        }
-      } catch (error) {
-        console.error('Shiki highlighting error:', error);
-        if (mounted) {
-          // Fallback to plain text if highlighting fails
-          setHighlightedCode(`<pre><code>${escapeHtml(code)}</code></pre>`);
-          setLoading(false);
-        }
+    const lang = language.toLowerCase() || 'plaintext';
+    enqueueHighlight(code, lang).then((html) => {
+      if (mounted) {
+        setHighlightedCode(html);
+        setLoading(false);
       }
-    }
-
-    highlight();
+    });
 
     return () => {
       mounted = false;
@@ -170,7 +209,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({ code, language, className 
         <div className="code-block-header">
           <span className="code-block-language">{displayName}</span>
           <button className="code-block-copy-btn" onClick={handleCopy}>
-            <Copy size={14} />
+            {copied ? <CheckIcon size={14} color="var(--success)" /> : <CopyIcon size={14} />}
           </button>
         </div>
         <div className="code-block-content">
@@ -185,7 +224,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({ code, language, className 
       <div className="code-block-header">
         <span className="code-block-language">{displayName}</span>
         <button className="code-block-copy-btn" onClick={handleCopy}>
-          {copied ? <Check size={14} /> : <Copy size={14} />}
+          {copied ? <CheckIcon size={14} color="var(--success)" /> : <CopyIcon size={14} />}
         </button>
       </div>
       <div 

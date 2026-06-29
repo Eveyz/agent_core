@@ -231,6 +231,22 @@ export const chatSlice = createSlice({
       state.entries = [];
       state.isProcessing = false;
 
+      // Group the event log by turn_index once, instead of scanning the
+      // full array three times per assistant turn (O(turns x events)).
+      const eventsByTurn = new Map<number, EventLogEntry[]>();
+      if (event_log && Array.isArray(event_log)) {
+        for (const ev of event_log) {
+          const arr = eventsByTurn.get(ev.turn_index);
+          if (arr) arr.push(ev);
+          else eventsByTurn.set(ev.turn_index, [ev]);
+        }
+      }
+
+      const toPayload = (ev: EventLogEntry): Record<string, unknown> =>
+        ev.payload && typeof ev.payload === 'object' && !Array.isArray(ev.payload)
+          ? (ev.payload as Record<string, unknown>)
+          : {};
+
       let assistantIdx = 0;
       for (const msg of messages) {
         if (msg.role === 'user') {
@@ -244,50 +260,49 @@ export const chatSlice = createSlice({
           assistantIdx++;
           const blocks: TurnBlock[] = [];
 
-          if (event_log && Array.isArray(event_log)) {
-            const turnEvents = event_log.filter(
-              (e: EventLogEntry) =>
-                e.turn_index === turnIdx &&
-                (e.event_type === 'tool_call' || e.event_type === 'subagent' || e.event_type === 'thinking' || e.event_type === 'assistant')
-            );
-            for (const ev of turnEvents) {
-              const payload: Record<string, unknown> =
-                ev.payload && typeof ev.payload === 'object' && !Array.isArray(ev.payload)
-                  ? (ev.payload as Record<string, unknown>)
-                  : {};
-              if (ev.event_type === 'tool_call') {
+          const turnEvents = eventsByTurn.get(turnIdx) ?? [];
+          for (const ev of turnEvents) {
+            if (
+              ev.event_type !== 'tool_call' &&
+              ev.event_type !== 'subagent' &&
+              ev.event_type !== 'thinking' &&
+              ev.event_type !== 'assistant'
+            ) {
+              continue;
+            }
+            const payload = toPayload(ev);
+            if (ev.event_type === 'tool_call') {
+              blocks.push({
+                type: 'tool',
+                call_id: `restored-${Math.random()}`,
+                name: (payload.name as string) ?? 'unknown',
+                args: payload.args ?? undefined,
+                result: (payload.args_summary as string) ?? '',
+                active: false,
+                is_error: !!payload.is_error,
+              });
+            } else if (ev.event_type === 'subagent') {
+              const subId = payload.id as string | undefined;
+              if (subId) {
                 blocks.push({
-                  type: 'tool',
-                  call_id: `restored-${Math.random()}`,
-                  name: (payload.name as string) ?? 'unknown',
-                  args: payload.args ?? undefined,
-                  result: (payload.args_summary as string) ?? '',
-                  active: false,
-                  is_error: !!payload.is_error,
-                });
-              } else if (ev.event_type === 'subagent') {
-                const subId = payload.id as string | undefined;
-                if (subId) {
-                  blocks.push({
-                    type: 'subagent_ref',
-                    subagent_id: subId,
-                  });
-                }
-              } else if (ev.event_type === 'thinking') {
-                blocks.push({
-                  type: 'thinking',
-                  text: (payload.text as string) ?? '',
-                  isStreaming: false,
-                  startTime: payload.startTime as number | undefined,
-                  endTime: payload.endTime as number | undefined,
-                });
-              } else if (ev.event_type === 'assistant') {
-                blocks.push({
-                  type: 'assistant',
-                  text: (payload.text as string) ?? '',
-                  isStreaming: false,
+                  type: 'subagent_ref',
+                  subagent_id: subId,
                 });
               }
+            } else if (ev.event_type === 'thinking') {
+              blocks.push({
+                type: 'thinking',
+                text: (payload.text as string) ?? '',
+                isStreaming: false,
+                startTime: payload.startTime as number | undefined,
+                endTime: payload.endTime as number | undefined,
+              });
+            } else if (ev.event_type === 'assistant') {
+              blocks.push({
+                type: 'assistant',
+                text: (payload.text as string) ?? '',
+                isStreaming: false,
+              });
             }
           }
 
@@ -297,30 +312,24 @@ export const chatSlice = createSlice({
 
           let startTime: number | undefined = undefined;
           let endTime: number | undefined = undefined;
-          if (event_log && Array.isArray(event_log)) {
-            const metaEvent = event_log.find((e: EventLogEntry) => e.turn_index === turnIdx && e.event_type === 'turn_meta');
-            if (metaEvent && metaEvent.payload) {
-              startTime = (metaEvent.payload as Record<string, unknown>).startTime as number | undefined;
-              endTime = (metaEvent.payload as Record<string, unknown>).endTime as number | undefined;
+          for (const ev of turnEvents) {
+            if (ev.event_type === 'turn_meta' && ev.payload) {
+              const meta = ev.payload as Record<string, unknown>;
+              startTime = meta.startTime as number | undefined;
+              endTime = meta.endTime as number | undefined;
+              break;
             }
           }
 
           let subagentIds: string[] | undefined = undefined;
-          if (event_log && Array.isArray(event_log)) {
-            const subEvents = event_log.filter((e: EventLogEntry) => e.turn_index === turnIdx && e.event_type === 'subagent');
-            if (subEvents.length > 0) {
-              subagentIds = [];
-              for (const ev of subEvents) {
-                const payload: Record<string, unknown> =
-                  ev.payload && typeof ev.payload === 'object' && !Array.isArray(ev.payload)
-                    ? (ev.payload as Record<string, unknown>)
-                    : {};
-                const subId = payload.id as string | undefined;
-                if (subId) {
-                  subagentIds.push(subId);
-                  state.subagents[subId] = payload as unknown as SubagentEntry;
-                }
-              }
+          for (const ev of turnEvents) {
+            if (ev.event_type !== 'subagent') continue;
+            const payload = toPayload(ev);
+            const subId = payload.id as string | undefined;
+            if (subId) {
+              if (!subagentIds) subagentIds = [];
+              subagentIds.push(subId);
+              state.subagents[subId] = payload as unknown as SubagentEntry;
             }
           }
 

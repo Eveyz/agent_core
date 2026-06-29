@@ -1,6 +1,6 @@
 import { RefObject } from 'react';
 import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
-import { EntryRow } from '../chat/EntryRow';
+import { LazyEntry } from '../chat/LazyEntry';
 
 interface ChatAreaProps {
   entryIds: string[];
@@ -27,13 +27,15 @@ export function ChatArea({
     <>
       <div className="chat-history" ref={scrollRef}>
         <div ref={contentRef} style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-          {entryIds.map((id) => (
-            <EntryRow
+          {entryIds.map((id, index) => (
+            <LazyEntry
               key={id}
               entryId={id}
               defaultModel={defaultModel}
               handleRetry={handleRetry}
               isProcessing={isProcessing}
+              scrollRef={scrollRef}
+              forceVisible={index >= entryIds.length - 3}
             />
           ))}
         </div>

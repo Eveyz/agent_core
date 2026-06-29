@@ -727,8 +727,8 @@
 .assistant-msg hr {
   border: 0;
   border-top: 1px solid var(--border-color);
-  opacity: 0.5;
-  margin: 1.5rem 0;
+  opacity: 1.0;
+  margin: 12px 0;
 }
 
 .assistant-msg a {
@@ -782,7 +782,7 @@
   border-radius: 8px;
   overflow: hidden;
   border: 1px solid var(--border-color);
-  background-color: #0d1117;
+  background-color: var(--code-bg);
   max-width: 100%;
 }
 
@@ -791,7 +791,7 @@
   align-items: center;
   justify-content: space-between;
   padding: 8px 12px;
-  background-color: #161b22;
+  background-color: var(--code-header-bg);
   border-bottom: 1px solid var(--border-color);
 }
 
@@ -799,7 +799,7 @@
   font-family: 'Geist Mono', 'SF Mono', 'Menlo', monospace;
   font-size: 12px;
   font-weight: 500;
-  color: #8b949e;
+  color: var(--code-lang-color);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
@@ -810,7 +810,7 @@
   justify-content: center;
   background: none;
   border: none;
-  color: #8b949e;
+  color: var(--code-lang-color);
   cursor: pointer;
   padding: 4px;
   border-radius: 4px;
@@ -818,8 +818,8 @@
 }
 
 .code-block-copy-btn:hover {
-  background-color: rgba(255, 255, 255, 0.1);
-  color: #c9d1d9;
+  background-color: var(--bg-hover);
+  color: var(--code-text);
 }
 
 .code-block-content {
@@ -833,22 +833,23 @@
 }
 
 .code-block-content::-webkit-scrollbar-track {
-  background: #0d1117;
+  background: var(--code-scrollbar-track);
 }
 
 .code-block-content::-webkit-scrollbar-thumb {
-  background: #30363d;
+  background: var(--code-scrollbar-thumb);
   border-radius: 4px;
 }
 
 .code-block-content::-webkit-scrollbar-thumb:hover {
-  background: #484f58;
+  background: var(--code-scrollbar-thumb-hover);
 }
 
 .code-block-content pre {
   margin: 0;
   padding: 12px;
-  background-color: #0d1117;
+  background-color: var(--code-bg);
+  color: var(--code-text);
   border-radius: 0;
   overflow-x: auto;
   min-width: fit-content;
@@ -865,7 +866,21 @@
 
 /* Shiki syntax highlighting overrides */
 .code-block-content .shiki {
-  background-color: #0d1117 !important;
+  background-color: var(--code-bg) !important;
+  color: var(--code-text) !important;
+}
+
+/* Dual-theme token switching: Shiki emits both --shiki-light and
+ * --shiki-dark color vars per token; pick the right one per app theme.
+ * Dark is the default (:root); [data-theme="light"] overrides. */
+.code-block-content .shiki,
+.code-block-content .shiki span {
+  color: var(--shiki-dark) !important;
+}
+
+[data-theme="light"] .code-block-content .shiki,
+[data-theme="light"] .code-block-content .shiki span {
+  color: var(--shiki-light) !important;
 }
 
 .code-block-content .shiki code {
