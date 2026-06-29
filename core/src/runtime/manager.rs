@@ -209,6 +209,31 @@ impl RunManager {
             },
         });
 
+        // Continuous Learning: Diff Observer
+        // Before starting a new run, we check if the user modified files that the previous run touched.
+        if let Ok(runs) = crate::runtime::event_log::EventLog::list_runs(
+            crate::paths::get_runs_dir().to_string_lossy().as_ref()
+        ) {
+            // Because the current run's log hasn't been written yet (the log task hasn't processed RunCreated),
+            // the last run in the directory is truly the "previous" run.
+            if let Some(prev_run_id) = runs.last() {
+                let diffs = crate::reflector::diff_observer::DiffObserver::check_for_diffs(prev_run_id);
+                if !diffs.is_empty() {
+                    tracing::info!(diff_count = diffs.len(), "Diff Observer found manual edits to previous run's files");
+                    if let Ok(client) = self.brain.build_client() {
+                        crate::memory::diff_preference::DiffPreferenceEngine::spawn_analysis(
+                            client,
+                            diffs,
+                            event_tx.clone(),
+                            seq.clone(),
+                            run_id.clone(),
+                        );
+                    }
+                }
+            }
+        }
+
+
         // Spawn the Run's task
         let user_input_owned = user_input.to_string();
         let state_clone = shared_state.clone();
@@ -282,6 +307,7 @@ impl RunManager {
                     .join(format!("{reflect_run_id}.jsonl"));
                 match Reflector::load_event_log(&log_path) {
                     Ok(events) => {
+                        crate::reflector::diff_observer::DiffObserver::take_snapshot(&reflect_run_id, &events);
                         let suggestions = reflector.analyze(&events);
                         for sug in &suggestions {
                             match reflector.apply(sug) {

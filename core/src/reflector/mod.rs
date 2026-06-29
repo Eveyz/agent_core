@@ -35,6 +35,7 @@ use crate::client::OpenAIClient;
 use crate::types::Message;
 
 pub mod digester;
+pub mod diff_observer;
 pub mod suggestion;
 
 pub use digester::{Digester, DigesterRule, DigestEvent, DigestEventKind};

@@ -23,6 +23,11 @@ pub fn get_skills_dir() -> PathBuf {
     get_agverse_dir().join("skills")
 }
 
+/// Gets the diff observer snapshots directory. Usually `~/.agverse/snapshots/`.
+pub fn get_snapshots_dir() -> PathBuf {
+    get_agverse_dir().join("snapshots")
+}
+
 /// Gets the CLI history directory. Usually `~/.agverse_history/`.
 pub fn get_cli_history_dir() -> PathBuf {
     dirs::home_dir()
