@@ -1,98 +1,83 @@
 ---
 id: AI-NOTE-0005
 type: AI-NOTE
-title: Reflector Evolution To Continuous Learning
+title: Reflector Evolution To Continuous Learning (PLAN-0003 Sub-plan)
 status: Proposed
 author: agent_core (AI)
 created: 2026-06-29
 updated: 2026-06-29
 reviewers: []
-related: []
+related: [PLAN-0003]
 supersedes: ~
 superseded_by: ~
-tags: [reflector, continuous-learning, hermes, evolution]
+tags: [reflector, continuous-learning, hermes, evolution, diff-observer]
 ---
 
-# 2026-06-29: 改进 Reflector 实现连续学习与偏好提取的 SOTA 方案
+# 2026-06-29: 改进 Reflector：基于 Diff 的偏好学习 (PLAN-0003 Phase 2-4 子方案)
 
-## 1. 背景与现状分析 (The Gap)
+## 1. 背景与定位 (Context & Positioning)
 
-目前的 `Reflector` 模块（位于 `manager.rs:253-293`）主要在 **Run 结束后的事后诸葛亮阶段**工作。它通过 `Digester.analyze()` 扫描 Event Log JSONL，主要寻找三种错误模式：
-- **连续工具错误** (同一工具连续失败 3 次)
-- **工具死循环** (同一工具同 turn 频繁调用)
-- **权限/操作拒绝** (频繁被 User Deny)
+本提案是 `PLAN-0003_self_evolution_roadmap.md` 中 Phase 2-4 (智能分析与持续学习) 的细化子方案。
 
-**现状痛点：**
-Reflector 目前本质上是一个 **"Bug 修复器"**，属于**粗粒度、低频次、由错误驱动**的机制。它完全忽略了用户在日常交互中展现出的**隐式偏好**（如：用户微调了生成的代码、改写了 commit message、调整了代码风格等）。
+**现状分析：**
+- **当前 ReflectionDaemon** (`core/src/memory/reflection.rs`) 能够非常好地处理基于**对话文本**的显式规则和偏好提取，并将其写入 `~/.agverse/agverse.md` (Core Memory)。
+- **当前 Reflector** (`manager.rs`) 主要从错误中分析 Bug（连续失败、循环调用）。
+- **目标 (Hermes GEPA 架构)**：`PLAN-0003` 明确指出要向基于 GEPA + DSPy 的进化搜索迈进。
 
-相比之下，类似 **Hermes** 这样的 SOTA 自我进化 Agent，其核心理念是 **"细粒度、高频次、持续偏好学习" (Continuous Preference Learning)**。Hermes 会在模型完成任务后，自动比对模型的初始输出与用户的最终修改，将其转化为可复用的 Skill 或 Context 偏好。
+**The Gap (待填补的空白)：**
+目前系统缺乏对**隐式偏好 (Implicit Preferences)** 的捕获。当 Agent 生成代码后，User 进行的手动修改 (Diff) 是最真实的偏好体现，但目前系统未能利用这一高价值数据。
 
-## 2. 核心目标：向 SOTA 迈进
+本提案旨在引入 **Diff Observer** 和 **Preference CRUD**，作为对 `ReflectionDaemon` 的关键补充，从而加速实现 PLAN-0003 的持续学习闭环。
 
-为了让我们的 Agent 超越 Hermes，我们需要将 Reflector 从“事后错误分析仪”升级为 **“实时/准实时用户偏好与技能提取引擎”**。
+## 2. 架构设计与关系明确
 
-改进核心主要包括：
-1. **反馈捕获 (Feedback Capture)**：不仅捕获报错和拒绝，还要捕获用户的**修改 (Diff)** 和**对话打断 (Chat Interruptions)**。
-2. **偏好提取 (Preference Extraction)**：利用 LLM 将 Diff 转化为人类可读的偏好描述（如“用户偏好使用 early return 而不是嵌套 if”）。
-3. **知识内化 (Knowledge Consolidation)**：将偏好不仅变成临时记忆，还要能自动 CRUD（增删改查）现有的 `Skill` 体系和 `.agents/AGENTS.md` 规则。
+### 2.1 与现有 ReflectionDaemon 的协同
+- **ReflectionDaemon** 继续负责：从对话 (Message) 中提取显式偏好 (User says "use X not Y")。
+- **Diff Observer (新增)** 负责：从文件状态变更中提取隐式偏好 (Agent wrote X, User changed it to Y)。
+- 两者提取出的结构化事实都写入统一的 Core Memory (`~/.agverse/agverse.md` 或针对特定项目的 `{cwd}/agverse.md` / `{cwd}/.agverse/rules/preferences.md`)，互不冲突。
 
----
+### 2.2 对齐 Hermes / PLAN-0003 定义
+在 PLAN-0003 中，Hermes 架构的核心是 GEPA (Genetic-Pareto) 提示进化。基于 Diff 的偏好学习将作为 GEPA **“变体生成 (Variant Generation)”** (Phase 3.1) 和 **“因果归因 (Causal Attribution)”** (Phase 4.1) 的高质量数据源。
 
-## 3. 详细方案与计划 (Implementation Plan)
+## 3. 详细子方案设计
 
-### 阶段 1: 细粒度观察与数据收集 (The Observer)
-要学习偏好，首先必须能“看到”偏好。
+### Milestone 1: 文件差异观察器 (Diff Observer) - 对应 PLAN-0003 Phase 2 早期
+由于当前是 CLI/Tauri 架构且无 IDE 深度集成，技术实现如下：
+- **机制**：
+  1. **数据源确定**：通过分析当前 Run 的 EventLog，提取 `ToolStarted`/`ToolEnded` 事件中调用 `write_file`、`edit` 等写操作工具时传入的文件路径参数，精确圈定“被 Agent 触碰过的文件”列表。
+  2. **状态快照 (Snapshot A)**：在每个 Run 结束时，保存上述文件列表的当前状态。对于 git 项目可以直接记录 `git tree hash` 或通过 `git diff` 比对；对于非 git 项目，则采用全文快照回溯（为保障存储与性能，强制限制全文快照仅适用于大小 < 1MB 的纯文本文件）。
+  3. **差异比对**：在下一次 Agent Run 开始前，重新比对这些文件的当前状态与 Snapshot A。如果发现人为修改，则生成 `UserEditDiffEvent` 注入 EventLog。
+- **价值**：这是整个机制中最具独特性和高价值的部分，无需调用 LLM 即可精确圈定用户的“接管操作”。
 
-- **1.1 文件差异观察 (Diff Observer)**
-  - **机制**：在 Agent 完成一个 Task 后，或者 User 主动接管修改时，记录 Agent 最终生成的文件状态与 User 修改后的状态之间的 `git diff`。
-  - **实现**：增加一个后台任务，在用户手动修改并保存文件（如通过 IDE 保存事件）时，自动 snapshot 差异。
-- **1.2 语境修正记录 (Conversational Correction)**
-  - **机制**：监控对话中类似“不要这样写”、“改成小写”等明显的纠正指令，将其标记为 `UserCorrectionEvent` 并写入 Event Log。
+### Milestone 2: Diff 偏好提取引擎 - 对应 PLAN-0003 Phase 2.2
+- **机制**：当产生 `UserEditDiffEvent` 时，启动后台异步 LLM 调用，要求模型：“对比 Agent 代码与 User 修改，提取一条通用的编程偏好或架构规则。”
+- **去噪策略**：为防止将一次性的语法 Bug 修复误认为长期偏好，Prompt 将要求 LLM 对提取的偏好输出一个 Confidence Score（低于阈值则丢弃）。同时，若用户在 TUI 中明确 `Reject` 了一条生成的偏好建议，系统会记录此次 Reject 作为负样本，防止未来重复提取类似规则。
+- **输出**：生成 `SuggestionAction::NeedsApproval` 的偏好规则建议。
 
-### 阶段 2: 偏好提取引擎 (The Analyzer)
-将收集到的原始数据转化为抽象的知识。
+### Milestone 3: 知识体系的 NeedsApproval CRUD - 对应 PLAN-0003 Phase 4.2
+为避免 Context 污染，引入动态 CRUD，但**严守安全红线**：
+- **新增操作 (`UpdateSkill`, `DeleteSkill`)**：绝不自动应用。所有对现有知识库的修改必须被标记为 `NeedsApproval`，并在 TUI/GUI 中向用户展示 Diff Preview，由用户决定是否合并。
+- **层次化存储**：提取的偏好将默认写入项目级的 `{cwd}/.agverse/rules/preferences.md`，或对于全局习惯推荐写入全局的 `~/.agverse/agverse.md`。
 
-- **2.1 微调提取器 (Diff-to-Preference Synthesizer)**
-  - **机制**：在后台或空闲时，触发一个新的 `Digester.extract_preference(diff, context)`。
-  - **LLM Prompt 核心**：“对比 Agent 生成的代码和 User 修改的代码，推断出 User 的编程风格、架构偏好或特定习惯，并生成一条简短规则。”
-- **2.2 负反馈归因 (Negative Feedback Attribution)**
-  - **机制**：分析 `UserCorrectionEvent`，将其归因为当前活跃的 `Skill` 的缺陷，或是缺少了某种基础规则。
+### Milestone 4: 主动微反馈 (Micro-feedback) - 对应 PLAN-0003 Phase 4.4
+- **机制**：在执行高风险、高歧义任务前，Agent 使用 RAG 查询提取出的历史偏好。如果存在相关但信心不足的偏好记录，Agent 可以主动在对话中提问（Micro-feedback）以确认，从而在事前进行对齐，而非事后修正。
+- **Context 注入**：这些基于 RAG 检索到的细粒度微偏好，在运行时将被动态挂载至现有的 7-Segment Context 引擎中（例如补充进 Segment 5: Active Memory 中），以直接干预 Agent 的规划生成。
 
-### 阶段 3: 知识体系的动态 CRUD (The Memory Controller)
-这是超越 Hermes 的关键：不仅仅是 Append（追加），还要能**修改和淘汰**过时的偏好。
+## 4. 评估指标与成本分析
 
-- **3.1 技能修改闭环 (Skill Mutation)**
-  - 当前 Reflector 只能通过 `AppendSkill` 添加新规则。新架构下，需要允许 `UpdateSkill` 和 `DeleteSkill`。
-  - 当 Analyzer 提取出新偏好时，先检索现有的 `Skill` 目录，如果是对现有技能的补充，则直接修改 `SKILL.md`，而不是无限追加新的 `AppendSkill` 导致 Context 污染。
-- **3.2 层次化偏好存储 (Hierarchical Preferences)**
-  - **Short-term**：注入到下一次 Prompt Context 中（适用于一次性任务的微调）。
-  - **Long-term (Workspace)**：写入到项目根目录下的 `.agents/AGENTS.md` 规则或具体的 `skills/` 中。
-  - **Long-term (Global)**：写入到 `~/.gemini/config/.agents/AGENTS.md`（适用于个人的全局代码风格）。
+**成功指标 (Success Metrics)：**
+1. **偏好提取准确率**：> 80% (人工抽查 LLM 提取的规则是否真正反映了 Diff 意图)。
+2. **规则应用率**：> 40% 的 `NeedsApproval` 提议被用户接受并合并。
+3. **用户修正率下降 (长期指标)**：同类任务的 User Edit Diff 大小在 4 周内下降 30%。
 
-### 阶段 4: 实时自我反思 (Proactive Alignment)
-最高级的进化不是等做完再改，而是在做的时候就“感觉”到可能会错。
+**成本分析 (Cost Estimate)：**
+- **计算成本**：Diff Observer 仅依赖本地文件 Hash/快照存储（限定文本），无 API 成本。
+- **LLM API 成本**：仅在发现有效 Diff 时触发后台调用，预估每次调用消耗 ~2K tokens ($0.01-0.02)，长期成本微乎其微。
 
-- **4.1 预生成反思 (Pre-generation Reflection)**
-  - Agent 在准备大量输出代码前，隐式查询偏好数据库（RAG）。
-  - 如果匹配到过去有类似冲突，Agent 可以主动通过提问确认：“上次你把类似组件改成了 React Hooks，这次也一样吗？”（即 micro-feedback 机制）。
+## 5. 结论
 
----
-
-## 4. 实施路线图 (Roadmap)
-
-- **Milestone 1: 基础建设 (Week 1)**
-  - 扩展 `EventLog` 结构，增加 `UserEditEvent` 和 `UserCorrectionEvent` 追踪。
-  - 实现基于文件系统的简单 Diff 捕获器。
-- **Milestone 2: 引入 LLM 偏好提取 (Week 2)**
-  - 实现 `PreferenceAnalyzer`，将 Diff 转化为结构化的偏好规则（JSON 格式）。
-  - 建立人工干预流：将提取结果暂时输出为 `AI-NOTE` 供人类 Review。
-- **Milestone 3: 闭环与知识存储 (Week 3)**
-  - 实现对 `.agents/AGENTS.md` 和 `skills/` 目录的自动 CRUD 机制，而不仅是 Append。
-  - 引入审核流：高信心的偏好自动合并，低信心的打上 `NeedsApproval` 标记。
-- **Milestone 4: SOTA 超越 (Week 4)**
-  - 实现技能之间的自动去重与冲突解决（解决随着时间推移 Skill 文件臃肿矛盾的问题）。
-  - 引入主动微反馈 (Micro-feedback) 和 Context RAG 动态组合机制。
+本方案彻底融入 `PLAN-0003` 的路线图，通过实现 Diff Observer 与安全可控的 CRUD 审批流，补齐了现有 ReflectionDaemon 无法观察“代码层面隐式编辑”的短板。建议首先在 Phase 2 期间启动 Milestone 1 (Diff Observer) 的概念验证。
 
 ---
 *Generated by AI Agent (agent_core)*
-*Model: Gemini 3.1 Pro (High) | Timestamp: 2026-06-29T13:17:42+08:00*
+*Model: Gemini 3.1 Pro (High) | Timestamp: 2026-06-29T13:30:03+08:00*
