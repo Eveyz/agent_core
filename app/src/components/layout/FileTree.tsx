@@ -20,7 +20,7 @@ import {
 } from 'react-icons/si';
 import { FaFileWord, FaFilePdf } from 'react-icons/fa';
 
-function getFileIcon(name: string) {
+export function getFileIcon(name: string) {
   const lowerName = name.toLowerCase();
   
   if (lowerName.endsWith('.lock') || lowerName.includes('-lock')) return <FileLockIcon size={14} color="var(--text-muted)" />;

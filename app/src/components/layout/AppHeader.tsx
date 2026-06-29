@@ -1,6 +1,6 @@
 import PanelRightOpenIcon from 'lucide-react/dist/esm/icons/panel-right-open.mjs';
+import PanelLeftOpenIcon from 'lucide-react/dist/esm/icons/panel-left-open.mjs';
 import PlusIcon from 'lucide-react/dist/esm/icons/plus.mjs';
-import PanelRightIcon from 'lucide-react/dist/esm/icons/panel-right.mjs';
 import { SessionTitle } from './SessionTitle';
 import { useAppDispatch } from '../../hooks/useAppDispatch';
 import { createSession } from '../../features/project/projectSlice';
@@ -35,7 +35,7 @@ export function AppHeader({
           <>
             <div style={{ width: 60, flexShrink: 0 }} />
             <button className="sidebar-expand-btn" onClick={onExpandSidebar} title="展开侧边栏">
-              <PanelRightIcon size={16} />
+              <PanelLeftOpenIcon size={16} />
             </button>
             <button
               className="sidebar-expand-btn"

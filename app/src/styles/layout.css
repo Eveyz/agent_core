@@ -520,10 +520,21 @@
 }
 
 .right-sidebar-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: var(--text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  margin-right: 8px;
+  border-radius: 4px;
+  flex-shrink: 0;
 }
 .right-sidebar-toggle:hover {
   color: var(--text-main);
+  background: var(--overlay-0_06);
 }
 
 .right-sidebar-content {
@@ -662,27 +673,117 @@
   border-bottom: 1px solid var(--border-color);
 }
 .overview-title {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-main);
 }
 .overview-body {
-  padding: 16px;
+  padding: 0;
   flex: 1;
   overflow-y: auto;
 }
-.tree-root {
+
+/* ── Overview sections (vertical accordion) ─────────────────────── */
+.overview-sections {
+  display: flex;
+  flex-direction: column;
+}
+
+.overview-section {
+  border-bottom: 1px solid var(--overlay-0_06);
+}
+
+.overview-section-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 11px;
   font-weight: 600;
-  margin-bottom: 8px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.overview-section-header:hover {
+  background: var(--overlay-0_04);
+}
+
+.overview-section-chevron {
+  display: flex;
+  align-items: center;
+  color: var(--text-muted);
+}
+
+.overview-section-label {
+  flex: 1;
+}
+
+.overview-section-body {
+  padding: 4px 0;
+}
+
+.overview-placeholder {
+  padding: 12px 16px 12px 34px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.overview-file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 16px 5px 34px;
+  font-size: 12px;
+  color: var(--text-main);
+  cursor: default;
+}
+.overview-file-row:hover {
+  background: var(--overlay-0_04);
+}
+
+.overview-file-icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  width: 18px;
+}
+
+.overview-file-name {
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.overview-file-path {
+  color: var(--text-dim);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.overview-task-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 6px 16px 6px 34px;
+  font-size: 12px;
   color: var(--text-main);
 }
-.tree-children {
-  padding-left: 16px;
-  border-left: 1px solid var(--overlay-0_1);
+
+.todo-status-dot {
+  margin-top: 4px;
 }
-.tree-item {
-  padding: 4px 0;
-  font-size: 13px;
+
+.overview-task-text {
+  flex: 1;
+  line-height: 1.4;
+}
+
+.overview-task-done {
+  text-decoration: line-through;
+  color: var(--text-dim);
 }
 
 /* ── Dragging Utility ────────────────────────────────────────────── */

@@ -1,6 +1,5 @@
 import { useState } from 'react';
-import PanelRightIcon from 'lucide-react/dist/esm/icons/panel-right.mjs';
-import FileTextIcon from 'lucide-react/dist/esm/icons/file-text.mjs';
+import PanelRightCloseIcon from 'lucide-react/dist/esm/icons/panel-right-close.mjs';
 import FilePlusIcon from 'lucide-react/dist/esm/icons/file-plus.mjs';
 import ListIcon from 'lucide-react/dist/esm/icons/list.mjs';
 import { ReviewTab } from '../review/ReviewTab';
@@ -13,13 +12,13 @@ interface RightSidebarProps {
 }
 
 export function RightSidebar({ sidebarRef, isExpanded, onToggle }: RightSidebarProps) {
-  const [activeTab, setActiveTab] = useState<'overview' | 'review' | 'plan'>('review');
+  const [activeTab, setActiveTab] = useState<'overview' | 'review'>('overview');
 
   return (
     <aside 
       className={`right-sidebar ${!isExpanded ? 'right-sidebar-collapsed' : ''}`} 
       ref={sidebarRef} 
-      style={!isExpanded ? undefined : { width: 550 }}
+      style={!isExpanded ? undefined : { width: 400 }}
     >
       <div className="right-sidebar-header">
         <div className="right-sidebar-tabs">
@@ -37,22 +36,14 @@ export function RightSidebar({ sidebarRef, isExpanded, onToggle }: RightSidebarP
             <FilePlusIcon size={14} className="tab-icon" />
             Review
           </button>
-          <button 
-            className={`tab-btn ${activeTab === 'plan' ? 'active' : ''}`} 
-            onClick={() => setActiveTab('plan')}
-          >
-            <FileTextIcon size={14} className="tab-icon" />
-            Implementation Plan
-          </button>
         </div>
-        <button className="icon-btn right-sidebar-toggle" onClick={onToggle} title="关闭侧边栏">
-          <PanelRightIcon size={16} />
+        <button className="right-sidebar-toggle" onClick={onToggle} title="收起右侧栏">
+          <PanelRightCloseIcon size={16} />
         </button>
       </div>
       <div className="right-sidebar-content">
         {activeTab === 'overview' && <OverviewTab />}
         {activeTab === 'review' && <ReviewTab />}
-        {activeTab === 'plan' && <div className="placeholder-pane">Implementation Plan (Coming Soon)</div>}
       </div>
     </aside>
   );
