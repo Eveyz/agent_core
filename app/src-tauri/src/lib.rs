@@ -1,6 +1,6 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 use agent_core::{
-    Brain, RunCommand, RunEvent, RunManager, RunState,
+    AgentMode, Brain, RunCommand, RunEvent, RunManager, RunState,
     permission::ApprovalChoice,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -407,6 +407,30 @@ async fn switch_model(state: State<'_, AppState>, name: String) -> Result<(), St
     manager.switch_model(&name).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn set_mode(state: State<'_, AppState>, mode: String) -> Result<(), String> {
+    let agent_mode = match mode.as_str() {
+        "ask" => AgentMode::Ask,
+        "plan" => AgentMode::Plan,
+        "build" => AgentMode::Build,
+        other => return Err(format!("unknown mode: {other}")),
+    };
+    let manager = state.run_manager.lock().await;
+    manager.set_mode(agent_mode);
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_mode(state: State<'_, AppState>) -> Result<String, String> {
+    let manager = state.run_manager.lock().await;
+    let mode_str = match manager.mode() {
+        AgentMode::Ask => "ask",
+        AgentMode::Plan => "plan",
+        AgentMode::Build => "build",
+    };
+    Ok(mode_str.to_string())
+}
+
 // ── Session commands ─────────────────────────────────────────────────
 
 #[tauri::command]
@@ -790,7 +814,7 @@ pub fn run() {
             send_message, approve_tool, abort_agent, replay_since,
             pause_run, resume_run, steer_run, get_run_state,
             list_directory, search_files,
-            get_config, save_config, switch_model,
+            get_config, save_config, switch_model, set_mode, get_mode,
             create_session, delete_session, rename_session,
             save_session_messages, resume_session,
             list_projects, create_project, delete_project, rename_project, open_in_explorer,

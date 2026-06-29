@@ -116,6 +116,7 @@ impl Subagent {
             }
         });
 
+        let mut all_text = String::new();
         let mut last_text = String::new();
         let mut tool_call_count = 0;
 
@@ -140,6 +141,10 @@ impl Subagent {
 
             let (text, tool_calls) = self.collect_stream(stream, event_sender.as_ref()).await?;
             last_text = text.clone();
+            if !all_text.is_empty() && !text.is_empty() {
+                all_text.push_str("\n\n");
+            }
+            all_text.push_str(&text);
             tool_call_count += tool_calls.len();
 
             if tool_calls.is_empty() {
@@ -157,7 +162,7 @@ impl Subagent {
                 return Ok(SubagentResult {
                     subagent_id: self.id.clone(),
                     role_name: self.role_name.clone(),
-                    output: text,
+                    output: all_text,
                     iterations_used: iteration + 1,
                     success: true,
                 });
@@ -249,7 +254,7 @@ impl Subagent {
                     });
                 }
                 self.context
-                    .add(Message::tool(call.id.clone(), result.clone()));
+                    .add(Message::tool(call.id.clone(), result.clone(), Some(call.function.name.clone())));
             }
         }
 
@@ -264,12 +269,12 @@ impl Subagent {
             });
         }
 
-        let truncated_output = if last_text.len() > 1000 {
-            format!("{}... [truncated, total {} chars]", &last_text[..1000], last_text.len())
-        } else if last_text.is_empty() {
+        let truncated_output = if all_text.len() > 1000 {
+            format!("{}... [truncated, total {} chars]", &all_text[..1000], all_text.len())
+        } else if all_text.is_empty() {
             "(no output produced)".to_string()
         } else {
-            last_text.clone()
+            all_text.clone()
         };
 
         Ok(SubagentResult {

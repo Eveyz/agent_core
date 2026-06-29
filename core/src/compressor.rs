@@ -16,6 +16,10 @@ use crate::types::Message;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Tools whose results must NOT be truncated — their content is instruction,
+/// not data output. Truncating these would lose critical guidance for the model.
+const NON_TRUNCATABLE_TOOLS: &[&str] = &["skill_load"];
+
 // ── Compression metrics ──────────────────────────────────────────────
 
 /// Result of running the compression pipeline.
@@ -182,11 +186,17 @@ impl Compressor {
     // ── Stage 1: snipCompact ────────────────────────────────────────
 
     /// Truncate tool results exceeding the budget.
+    /// Skips non-truncatable tools (e.g., skill_load) whose content is instruction.
     /// Returns the number of messages modified.
     pub fn snip_compact(&self, messages: &mut Vec<Message>) -> usize {
         let mut modified = 0;
         for msg in messages.iter_mut() {
             if msg.role == crate::types::Role::Tool
+                // Skip non-truncatable tools — their content is instruction, not data.
+                && !msg
+                    .name
+                    .as_deref()
+                    .map_or(false, |n| NON_TRUNCATABLE_TOOLS.contains(&n))
                 && let Some(ref content) = msg.content
                 && content.len() > self.tool_result_budget
             {

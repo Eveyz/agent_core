@@ -13,7 +13,7 @@
 
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use crate::client::OpenAIClient;
 use crate::config::{Config, ModelConfig};
@@ -21,6 +21,7 @@ use crate::error_recovery::RecoveryEngine;
 use crate::hooks::HookRegistry;
 use crate::memory::MemoryManager;
 use crate::memory::reflection::ReflectionDaemon;
+use crate::mode::AgentMode;
 use crate::permission::{PermissionConfig, PermissionPolicy};
 use crate::prompt;
 use crate::reflector::Reflector;
@@ -49,6 +50,10 @@ pub struct Brain {
     /// The currently active model name (e.g. "openai/gpt-4o").
     /// Switching the model updates this; new Runs use the new model.
     current_model_name: String,
+    /// The current agent mode (Ask / Plan / Build).
+    /// Mode changes take effect on the next Run — existing Runs are unaffected.
+    /// Wrapped in Arc<StdMutex<>> to satisfy Clone (required by #[derive(Clone)]).
+    current_mode: Arc<StdMutex<AgentMode>>,
 }
 
 impl Brain {
@@ -69,6 +74,7 @@ impl Brain {
             todo_list: Arc::new(Mutex::new(TodoList::new())),
             reflector,
             current_model_name,
+            current_mode: Arc::new(StdMutex::new(AgentMode::default())),
         })
     }
 
@@ -277,6 +283,17 @@ impl Brain {
         Ok(())
     }
 
+    /// The current agent mode. New Runs inherit this mode.
+    pub fn mode(&self) -> AgentMode {
+        *self.current_mode.lock().unwrap()
+    }
+
+    /// Set the agent mode. Takes effect on the NEXT Run — existing Runs
+    /// keep their mode.
+    pub fn set_mode(&self, mode: AgentMode) {
+        *self.current_mode.lock().unwrap() = mode;
+    }
+
     /// Build an OpenAIClient for the current model (with fallback chain).
     ///
     /// Each Run calls this to get its own client instance. The client is
@@ -318,11 +335,16 @@ impl Brain {
         Ok(client)
     }
 
-    /// Build a fresh ToolRegistry for a Run.
+    /// Build a fresh ToolRegistry for a Run, filtered by mode.
     ///
     /// Each Run gets its own registry so MCP tools, memory tools, and
     /// subagent tools can be registered per-Run without interference.
-    pub fn build_tool_registry(&self) -> ToolRegistry {
+    ///
+    /// Tools are removed based on [`AgentMode`]:
+    /// - **Ask**: read-only tools only (no write, no plans, no subagents)
+    /// - **Plan**: read + plan tools (no write)
+    /// - **Build**: all tools
+    pub fn build_tool_registry(&self, mode: AgentMode) -> ToolRegistry {
         let mut registry = ToolRegistry::with_defaults();
 
         // Register memory tools only in Standard and Deep modes
@@ -339,19 +361,29 @@ impl Brain {
             crate::tools::skill::register_skill_tools(&mut registry, sm.clone());
         }
 
-        if let Ok(model_config) = self.current_model_config() {
-            let available_tools: Vec<String> = registry
-                .list_names()
-                .into_iter()
-                .map(|s| s.to_string())
-                .collect();
-            crate::tools::subagent::register_subagent_tools(
-                &mut registry,
-                model_config,
-                available_tools,
-                None,
-                self.config.permissions.clone(),
-            );
+        // ── Mode-based filtering ─────────────────────────────────────
+        // Remove tools not allowed in this mode BEFORE registering
+        // subagent tools, so subagents inherit the correct tool list.
+        registry.remove_all(mode.tools_to_remove());
+
+        // Register subagent tools with the FILTERED tool list.
+        // In Ask mode, "task" was removed above, so subagent tools
+        // won't be re-registered (subagent_spawn is not available).
+        if mode != AgentMode::Ask {
+            if let Ok(model_config) = self.current_model_config() {
+                let available_tools: Vec<String> = registry
+                    .list_names()
+                    .into_iter()
+                    .map(|s| s.to_string())
+                    .collect();
+                crate::tools::subagent::register_subagent_tools(
+                    &mut registry,
+                    model_config,
+                    available_tools,
+                    None,
+                    self.config.permissions.clone(),
+                );
+            }
         }
 
         registry
@@ -380,9 +412,10 @@ impl Brain {
     /// The principles text for the system prompt.
     pub fn principles_text(&self, permission_mode: &str) -> String {
         format!(
-            "{}\n\nPermission Mode: {} — tools may require user approval before execution.",
+            "{}\n\nPermission Mode: {} — tools may require user approval before execution.\n\n{}",
             prompt::DEFAULT_PRINCIPLES,
-            permission_mode
+            permission_mode,
+            self.mode().system_prompt_override(),
         )
     }
 
@@ -442,7 +475,7 @@ default = { model_id = "mock" }
     #[test]
     fn brain_builds_tool_registry() {
         let brain = Brain::from_config(test_config()).unwrap();
-        let registry = brain.build_tool_registry();
+        let registry = brain.build_tool_registry(AgentMode::Build);
         assert!(registry.has("read_file"));
         assert!(registry.has("bash"));
     }

@@ -167,7 +167,7 @@ export function SkillSelector({ onSelect, externalOpen, onExternalOpenChange }: 
     await refresh();
   }, [invalidate, refresh]);
 
-  const skillCount = skills.length;
+
 
   return (
     <div className="skill-selector-wrapper" ref={dropdownRef}>
@@ -179,11 +179,6 @@ export function SkillSelector({ onSelect, externalOpen, onExternalOpenChange }: 
         aria-haspopup="listbox"
       >
         <WandIcon size={16} />
-        {skillCount > 0 && (
-          <span className="skill-badge" aria-label={`${skillCount} skills available`}>
-            {skillCount}
-          </span>
-        )}
       </button>
 
       {open && (

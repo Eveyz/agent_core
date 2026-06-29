@@ -14,6 +14,10 @@ const TOOL_RESULT_HEAD_LINES: usize = 15;
 const TOOL_RESULT_TAIL_LINES: usize = 8;
 const TOOL_ARG_MAX_CHARS: usize = 200;
 
+/// Tools whose results must NOT be truncated — their content is instruction,
+/// not data output. Truncating these would lose critical guidance for the model.
+const NON_TRUNCATABLE_TOOLS: &[&str] = &["skill_load"];
+
 /// Run the full hygiene pass on a message list (mutates in place).
 /// Returns the count of messages that were modified.
 pub fn sanitize(messages: &mut Vec<Message>) -> usize {
@@ -30,8 +34,17 @@ pub fn sanitize(messages: &mut Vec<Message>) -> usize {
 }
 
 /// Truncate an oversized tool result message to head + tail + signal lines.
+/// Skips non-truncatable tools (e.g., skill_load) whose content is instruction.
 fn truncate_tool_result(msg: &mut Message) -> bool {
     if msg.role != Role::Tool {
+        return false;
+    }
+    // Skip truncation for non-truncatable tools — their content is instruction.
+    if msg
+        .name
+        .as_deref()
+        .map_or(false, |n| NON_TRUNCATABLE_TOOLS.contains(&n))
+    {
         return false;
     }
     let content = match &msg.content {
@@ -139,7 +152,7 @@ mod tests {
 
     #[test]
     fn truncate_large_tool_result() {
-        let big = "line ".repeat(1000);
+        let big: String = (0..200).map(|i| format!("line {i}\n")).collect();
         let mut msg = make_tool_msg(&big);
         assert!(truncate_tool_result(&mut msg));
         let c = msg.content.unwrap();
@@ -188,9 +201,42 @@ mod tests {
 
     #[test]
     fn sanitize_returns_modified_count() {
-        let big = "long ".repeat(2000);
+        let big: String = (0..200).map(|i| format!("long {i}\n")).collect();
         let mut msgs = vec![make_tool_msg(&big), make_tool_msg("ok")];
         let n = sanitize(&mut msgs);
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn skip_truncation_for_skill_load() {
+        let big: String = (0..200).map(|i| format!("instruction {i}\n")).collect(); // ~2600 chars, well over 4000 limit
+        // Wait, 200 lines at ~15 chars each = ~3000 chars. Let's make it bigger.
+        let big: String = (0..500).map(|i| format!("instruction line {i}\n")).collect(); // > 8000 chars
+        let mut msg = Message {
+            role: Role::Tool,
+            content: Some(big.clone()),
+            tool_calls: None,
+            tool_call_id: Some("t1".into()),
+            name: Some("skill_load".into()),
+        };
+        assert!(!truncate_tool_result(&mut msg));
+        assert_eq!(msg.content.unwrap(), big);
+    }
+
+    #[test]
+    fn non_truncatable_tools_not_counted() {
+        let big: String = (0..200).map(|i| format!("long {i}\n")).collect();
+        let skill_msg = Message {
+            role: Role::Tool,
+            content: Some(big.clone()),
+            tool_calls: None,
+            tool_call_id: Some("t1".into()),
+            name: Some("skill_load".into()),
+        };
+        let normal_msg = make_tool_msg(&big); // name: "test_tool" → truncated
+        let mut msgs = vec![skill_msg, normal_msg];
+        let n = sanitize(&mut msgs);
+        // Only normal_msg should be truncated (skill_load skipped)
         assert_eq!(n, 1);
     }
 }

@@ -4,6 +4,8 @@
 @import './styles/empty-state.css';
 @import './styles/input.css';
 @import './styles/model-dropdown.css';
+@import './styles/mode-selector.css';
+@import './styles/skill-selector.css';
 @import './styles/subagent.css';
 @import './styles/settings.css';
 @import './styles/widgets.css';

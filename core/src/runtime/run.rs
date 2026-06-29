@@ -36,6 +36,7 @@ use crate::config::ModelConfig;
 use crate::context::ContextEngine as Context;
 use crate::error_recovery::{RecoveryAction, RecoveryContext, RecoveryEngine};
 use crate::hooks::HookRegistry;
+use crate::mode::AgentMode;
 use crate::permission::PermissionPolicy;
 use crate::runtime::approval::ApprovalResolver;
 use crate::runtime::brain::Brain;
@@ -115,6 +116,10 @@ pub struct Run {
     /// git worktree without file conflicts.
     working_dir: Option<String>,
 
+    /// The agent mode for this Run (Ask / Plan / Build).
+    /// Immutable after construction — mode changes take effect on the next Run.
+    mode: AgentMode,
+
     /// Last stable prefix fingerprint — used to detect drift across turns.
     last_prefix_fingerprint: String,
 }
@@ -131,6 +136,7 @@ impl Run {
         seq: Arc<AtomicU64>,
         working_dir: Option<String>,
         history: Vec<crate::types::Message>,
+        mode: AgentMode,
     ) -> Result<Self> {
         let client = brain.build_client()?;
         let permission_policy = brain.build_permission_policy();
@@ -146,12 +152,15 @@ impl Run {
         let supervisor = Arc::new(Mutex::new(ProcessSupervisor::new()));
         let working_dir_for_tool = working_dir.clone();
 
-        let mut registry = brain.build_tool_registry();
+        let mut registry = brain.build_tool_registry(mode);
         // Replace the default BashTool with a supervised version
-        registry.register(Box::new(crate::tools::bash::BashTool::with_supervisor(
-            supervisor.clone(),
-            working_dir_for_tool,
-        )));
+        // (only present in Build mode — in other modes bash was already removed)
+        if mode == AgentMode::Build {
+            registry.register(Box::new(crate::tools::bash::BashTool::with_supervisor(
+                supervisor.clone(),
+                working_dir_for_tool,
+            )));
+        }
 
         let mut context = Context::new(&identity, max_context_tokens);
 
@@ -220,6 +229,7 @@ impl Run {
             steering_queue: VecDeque::new(),
             approval_resolver: ApprovalResolver::new(),
             working_dir,
+            mode,
             max_iterations,
             last_prefix_fingerprint,
         })
@@ -723,7 +733,7 @@ impl Run {
             });
 
             self.context
-                .add(Message::tool(call.id.clone(), result.clone()));
+                .add(Message::tool(call.id.clone(), result.clone(), Some(call.function.name.clone())));
         }
 
         // All tools completed normally — disarm the guards.

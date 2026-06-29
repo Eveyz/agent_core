@@ -1,61 +1,43 @@
-import { useState, useEffect, useCallback, memo, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useSelector, useStore, shallowEqual } from 'react-redux';
-import PencilIcon from 'lucide-react/dist/esm/icons/pencil.mjs';
-import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
-import XIcon from 'lucide-react/dist/esm/icons/x.mjs';
-import BoxIcon from 'lucide-react/dist/esm/icons/box.mjs';
-import MessageSquareIcon from 'lucide-react/dist/esm/icons/message-square.mjs';
-import TerminalSquareIcon from 'lucide-react/dist/esm/icons/terminal-square.mjs';
-import FolderIcon from 'lucide-react/dist/esm/icons/folder.mjs';
-import Maximize2Icon from 'lucide-react/dist/esm/icons/maximize-2.mjs';
-import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
-import PanelRightIcon from 'lucide-react/dist/esm/icons/panel-right.mjs';
 import { RootState } from './store';
 import {
   agentEventReceived,
   userMessageSent,
   agentAborted,
   runIdSet,
-  selectEntryById,
   selectEntryIds,
   selectPendingApprovalCount,
   selectSubagentById,
-  popSubagentView,
-  clearSubagentView,
 } from './features/chat/chatSlice';
-import type { ChatEntry, SubagentEntry, SubagentBlock, TurnBlock } from './features/chat/chatSlice';
 import { openSettings, fetchConfig } from './features/settings/settingsSlice';
 import {
   fetchProjects,
-  fetchProjectSessions,
   createSession,
   renameSession,
-  resumeSession,
-  setActiveSession,
 } from './features/project/projectSlice';
 import { useAppDispatch } from './hooks/useAppDispatch';
 import { useAgentEventListener } from './hooks/useAgentEventListener';
 import { useAutoSaveSession } from './hooks/useAutoSaveSession';
 import { useAutoScroll } from './hooks/useAutoScroll';
+import { useThemeEffect } from './hooks/useThemeEffect';
+import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
+import { useWindowShow } from './hooks/useWindowShow';
+import { useSessionLoader } from './hooks/useSessionLoader';
+
 import { Sidebar } from './components/layout/Sidebar';
 import { CosmicBackground } from './components/layout/CosmicBackground';
 import { EmptyState } from './components/chat/EmptyState';
-import { UserRow } from './components/chat/UserRow';
-import { AgentTurnUI } from './components/chat/AgentTurn';
 import { ChatInput } from './components/chat/ChatInput';
-import TodoPanel from './components/chat/TodoPanel';
 import SettingsModal from './components/settings/SettingsModal';
 import { CustomTitleBar } from './components/layout/CustomTitleBar';
-import { WindowControls } from './components/layout/WindowControls';
-import './App.css';
+import { AppHeader } from './components/layout/AppHeader';
+import { ChatArea } from './components/layout/ChatArea';
+import { SubagentDetailPage } from './components/chat/SubagentDetailPage';
+import { getActiveSessionTitle } from './utils/chatUtils';
 
-function getActiveSessionTitle(projectState: RootState['project']): string {
-  if (!projectState.activeSessionId || !projectState.activeProjectId) return '';
-  const list = projectState.sessions[projectState.activeProjectId] ?? [];
-  const s = list.find((s) => s.id === projectState.activeSessionId);
-  return s?.title ?? '';
-}
+import './App.css';
 
 function App() {
   const dispatch = useAppDispatch();
@@ -66,7 +48,7 @@ function App() {
   const isProcessing = useSelector((state: RootState) => state.chat.isProcessing);
   const defaultModel = useSelector((state: RootState) => state.settings.config?.default_model || '');
   const appearance = useSelector((state: RootState) => state.settings.appearance);
-
+  
   const activeProjectId = useSelector((state: RootState) => state.project.activeProjectId);
   const activeSessionId = useSelector((state: RootState) => state.project.activeSessionId);
   const projects = useSelector((state: RootState) => state.project.projects);
@@ -89,29 +71,23 @@ function App() {
     defaultModel,
   });
 
-  // Appearance (Theme) handling
-  useEffect(() => {
-    const root = document.documentElement;
-    const applyTheme = (theme: 'dark' | 'light') => {
-      root.setAttribute('data-theme', theme);
-    };
+  useThemeEffect(appearance);
 
-    if (appearance === 'system') {
-      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-      applyTheme(mediaQuery.matches ? 'dark' : 'light');
-      const handler = (e: MediaQueryListEvent) => {
-        applyTheme(e.matches ? 'dark' : 'light');
-      };
-      mediaQuery.addEventListener('change', handler);
-      return () => mediaQuery.removeEventListener('change', handler);
-    } else {
-      applyTheme(appearance);
-    }
-  }, [appearance]);
+  const runId = useSelector((state: RootState) => state.chat.runId);
+  
+  useKeyboardShortcuts({ isProcessing, runId });
+  useWindowShow();
+
+  const projectsLoaded = projects.length > 0;
+  useSessionLoader({
+    projectsLoaded,
+    activeProjectId,
+    activeSessionId,
+    scrollToBottom,
+  });
 
   // Track pending approvals — scroll to bottom when a new one appears
   const pendingApprovalCount = useSelector(selectPendingApprovalCount);
-  const runId = useSelector((state: RootState) => state.chat.runId);
   const viewingSubagentPath = useSelector((state: RootState) => state.chat.viewingSubagentPath, shallowEqual);
 
   const activeSubagentId = viewingSubagentPath.length > 0 ? viewingSubagentPath[viewingSubagentPath.length - 1].id : null;
@@ -142,20 +118,6 @@ function App() {
     }
   }, [activeSessionId, scrollToBottom]);
 
-  // Esc key to abort agent during processing
-  useEffect(() => {
-    if (!isProcessing) return;
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        dispatch(agentAborted());
-        invoke('abort_agent', { runId }).catch((e) => console.error('Failed to abort agent:', e));
-      }
-    };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
-  }, [isProcessing, dispatch]);
-
   const handleAbort = useCallback(() => {
     dispatch(agentAborted());
     invoke('abort_agent', { runId }).catch((e) => console.error('Failed to abort agent:', e));
@@ -166,39 +128,10 @@ function App() {
     invoke('steer_run', { runId, message }).catch((e) => console.error('Failed to steer run:', e));
   }, [runId]);
 
-  // Show window after app loads (tauri.conf.json has visible: false)
-  useEffect(() => {
-    const showWindow = async () => {
-      try {
-        const { getCurrentWindow } = await import('@tauri-apps/api/window');
-        const win = getCurrentWindow();
-        await win.show();
-        await win.setFocus();
-      } catch (e) {
-        // Not in Tauri environment (dev mode)
-      }
-    };
-    showWindow();
-  }, []);
-
   useEffect(() => {
     dispatch(fetchConfig());
     dispatch(fetchProjects());
   }, [dispatch]);
-
-  const projectsLoaded = projects.length > 0;
-  useEffect(() => {
-    if (!projectsLoaded || !activeProjectId || !activeSessionId) return;
-    dispatch(fetchProjectSessions(activeProjectId));
-    dispatch(resumeSession(activeSessionId)).then((result) => {
-      if (!resumeSession.fulfilled.match(result)) {
-        dispatch(setActiveSession(null));
-      } else {
-        // Scroll to bottom after session is loaded from backend
-        setTimeout(() => scrollToBottom(), 150);
-      }
-    });
-  }, [projectsLoaded, dispatch, activeProjectId, activeSessionId, scrollToBottom]);
 
   const handleSend = useCallback(
     async (msg: string) => {
@@ -262,28 +195,8 @@ function App() {
         dispatch(agentEventReceived({ Error: String(e) }));
       }
     },
-    [dispatch, activeSessionId, store]
+    [dispatch, activeSessionId, store, scrollToBottom]
   );
-
-  const [isEditingTitle, setIsEditingTitle] = useState(false);
-  const [titleEditValue, setTitleEditValue] = useState('');
-
-  const startEditingTitle = useCallback(() => {
-    setTitleEditValue(sessionTitle || 'New Session');
-    setIsEditingTitle(true);
-  }, [sessionTitle]);
-
-  const commitTitleEdit = useCallback(() => {
-    const trimmed = titleEditValue.trim();
-    if (trimmed && activeSessionId && activeProjectId) {
-      dispatch(renameSession({ sessionId: activeSessionId, projectId: activeProjectId, newTitle: trimmed }));
-    }
-    setIsEditingTitle(false);
-  }, [dispatch, titleEditValue, activeSessionId, activeProjectId]);
-
-  const cancelTitleEdit = useCallback(() => {
-    setIsEditingTitle(false);
-  }, []);
 
   const handleOpenSettings = useCallback(() => {
     dispatch(openSettings());
@@ -308,224 +221,43 @@ function App() {
 
         <main className="main-area">
           <CosmicBackground />
-        <header className="main-header">
-          <div className="header-title">
-            {sidebarCollapsed && (
-              <>
-                <WindowControls />
-                <button
-                  className="sidebar-expand-btn"
-                  onClick={() => setSidebarCollapsed(false)}
-                  title="展开侧边栏"
-                >
-                  <PanelRightIcon size={16} />
-                </button>
-              </>
-            )}
-            {isEditingTitle && viewingSubagentPath.length === 0 ? (
-              <>
-                <input
-                  className="header-title-input"
-                  value={titleEditValue}
-                  onChange={(e) => setTitleEditValue(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') commitTitleEdit();
-                    if (e.key === 'Escape') cancelTitleEdit();
-                  }}
-                  autoFocus
-                />
-                <button className="icon-btn header-edit-btn" onClick={commitTitleEdit} title="Save" style={{ opacity: 1 }}>
-                  <CheckIcon size={12} />
-                </button>
-                <button className="icon-btn header-edit-btn" onClick={cancelTitleEdit} title="Cancel" style={{ opacity: 1 }}>
-                  <XIcon size={12} />
-                </button>
-              </>
-            ) : (
-              <>
-                <span
-                  className="header-session-name"
-                  style={viewingSubagentPath.length > 0 ? { cursor: 'pointer' } : undefined}
-                  onClick={viewingSubagentPath.length > 0 ? () => dispatch(clearSubagentView()) : undefined}
-                >
-                  {sessionTitle || 'New Session'}
-                </span>
-                {viewingSubagentPath.map((seg, i) => (
-                  <span key={seg.id} className="header-breadcrumb">
-                    <span className="header-breadcrumb-sep">›</span>
-                    <span
-                      className="header-breadcrumb-name"
-                      style={{ cursor: i < viewingSubagentPath.length - 1 ? 'pointer' : 'default' }}
-                      onClick={i < viewingSubagentPath.length - 1 ? () => {
-                        const pops = viewingSubagentPath.length - 1 - i;
-                        for (let k = 0; k < pops; k++) dispatch(popSubagentView());
-                      } : undefined}
-                    >
-                      {seg.name}
-                    </span>
-                  </span>
-                ))}
-                {viewingSubagentPath.length === 0 && (
-                  <button className="icon-btn header-edit-btn" onClick={startEditingTitle} title="Edit session title">
-                    <PencilIcon size={12} />
-                  </button>
-                )}
-              </>
-            )}
-          </div>
-          <div className="header-actions">
-            <button className="icon-btn" disabled title="Coming soon"><BoxIcon size={14} /></button>
-            <button className="icon-btn" disabled title="Coming soon"><MessageSquareIcon size={14} /></button>
-            <button className="icon-btn" disabled title="Coming soon"><TerminalSquareIcon size={14} /></button>
-            <button className="icon-btn" disabled title="Coming soon"><FolderIcon size={14} /></button>
-            <button className="icon-btn" disabled title="Coming soon"><Maximize2Icon size={14} /></button>
-          </div>
-        </header>
-
-        {viewingSubagentPath.length > 0 && activeSubagent ? (
-          <SubagentDetailPage
-            subagent={activeSubagent}
-            isProcessing={isProcessing}
-            defaultModel={defaultModel}
+          <AppHeader
+            sessionTitle={sessionTitle}
+            viewingSubagentPath={viewingSubagentPath}
+            activeSessionId={activeSessionId}
+            activeProjectId={activeProjectId}
+            sidebarCollapsed={sidebarCollapsed}
+            onExpandSidebar={() => setSidebarCollapsed(false)}
           />
-        ) : entriesLength === 0 ? (
-          <EmptyState onSend={handleSend} />
-        ) : (
-          <>
-            <TodoPanel />
-            <div className="chat-history" ref={scrollRef}>
-              <div ref={contentRef} style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-                {entryIds.map((id) => (
-                  <EntryRow
-                    key={id}
-                    entryId={id}
-                    defaultModel={defaultModel}
-                    handleRetry={handleRetry}
-                    isProcessing={isProcessing}
-                  />
-                ))}
-              </div>
-            </div>
-            {!isAtBottom && (
-              <button className="scroll-to-bottom-btn" onClick={scrollToBottom} title="Scroll to latest">
-                <ChevronDownIcon size={18} />
-              </button>
-            )}
-          </>
-        )}
 
-        {viewingSubagentPath.length === 0 && (
-          <ChatInput isProcessing={isProcessing} onSend={handleSend} currentModel={defaultModel} onAbort={handleAbort} onSteer={handleSteer} />
-        )}
-      </main>
-    </div>
-  </div>
-);
-	}
+          {viewingSubagentPath.length > 0 && activeSubagent ? (
+            <SubagentDetailPage
+              subagent={activeSubagent}
+              isProcessing={isProcessing}
+              defaultModel={defaultModel}
+            />
+          ) : entriesLength === 0 ? (
+            <EmptyState onSend={handleSend} />
+          ) : (
+            <ChatArea
+              entryIds={entryIds}
+              defaultModel={defaultModel}
+              isProcessing={isProcessing}
+              scrollRef={scrollRef}
+              contentRef={contentRef}
+              isAtBottom={isAtBottom}
+              scrollToBottom={scrollToBottom}
+              handleRetry={handleRetry}
+            />
+          )}
 
-function convertSubagentBlocks(blocks: SubagentBlock[]): TurnBlock[] {
-  return blocks.map((b): TurnBlock => {
-    switch (b.type) {
-      case 'assistant':
-        return {
-          type: 'assistant',
-          text: b.text ?? '',
-          isStreaming: b.isStreaming ?? false,
-          message_id: b.message_id,
-        };
-      case 'thinking':
-        return {
-          type: 'thinking',
-          text: b.text ?? '',
-          isStreaming: b.isStreaming ?? false,
-          message_id: b.message_id,
-          startTime: b.startTime,
-          endTime: b.endTime,
-        };
-      case 'tool':
-        return {
-          type: 'tool',
-          call_id: b.call_id ?? '',
-          name: b.name ?? '',
-          args: b.args,
-          result: b.result ?? '',
-          active: b.active ?? false,
-          is_error: b.is_error ?? false,
-          startTime: b.startTime,
-          endTime: b.endTime,
-        };
-      case 'approval':
-        return {
-          type: 'approval',
-          prompt_id: b.prompt_id ?? '',
-          tool_name: b.tool_name ?? '',
-          tool_input: b.tool_input,
-          danger_level: b.danger_level ?? '',
-          explanation: b.explanation ?? '',
-          status: b.status ?? 'pending',
-        };
-      case 'error':
-        return { type: 'error', text: b.text ?? '' };
-      default:
-        return { type: 'error', text: 'unknown block type' };
-    }
-  });
-}
-
-const SubagentDetailPage = memo(function SubagentDetailPage({
-  subagent,
-  isProcessing,
-  defaultModel,
-}: {
-  subagent: SubagentEntry;
-  isProcessing: boolean;
-  defaultModel: string;
-}) {
-  const taskText = typeof subagent.task === 'string' ? subagent.task : JSON.stringify(subagent.task);
-  const syntheticEntry: ChatEntry = {
-    id: `subagent-detail-${subagent.id}`,
-    type: 'turn',
-    blocks: convertSubagentBlocks(subagent.blocks),
-    startTime: subagent.startTime,
-    endTime: subagent.endTime,
-  };
-  return (
-    <div className="chat-history">
-      <UserRow
-        entry={{ id: `${subagent.id}-task`, type: 'user', text: taskText }}
-        modelName={defaultModel}
-        isProcessing={isProcessing}
-      />
-      <div className="message-row agent-row">
-        <AgentTurnUI entry={syntheticEntry} />
+          {viewingSubagentPath.length === 0 && (
+            <ChatInput isProcessing={isProcessing} onSend={handleSend} currentModel={defaultModel} onAbort={handleAbort} onSteer={handleSteer} />
+          )}
+        </main>
       </div>
     </div>
   );
-});
-
-const EntryRow = memo(function EntryRow({
-  entryId,
-  defaultModel,
-  handleRetry,
-  isProcessing,
-}: {
-  entryId: string;
-  defaultModel: string;
-  handleRetry: (id: string, text?: string) => void;
-  isProcessing: boolean;
-}) {
-  const entry = useSelector((state: RootState) => selectEntryById(state, entryId));
-  if (!entry) return null;
-
-  if (entry.type === 'user') {
-    return <UserRow entry={entry} modelName={defaultModel} onRetry={handleRetry} isProcessing={isProcessing} />;
-  } else {
-    return (
-      <div className="message-row agent-row">
-        <AgentTurnUI entry={entry} />
-      </div>
-    );
-  }
-});
+}
 
 export default App;

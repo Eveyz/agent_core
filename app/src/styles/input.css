@@ -161,16 +161,15 @@
   align-items: center;
   gap: 4px;
   cursor: pointer;
-  background: var(--overlay-0_04);
-  border: 1px solid var(--border-color);
+  background: transparent;
+  border: none;
   border-radius: 6px;
   padding: 3px 8px;
-  transition: all 0.15s;
+  transition: background 0.15s;
 }
 
 .model-selector:hover {
-  border-color: var(--overlay-0_1);
-  background: var(--overlay-0_06);
+  background: var(--overlay-0_04);
 }
 
 .model-selector-text {

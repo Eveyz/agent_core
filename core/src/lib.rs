@@ -11,6 +11,7 @@ pub mod hooks;
 pub mod hygiene;
 pub mod mcp;
 pub mod memory;
+pub mod mode;
 pub mod paths;
 pub mod permission;
 pub mod project;
@@ -36,6 +37,7 @@ pub use context::{CacheHint, Context, ContextEngine, ContextSegment, RefreshPoli
 pub use memory::{
     MemoryCategory, MemoryManager, MemoryStats, SalienceConfig, SalienceScorer, ScoredRecord,
 };
+pub use mode::AgentMode;
 pub use tokio_util::sync::CancellationToken;
 pub use tools::{Tool, ToolRegistry, ToolUpdateFn, build_tool_by_name};
 pub use types::{

@@ -22,6 +22,7 @@ use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::mode::AgentMode;
 use crate::permission::ApprovalChoice;
 use crate::reflector::Reflector;
 use crate::runtime::approval::ApprovalResolver;
@@ -118,6 +119,18 @@ impl RunManager {
         &self.brain
     }
 
+    /// The current agent mode. New Runs inherit this mode.
+    pub fn mode(&self) -> AgentMode {
+        self.brain.mode()
+    }
+
+    /// Set the agent mode. Takes effect on the next Run — existing Runs
+    /// keep their mode. The frontend should update its mode indicator
+    /// after calling this.
+    pub fn set_mode(&self, mode: AgentMode) {
+        self.brain.set_mode(mode);
+    }
+
     /// Create a new Run for a user request.
     ///
     /// Returns the RunId. The Run starts in `Created` state — call
@@ -159,6 +172,9 @@ impl RunManager {
         // RunCreated (seq 0) and the Run's own events form one sequence.
         let seq = Arc::new(AtomicU64::new(0));
 
+        // Get the current mode from the brain
+        let mode = self.brain.mode();
+
         // Create the Run
         let run = Run::new(
             run_id.clone(),
@@ -170,6 +186,7 @@ impl RunManager {
             seq.clone(),
             working_dir,
             history,
+            mode,
         )?;
         // Clone the approval resolver before spawning so we can store
         // it in the RunHandle for direct (non-command-channel) resolution.

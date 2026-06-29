@@ -108,6 +108,7 @@ impl Storage {
                 parent_session_id TEXT DEFAULT '',
                 session_type TEXT DEFAULT 'main',
                 project_id TEXT DEFAULT '',
+                mode TEXT NOT NULL DEFAULT 'build',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -190,6 +191,7 @@ impl Storage {
             "ALTER TABLE sessions ADD COLUMN project_id TEXT DEFAULT ''",
             "ALTER TABLE sessions ADD COLUMN process_time_ms INTEGER DEFAULT 0",
             "ALTER TABLE sessions ADD COLUMN thought_time_ms INTEGER DEFAULT 0",
+            "ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'build'",
         ];
         for migration in migrations {
             let _ = db.execute_batch(migration);

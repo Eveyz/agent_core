@@ -22,6 +22,7 @@ import {
 
 import { ModelSelector } from './ModelSelector';
 import { SkillSelector } from './SkillSelector';
+import ModeSelector from './ModeSelector';
 import { useAutocomplete } from '../../hooks/useAutocomplete';
 import { useGitBranch } from '../../hooks/useGitBranch';
 import { useTokenCount, useTurnCount } from '../../hooks/useTokenCount';
@@ -242,6 +243,8 @@ export const ChatInput = memo(function ChatInput({
         />
         <div className="input-actions">
           <div className="input-actions-left">
+            <ModeSelector />
+            <ModelSelector currentModel={currentModel} />
             <button className="icon-btn"><PlusIcon size={16} /></button>
             <SkillSelector 
               onSelect={handleSkillSelect} 
@@ -250,7 +253,6 @@ export const ChatInput = memo(function ChatInput({
             />
           </div>
           <div className="input-actions-right">
-            <ModelSelector currentModel={currentModel} />
             {isProcessing ? (
               <div style={{ display: 'flex', gap: '4px' }}>
                 {onSteer && input.trim() && (

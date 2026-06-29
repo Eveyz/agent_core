@@ -33,6 +33,7 @@ pub struct SessionMeta {
     pub session_type: String,
     pub process_time_ms: u64,
     pub thought_time_ms: u64,
+    pub mode: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -73,6 +74,7 @@ pub struct Session {
 pub const META_SELECT: &str = "SELECT id, title, summary, start_time, end_time, message_count, cwd, model_used, tags, archived, \
     COALESCE(parent_session_id, ''), COALESCE(session_type, 'main'), \
     COALESCE(process_time_ms, 0), COALESCE(thought_time_ms, 0), \
+    COALESCE(mode, 'build'), \
     created_at, updated_at FROM sessions";
 
 pub fn row_to_meta(row: &rusqlite::Row) -> rusqlite::Result<SessionMeta> {
@@ -99,8 +101,9 @@ pub fn row_to_meta(row: &rusqlite::Row) -> rusqlite::Result<SessionMeta> {
         session_type: stype,
         process_time_ms: row.get::<_, i64>(12)? as u64,
         thought_time_ms: row.get::<_, i64>(13)? as u64,
-        created_at: row.get(14)?,
-        updated_at: row.get(15)?,
+        mode: row.get(14)?,
+        created_at: row.get(15)?,
+        updated_at: row.get(16)?,
     })
 }
 
@@ -199,9 +202,9 @@ impl SessionManager {
                 let parent = parent_session_id.unwrap_or("");
                 let proj = project_id.unwrap_or("");
                 db.execute(
-                    "INSERT INTO sessions (id, title, start_time, message_count, cwd, model_used, parent_session_id, session_type, project_id, created_at, updated_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
-                    rusqlite::params![new_id, title, now, msg_count, cwd, model_used, parent, session_type, proj, now],
+                    "INSERT INTO sessions (id, title, start_time, message_count, cwd, model_used, parent_session_id, session_type, project_id, mode, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
+                    rusqlite::params![new_id, title, now, msg_count, cwd, model_used, parent, session_type, proj, "build", now],
                 )?;
                 new_id
             }
@@ -1008,6 +1011,7 @@ mod tests {
             session_type: "main".to_string(),
             process_time_ms: 0,
             thought_time_ms: 0,
+            mode: "build".to_string(),
             created_at: "2026-06-07T12:00:00Z".to_string(),
             updated_at: "2026-06-07T12:30:00Z".to_string(),
         };
@@ -1035,6 +1039,7 @@ mod tests {
             session_type: "main".to_string(),
             process_time_ms: 0,
             thought_time_ms: 0,
+            mode: "build".to_string(),
             created_at: "".to_string(),
             updated_at: "".to_string(),
         };
@@ -1059,6 +1064,7 @@ mod tests {
             session_type: "subagent".to_string(),
             process_time_ms: 0,
             thought_time_ms: 0,
+            mode: "build".to_string(),
             created_at: "".to_string(),
             updated_at: "".to_string(),
         };

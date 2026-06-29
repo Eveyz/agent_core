@@ -45,33 +45,7 @@ export default function GeneralTab() {
         </div>
       </div>
 
-      <div className="settings-section">
-        <h3 className="settings-section-title">Permissions</h3>
-        <div className="settings-field">
-          <label className="settings-label">Permission Mode</label>
-          <div className="settings-value">
-            <span className={`badge badge-${config.permissions.mode}`}>{config.permissions.mode}</span>
-          </div>
-        </div>
-        {config.permissions.auto_allow_up_to && (
-          <div className="settings-field">
-            <label className="settings-label">Auto-allow up to</label>
-            <div className="settings-value">{config.permissions.auto_allow_up_to}</div>
-          </div>
-        )}
-        <div className="settings-field">
-          <label className="settings-label">Custom Rules</label>
-          <div className="settings-value">{config.permissions.rules.length} rules</div>
-        </div>
-        <div className="settings-field">
-          <label className="settings-label">Whitelist</label>
-          <div className="settings-value">{config.permissions.whitelist.length} entries</div>
-        </div>
-        <div className="settings-field">
-          <label className="settings-label">Blacklist</label>
-          <div className="settings-value">{config.permissions.blacklist.length} entries</div>
-        </div>
-      </div>
+
 
       <div className="settings-info-box">
         <InfoIcon size={14} />

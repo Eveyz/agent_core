@@ -1,0 +1,89 @@
+/* ── Mode Selector ────────────────────────────────────────────────── */
+
+.mode-selector {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.mode-selector-trigger {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--text-main);
+  cursor: pointer;
+  padding: 3px 8px;
+  font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.mode-selector-trigger:hover {
+  background: var(--overlay-0_04);
+}
+
+.mode-selector-label {
+  font-weight: 500;
+}
+
+/* ── Dropdown ─────────────────────────────────────────────────────── */
+
+.mode-selector-dropdown {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  min-width: 170px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  z-index: 100;
+  overflow: hidden;
+  padding: 4px;
+}
+
+.mode-selector-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-main);
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+  transition: background 0.1s;
+}
+
+.mode-selector-option:hover {
+  background: var(--bg-hover);
+}
+
+.mode-selector-option.active {
+  background: var(--bg-selected, var(--bg-hover));
+}
+
+.mode-selector-option-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.mode-selector-option-label {
+  font-weight: 500;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.mode-selector-option-desc {
+  font-size: 10px;
+  color: var(--text-muted);
+  line-height: 1.2;
+}

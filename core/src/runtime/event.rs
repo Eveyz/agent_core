@@ -160,6 +160,14 @@ pub enum RunEvent {
         miss_tokens: u64,
         hit_rate: f64,
     },
+
+    // ── Mode changes ───────────────────────────────────────────────
+    /// Emitted when the agent mode changes (Brain-level, affects next Run).
+    /// The frontend can use this to update its mode indicator without
+    /// creating a new Run.
+    ModeChanged {
+        mode: String,
+    },
 }
 
 /// A lightweight todo item sent to the frontend via `TodoUpdated`.

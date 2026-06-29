@@ -10,12 +10,14 @@ import BrainIcon from 'lucide-react/dist/esm/icons/brain.mjs';
 import PlugIcon from 'lucide-react/dist/esm/icons/plug.mjs';
 import WrenchIcon from 'lucide-react/dist/esm/icons/wrench.mjs';
 import LoaderIcon from 'lucide-react/dist/esm/icons/loader.mjs';
+import ShieldIcon from 'lucide-react/dist/esm/icons/shield.mjs';
 import GeneralTab from './GeneralTab';
 
 const ProviderTab = lazy(() => import('./ProviderTab'));
 const MemoryTab = lazy(() => import('./MemoryTab'));
 const McpTab = lazy(() => import('./McpTab'));
 const SkillsTab = lazy(() => import('./SkillsTab'));
+const PermissionsTab = lazy(() => import('./PermissionsTab'));
 
 const TABS = [
   { key: 'general' as const, label: 'General', icon: SettingsIcon },
@@ -23,6 +25,7 @@ const TABS = [
   { key: 'memory' as const, label: 'Memory', icon: BrainIcon },
   { key: 'mcp' as const, label: 'MCP', icon: PlugIcon },
   { key: 'skills' as const, label: 'Skills', icon: WrenchIcon },
+  { key: 'permissions' as const, label: 'Permissions', icon: ShieldIcon },
 ];
 
 export default function SettingsModal() {
@@ -116,6 +119,7 @@ export default function SettingsModal() {
                 {activeTab === 'memory' && <MemoryTab />}
                 {activeTab === 'mcp' && <McpTab />}
                 {activeTab === 'skills' && <SkillsTab />}
+                {activeTab === 'permissions' && <PermissionsTab />}
               </Suspense>
             )}
           </div>

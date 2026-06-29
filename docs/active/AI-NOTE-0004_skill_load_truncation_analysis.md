@@ -1,215 +1,287 @@
-# AI-NOTE-0004: Skill Load Truncation Analysis & Fix Plan
+# AI-NOTE-0004: Skill Load Truncation Deep Analysis & Refined Fix Plan
 
 ```yaml
 ---
 id: AI-NOTE-0004
 type: AI-NOTE
-title: Skill Load Truncation Analysis & Fix Plan
+title: Skill Load Truncation Deep Analysis & Refined Fix Plan
 status: Draft
 author: agent_core
 created: 2026-06-28
 updated: 2026-06-28
 reviewers: [zniverse]
-related: [PLAN-0006]
+related: [PLAN-0006, PLAN-0005]
 supersedes: ~
 superseded_by: ~
-tags: [truncation, skills, hygiene, compressor, context-engine]
+tags: [truncation, skills, hygiene, compressor, context-engine, cache-hit]
 ---
 ```
 
-## 1. The Problem
+## 1. Problem Statement
 
-`skill_load` 返回的完整技能内容在到达模型之前会被多层截断，导致模型看不到完整的技能指令。
+`skill_load` 返回完整技能内容（8000~15000 chars for pptx-generator, minimax-pdf, deep-research），但在到达模型前被截断到 ~4000 chars，中间 60-80% 的指令被丢弃。
 
-## 2. Current Truncation Architecture
+## 2. Full Truncation Flow (Two Paths)
 
-以下所有截断层都作用于 `Role::Tool` 消息（工具执行结果）：
-
-```
-skill_load 执行 → 返回完整内容（可能 8000+ chars）
-   │
-   ├── [Layer 1] hygiene::sanitize()          ← run.rs:787, 每次模型调用前
-   │    条件: content.len > 4000
-   │    结果: 保留 head(15行) + tail(8行) + signals(5行)
-   │    效果: 头部 + 尾部，中间全部丢失
-   │
-   ├── [Layer 2] compressor::snip_compact()   ← run.rs:1234, maybe_compact 时
-   │    条件: content.len > 4000
-   │    结果: 保留前 4000 chars + "[... truncated from N chars]"
-   │    效果: 粗暴截断前 4000 字符
-   │
-   └── [Layer 3] ContextSegment (loaded_skills) ← context.rs:291-292
-        条件: 500 token budget
-        结果: truncate_to_token_budget(500)
-        效果: 很多技能内容超过 500 token
-```
-
-### What the Model Actually Sees
-
-一次 `skill_load("pptx-generator")`（假设 ~10000 chars skill 内容）：
+### Path A: Manual skill_load (Tool Call) — Main Concern
 
 ```
-Skill 'pptx-generator' loaded and activated.
-
-== Skill: pptx-generator (v1.0) ==
-[truncated: 300 lines / 10500 chars → 4000 char budget]
---- head (15 lines) ---
-Use this skill when visual quality and design identity matter for...
-CREATE (generate from scratch): "make a PDF", "generate a report",
-FILL (complete form fields): "fill in the form", "fill out this PDF",
-REFORMAT (apply design to an existing doc): "reformat this document",
-This skill uses a token-based design system...
-...
---- tail (8 lines) ---
-For tables, prefer alternating row colors.
-When in doubt, use the primary color palette.
-Always include page numbers.
-Use consistent heading hierarchy.
-...
---- signals ---
-(none found)
+Turn N: Model calls skill_load("pptx-generator")
+  ↓
+SkillLoadTool::execute() → load_content() → 完整 SKILL.md body (e.g., 10500 chars)
+  包装: "Skill 'pptx-generator' loaded and activated.\n\n== Skill: pptx-generator (v1.0) ==\n<full content>\n== End Skill: pptx-generator =="
+  ↓
+run.rs:726 → context.add(Message::tool(call.id, result))  [name: None, 全量存储]
+  ↓
+Turn N+1:
+  ↓
+  model_turn() → build_messages()
+    → context.messages()                  [system(frozen) + history + context_injection in last user]
+    → hygiene::sanitize(&mut messages)    [COPY, 不修改存储]
+        ↓
+        truncate_tool_result() →
+          条件: role==Tool && content.len > 4000
+          效果: head(15行) + tail(8行) + signals(5行)
+          丢失: 中间约 60-80% 的内容
+    ↓
+  LLM API call ← 模型看到截断后的 skill 内容
 ```
 
-**问题**：模型只看到技能的头部介绍和尾部注意事项，**缺失了中间具体的参数说明、模板结构、API 调用示例等关键指令**。对于 `minimax-pdf`、`deep-research`、`pptx-generator` 这类包含大量指令的技能，这会导致模型无法正确执行。
+```
+Later (context grows large):
+  maybe_compact() → chunked_drop() + trim_to_fit()
+    → compressor::snip_compact(&mut context.messages)  [IN-PLACE, 修改存储!]
+        条件: role==Tool && content.len > 4000
+        效果: 保留前 4000 chars + "[... truncated from N chars]"
+```
 
-### Call Sites of Message::tool()
+### Path B: Auto-Trigger (Segment 6) — Secondary Concern
 
-`Message::tool()` 目前不记录 tool name，当前有 3 个调用点：
-
-| 位置 | 代码 |
-|------|------|
-| `core/src/runtime/run.rs:726` | `Message::tool(call.id.clone(), result.clone())` |
-| `core/src/subagent/mod.rs:252` | `Message::tool(call.id.clone(), result.clone())` |
-| `core/src/agent/mod.rs:723` | `Message::tool(call.id.clone(), result.clone())` |
-
-每个调用点都有 `call.function.name` 在手边但没传给 Message。
+```
+run.rs: refresh_context_segments()
+  → check_triggers(user_input) → find_by_triggers()
+  → mgr.load_content() → full body
+  → ctx.set_loaded_skills(text) → Segment 6
+  ↓
+Turn N:
+  context.messages()
+    → assemble_context_injection()
+      → seg.assemble() for "loaded_skills"
+        → truncate_to_token_budget(&content, 500)  [500 tokens ≈ 2000 chars]
+```
 
 ## 3. Root Cause
 
-**所有 `Role::Tool` 消息被统一对待为"工具输出"**。truncation 逻辑（hygiene/compressor）不区分工具类型，对所有工具结果一刀切。
+| Layer | Location | Budget | Effect on skill_load |
+|-------|----------|--------|---------------------|
+| Hygiene | `hygiene.rs:33-84` | 4000 chars | 保留 head+tail, 丢失中间 |
+| Compressor | `compressor.rs:186-203` | 4000 chars | 保留前 N chars (permanently!) |
+| Segment 6 | `context.rs:291-292` | 500 tokens | 自动触发时截断 |
 
-但实际上工具结果有两类：
-- **Data output** (`read`, `bash`, `grep`, `webfetch`, etc.)：内容是数据/日志，截断后模型依然可以理解概要。
-- **Instruction output** (`skill_load`)：内容是指令/知识，截断会导致模型失去关键行为指导。
+**核心问题**: 所有 `Role::Tool` 消息被统一截断，但 `skill_load` 返回的是 **指令 (instruction)** 而非 **数据 (data)**。
 
-## 4. Solution Design
+**次要问题**: `Message::tool()` 不记录 `tool_name`，导致截断层无法区分工具类型。
 
-### 4.1 修改 `Message::tool()` — 记录工具名称
+## 4. Cache Hit Impact Analysis (PLAN-0005)
 
-```rust
-// Before
-pub fn tool(tool_call_id: String, content: String) -> Self { ... name: None }
+### 4.1 Current Cache Structure (from PLAN-0005)
 
-// After
-pub fn tool(tool_call_id: String, content: String, tool_name: Option<String>) -> Self { ... name: tool_name }
+```
+messages: [
+  system(frozen: identity + principles + tool_catalog)  ← CACHED
+  user(q1) ────┐
+  asst(a1) ────┤
+  user(q2) ────┤  conversation history
+  asst(a2) ────┤  (not cached)
+  tool(truncated skill) ──┤  ← skill_load result, truncated by hygiene
+  user(q3 + context_injection) ──┘  ← last user message
+]
 ```
 
-更新 3 个调用点，传入 `call.function.name`。
+### 4.2 What Changes If We Skip Truncation?
 
-### 4.2 在 Hygiene 层跳过非截断工具
+| Before (truncated 4000 chars) | After (full 10000 chars) | Cache impact |
+|-------|-------|-------------|
+| `tool` message: ~4000 chars | `tool` message: ~10000 chars | **None** — this is conversation history, not cacheable prefix |
+| `system` message: unchanged | `system` message: unchanged | **Hit preserved** |
+| Total tokens: N | Total tokens: N + ~1500 | Reaches context limit faster → maybe_compact fires sooner |
+
+### 4.3 Why Cache Is Safe
+
+1. **System prompt 不变**: frozen 段 (identity/principles/tool_catalog) 完全不变，KF cache 前缀命中。
+2. **Context injection 不变**: 注入在最后一个 user message，本就每次变化。
+3. **skill_load 结果稳定**: 无论截断与否，内容是确定性的（同一 skill 同一内容）。不会引入 non-deterministic 变化。
+4. **sanitize 操作 COPY**: 不修改 `context.messages` 存储，只修改临时副本。
+5. **唯一的代价**: 更多 tokens → 更快触发 maybe_compact（但 PLAN-0005 的 chunked_drop 优先处理，影响有限）。
+
+### 4.4 Compressor snip_compact 的 Cache 风险
+
+⚠️ **重要**: `snip_compact` 修改的是 `context.messages` **存储本身**。如果 skill_load 结果超过 4000 chars，它会永久截断存储的消息。这意味着：
+
+- 截断前：所有后续 turn 模型都能看到完整内容（sanitize 只截断副本）
+- 截断后（snipCompact）：后续 turn 模型看到的都是被截断后的 4000 chars
+
+所以 **compressor 层的跳过比 hygiene 层更重要**！hygiene 只影响当前 turn，compressor 影响所有后续 turn。
+
+✅ 跳过后不会破坏 cache：skill_load 结果保持完整且稳定。system prompt 依然 frozen。
+
+## 5. Refined Solution Design
+
+### 5.1 修改 `Message::tool()` — 记录工具名称
 
 ```rust
-// hygiene.rs
-const NON_TRUNCATABLE_TOOLS: &[&str] = &["skill_load"];
-
-fn is_truncatable(name: &Option<String>) -> bool {
-    match name {
-        Some(n) => !NON_TRUNCATABLE_TOOLS.contains(&n.as_str()),
-        None => true, // 没有工具名称的默认截断
-    }
+// types.rs — Before
+pub fn tool(tool_call_id: String, content: String) -> Self {
+    Self { role: Role::Tool, content: Some(content), tool_calls: None,
+           tool_call_id: Some(tool_call_id), name: None }
 }
+
+// After
+pub fn tool(tool_call_id: String, content: String, tool_name: Option<String>) -> Self {
+    Self { role: Role::Tool, content: Some(content), tool_calls: None,
+           tool_call_id: Some(tool_call_id), name: tool_name }
+}
+```
+
+**3 个调用点全部传入 `call.function.name.clone()`**:
+| File | Line |
+|------|------|
+| `core/src/runtime/run.rs` | 726 |
+| `core/src/subagent/mod.rs` | 252 |
+| `core/src/agent/mod.rs` | 723 |
+
+### 5.2 Hygiene Layer — Skip Non-Truncatable Tools
+
+```rust
+// hygiene.rs — 在文件顶部添加
+const NON_TRUNCATABLE_TOOLS: &[&str] = &["skill_load"];
 
 fn truncate_tool_result(msg: &mut Message) -> bool {
     if msg.role != Role::Tool { return false; }
-    if !is_truncatable(&msg.name) { return false; } // ← 新增跳过
-    // ... 原有截断逻辑
+    // ⭐ NEW: skip non-truncatable tools (skill_load content is instruction, not data)
+    if msg.name.as_deref()
+        .map_or(false, |n| NON_TRUNCATABLE_TOOLS.contains(&n))
+    {
+        return false;
+    }
+    // ... existing truncation logic
 }
 ```
 
-### 4.3 在 Compressor 层跳过非截断工具
+### 5.3 Compressor Layer — Skip Non-Truncatable Tools
 
 ```rust
-// compressor.rs
+// compressor.rs — 在文件顶部添加相同的常量
 const NON_TRUNCATABLE_TOOLS: &[&str] = &["skill_load"];
 
 pub fn snip_compact(&self, messages: &mut Vec<Message>) -> usize {
+    let mut modified = 0;
     for msg in messages.iter_mut() {
         if msg.role == Tool
-            && msg.name.as_deref().map_or(true, |n| !NON_TRUNCATABLE_TOOLS.contains(&n))
+            // ⭐ NEW: skip non-truncatable tools
+            && !msg.name.as_deref()
+                .map_or(false, |n| NON_TRUNCATABLE_TOOLS.contains(&n))
             && let Some(ref content) = msg.content
             && content.len() > self.tool_result_budget
         {
-            // ... 原有截断逻辑
+            // ... existing truncation
         }
     }
 }
 ```
 
-### 4.4 ContextSegment (loaded_skills) 不截断
+### 5.4 Segment 6 Budget: 500 → 2000 tokens
 
-Segment 6 的 `max_tokens` 从 500 增加到 0（不限制）或一个较大值。因为技能内容已经通过 context injection 发送，不应在 segment 层面再次截断。
-
-实际上，auto-trigger 和 manual load 走的是不同路径：
-- **Auto-trigger** → `set_loaded_skills()` → Segment 6 (500 token budget)
-- **Manual load** → `skill_load` tool → `Role::Tool` message
-
-对于 manual load 路径，Layer 1 (hygiene) 和 Layer 2 (compressor) 是主要问题。对于 auto-trigger 路径，Layer 3 (segment budget) 是主要问题。
-
-当前我们的使用场景是：通过 dropdown 选择 skill → `@skill:name` → 发送消息 → 模型自动调用 `skill_load`。所以主要关注 **manual load 路径**。
-
-但 auto-trigger 路径也应该处理。建议同时修复：
-- Segment 6 的 budget 增加到 2000 tokens（足以容纳大多数技能内容）
-- hygiene/compressor 跳过 `skill_load`
-
-### 4.5 扩展性考虑
-
-不硬编码 `skill_load` 字符串。更好的做法：
-
-**Option A**: Tool trait 新增 `truncatable()` 方法
 ```rust
-pub trait Tool: Send + Sync {
-    // ...
-    /// Whether this tool's result should be truncated if too long.
-    fn truncatable(&self) -> bool { true }
+// context.rs:292
+let skills = ContextSegment::new(
+    "loaded_skills", "Loaded Skills", 5,
+    2000,  // ← 从 500 改为 2000 (~8000 chars, 足够大多数 skill)
+    RefreshPolicy::PerTurn, Stability::Dynamic,
+);
+```
+
+**Note**: 即使 manual skill_load path 不经过 Segment 6，但 `skill_load` 调用后会 `mgr.activate(name)`，下一 turn `build_active_context()` 会重建 Segment 6。如果此时 budget 只有 500 tokens，auto-trigger 的 skill 内容仍会被截断。二者应同步修复。
+
+### 5.5 为什么不用 Tool Trait？
+
+**不推荐方案** (Option A): 
+- 需要在 `Tool` trait 加 `truncatable()`
+- ToolRegistry 需要提取非截断工具名称
+- 需要 plumb 到 hygiene/compressor 调用点
+- 增加约 30 行改动，但只有一个工具需要 (skill_load)
+
+**推荐方案** (Option B):
+- 硬编码常量列表，2 个地方（hygiene + compressor）
+- 改动量最小，不易出错
+- 后续如有新工具需要，加一行字符串即可
+
+## 6. Updated Files to Modify
+
+| # | File | Change | 影响范围 |
+|---|------|--------|---------|
+| 1 | `core/src/types.rs:305-313` | `Message::tool()` + tool_name param | API change |
+| 2 | `core/src/runtime/run.rs:726` | `Message::tool(call.id, result, Some(call.function.name.clone()))` | Main path |
+| 3 | `core/src/subagent/mod.rs:252` | 同上 | Subagent path |
+| 4 | `core/src/agent/mod.rs:723` | 同上 | Legacy agent path |
+| 5 | `core/src/hygiene.rs` | 添加 `NON_TRUNCATABLE_TOOLS` + skip logic | **主修复** |
+| 6 | `core/src/compressor.rs` | 添加 `NON_TRUNCATABLE_TOOLS` + skip logic | **永久存储修复** |
+| 7 | `core/src/context.rs:292` | loaded_skills budget: 500 → 2000 | 自动触发修复 |
+| 8 | `core/src/hygiene.rs` (tests) | 添加 skill_load skip 的测试 | 回归保障 |
+
+## 7. Test Plan
+
+### 7.1 Existing Tests
+- hygiene.rs: 6 个测试 (truncate, skip, error-signals, truncate-args, sanitize-count)
+- 所有修改不应破坏现有测试
+
+### 7.2 New Test
+```rust
+#[test]
+fn skip_truncation_for_skill_load() {
+    let big = "line ".repeat(2000); // ~10000 chars
+    let mut msg = Message {
+        role: Role::Tool,
+        content: Some(big.clone()),
+        tool_calls: None,
+        tool_call_id: Some("t1".into()),
+        name: Some("skill_load".into()),  // ← 现在 name 被传入了
+    };
+    assert!(!truncate_tool_result(&mut msg));  // ← 不会被截断
+    assert_eq!(msg.content.unwrap(), big);     // ← 内容保持完整
 }
 ```
-- SkillLoadTool 返回 `false`
-- ToolRegistry 收集非截断工具名称，生成 `non_truncatable: HashSet<String>`
-- 运行时传入 hygiene/compressor
 
-**Option B**: 硬编码列表 + 后续维护
-- 简单直接，当前只需 `skill_load` 一个例外
-- 后续有新的非截断工具时再维护
+## 8. Verification Checklist
 
-**推荐 Option B**，简单且现阶段足够了。后续如果有更多工具要加入（如 `skill_reload`），维护一个常量列表也很容易。
-
-## 5. Files to Modify
-
-| # | File | Change |
-|---|------|--------|
-| 1 | `core/src/types.rs` | `Message::tool()` 接受 tool_name 参数 |
-| 2 | `core/src/runtime/run.rs:726` | 传入 `call.function.name` |
-| 3 | `core/src/subagent/mod.rs:252` | 传入 tool name |
-| 4 | `core/src/agent/mod.rs:723` | 传入 tool name |
-| 5 | `core/src/hygiene.rs` | `truncate_tool_result()` 跳过非截断工具 |
-| 6 | `core/src/compressor.rs` | `snip_compact()` 跳过非截断工具 |
-| 7 | `core/src/context.rs` | `loaded_skills` segment budget 从 500 → 2000 tokens |
-
-## 6. Verification
-
-- [ ] 编译通过（cargo build）
-- [ ] 测试通过（cargo test）
-- [ ] 加载一个 8000+ chars 的技能 → hygiene 日志显示 "skipped: skill_load"
-- [ ] 模型能看到完整的技能内容（可以在测试中 mock 检查 messages 内容）
+- [ ] `cargo build` 成功
+- [ ] `cargo test` 全部通过（含新测试）
+- [ ] 验证: skill_load 结果 ≥ 8000 chars 时，sanitize 返回 count=0 for that message
+- [ ] 验证: 其他 tool (read/bahs/grep) 仍然正常截断
+- [ ] 验证: system prompt frozen → cache hit 不受影响
+- [ ] End-to-end: 加载 pptx-generator skill → 模型能看到完整 PPTX 生成指令
 
 ## References
 
-- `core/src/hygiene.rs:33-84` — `truncate_tool_result()` 截断逻辑
-- `core/src/compressor.rs:186-203` — `snip_compact()` 截断逻辑
-- `core/src/types.rs:305-313` — `Message::tool()` 构造函数
-- `core/src/runtime/run.rs:712-727` — 工具结果添加到 context
-- `core/src/tools/skill.rs:110-131` — SkillLoadTool::execute()
-- `core/src/context.rs:291-292` — loaded_skills segment budget
+- `core/src/hygiene.rs:33-84` — `truncate_tool_result()`
+- `core/src/compressor.rs:186-203` — `snip_compact()`  
+- `core/src/context.rs:160-169` — `seg.assemble()` — truncate per segment budget
+- `core/src/context.rs:291-292` — Segment 6 "loaded_skills" 500 token budget
+- `core/src/context.rs:384-458` — `assemble_system_prompt()` / `assemble_context_injection()` — PLAN-0005 cache structure
+- `core/src/types.rs:29-39` — `Message` struct with `name` field
+- `core/src/types.rs:305-313` — `Message::tool()` constructor
+- `core/src/tools/skill.rs:110-131` — `SkillLoadTool::execute()`
+- `core/src/skills/mod.rs:345-355` — `load_skill_context()`
+- `core/src/runtime/run.rs:712-727` — tool result → context
+- `core/src/runtime/run.rs:775-826` — model_turn + sanitize + LLM call
+- `core/src/runtime/run.rs:1206-1250` — maybe_compact + trim_to_fit
+
+## Change Log
+
+| Date | Author | Change |
+|------|--------|--------|
+| 2026-06-28 | agent_core | Initial draft |
+| 2026-06-28 | agent_core | Refined analysis: added cache impact analysis (vs PLAN-0005), compressor in-place risk, two-path analysis, updated test plan |
 
 ---
 *Generated by AI Agent (agent_core)*

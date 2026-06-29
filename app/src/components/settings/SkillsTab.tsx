@@ -1,11 +1,10 @@
-import { useState, useEffect } from 'react';
-import { invoke } from '@tauri-apps/api/core';
+import { useState } from 'react';
+
 import WrenchIcon from 'lucide-react/dist/esm/icons/wrench.mjs';
 import BookOpenIcon from 'lucide-react/dist/esm/icons/book-open.mjs';
 import ZapIcon from 'lucide-react/dist/esm/icons/zap.mjs';
 import RefreshIcon from 'lucide-react/dist/esm/icons/refresh-cw.mjs';
 import { useSkills } from '../../hooks/useSkills';
-import type { SkillManifest } from '../../features/chat/types';
 
 export default function SkillsTab() {
   const { skills, loading, refresh, invalidate } = useSkills();

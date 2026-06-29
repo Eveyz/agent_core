@@ -71,6 +71,103 @@
   color: var(--text-main);
 }
 
+.settings-form-row {
+  display: flex;
+  gap: 16px;
+}
+
+.settings-form-row > * {
+  flex: 1;
+}
+
+/* Permission Cards */
+.permission-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background-color: var(--overlay-0_015);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.permission-card:hover {
+  background-color: var(--overlay-0_04);
+  border-color: var(--overlay-0_08);
+}
+
+.permission-card.active {
+  border-color: var(--accent);
+  background-color: rgba(82, 168, 255, 0.05);
+}
+
+.permission-card-icon {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  margin-top: 2px;
+  transition: color 0.2s ease;
+}
+
+.permission-card.active .permission-card-icon {
+  color: var(--accent);
+}
+
+.permission-card-content {
+  flex: 1;
+}
+
+.permission-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.permission-card-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.permission-card-desc {
+  margin: 4px 0 0 0;
+  font-size: 12px;
+  color: var(--text-secondary, var(--text-muted));
+  line-height: 1.4;
+}
+
+.settings-radio {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.permission-card.active .settings-radio {
+  border-color: var(--accent);
+}
+
+.settings-radio-inner {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: var(--accent);
+  opacity: 0;
+  transform: scale(0.5);
+  transition: all 0.2s ease;
+}
+
+.permission-card.active .settings-radio-inner {
+  opacity: 1;
+  transform: scale(1);
+}
+
 .settings-modal-body {
   display: flex;
   flex: 1;

@@ -289,7 +289,7 @@ impl ContextEngine {
             "loaded_skills",
             "Loaded Skills",
             5,
-            500,
+            2000,
             RefreshPolicy::PerTurn,
             Stability::Dynamic,
         );

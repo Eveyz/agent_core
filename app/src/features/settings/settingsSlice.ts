@@ -88,7 +88,7 @@ export interface AppConfig {
 
 interface SettingsState {
   isOpen: boolean;
-  activeTab: 'general' | 'provider' | 'memory' | 'mcp' | 'skills';
+  activeTab: 'general' | 'provider' | 'memory' | 'mcp' | 'skills' | 'permissions';
   config: AppConfig | null;
   loading: boolean;
   saving: boolean;

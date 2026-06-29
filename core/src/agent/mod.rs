@@ -720,7 +720,7 @@ impl Agent {
             });
 
             self.context
-                .add(Message::tool(call.id.clone(), result.clone()));
+                .add(Message::tool(call.id.clone(), result.clone(), Some(call.function.name.clone())));
         }
 
         on_event(AgentEvent::TurnEnd {

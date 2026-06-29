@@ -302,13 +302,13 @@ impl Message {
         }
     }
 
-    pub fn tool(tool_call_id: String, content: String) -> Self {
+    pub fn tool(tool_call_id: String, content: String, tool_name: Option<String>) -> Self {
         Self {
             role: Role::Tool,
             content: Some(content),
             tool_calls: None,
             tool_call_id: Some(tool_call_id),
-            name: None,
+            name: tool_name,
         }
     }
 

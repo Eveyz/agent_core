@@ -15,41 +15,9 @@ pub fn default_rules_with_danger() -> Vec<(ToolPermissionPattern, DangerLevel, A
             ApprovalLevel::Allow,
         ),
         (
-            ToolPermissionPattern::simple("glob"),
-            DangerLevel::ReadOnly,
-            ApprovalLevel::Allow,
-        ),
-        (
             ToolPermissionPattern::simple("grep"),
             DangerLevel::ReadOnly,
             ApprovalLevel::Allow,
-        ),
-        // ── Git read-only (safe) ─────────────────────────────────────
-        (
-            ToolPermissionPattern::simple("git_status"),
-            DangerLevel::ReadOnly,
-            ApprovalLevel::Allow,
-        ),
-        (
-            ToolPermissionPattern::simple("git_diff"),
-            DangerLevel::ReadOnly,
-            ApprovalLevel::Allow,
-        ),
-        (
-            ToolPermissionPattern::simple("git_log"),
-            DangerLevel::ReadOnly,
-            ApprovalLevel::Allow,
-        ),
-        (
-            ToolPermissionPattern::simple("git_show"),
-            DangerLevel::ReadOnly,
-            ApprovalLevel::Allow,
-        ),
-        // ── Git write (mutable) ──────────────────────────────────────
-        (
-            ToolPermissionPattern::simple("git_commit"),
-            DangerLevel::ReadWrite,
-            ApprovalLevel::Ask,
         ),
         // ── File write (mutable) ─────────────────────────────────────
         (
@@ -171,39 +139,9 @@ pub fn default_rules() -> Vec<super::PermissionRule> {
             level: ApprovalLevel::Ask,
         },
         super::PermissionRule {
-            tool_pattern: "glob".to_string(),
-            action_pattern: None,
-            level: ApprovalLevel::Allow,
-        },
-        super::PermissionRule {
             tool_pattern: "grep".to_string(),
             action_pattern: None,
             level: ApprovalLevel::Allow,
-        },
-        super::PermissionRule {
-            tool_pattern: "git_status".to_string(),
-            action_pattern: None,
-            level: ApprovalLevel::Allow,
-        },
-        super::PermissionRule {
-            tool_pattern: "git_diff".to_string(),
-            action_pattern: None,
-            level: ApprovalLevel::Allow,
-        },
-        super::PermissionRule {
-            tool_pattern: "git_log".to_string(),
-            action_pattern: None,
-            level: ApprovalLevel::Allow,
-        },
-        super::PermissionRule {
-            tool_pattern: "git_show".to_string(),
-            action_pattern: None,
-            level: ApprovalLevel::Allow,
-        },
-        super::PermissionRule {
-            tool_pattern: "git_commit".to_string(),
-            action_pattern: None,
-            level: ApprovalLevel::Ask,
         },
         super::PermissionRule {
             tool_pattern: "webfetch".to_string(),
@@ -281,17 +219,7 @@ pub fn strict_rules() -> Vec<super::PermissionRule> {
             level: ApprovalLevel::Allow,
         },
         super::PermissionRule {
-            tool_pattern: "glob".to_string(),
-            action_pattern: None,
-            level: ApprovalLevel::Allow,
-        },
-        super::PermissionRule {
             tool_pattern: "grep".to_string(),
-            action_pattern: None,
-            level: ApprovalLevel::Allow,
-        },
-        super::PermissionRule {
-            tool_pattern: "git_*".to_string(),
             action_pattern: None,
             level: ApprovalLevel::Allow,
         },
@@ -321,13 +249,13 @@ mod tests {
         assert_eq!(read_file.1, DangerLevel::ReadOnly);
         assert_eq!(read_file.2, ApprovalLevel::Allow);
 
-        // git_commit should be ReadWrite + Ask
-        let git_commit = rules
+        // edit should be ReadWrite + Ask
+        let edit_rule = rules
             .iter()
-            .find(|(p, _, _)| p.tool_pattern == "git_commit")
+            .find(|(p, _, _)| p.tool_pattern == "edit")
             .unwrap();
-        assert_eq!(git_commit.1, DangerLevel::ReadWrite);
-        assert_eq!(git_commit.2, ApprovalLevel::Ask);
+        assert_eq!(edit_rule.1, DangerLevel::ReadWrite);
+        assert_eq!(edit_rule.2, ApprovalLevel::Ask);
     }
 
     #[test]

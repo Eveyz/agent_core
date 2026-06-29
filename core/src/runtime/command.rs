@@ -30,6 +30,10 @@ pub enum RunCommand {
     },
     /// Answer a pending input request. Valid in `AwaitingInput`.
     Answer { prompt_id: String, answer: String },
+
+    /// Set the agent mode on the Brain. Takes effect on the NEXT Run.
+    /// Existing Runs keep their mode.
+    SetMode { mode: String },
 }
 
 impl RunCommand {

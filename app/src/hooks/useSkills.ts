@@ -3,7 +3,6 @@ import { useSelector } from 'react-redux';
 import { useAppDispatch } from './useAppDispatch';
 import { RootState } from '../store';
 import { fetchSkills, invalidateSkillsCache } from '../features/chat/chatSlice';
-import type { SkillManifest } from '../features/chat/types';
 
 export function useSkills() {
   const dispatch = useAppDispatch();
