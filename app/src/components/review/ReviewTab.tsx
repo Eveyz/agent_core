@@ -3,20 +3,34 @@ import { useSelector } from 'react-redux';
 import MoreVerticalIcon from 'lucide-react/dist/esm/icons/more-vertical.mjs';
 import SearchIcon from 'lucide-react/dist/esm/icons/search.mjs';
 import ListTreeIcon from 'lucide-react/dist/esm/icons/list-tree.mjs';
+import FileIcon from 'lucide-react/dist/esm/icons/file.mjs';
 import { RootState } from '../../store';
 import { basename, parseUnifiedDiff } from '../chat/turnHelpers';
 import { useResizableSidebar } from '../../hooks/useResizableSidebar';
-import { FileTree } from '../layout/FileTree';
 
 export function ReviewTab() {
   const activeProjectId = useSelector((state: RootState) => state.project.activeProjectId);
-  const projects = useSelector((state: RootState) => state.project.projects);
-  const activeProject = projects.find(p => p.id === activeProjectId);
 
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [filePaneVisible, setFilePaneVisible] = useState(false);
+  const [paneAnimPhase, setPaneAnimPhase] = useState<'idle' | 'entering' | 'leaving'>('idle');
   
   const { sidebarRef: filePaneRef, onMouseDown: startFilePaneDrag } = useResizableSidebar(250, 150, 600, 'right');
+
+  const toggleFilePane = () => {
+    if (filePaneVisible) {
+      // Start leave animation, then hide
+      setPaneAnimPhase('leaving');
+      setTimeout(() => {
+        setFilePaneVisible(false);
+        setPaneAnimPhase('idle');
+      }, 250);
+    } else {
+      setFilePaneVisible(true);
+      // Start enter animation on next frame after mount
+      requestAnimationFrame(() => setPaneAnimPhase('entering'));
+    }
+  };
 
   // Extract modified files from the current session's chat entries
   const entries = useSelector((state: RootState) => state.chat.entries);
@@ -69,7 +83,7 @@ export function ReviewTab() {
           <button className="icon-btn"><SearchIcon size={14} /></button>
           <button 
             className="icon-btn" 
-            onClick={() => setFilePaneVisible(!filePaneVisible)}
+            onClick={toggleFilePane}
             title={filePaneVisible ? "收起文件树" : "展开文件树"}
           >
             <ListTreeIcon size={14} />
@@ -102,13 +116,37 @@ export function ReviewTab() {
           )}
         </div>
         
-        {filePaneVisible && (
+        {(filePaneVisible || paneAnimPhase === 'leaving') && (
           <>
             <div className="resizer-handle" onMouseDown={startFilePaneDrag} />
-            <div className="review-files-pane" ref={filePaneRef} style={{ width: 250 }}>
-              <div className="files-changed-header">Project File Tree</div>
+            <div 
+              className={`review-files-pane ${
+                paneAnimPhase === 'entering' ? 'review-files-pane-enter' :
+                paneAnimPhase === 'leaving' ? 'review-files-pane-leave' : ''
+              }`}
+              ref={filePaneRef}
+            >
+              <div className="files-changed-header">
+                Modified Files ({modifiedFiles.length})
+              </div>
               <div style={{ flex: 1, overflowY: 'auto' }}>
-                <FileTree rootPath={activeProject?.path || ''} onSelectFile={setSelectedFile} />
+                {modifiedFiles.length === 0 ? (
+                  <div className="empty-message">No modified files</div>
+                ) : (
+                  modifiedFiles.map(file => (
+                    <div
+                      key={file.path}
+                      className={`file-tree-row ${selectedFile === file.path ? 'file-tree-row-active' : ''}`}
+                      style={{ paddingLeft: '8px' }}
+                      onClick={() => setSelectedFile(file.path)}
+                    >
+                      <span className="file-tree-type-icon">
+                        <FileIcon size={14} />
+                      </span>
+                      <span className="file-tree-name" title={file.path}>{file.name}</span>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           </>

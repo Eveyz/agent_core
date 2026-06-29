@@ -117,20 +117,35 @@ interface FileNode {
 interface FileTreeItemProps {
   node: FileNode;
   level: number;
+  selectedPath: string | null;
+  onItemClick: (path: string) => void;
   onSelect?: (path: string) => void;
 }
 
-function FileTreeItem({ node, level, onSelect }: FileTreeItemProps) {
+function FileTreeItem({ node, level, selectedPath, onItemClick, onSelect }: FileTreeItemProps) {
   const [expanded, setExpanded] = useState(false);
   const [children, setChildren] = useState<FileNode[]>([]);
   const [loading, setLoading] = useState(false);
+  const [animPhase, setAnimPhase] = useState<'idle' | 'enter' | 'leave'>('idle');
 
   const isDir = node.type === 'dir';
+  const isSelected = node.path === selectedPath;
 
   const handleToggle = async (e: React.MouseEvent) => {
     e.stopPropagation();
+    onItemClick(node.path);
+
     if (!isDir) {
       if (onSelect) onSelect(node.path);
+      return;
+    }
+
+    if (expanded) {
+      setAnimPhase('leave');
+      setTimeout(() => {
+        setExpanded(false);
+        setAnimPhase('idle');
+      }, 150);
       return;
     }
 
@@ -149,13 +164,16 @@ function FileTreeItem({ node, level, onSelect }: FileTreeItemProps) {
         setLoading(false);
       }
     }
-    setExpanded(!expanded);
+    setExpanded(true);
+    setAnimPhase('enter');
   };
+
+  const showChildren = expanded || animPhase === 'leave';
 
   return (
     <div>
       <div 
-        className="file-tree-row" 
+        className={`file-tree-row ${isSelected ? 'file-tree-row-active' : ''}`}
         style={{ paddingLeft: `${level * 12 + 8}px` }}
         onClick={handleToggle}
       >
@@ -171,13 +189,13 @@ function FileTreeItem({ node, level, onSelect }: FileTreeItemProps) {
         </span>
         <span className="file-tree-name">{node.name}</span>
       </div>
-      {expanded && isDir && (
-        <div className="file-tree-children">
+      {showChildren && isDir && (
+        <div className={`file-tree-children ${animPhase === 'enter' ? 'file-tree-children-enter' : animPhase === 'leave' ? 'file-tree-children-leave' : ''}`}>
           {loading ? (
             <div className="file-tree-loading" style={{ paddingLeft: `${(level + 1) * 12 + 28}px` }}>Loading...</div>
           ) : (
             children.map(child => (
-              <FileTreeItem key={child.path} node={child} level={level + 1} onSelect={onSelect} />
+              <FileTreeItem key={child.path} node={child} level={level + 1} selectedPath={selectedPath} onItemClick={onItemClick} onSelect={onSelect} />
             ))
           )}
         </div>
@@ -194,6 +212,11 @@ interface FileTreeProps {
 export function FileTree({ rootPath, onSelectFile }: FileTreeProps) {
   const [nodes, setNodes] = useState<FileNode[]>([]);
   const [loading, setLoading] = useState(true);
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+
+  const handleItemClick = (path: string) => {
+    setSelectedPath(path);
+  };
 
   useEffect(() => {
     if (!rootPath) return;
@@ -226,7 +249,7 @@ export function FileTree({ rootPath, onSelectFile }: FileTreeProps) {
   return (
     <div className="file-tree-container">
       {nodes.map(node => (
-        <FileTreeItem key={node.path} node={node} level={0} onSelect={onSelectFile} />
+        <FileTreeItem key={node.path} node={node} level={0} selectedPath={selectedPath} onItemClick={handleItemClick} onSelect={onSelectFile} />
       ))}
     </div>
   );

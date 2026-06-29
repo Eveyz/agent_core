@@ -593,6 +593,36 @@
   overflow-y: auto;
 }
 
+.review-files-pane-enter {
+  animation: paneSlideIn 0.25s ease-out forwards;
+}
+
+.review-files-pane-leave {
+  animation: paneSlideOut 0.25s ease-in forwards;
+}
+
+@keyframes paneSlideIn {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes paneSlideOut {
+  from {
+    transform: translateX(0);
+    opacity: 1;
+  }
+  to {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+}
+
 .files-changed-header {
   padding: 12px 12px 8px;
   font-size: 11px;
@@ -670,6 +700,7 @@ body.is-resizing * {
   flex-direction: column;
   padding: 4px 0;
 }
+
 .file-tree-row {
   display: flex;
   align-items: center;
@@ -708,4 +739,51 @@ body.is-resizing * {
   font-size: 11px;
   color: var(--text-dim);
   padding: 4px 8px;
+}
+
+.file-tree-children {
+  overflow: hidden;
+}
+
+.file-tree-children-enter {
+  animation: ftSlideDown 0.2s ease-out forwards;
+}
+
+.file-tree-children-leave {
+  animation: ftSlideUp 0.15s ease-in forwards;
+}
+
+@keyframes ftSlideDown {
+  from {
+    max-height: 0;
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    max-height: 3000px;
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes ftSlideUp {
+  from {
+    max-height: 3000px;
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    max-height: 0;
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+/* ── Folder click highlight (persistent gray for expanded folders) ── */
+.file-tree-row-active {
+  background-color: var(--overlay-0_06);
+}
+
+.file-tree-row-active:hover {
+  background-color: var(--overlay-0_1);
 }
