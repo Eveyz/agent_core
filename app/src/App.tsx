@@ -109,6 +109,15 @@ function App() {
   // view through the async reflows (markdown, code blocks, tool calls) that happen
   // as a loaded session renders, so the latest message — and its copy icon — lands
   // fully in view. Covers both sync cache restore and async backend resume.
+  // When returning to the main chat from a subagent detail view, scroll to bottom.
+  const prevViewingSubagentPathLength = useRef(0);
+  useEffect(() => {
+    if (prevViewingSubagentPathLength.current > 0 && viewingSubagentPath.length === 0) {
+      setTimeout(() => scrollToBottom(), 100);
+    }
+    prevViewingSubagentPathLength.current = viewingSubagentPath.length;
+  }, [viewingSubagentPath.length, scrollToBottom]);
+
   const prevSessionIdRef = useRef<string | null | undefined>(activeSessionId);
   useEffect(() => {
     if (prevSessionIdRef.current !== activeSessionId) {
@@ -253,9 +262,15 @@ function App() {
             />
           )}
 
-          {viewingSubagentPath.length === 0 && (
-            <ChatInput isProcessing={isProcessing} onSend={handleSend} currentModel={defaultModel} onAbort={handleAbort} onSteer={handleSteer} />
-          )}
+          <ChatInput
+            isProcessing={isProcessing}
+            onSend={handleSend}
+            currentModel={defaultModel}
+            onAbort={handleAbort}
+            onSteer={handleSteer}
+            disabled={viewingSubagentPath.length > 0}
+            disabledMessage="the input chat is disabled for the subagent"
+          />
         </main>
       </div>
     </div>

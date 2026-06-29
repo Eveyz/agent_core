@@ -30,6 +30,7 @@ export const SubagentDetailPage = memo(function SubagentDetailPage({
         entry={{ id: `${subagent.id}-task`, type: 'user', text: taskText }}
         modelName={defaultModel}
         isProcessing={isProcessing}
+        hideActions={true}
       />
       <div className="message-row agent-row">
         <AgentTurnUI entry={syntheticEntry} />

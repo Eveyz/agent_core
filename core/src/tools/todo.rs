@@ -146,10 +146,16 @@ impl Tool for TodoUpdateTool {
         let mut list = self.todo_list.lock();
         list.update_status(id, status)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
+            
+        let desc = list.get(id).map(|i| i.description.as_str()).unwrap_or("");
+        let full_list = list.to_context_string();
+        
         Ok(format!(
-            "Todo '{}' updated to {}",
+            "Todo '{}': \"{}\" updated to {}\n\n{}",
             id,
-            args["status"].as_str().unwrap_or("")
+            desc,
+            args["status"].as_str().unwrap_or(""),
+            full_list
         ))
     }
 }

@@ -9,8 +9,11 @@ import type { TurnIteration, ApprovalBlock, SubagentRefBlock } from './turnHelpe
 import { isSubagentTool, isSubagentRefBlock } from './turnHelpers';
 import ToolBlockUI from './ToolBlockUI';
 import EditFileWidget from './EditFileWidget';
+import ReadFileWidget from './ReadFileWidget';
+import BashWidget from './BashWidget';
 import ApprovalBlockUI from './ApprovalBlockUI';
 import SubagentSpawnWidget, { SubagentCard } from './SubagentWidgets';
+import { generateSmartToolsLabel } from './turnHelpers';
 
 const TurnIterationUI = memo(function TurnIterationUI({
   iteration,
@@ -51,12 +54,16 @@ const TurnIterationUI = memo(function TurnIterationUI({
   }, [isStreaming, thinkingBlock]);
 
   const toolsLabel = useMemo(() => {
-    if (isStreaming) {
-      return regularToolCount > 0 ? `Calling ${regularToolCount} tool${regularToolCount > 1 ? 's' : ''}...` : 'Calling tool...';
-    } else {
-      return regularToolCount > 0 ? `Called ${regularToolCount} tool${regularToolCount > 1 ? 's' : ''}` : 'Called tool';
-    }
-  }, [isStreaming, regularToolCount]);
+    return generateSmartToolsLabel(iteration.toolBlocks, isStreaming);
+  }, [iteration.toolBlocks, isStreaming]);
+
+  const singleTopLevelTool = useMemo(() => {
+    if (regularToolCount !== 1) return false;
+    const regularTools = iteration.toolBlocks.filter(b => b.type === 'tool' && !isSubagentTool(b));
+    if (regularTools.length !== 1) return false;
+    const name = (regularTools[0] as Extract<TurnBlock, { type: 'tool' }>).name;
+    return name === 'edit' || name === 'read_file' || name === 'bash' || name === 'grep_search' || name === 'glob_search' || name === 'grep' || name === 'glob' || name.startsWith('todo_') || name === 'write_file' || name === 'write_to_file' || name.startsWith('skill_') || name === 'archival_memory_search' || name === 'conversation_search';
+  }, [regularToolCount, iteration.toolBlocks]);
 
   const renderRegularTools = () => (
     <>
@@ -77,6 +84,26 @@ const TurnIterationUI = memo(function TurnIterationUI({
                 result={b.result}
                 active={b.active}
                 is_error={b.is_error}
+              />
+            );
+          } else if (name === 'read_file') {
+            return (
+              <ReadFileWidget
+                key={b.call_id || idx}
+                args={b.args}
+                active={b.active}
+                is_error={b.is_error}
+              />
+            );
+          } else if (name === 'bash' || name === 'grep_search' || name === 'glob_search' || name === 'grep' || name === 'glob') {
+            return (
+              <BashWidget
+                key={b.call_id || idx}
+                args={b.args}
+                result={b.result}
+                active={b.active}
+                is_error={b.is_error}
+                name={name}
               />
             );
           }
@@ -166,21 +193,27 @@ const TurnIterationUI = memo(function TurnIterationUI({
       )}
 
       {hasRegularTools && (
-        <div className={`step-block ${hasThinkingContent ? 'mt-4' : 'mt-0'}`}>
-          <div
-            className={`step-row ${isStreaming ? 'step-row-active' : ''}`}
-            onClick={() => setToolsCollapsed(!toolsCollapsed)}
-          >
-            <WrenchIcon size={13} className="step-icon" color={isStreaming ? undefined : "#888"} />
-            <span className="step-label step-label-bold">{toolsLabel}</span>
-            {toolsCollapsed ? <ChevronRightIcon size={12} className="step-chevron" /> : <ChevronDownIcon size={12} className="step-chevron" />}
+        singleTopLevelTool ? (
+          <div className={hasThinkingContent ? 'mt-4' : 'mt-0'}>
+            {renderRegularTools()}
           </div>
-          {!toolsCollapsed && (
-            <div className="iteration-body">
-              {renderRegularTools()}
+        ) : (
+          <div className={`step-block ${hasThinkingContent ? 'mt-4' : 'mt-0'}`}>
+            <div
+              className={`step-row ${isStreaming ? 'step-row-active' : ''}`}
+              onClick={() => setToolsCollapsed(!toolsCollapsed)}
+            >
+              <WrenchIcon size={13} className="step-icon" color={isStreaming ? undefined : "#888"} />
+              <span className="step-label step-label-bold">{toolsLabel}</span>
+              {toolsCollapsed ? <ChevronRightIcon size={12} className="step-chevron" /> : <ChevronDownIcon size={12} className="step-chevron" />}
             </div>
-          )}
-        </div>
+            {!toolsCollapsed && (
+              <div className="iteration-body">
+                {renderRegularTools()}
+              </div>
+            )}
+          </div>
+        )
       )}
 
       {hasSubagents && (

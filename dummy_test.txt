@@ -1,0 +1,5 @@
+This is a dummy test file.
+Line 2: Rust is awesome.
+Line 3: Working memory is key for agents.
+Line 4: Edit tool works by replacing old_string with new_string.
+Line 5: Hello from WorkBuddy!

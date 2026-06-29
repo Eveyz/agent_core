@@ -80,10 +80,10 @@ Use this whenever you need to find up-to-date information on the internet."
         let mut output = String::new();
 
         if let Some(answer) = response["answer"].as_str() {
-            output.push_str(&format!("### Direct Answer:\n{}\n\n", answer));
+            if !answer.is_empty() {
+                output.push_str(&format!("{}\n\n", answer));
+            }
         }
-
-        output.push_str("### Sources & Snippets:\n");
 
         if let Some(results) = response["results"].as_array() {
             if results.is_empty() {

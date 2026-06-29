@@ -113,6 +113,8 @@ Args: name (string). The skill's knowledge will guide your responses."
             .ok_or_else(|| anyhow::anyhow!("missing 'name'"))?;
         let mut mgr = self.manager.lock();
 
+        let description = mgr.find_by_name(name).map(|m| m.description.clone()).unwrap_or_default();
+
         let content = match mgr.load_skill_context(name)? {
             Some(c) => c,
             None => {
@@ -125,8 +127,8 @@ Args: name (string). The skill's knowledge will guide your responses."
 
         mgr.activate(name);
         Ok(format!(
-            "Skill '{}' loaded and activated.\n\n{}",
-            name, content
+            "Skill '{}' loaded and activated.\nDescription: {}\n\n{}",
+            name, description, content
         ))
     }
 }

@@ -447,7 +447,7 @@ Do NOT attempt to read or process image files.";
         })
         .unwrap_or(false);
 
-    let final_tool_names = if is_all {
+    let mut final_tool_names = if is_all {
         available_tools.to_vec()
     } else if tool_names.is_empty() {
         // Agent explicitly passed empty tools — respect that, but subagent can only think
@@ -455,6 +455,14 @@ Do NOT attempt to read or process image files.";
     } else {
         tool_names
     };
+
+    // Prevent subagents from getting tools the parent agent doesn't have.
+    final_tool_names.retain(|t| available_tools.contains(t));
+
+    // If all requested tools were filtered out, give at least read_file so it can do something.
+    if final_tool_names.is_empty() {
+        final_tool_names = vec!["read_file".to_string()];
+    }
 
     let tool_count = final_tool_names.len();
 

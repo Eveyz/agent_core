@@ -37,8 +37,8 @@ impl AgentMode {
             Self::Ask => "\
 MODE: Ask — Read-only mode.
 You can read files, use git status/diff/log/show, search the web,
-and search memory. You CANNOT write files, execute commands,
-create todo plans, or spawn subagents.
+search memory, and spawn read-only subagents. You CANNOT write files,
+execute commands, or create todo plans.
 Answer questions thoroughly by reading source code and documentation.
 If the user wants changes made, suggest switching to Plan or Build mode.",
 

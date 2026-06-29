@@ -10,11 +10,12 @@ const flexColumnEnd = { display: 'flex', flexDirection: 'column' as const, align
 const flexRowMeta = { display: 'flex', gap: '12px', color: '#555', fontSize: '11px', paddingRight: '4px' };
 const cursorPointer = { cursor: 'pointer' as const };
 
-export const UserRow = memo(function UserRow({ entry, modelName, onRetry, isProcessing }: {
+export const UserRow = memo(function UserRow({ entry, modelName, onRetry, isProcessing, hideActions }: {
   entry: ChatEntry;
   modelName?: string;
   onRetry?: (entryId: string, editedText?: string) => void;
   isProcessing?: boolean;
+  hideActions?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState('');
@@ -78,12 +79,16 @@ export const UserRow = memo(function UserRow({ entry, modelName, onRetry, isProc
           <span style={cursorPointer} onClick={handleCopy}>
             {copied ? '✓ Copied' : <><CopyIcon size={12} /></>}
           </span>
-          <Edit2Icon size={12} style={cursorPointer} onClick={startEdit} />
-          <RotateCwIcon
-            size={12}
-            style={{ ...cursorPointer, opacity: isProcessing ? 0.4 : 1 }}
-            onClick={isProcessing ? undefined : () => onRetry?.(entry.id)}
-          />
+          {!hideActions && (
+            <>
+              <Edit2Icon size={12} style={cursorPointer} onClick={startEdit} />
+              <RotateCwIcon
+                size={12}
+                style={{ ...cursorPointer, opacity: isProcessing ? 0.4 : 1 }}
+                onClick={isProcessing ? undefined : () => onRetry?.(entry.id)}
+              />
+            </>
+          )}
         </div>
       </div>
     </div>

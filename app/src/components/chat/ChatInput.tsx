@@ -36,12 +36,16 @@ export const ChatInput = memo(function ChatInput({
   onAbort,
   currentModel,
   onSteer,
+  disabled,
+  disabledMessage,
 }: {
   isProcessing: boolean;
   onSend: (msg: string) => void;
   onAbort: () => void;
   currentModel: string;
   onSteer?: (message: string) => void;
+  disabled?: boolean;
+  disabledMessage?: string;
 }) {
   const [input, setInput] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -239,11 +243,13 @@ export const ChatInput = memo(function ChatInput({
           onCompositionStart={onCompositionStart}
           onCompositionEnd={onCompositionEnd}
           onScroll={handleScroll}
-          autoFocus={true}
-          placeholder="Ask the agent...  Type @ for files, / for commands"
+          autoFocus={!disabled}
+          placeholder={disabled ? (disabledMessage || 'Chat is disabled') : 'Ask the agent...  Type @ for files, / for commands'}
           rows={1}
+          disabled={disabled}
         />
-        <div className="input-actions">
+        {!disabled && (
+          <div className="input-actions">
           <div className="input-actions-left">
             <ModeSelector />
             <ModelSelector currentModel={currentModel} />
@@ -282,8 +288,10 @@ export const ChatInput = memo(function ChatInput({
             )}
           </div>
         </div>
+        )}
       </div>
 
+      {!disabled && (
       <div className="input-footer">
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <div ref={branchDropdownRef} style={{ position: 'relative' }}>
@@ -329,6 +337,7 @@ export const ChatInput = memo(function ChatInput({
         </div>
         <div>{isProcessing ? 'Press Esc to stop' : 'Type @ for files, / for commands'}</div>
       </div>
+      )}
     </div>
   );
 });

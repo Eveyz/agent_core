@@ -367,23 +367,19 @@ impl Brain {
         registry.remove_all(mode.tools_to_remove());
 
         // Register subagent tools with the FILTERED tool list.
-        // In Ask mode, "task" was removed above, so subagent tools
-        // won't be re-registered (subagent_spawn is not available).
-        if mode != AgentMode::Ask {
-            if let Ok(model_config) = self.current_model_config() {
-                let available_tools: Vec<String> = registry
-                    .list_names()
-                    .into_iter()
-                    .map(|s| s.to_string())
-                    .collect();
-                crate::tools::subagent::register_subagent_tools(
-                    &mut registry,
-                    model_config,
-                    available_tools,
-                    None,
-                    self.config.permissions.clone(),
-                );
-            }
+        if let Ok(model_config) = self.current_model_config() {
+            let available_tools: Vec<String> = registry
+                .list_names()
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect();
+            crate::tools::subagent::register_subagent_tools(
+                &mut registry,
+                model_config,
+                available_tools,
+                None,
+                self.config.permissions.clone(),
+            );
         }
 
         registry

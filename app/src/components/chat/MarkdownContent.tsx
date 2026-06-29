@@ -104,10 +104,21 @@ export const MarkdownContent = memo(function MarkdownContent({
   isStreaming?: boolean;
   plainText?: boolean;
 }) {
+  const handleClick = (e: React.MouseEvent) => {
+    const target = e.target as HTMLElement;
+    const a = target.closest('a');
+    if (a && a.href) {
+      e.preventDefault();
+      import('@tauri-apps/plugin-opener')
+        .then(({ openUrl }) => openUrl(a.href))
+        .catch(console.error);
+    }
+  };
+
   // plainText mode: always render as preformatted text, no markdown.
   if (plainText) {
     return (
-      <div className={className} style={streamingStyle}>
+      <div className={className} style={streamingStyle} onClick={handleClick}>
         {content}
       </div>
     );
@@ -156,7 +167,7 @@ export const MarkdownContent = memo(function MarkdownContent({
 
   if (segments) {
     return (
-      <div className={className}>
+      <div className={className} onClick={handleClick}>
         {segments.map((segment, idx) => {
           if (segment.type === 'code') {
             return (
@@ -177,7 +188,7 @@ export const MarkdownContent = memo(function MarkdownContent({
   
   // Streaming fast path: cheap plain-text render, no parse.
   return (
-    <div className={className} style={streamingStyle}>
+    <div className={className} style={streamingStyle} onClick={handleClick}>
       {content}
     </div>
   );

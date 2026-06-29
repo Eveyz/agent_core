@@ -1,9 +1,9 @@
 import React from 'react';
 import TerminalIcon from 'lucide-react/dist/esm/icons/terminal.mjs';
 import FileIcon from 'lucide-react/dist/esm/icons/file.mjs';
+import PencilIcon from 'lucide-react/dist/esm/icons/pencil.mjs';
 import ScanTextIcon from 'lucide-react/dist/esm/icons/scan-text.mjs';
 import EyeIcon from 'lucide-react/dist/esm/icons/eye.mjs';
-import SaveIcon from 'lucide-react/dist/esm/icons/save.mjs';
 import FolderSearchIcon from 'lucide-react/dist/esm/icons/folder-search.mjs';
 import FileSearchIcon from 'lucide-react/dist/esm/icons/file-search.mjs';
 import GitBranchIcon from 'lucide-react/dist/esm/icons/git-branch.mjs';
@@ -27,12 +27,14 @@ import WrenchIcon from 'lucide-react/dist/esm/icons/wrench.mjs';
 // agent is doing. Falls back to WrenchIcon for unknown tools.
 const TOOL_ICONS: Record<string, React.ComponentType<{ size?: number; color?: string; className?: string; style?: React.CSSProperties }>> = {
   bash: TerminalIcon,
-  edit: FileIcon,
+  edit: PencilIcon,
   sed: ScanTextIcon,
   read_file: EyeIcon,
-  write_file: SaveIcon,
+  write_file: FileIcon,
   glob: FolderSearchIcon,
+  glob_search: FolderSearchIcon,
   grep: FileSearchIcon,
+  grep_search: FileSearchIcon,
   git_status: GitBranchIcon,
   git_diff: GitCompareIcon,
   git_commit: GitCommitIcon,
