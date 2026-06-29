@@ -1,6 +1,5 @@
 import { RefObject } from 'react';
 import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
-import TodoPanel from '../chat/TodoPanel';
 import { EntryRow } from '../chat/EntryRow';
 
 interface ChatAreaProps {
@@ -26,7 +25,6 @@ export function ChatArea({
 }: ChatAreaProps) {
   return (
     <>
-      <TodoPanel />
       <div className="chat-history" ref={scrollRef}>
         <div ref={contentRef} style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
           {entryIds.map((id) => (

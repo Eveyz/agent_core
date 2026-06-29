@@ -8,7 +8,7 @@
 |------|-------|-------------|
 | ADR | 1 | Architecture Decision Records |
 | RFC | 0 | Requests for Comments |
-| PLAN | 5 | Development Plans |
+| PLAN | 7 | Development Plans |
 | RUN | 0 | Runbooks |
 | POST | 0 | Post-mortems |
 | AI-NOTE | 2 | AI Analysis Notes |
@@ -37,6 +37,8 @@
 | PLAN-0003 | Context Engine 修复与激活 | Draft | zniverse | 2026-06-25 |
 | PLAN-0005 | Prompt Cache Hit Rate Optimization | Draft | agent_core | 2026-06-26 |
 | PLAN-0006 | Skill Selector in Input Box | Draft | agent_core | 2026-06-28 |
+| PLAN-0007 | Cronjob System Implementation | Draft | agent_core | 2026-06-29 |
+| PLAN-0008 | Truncation Architecture Redesign + Read File Segmented Reading | In Progress | zniverse | 2026-06-30 |
 
 ## RUN (Runbooks)
 

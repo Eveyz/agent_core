@@ -15,6 +15,7 @@ import FileTextIcon from 'lucide-react/dist/esm/icons/file-text.mjs';
 import ImageIcon from 'lucide-react/dist/esm/icons/image.mjs';
 import GitBranchIcon from 'lucide-react/dist/esm/icons/git-branch.mjs';
 import SquareIcon from 'lucide-react/dist/esm/icons/square.mjs';
+import TodoPanel from './TodoPanel';
 
 import { 
   SiJavascript, SiTypescript, SiReact, SiPython, SiGo, SiCss, SiHtml5, SiRust 
@@ -191,6 +192,7 @@ export const ChatInput = memo(function ChatInput({
 
   return (
     <div className="input-area">
+      <TodoPanel />
       <div className="input-container" style={{ position: 'relative' }}>
         {showAutocomplete && autocompleteItems.length > 0 && (
           <div className="autocomplete-dropdown" ref={dropdownRef}>

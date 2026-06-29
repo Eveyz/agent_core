@@ -210,7 +210,7 @@ impl ContextEngine {
             segments: HashMap::new(),
             messages: Vec::new(),
             max_tokens,
-            tool_result_budget: 4000,
+            tool_result_budget: crate::hygiene::policy::INCIDENTAL_MAX_CHARS,
             auto_compact_threshold: 0.8,
             system_prefix_budget: (max_tokens as f64 * 0.08) as usize,
             stable_segment_names: Vec::new(),
@@ -591,13 +591,20 @@ impl ContextEngine {
     }
 
     /// Build the full message array: system (frozen) + conversation history
-    /// with dynamic context injection appended to the last user message.
+    /// (untouched) + dynamic context injection as a separate trailing user
+    /// message.
     ///
     /// This structure maximizes prompt cache hits:
     /// - The system message is frozen (Stable segments only).
-    /// - Conversation history is untouched → prefix is cacheable.
-    /// - Dynamic content (environment, memory, plan) is injected into the
-    ///   last user message, which is always a cache miss anyway.
+    /// - Conversation history is never modified → prefix is cacheable.
+    /// - Dynamic content (environment, memory, skills, plan) is appended as
+    ///   a separate user message at the end, which is always a cache miss
+    ///   but does not invalidate the cacheable prefix.
+    ///
+    /// Adding the injection as a separate message (rather than mutating the
+    /// last user message) ensures it is delivered on **every** turn,
+    /// including tool-call turns where the last conversation message is a
+    /// Tool result.
     pub fn messages(&self) -> Vec<Message> {
         let mut result = Vec::new();
         let system_content = self.assemble_system_prompt();
@@ -605,23 +612,15 @@ impl ContextEngine {
             result.push(Message::system(&system_content));
         }
 
-        let injection = self.assemble_context_injection();
+        // Push all conversation history messages untouched.
+        for msg in &self.messages {
+            result.push(msg.clone());
+        }
 
-        let n = self.messages.len();
-        for (i, msg) in self.messages.iter().enumerate() {
-            let mut msg = msg.clone();
-            // Inject dynamic context into the last user message.
-            if i == n - 1
-                && msg.role == crate::types::Role::User
-                && !injection.is_empty()
-            {
-                if let Some(ref content) = msg.content {
-                    msg.content = Some(format!("{content}\n\n{injection}"));
-                } else {
-                    msg.content = Some(injection.clone());
-                }
-            }
-            result.push(msg);
+        // Append dynamic context injection as a separate user message.
+        let injection = self.assemble_context_injection();
+        if !injection.is_empty() {
+            result.push(Message::user(&injection));
         }
 
         result
@@ -1045,7 +1044,7 @@ mod tests {
     }
 
     #[test]
-    fn test_context_injection_appended_to_last_user_message() {
+    fn test_context_injection_as_separate_message() {
         let mut engine = ContextEngine::new("identity", 128000);
         engine.set_environment("CWD: /tmp");
         engine.set_active_memory("User likes Rust");
@@ -1054,23 +1053,56 @@ mod tests {
         engine.add(Message::user("second question"));
 
         let msgs = engine.messages();
-        // system + 3 conversation messages
-        assert_eq!(msgs.len(), 4);
+        // system + 3 conversation messages + 1 injection message
+        assert_eq!(msgs.len(), 5);
 
-        // Last user message should contain the injection
-        let last_user = &msgs[3];
-        assert_eq!(last_user.role, Role::User);
-        let content = last_user.content.as_ref().unwrap();
-        assert!(content.contains("second question"));
+        // Last message is the injection (separate user message)
+        let injection_msg = &msgs[4];
+        assert_eq!(injection_msg.role, Role::User);
+        let content = injection_msg.content.as_ref().unwrap();
         assert!(content.contains("<context_injection>"));
         assert!(content.contains("User likes Rust"));
 
-        // First user message should NOT contain injection
+        // Conversation messages should NOT contain injection
+        let last_user = &msgs[3];
+        assert_eq!(last_user.role, Role::User);
+        let last_content = last_user.content.as_ref().unwrap();
+        assert!(last_content.contains("second question"));
+        assert!(!last_content.contains("<context_injection>"));
+
         let first_user = &msgs[1];
         assert_eq!(first_user.role, Role::User);
         let first_content = first_user.content.as_ref().unwrap();
         assert!(first_content.contains("first question"));
         assert!(!first_content.contains("<context_injection>"));
+    }
+
+    #[test]
+    fn test_context_injection_delivered_on_tool_turns() {
+        let mut engine = ContextEngine::new("identity", 128000);
+        engine.set_environment("CWD: /tmp");
+        engine.set_active_memory("User likes Rust");
+        engine.add(Message::user("do something"));
+        engine.add(Message::assistant_with_tools("let me check", vec![]));
+        engine.add(Message {
+            role: Role::Tool,
+            content: Some("tool result".to_string()),
+            tool_calls: None,
+            tool_call_id: Some("call_1".to_string()),
+            name: Some("test_tool".to_string()),
+        });
+
+        let msgs = engine.messages();
+        // system + user + assistant + tool + injection
+        assert_eq!(msgs.len(), 5);
+
+        // Injection should be present even though the last conversation
+        // message is a Tool result (not a User message).
+        let injection_msg = &msgs[4];
+        assert_eq!(injection_msg.role, Role::User);
+        let content = injection_msg.content.as_ref().unwrap();
+        assert!(content.contains("<context_injection>"));
+        assert!(content.contains("User likes Rust"));
     }
 
     #[test]
@@ -1172,7 +1204,7 @@ mod tests {
     #[test]
     fn test_snip_compact_truncates_large_tool_results() {
         let mut engine = ContextEngine::new("test", 128000);
-        let big_result = "x".repeat(5000);
+        let big_result = "x".repeat(20_000); // over the 16K incidental budget
         engine.add(Message {
             role: Role::Tool,
             content: Some(big_result.clone()),

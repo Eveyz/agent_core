@@ -26,4 +26,6 @@ serde_json = "1"
 agent_core = { path = "../../core" }
 tokio = { version = "1", features = ["full"] }
 parking_lot = "0.12"
+uuid = { version = "1.23.4", features = ["v4"] }
+chrono = "0.4.45"
 

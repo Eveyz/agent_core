@@ -16,9 +16,8 @@ use crate::types::Message;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// Tools whose results must NOT be truncated — their content is instruction,
-/// not data output. Truncating these would lose critical guidance for the model.
-const NON_TRUNCATABLE_TOOLS: &[&str] = &["skill_load"];
+// Tool-result truncation (Stage 1) delegates to `hygiene::policy`, shared with
+// the hygiene layer so L2 (request) and L3 (persistent history) stay identical.
 
 // ── Compression metrics ──────────────────────────────────────────────
 
@@ -154,7 +153,9 @@ Return ONLY valid JSON, no other text."#
 
 /// The compression pipeline operates on a slice/vec of messages.
 pub struct Compressor {
-    /// Tool result budget for snipCompact (chars).
+    /// Legacy tool-result budget field. Actual truncation is driven by
+    /// `hygiene::policy` (per-tool-kind budgets) since PLAN-0008; retained for
+    /// API compatibility but no longer gates snipCompact.
     pub tool_result_budget: usize,
     /// Threshold ratio: if tokens > max_tokens * threshold, start compressing.
     pub auto_compact_threshold: f64,
@@ -169,7 +170,7 @@ pub struct Compressor {
 impl Default for Compressor {
     fn default() -> Self {
         Self {
-            tool_result_budget: 4000,
+            tool_result_budget: crate::hygiene::policy::INCIDENTAL_MAX_CHARS,
             auto_compact_threshold: 0.8,
             target_ratio: 0.6,
             gradient_keep_recent: 6,
@@ -186,25 +187,17 @@ impl Compressor {
     // ── Stage 1: snipCompact ────────────────────────────────────────
 
     /// Truncate tool results exceeding the budget.
-    /// Skips non-truncatable tools (e.g., skill_load) whose content is instruction.
+    /// Delegates to the shared `hygiene::policy` so behaviour matches the
+    /// hygiene layer (L2 == L3). See PLAN-0008.
     /// Returns the number of messages modified.
     pub fn snip_compact(&self, messages: &mut Vec<Message>) -> usize {
         let mut modified = 0;
         for msg in messages.iter_mut() {
             if msg.role == crate::types::Role::Tool
-                // Skip non-truncatable tools — their content is instruction, not data.
-                && !msg
-                    .name
-                    .as_deref()
-                    .map_or(false, |n| NON_TRUNCATABLE_TOOLS.contains(&n))
                 && let Some(ref content) = msg.content
-                && content.len() > self.tool_result_budget
+                && let Some(truncated) =
+                    crate::hygiene::policy::truncate_content(msg.name.as_deref(), content)
             {
-                let truncated = format!(
-                    "{}\n[... truncated from {} chars]",
-                    &content[..self.tool_result_budget],
-                    content.len()
-                );
                 msg.content = Some(truncated);
                 modified += 1;
             }
@@ -545,18 +538,19 @@ mod tests {
     #[test]
     fn test_snip_compact_truncates_long_results() {
         let comp = Compressor::new();
-        let mut msgs = vec![make_tool_result("c1", "read_file", &"x".repeat(5000))];
+        // Incidental tool (exec) over the 16K char budget → truncated.
+        let mut msgs = vec![make_tool_result("c1", "exec", &"x".repeat(20_000))];
         let modified = comp.snip_compact(&mut msgs);
         assert_eq!(modified, 1);
         let content = msgs[0].content.as_ref().unwrap();
-        assert!(content.len() < 5000);
+        assert!(content.len() < 20_000);
         assert!(content.contains("truncated"));
     }
 
     #[test]
     fn test_snip_compact_skips_short_results() {
         let comp = Compressor::new();
-        let mut msgs = vec![make_tool_result("c1", "read_file", "short result")];
+        let mut msgs = vec![make_tool_result("c1", "exec", "short result")];
         let modified = comp.snip_compact(&mut msgs);
         assert_eq!(modified, 0);
     }
@@ -687,7 +681,8 @@ mod tests {
             Message::user("old task"),
             Message::assistant("working"),
             make_tool_call_msg("c1", "read_file", "{}"),
-            make_tool_result("c1", "read_file", &"x".repeat(5000)),
+            // Incidental tool over the 16K char budget so snipCompact engages.
+            make_tool_result("c1", "exec", &"x".repeat(20_000)),
             Message::user("recent task"),
             Message::assistant("done"),
         ];

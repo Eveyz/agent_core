@@ -244,6 +244,23 @@ impl PermissionPolicy {
         self
     }
 
+    /// Update the policy in-place from a new config without destroying runtime state (like session whitelist).
+    pub fn update_from_config(&mut self, config: &PermissionConfig) {
+        self.mode = config.mode;
+        self.auto_allow_up_to = config.auto_allow_up_to;
+        self.config_rules = config.rules.clone();
+        self.blacklist = config.blacklist.clone();
+        self.sandbox_paths = config
+            .sandbox_paths
+            .iter()
+            .map(|s| {
+                let expanded = expand_tilde(s);
+                PathBuf::from(expanded)
+            })
+            .collect();
+        self.whitelist.load_persistent(config.whitelist.clone());
+    }
+
     // ── Rule management ─────────────────────────────────────────
 
     /// Add a config-level rule.
@@ -396,6 +413,21 @@ impl PermissionPolicy {
             }
             PermissionMode::Standard => {
                 // Check built-in + config rules (checked below)
+            }
+            PermissionMode::Developer => {
+                // Auto-allow ReadOnly tools/commands
+                if danger == DangerLevel::ReadOnly {
+                    self.audit_record(
+                        tool_name,
+                        tool_input_json,
+                        &ApprovalLevel::Allow,
+                        &RuleSource::Builtin,
+                        "developer: ReadOnly auto-allow",
+                        danger,
+                        None,
+                    );
+                    return PermissionDecision::Allow;
+                }
             }
             PermissionMode::Permissive => {
                 // Auto-allow ReadOnly, ReadWrite, Network
@@ -611,7 +643,7 @@ impl PermissionPolicy {
             if command.map_or(false, is_destructive_command) {
                 return DangerLevel::Destructive;
             }
-            if command.map_or(false, is_readonly_command) {
+            if command.map_or(false, |cmd| is_readonly_command(cmd, &self.sandbox_paths)) {
                 return DangerLevel::ReadOnly;
             }
             return DangerLevel::System;
@@ -839,7 +871,7 @@ fn is_destructive_tokens(prog: &str, args: &[&str]) -> bool {
 /// `env`/`nohup`/`xargs` to reach the real program. It cannot defeat arbitrary
 /// shell quoting/`$()` substitution, but it closes the common bypasses
 /// (`rm\t-rf`, `rm${IFS}-rf`, `doas`, `chmod 0777`, `install -m 777`, …).
-pub fn is_readonly_command(cmd: &str) -> bool {
+pub fn is_readonly_command(cmd: &str, sandbox_paths: &[std::path::PathBuf]) -> bool {
     let lower = cmd.trim().to_lowercase();
     
     // Any shell metacharacters indicate potentially complex/unsafe commands.
@@ -857,14 +889,40 @@ pub fn is_readonly_command(cmd: &str) -> bool {
             "ls", "cat", "echo", "pwd", "grep", "find", "rg", "head", "tail", "less", "more",
             "wc", "stat", "file", "which", "whereis", "whoami", "id", "groups", "uname",
             "date", "cal", "uptime", "w", "who", "du", "df", "ps", "top", "htop", "env",
-            "printenv", "diff", "cmp", "tree"
+            "printenv", "diff", "cmp", "tree", "sed", "awk"
         ];
         
         if readonly_programs.contains(&prog) {
+            // For sed/awk, only allow if they don't have write flags like -i
+            if prog == "sed" || prog == "awk" {
+                if tokens[idx + 1..].iter().any(|arg| arg.starts_with("-i") || *arg == "--in-place") {
+                    return false;
+                }
+            }
+
             // Ensure no arguments try to read outside the sandbox via absolute paths or parent dirs
             for arg in &tokens[idx + 1..] {
-                if arg.contains("..") || arg.starts_with('/') || arg.starts_with('~') {
+                // If it's a flag, skip
+                if arg.starts_with('-') {
+                    continue;
+                }
+
+                if arg.contains("..") || arg.starts_with('~') {
                     return false;
+                }
+                
+                if arg.starts_with('/') {
+                    let p = std::path::Path::new(arg);
+                    let mut allowed = false;
+                    for sandbox in sandbox_paths {
+                        if p.starts_with(sandbox) {
+                            allowed = true;
+                            break;
+                        }
+                    }
+                    if !allowed {
+                        return false;
+                    }
                 }
             }
             return true;

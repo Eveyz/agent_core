@@ -42,6 +42,31 @@ pub fn default_rules_with_danger() -> Vec<(ToolPermissionPattern, DangerLevel, A
             ApprovalLevel::Allow,
         ),
         // ── Shell commands ───────────────────────────────────────────
+        // Read-only shell commands (safe to auto-approve)
+        (
+            ToolPermissionPattern::simple("bash").with_commands(vec![
+                "ls ".to_string(), "ls".to_string(),
+                "find ".to_string(), "find".to_string(),
+                "wc ".to_string(), "wc".to_string(),
+                "cat ".to_string(), "cat".to_string(),
+                "grep ".to_string(), "grep".to_string(),
+                "rg ".to_string(), "rg".to_string(),
+                "ag ".to_string(), "ag".to_string(),
+                "jq ".to_string(), "jq".to_string(),
+                "head ".to_string(), "head".to_string(),
+                "tail ".to_string(), "tail".to_string(),
+                "awk ".to_string(),
+                "sed -n ".to_string(), // -n is safe, -i is destructive
+                "file ".to_string(), "file".to_string(),
+                "tree ".to_string(), "tree".to_string(),
+                "bat ".to_string(), "bat".to_string(),
+                "stat ".to_string(), "stat".to_string(),
+                "du ".to_string(), "du".to_string(),
+                "df ".to_string(), "df".to_string(),
+            ]),
+            DangerLevel::ReadOnly,
+            ApprovalLevel::Allow,
+        ),
         // Destructive shell commands are denied programmatically in
         // `PermissionPolicy::check` via `is_destructive_command` (which is
         // robust to whitespace/`$IFS` evasion and covers `doas`, `pkexec`,

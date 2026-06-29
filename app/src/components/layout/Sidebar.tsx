@@ -35,6 +35,8 @@ import ChevronRightIcon from "lucide-react/dist/esm/icons/chevron-right.mjs";
 import ChevronDownIcon from "lucide-react/dist/esm/icons/chevron-down.mjs";
 import MoreHorizontalIcon from "lucide-react/dist/esm/icons/more-horizontal.mjs";
 import LoaderIcon from "lucide-react/dist/esm/icons/loader.mjs";
+import ClockIcon from "lucide-react/dist/esm/icons/clock.mjs";
+import { CronjobModal } from "../ui/CronjobModal";
 
 // ── Context menu hook ────────────────────────────────────────────────
 
@@ -214,8 +216,28 @@ export const Sidebar = memo(function Sidebar({
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(
     new Set(),
   );
+  const [expandedSessions, setExpandedSessions] = useState<Set<string>>(
+    new Set(),
+  );
   const [creatingSession, setCreatingSession] = useState(false);
+  const [isCronModalOpen, setIsCronModalOpen] = useState(false);
   const { confirm, prompt, dialogElement } = useConfirmDialog();
+
+  const toggleSessionsExpand = useCallback(
+    (projectId: string, e: React.MouseEvent) => {
+      e.stopPropagation();
+      setExpandedSessions((prev) => {
+        const next = new Set(prev);
+        if (next.has(projectId)) {
+          next.delete(projectId);
+        } else {
+          next.add(projectId);
+        }
+        return next;
+      });
+    },
+    [],
+  );
 
   // Auto-expand active project when it changes
   const lastAutoExpanded = useRef<string | null>(null);
@@ -367,10 +389,9 @@ export const Sidebar = memo(function Sidebar({
       <div className="sidebar-nav" style={{ marginBottom: "4px" }}>
         <div
           className="nav-item"
-          style={{ opacity: 0.4, cursor: "default" }}
-          title="Coming soon"
+          onClick={() => setIsCronModalOpen(true)}
         >
-          <PlusIcon size={14} /> New Agent
+          <ClockIcon size={14} /> Schedule Task
         </div>
         <div
           className="nav-item"
@@ -450,53 +471,83 @@ export const Sidebar = memo(function Sidebar({
                   className={`session-list-container ${isExpanded ? "expanded" : ""}`}
                 >
                   <div className="session-list">
-                    {projectSessions.map((session) => {
-                      const isSessionActive =
-                        activeSessionId === session.id &&
-                        activeProjectId === project.id;
+                    {(() => {
+                      const maxInitial = 6;
+                      const sessionsFullyExpanded = expandedSessions.has(project.id);
+                      const visibleSessions = sessionsFullyExpanded
+                        ? projectSessions
+                        : projectSessions.slice(0, maxInitial);
+                      const hiddenCount = projectSessions.length - maxInitial;
+
                       return (
-                        <div
-                          key={session.id}
-                          className={`session-row ${isSessionActive ? "session-row-active" : ""}`}
-                          onClick={() =>
-                            handleSelectSession(session.id, project.id)
-                          }
-                        >
-                          <span className="session-row-text">
-                            {session.title || "Untitled"}
-                          </span>
-                          {isSessionActive && isProcessing ? (
-                            <LoaderIcon
-                              size={12}
-                              className="session-processing-spinner"
-                            />
-                          ) : (
-                            <>
-                              <span className="session-row-time">
-                                {formatTimeAgo(session.updated_at)}
-                              </span>
-                              <span className="session-row-actions">
-                                <SessionContextMenu
-                                  sessionId={session.id}
-                                  projectId={project.id}
-                                  onDelete={handleDeleteSession}
-                                />
-                                <button
-                                  className="sidebar-context-trigger session-delete-btn"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleDeleteSession(session.id, project.id);
-                                  }}
-                                  title="Delete session"
-                                >
-                                  <TrashIcon size={12} />
-                                </button>
-                              </span>
-                            </>
+                        <>
+                          {visibleSessions.map((session) => {
+                            const isSessionActive =
+                              activeSessionId === session.id &&
+                              activeProjectId === project.id;
+                            return (
+                              <div
+                                key={session.id}
+                                className={`session-row ${isSessionActive ? "session-row-active" : ""}`}
+                                onClick={() =>
+                                  handleSelectSession(session.id, project.id)
+                                }
+                              >
+                                <span className="session-row-text">
+                                  {session.title || "Untitled"}
+                                </span>
+                                <>
+                                  <span className="session-row-time">
+                                    {isSessionActive && isProcessing ? (
+                                      <LoaderIcon
+                                        size={12}
+                                        className="session-processing-spinner"
+                                        style={{ marginRight: 0 }}
+                                      />
+                                    ) : (
+                                      formatTimeAgo(session.updated_at)
+                                    )}
+                                  </span>
+                                  <span className="session-row-actions">
+                                    <SessionContextMenu
+                                      sessionId={session.id}
+                                      projectId={project.id}
+                                      onDelete={handleDeleteSession}
+                                    />
+                                    <button
+                                      className="sidebar-context-trigger session-delete-btn"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleDeleteSession(session.id, project.id);
+                                      }}
+                                      title="Delete session"
+                                    >
+                                      <TrashIcon size={12} />
+                                    </button>
+                                  </span>
+                                </>
+                              </div>
+                            );
+                          })}
+                          {!sessionsFullyExpanded && hiddenCount > 0 && (
+                            <div
+                              className="session-expand-toggle"
+                              onClick={(e) => toggleSessionsExpand(project.id, e)}
+                            >
+                              See all ({hiddenCount})
+                            </div>
                           )}
-                        </div>
+                          {sessionsFullyExpanded && hiddenCount > 0 && (
+                            <div
+                              className="session-expand-toggle"
+                              onClick={(e) => toggleSessionsExpand(project.id, e)}
+                            >
+                              View less
+                            </div>
+                          )}
+                        </>
                       );
-                    })}
+                    })()}
                   </div>
                 </div>
               </div>
@@ -515,6 +566,7 @@ export const Sidebar = memo(function Sidebar({
         </div>
       </div>
 
+      <CronjobModal isOpen={isCronModalOpen} onClose={() => setIsCronModalOpen(false)} />
       {dialogElement}
     </aside>
   );

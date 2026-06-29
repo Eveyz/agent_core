@@ -15,6 +15,7 @@ struct AppState {
     config_path: String,
     project_manager: Arc<Mutex<agent_core::ProjectManager>>,
     session_manager: Arc<agent_core::SessionManager>,
+    storage: agent_core::memory::storage::Storage,
 }
 
 // ── Frontend message type for session save/load ──────────────────────
@@ -716,6 +717,99 @@ fn invalidate_skills_cache() -> Result<(), String> {
     Ok(())
 }
 
+// ── Cronjob commands ───────────────────────────────────────────────────
+
+#[tauri::command]
+async fn list_cronjobs(state: State<'_, AppState>) -> Result<Vec<agent_core::CronJob>, String> {
+    let storage = state.storage.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = storage.conn();
+        agent_core::CronjobStore::list(&conn).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("list_cronjobs task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn create_cronjob(
+    state: State<'_, AppState>,
+    name: String,
+    cadence_type: String,
+    cadence_value: String,
+    prompt: String,
+    project: Option<String>,
+    skills: Vec<String>,
+    permission_level: String,
+    max_concurrency: Option<u32>,
+) -> Result<agent_core::CronJob, String> {
+    let job = agent_core::CronJob {
+        id: uuid::Uuid::new_v4().to_string(),
+        name,
+        cadence_type,
+        cadence_value,
+        prompt,
+        project,
+        skills,
+        permission_level,
+        max_concurrency,
+        enabled: true,
+        created_at: chrono::Utc::now(),
+    };
+    let storage = state.storage.clone();
+    tokio::task::spawn_blocking({
+        let job = job.clone();
+        move || {
+            let conn = storage.conn();
+            agent_core::CronjobStore::insert(&conn, &job).map_err(|e| e.to_string())
+        }
+    })
+    .await
+    .map_err(|e| format!("create_cronjob task failed: {e}"))??;
+    
+    Ok(job)
+}
+
+#[tauri::command]
+async fn update_cronjob(
+    state: State<'_, AppState>,
+    job: agent_core::CronJob,
+) -> Result<(), String> {
+    let storage = state.storage.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = storage.conn();
+        agent_core::CronjobStore::update(&conn, &job).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("update_cronjob task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn delete_cronjob(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let storage = state.storage.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = storage.conn();
+        agent_core::CronjobStore::delete(&conn, &id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("delete_cronjob task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn toggle_cronjob(state: State<'_, AppState>, id: String, enabled: bool) -> Result<(), String> {
+    let storage = state.storage.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = storage.conn();
+        let jobs = agent_core::CronjobStore::list(&conn).map_err(|e| e.to_string())?;
+        if let Some(mut job) = jobs.into_iter().find(|j| j.id == id) {
+            job.enabled = enabled;
+            agent_core::CronjobStore::update(&conn, &job).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("toggle_cronjob task failed: {e}"))?
+}
+
 // ── App entry point ──────────────────────────────────────────────────
 
 pub fn run() {
@@ -794,7 +888,7 @@ pub fn run() {
                 agent_core::ProjectManager::new(storage.clone())
             ));
             let session_manager = Arc::new(
-                agent_core::SessionManager::new(storage)
+                agent_core::SessionManager::new(storage.clone())
             );
 
             // Build the RunManager
@@ -805,6 +899,7 @@ pub fn run() {
                 config_path: config_path_str,
                 project_manager,
                 session_manager,
+                storage: storage.clone(),
             });
             Ok(())
         })
@@ -819,7 +914,8 @@ pub fn run() {
             save_session_messages, resume_session,
             list_projects, create_project, delete_project, rename_project, open_in_explorer,
             list_git_branches, switch_git_branch, get_project_sessions,
-            get_agverse_md, get_skills, invalidate_skills_cache
+            get_agverse_md, get_skills, invalidate_skills_cache,
+            list_cronjobs, create_cronjob, update_cronjob, delete_cronjob, toggle_cronjob
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

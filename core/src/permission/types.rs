@@ -20,6 +20,8 @@ pub enum PermissionMode {
     Paranoid,
     /// Built-in defaults: read-only → allow, write → ask, destructive → deny.
     Standard,
+    /// Developer mode: safe read-only tools and shell commands are auto-allowed.
+    Developer,
     /// Most things allowed. Only system/network/destructive → ask.
     Permissive,
     /// Everything allowed. No prompts. Use at your own risk.
@@ -37,6 +39,7 @@ impl fmt::Display for PermissionMode {
         match self {
             Self::Paranoid => write!(f, "paranoid"),
             Self::Standard => write!(f, "standard"),
+            Self::Developer => write!(f, "developer"),
             Self::Permissive => write!(f, "permissive"),
             Self::Yolo => write!(f, "yolo"),
         }

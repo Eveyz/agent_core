@@ -293,7 +293,7 @@
   border-radius: 4px;
   margin: 1px 6px;
   font-size: 13px;
-  color: var(--text-dim);
+  color: var(--text-main);
   transition: background 0.1s;
   position: relative;
   padding-right: 80px;
@@ -321,7 +321,7 @@
 
 .session-row-time {
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--text-dim);
   flex-shrink: 0;
   white-space: nowrap;
   position: absolute;
@@ -355,6 +355,22 @@
 .session-row-active {
   background: var(--overlay-0_09) !important;
   color: var(--text-main) !important;
+}
+
+.session-expand-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 3px 12px 6px 32px;
+  margin: 1px 6px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12px;
+  color: var(--text-muted);
+  transition: color 0.15s;
+}
+.session-expand-toggle:hover {
+  color: var(--text-main);
 }
 
 /* ── Context Menu ───────────────────────────────────────────────── */

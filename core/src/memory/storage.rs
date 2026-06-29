@@ -144,6 +144,29 @@ impl Storage {
             );
 
             CREATE INDEX IF NOT EXISTS idx_session_events ON session_event_log(session_id);
+
+            CREATE TABLE IF NOT EXISTS cronjobs (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                cadence_type TEXT NOT NULL,
+                cadence_value TEXT NOT NULL,
+                prompt TEXT NOT NULL,
+                project TEXT,
+                skills TEXT NOT NULL DEFAULT '[]',
+                permission_level TEXT NOT NULL,
+                max_concurrency INTEGER,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS cronjob_runs (
+                id TEXT PRIMARY KEY,
+                cronjob_id TEXT NOT NULL REFERENCES cronjobs(id) ON DELETE CASCADE,
+                session_id TEXT,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                status TEXT NOT NULL
+            );
             ",
         )?;
 

@@ -6,17 +6,16 @@
 //!
 //! This prevents context pollution from bloated tool outputs and keeps the
 //! message prefix stable for prompt KV cache hits.
+//!
+//! Tool-result truncation delegates to [`policy`] (shared with
+//! `compressor::snip_compact`) so the request view and the persisted-history
+//! view never diverge. See PLAN-0008.
+
+pub mod policy;
 
 use crate::types::{Message, Role};
 
-const TOOL_RESULT_MAX_CHARS: usize = 4000;
-const TOOL_RESULT_HEAD_LINES: usize = 15;
-const TOOL_RESULT_TAIL_LINES: usize = 8;
 const TOOL_ARG_MAX_CHARS: usize = 200;
-
-/// Tools whose results must NOT be truncated — their content is instruction,
-/// not data output. Truncating these would lose critical guidance for the model.
-const NON_TRUNCATABLE_TOOLS: &[&str] = &["skill_load"];
 
 /// Run the full hygiene pass on a message list (mutates in place).
 /// Returns the count of messages that were modified.
@@ -33,67 +32,25 @@ pub fn sanitize(messages: &mut Vec<Message>) -> usize {
     modified
 }
 
-/// Truncate an oversized tool result message to head + tail + signal lines.
-/// Skips non-truncatable tools (e.g., skill_load) whose content is instruction.
+/// Truncate an oversized tool result message.
+///
+/// Delegates to the shared `hygiene::policy` so L2 (here) and L3
+/// (`compressor::snip_compact`) behave identically. See PLAN-0008.
 fn truncate_tool_result(msg: &mut Message) -> bool {
     if msg.role != Role::Tool {
         return false;
     }
-    // Skip truncation for non-truncatable tools — their content is instruction.
-    if msg
-        .name
-        .as_deref()
-        .map_or(false, |n| NON_TRUNCATABLE_TOOLS.contains(&n))
-    {
-        return false;
-    }
     let content = match &msg.content {
-        Some(c) if c.len() > TOOL_RESULT_MAX_CHARS => c,
-        _ => return false,
+        Some(c) => c.clone(),
+        None => return false,
     };
-
-    let lines: Vec<&str> = content.lines().collect();
-    if lines.len() <= TOOL_RESULT_HEAD_LINES + TOOL_RESULT_TAIL_LINES {
-        return false;
+    match policy::truncate_content(msg.name.as_deref(), &content) {
+        Some(truncated) => {
+            msg.content = Some(truncated);
+            true
+        }
+        None => false,
     }
-
-    let head: Vec<&str> = lines.iter().take(TOOL_RESULT_HEAD_LINES).copied().collect();
-    let tail: Vec<&str> = lines
-        .iter()
-        .rev()
-        .take(TOOL_RESULT_TAIL_LINES)
-        .copied()
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-
-    let signals: Vec<&str> = lines
-        .iter()
-        .filter(|l| {
-            let lower = l.to_lowercase();
-            lower.contains("error")
-                || lower.contains("exit code")
-                || lower.contains("warning")
-                || lower.contains("failed")
-                || lower.contains("denied")
-        })
-        .take(5)
-        .copied()
-        .collect();
-
-    let truncated = format!(
-        "[truncated: {} lines / {} chars → {} char budget]\n{}\n...\n{}\n--- signals ---\n{}",
-        lines.len(),
-        content.len(),
-        TOOL_RESULT_MAX_CHARS,
-        head.join("\n"),
-        tail.join("\n"),
-        signals.join("\n")
-    );
-
-    msg.content = Some(truncated);
-    true
 }
 
 /// Truncate long tool call arguments to a placeholder.
@@ -150,9 +107,17 @@ mod tests {
         }
     }
 
+    // Incidental output large enough to exceed the 16K char budget.
+    fn big_incidental() -> String {
+        (0..2000)
+            .map(|i| format!("line number {i}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     #[test]
     fn truncate_large_tool_result() {
-        let big: String = (0..200).map(|i| format!("line {i}\n")).collect();
+        let big = big_incidental();
         let mut msg = make_tool_msg(&big);
         assert!(truncate_tool_result(&mut msg));
         let c = msg.content.unwrap();
@@ -170,10 +135,9 @@ mod tests {
 
     #[test]
     fn preserves_error_signals() {
-        let lines: Vec<String> = (0..200)
-            .map(|i| format!("line {}", i))
-            .chain(vec!["Error: something went wrong".to_string(), "exit code: 1".to_string()])
-            .collect();
+        let mut lines: Vec<String> = (0..2000).map(|i| format!("line {}", i)).collect();
+        lines.push("Error: something went wrong".to_string());
+        lines.push("exit code: 1".to_string());
         let big = lines.join("\n");
         let mut msg = make_tool_msg(&big);
         truncate_tool_result(&mut msg);
@@ -201,7 +165,7 @@ mod tests {
 
     #[test]
     fn sanitize_returns_modified_count() {
-        let big: String = (0..200).map(|i| format!("long {i}\n")).collect();
+        let big = big_incidental();
         let mut msgs = vec![make_tool_msg(&big), make_tool_msg("ok")];
         let n = sanitize(&mut msgs);
         assert_eq!(n, 1);
@@ -209,9 +173,11 @@ mod tests {
 
     #[test]
     fn skip_truncation_for_skill_load() {
-        let big: String = (0..200).map(|i| format!("instruction {i}\n")).collect(); // ~2600 chars, well over 4000 limit
-        // Wait, 200 lines at ~15 chars each = ~3000 chars. Let's make it bigger.
-        let big: String = (0..500).map(|i| format!("instruction line {i}\n")).collect(); // > 8000 chars
+        // Instruction-class tools are never truncated regardless of size.
+        let big: String = (0..2000)
+            .map(|i| format!("instruction line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let mut msg = Message {
             role: Role::Tool,
             content: Some(big.clone()),
@@ -225,7 +191,7 @@ mod tests {
 
     #[test]
     fn non_truncatable_tools_not_counted() {
-        let big: String = (0..200).map(|i| format!("long {i}\n")).collect();
+        let big = big_incidental();
         let skill_msg = Message {
             role: Role::Tool,
             content: Some(big.clone()),
@@ -233,10 +199,29 @@ mod tests {
             tool_call_id: Some("t1".into()),
             name: Some("skill_load".into()),
         };
-        let normal_msg = make_tool_msg(&big); // name: "test_tool" → truncated
+        let normal_msg = make_tool_msg(&big); // name: "test_tool" → Incidental → truncated
         let mut msgs = vec![skill_msg, normal_msg];
         let n = sanitize(&mut msgs);
         // Only normal_msg should be truncated (skill_load skipped)
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn actively_read_tool_exempts_head_tail() {
+        // read_file is ActivelyRead: under the 24K cap it is left untouched even
+        // though it would be head/tail-split as Incidental.
+        let content = "line\n".repeat(5000); // ~25K chars, 5000 lines
+        let mut msg = Message {
+            role: Role::Tool,
+            content: Some(content.clone()),
+            tool_calls: None,
+            tool_call_id: Some("t1".into()),
+            name: Some("read_file".into()),
+        };
+        assert!(truncate_tool_result(&mut msg));
+        let c = msg.content.unwrap();
+        // Char-capped (not head/tail-split): no signal section.
+        assert!(c.contains("truncated"));
+        assert!(!c.contains("--- signals ---"));
     }
 }

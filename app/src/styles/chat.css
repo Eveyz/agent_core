@@ -9,11 +9,11 @@
 }
 
 .main-header {
-  height: 50px;
+  height: 44px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 24px;
+  padding: 0 16px;
   position: relative;
   z-index: 1;
 }

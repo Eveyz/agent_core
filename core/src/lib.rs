@@ -49,7 +49,7 @@ pub use types::{
 pub use background::{BackgroundPool, Notification};
 pub use comprehensive::{ComprehensiveAgent, ComprehensiveAgentBuilder, ReflectionReport};
 pub use compressor::{CompressionResult, Compressor, SummarizeRequest, TurnSummary};
-pub use cron::{CronJob, CronSchedule, CronScheduler};
+pub use cron::{CronJob, CronJobRun, CronjobStore};
 pub use error_recovery::{RecoveryAction, RecoveryContext, RecoveryEngine};
 pub use hooks::{Hook, HookAction, HookEvent, HookRegistry};
 pub use mcp::{

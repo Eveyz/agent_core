@@ -1,8 +1,6 @@
 import PanelLeftIcon from "lucide-react/dist/esm/icons/panel-left.mjs";
 import PanelRightIcon from "lucide-react/dist/esm/icons/panel-right.mjs";
-import { WindowControls } from "./WindowControls";
-
-const TITLE_BAR_HEIGHT = 36;
+const TITLE_BAR_HEIGHT = 44;
 
 export function CustomTitleBar({
   sidebarCollapsed,
@@ -19,8 +17,9 @@ export function CustomTitleBar({
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          padding: "0 8px",
+          padding: "0 8px 0 8px",
           backgroundColor: "var(--bg-sidebar)",
+          borderRight: "1px solid var(--border-color)",
           userSelect: "none",
           flexShrink: 0,
           // @ts-ignore - webkit-app-region is not in React's CSSProperties type
@@ -30,8 +29,8 @@ export function CustomTitleBar({
         } as React.CSSProperties
       }
     >
-      {/* Left: window controls */}
-      <WindowControls />
+      {/* Left: window controls spacer for native traffic lights */}
+      <div style={{ width: 72, flexShrink: 0 }} />
 
       {/* Center: flex spacer (draggable) */}
       <div style={{ flex: 1 }} />

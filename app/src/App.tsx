@@ -25,6 +25,7 @@ import { useThemeEffect } from './hooks/useThemeEffect';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useWindowShow } from './hooks/useWindowShow';
 import { useSessionLoader } from './hooks/useSessionLoader';
+import { useVisibilityResync } from './hooks/useVisibilityResync';
 
 import { Sidebar } from './components/layout/Sidebar';
 import { CosmicBackground } from './components/layout/CosmicBackground';
@@ -77,6 +78,7 @@ function App() {
   
   useKeyboardShortcuts({ isProcessing, runId });
   useWindowShow();
+  useVisibilityResync();
 
   const projectsLoaded = projects.length > 0;
   useSessionLoader({

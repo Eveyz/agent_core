@@ -344,33 +344,23 @@ impl Run {
             daemon.try_send("user", user_input);
         }
 
-        // Skill auto-trigger: check user message against skill triggers
+        // Skill auto-trigger: check user message against skill triggers and @skill: tags
         if let Some(ref sm) = self.brain.skill_manager {
-            let matched: Vec<(String, String)> = {
-                let mgr = sm.lock();
-                let matched = mgr.check_triggers(user_input);
-                let mut result = Vec::new();
-                for skill in &matched {
-                    if let Ok(content) = mgr.load_content(skill) {
-                        result.push((
-                            skill.name.clone(),
-                            format!(
-                                "== Skill: {} (v{}) ==\n{}\n== End Skill: {} ==\n",
-                                skill.name, skill.version, content, skill.name
-                            ),
-                        ));
-                    }
-                }
-                result
-            };
-
-            for (_, text) in &matched {
-                self.context.set_loaded_skills(text);
+            let mut mgr = sm.lock();
+            let matched_names: Vec<String> = mgr.check_triggers(user_input)
+                .iter()
+                .map(|s| s.name.clone())
+                .collect();
+            for name in matched_names {
+                mgr.activate(&name);
             }
 
-            let mut mgr = sm.lock();
-            for (name, _) in &matched {
-                mgr.activate(name);
+            // Also explicitly activate any skills tagged with @skill:name
+            for word in user_input.split_whitespace() {
+                if let Some(skill_name) = word.strip_prefix("@skill:") {
+                    let clean_name = skill_name.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-');
+                    mgr.activate(clean_name);
+                }
             }
         }
 
@@ -404,6 +394,18 @@ impl Run {
 
     async fn run_loop(&mut self) -> Result<String, RunError> {
         for turn_index in 0..self.max_iterations {
+            // ── Hot-reload configs ─────────────────────────────────
+            // Ensure the active run dynamically picks up config changes 
+            // (e.g. user changes permission level mid-conversation).
+            self.permission_policy.update_from_config(&self.brain.config.permissions);
+
+            // Re-render and update the tool catalog in context so the LLM knows about the new permissions.
+            // set_tool_catalog will implicitly ignore the update if the string hasn't actually changed.
+            let tool_defs = self.registry.tool_definitions();
+            let danger_map = build_danger_map(&tool_defs, &self.permission_policy);
+            let updated_catalog = Context::build_tool_catalog_string(&tool_defs, &danger_map);
+            self.context.set_tool_catalog(&updated_catalog);
+
             // ── Poll commands (non-blocking) ───────────────────────
             self.poll_commands()?;
 
