@@ -29,7 +29,7 @@ import SettingsIcon from "lucide-react/dist/esm/icons/settings.mjs";
 import SmartphoneIcon from "lucide-react/dist/esm/icons/smartphone.mjs";
 import BotIcon from "lucide-react/dist/esm/icons/bot.mjs";
 import WorkflowIcon from "lucide-react/dist/esm/icons/workflow.mjs";
-import SparklesIcon from "lucide-react/dist/esm/icons/sparkles.mjs";
+
 import TrashIcon from "lucide-react/dist/esm/icons/trash.mjs";
 import PencilIcon from "lucide-react/dist/esm/icons/pencil.mjs";
 import ExternalLinkIcon from "lucide-react/dist/esm/icons/external-link.mjs";
@@ -39,7 +39,6 @@ import MoreHorizontalIcon from "lucide-react/dist/esm/icons/more-horizontal.mjs"
 import LoaderIcon from "lucide-react/dist/esm/icons/loader.mjs";
 import ClockIcon from "lucide-react/dist/esm/icons/clock.mjs";
 import { CronjobModal } from "../ui/CronjobModal";
-import { NewAgentModal } from "../ui/NewAgentModal";
 
 // ── Context menu hook ────────────────────────────────────────────────
 
@@ -230,7 +229,6 @@ export const Sidebar = memo(function Sidebar({
   );
   const [creatingSession, setCreatingSession] = useState(false);
   const [isCronModalOpen, setIsCronModalOpen] = useState(false);
-  const [isNewAgentOpen, setIsNewAgentOpen] = useState(false);
   const { confirm, prompt, dialogElement } = useConfirmDialog();
 
   const toggleSessionsExpand = useCallback(
@@ -408,12 +406,6 @@ export const Sidebar = memo(function Sidebar({
           onClick={() => onNavigate?.("workflows")}
         >
           <WorkflowIcon size={14} /> Workflows
-        </div>
-        <div
-          className="nav-item"
-          onClick={() => setIsNewAgentOpen(true)}
-        >
-          <SparklesIcon size={14} /> + New Agent
         </div>
         <div
           className="nav-item"
@@ -595,7 +587,6 @@ export const Sidebar = memo(function Sidebar({
       </div>
 
       <CronjobModal isOpen={isCronModalOpen} onClose={() => setIsCronModalOpen(false)} />
-      <NewAgentModal isOpen={isNewAgentOpen} onClose={() => setIsNewAgentOpen(false)} />
       {dialogElement}
     </aside>
   );

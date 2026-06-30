@@ -40,7 +40,10 @@ import { getActiveSessionTitle } from './utils/chatUtils';
 import { useResizableSidebar } from './hooks/useResizableSidebar';
 import { RightSidebar } from './components/layout/RightSidebar';
 import { AgentList } from './components/agents/AgentList';
-import { WorkflowEditor } from './components/workflow/WorkflowEditor';
+import React, { Suspense } from 'react';
+const WorkflowEditor = React.lazy(() =>
+  import('./components/workflow/WorkflowEditor').then(m => ({ default: m.WorkflowEditor }))
+);
 import type { AppView } from './components/layout/Sidebar';
 
 import './App.css';
@@ -65,6 +68,15 @@ function App() {
   const [activeView, setActiveView] = useState<AppView>('chat');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [rightSidebarExpanded, setRightSidebarExpanded] = useState(false);
+
+  // When a session is selected (via sidebar click), auto-switch to chat view.
+  // This handles the case where the user was on Agents/Workflows view and
+  // then clicked a session — the chat should take over the main area.
+  useEffect(() => {
+    if (activeSessionId) {
+      setActiveView("chat");
+    }
+  }, [activeSessionId]);
 
   const { sidebarRef: leftSidebarRef, onMouseDown: startLeftDrag } = useResizableSidebar(260, 200, 600, 'left');
   const { sidebarRef: rightSidebarRef, onMouseDown: startRightDrag } = useResizableSidebar(550, 300, 1200, 'right');
@@ -263,7 +275,9 @@ function App() {
           {activeView === "agents" ? (
             <AgentList />
           ) : activeView === "workflows" ? (
-            <WorkflowEditor />
+            <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>Loading workflow editor...</div>}>
+              <WorkflowEditor />
+            </Suspense>
           ) : viewingSubagentPath.length > 0 && activeSubagent ? (
             <SubagentDetailPage
               subagent={activeSubagent}

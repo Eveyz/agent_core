@@ -290,6 +290,7 @@ export const chatSlice = createSlice({
                 });
               }
             } else if (ev.event_type === 'thinking') {
+              const payload = ev.payload as Record<string, unknown>;
               blocks.push({
                 type: 'thinking',
                 text: (payload.text as string) ?? '',
@@ -298,6 +299,7 @@ export const chatSlice = createSlice({
                 endTime: payload.endTime as number | undefined,
               });
             } else if (ev.event_type === 'assistant') {
+              const payload = ev.payload as Record<string, unknown>;
               blocks.push({
                 type: 'assistant',
                 text: (payload.text as string) ?? '',
