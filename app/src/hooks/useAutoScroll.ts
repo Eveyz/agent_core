@@ -28,17 +28,17 @@ export function useAutoScroll<
 
 
   // 暴露给外部强制贴底（切换会话、新消息时调用）
-  const scrollToBottom = useCallback(() => {
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     const el = scrollRef.current;
     if (!el) return;
 
-    // 使用 smooth 行为实现平滑滚动
+    // 根据传入的 behavior 执行滚动
     el.scrollTo({
       top: el.scrollHeight,
-      behavior: 'smooth'
+      behavior
     });
 
-    // 兜底：如果 smooth 滚动被中断，在下一帧强制贴底
+    // 兜底：如果 smooth 滚动被中断或 instant 滚动，确保下一帧贴底
     requestAnimationFrame(() => {
       if (scrollRef.current) {
         scrollRef.current.scrollTop = scrollRef.current.scrollHeight;

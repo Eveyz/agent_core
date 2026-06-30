@@ -1,0 +1,34 @@
+.node-chat-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.node-chat-log {
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 12px;
+  font-size: 13px;
+}
+
+.node-chat-log.system {
+  border-color: rgba(59, 130, 246, 0.2);
+  background: rgba(59, 130, 246, 0.05);
+}
+
+.node-chat-log-type {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 6px;
+}
+
+.node-chat-log-content {
+  color: var(--text-main);
+  white-space: pre-wrap;
+  line-height: 1.5;
+  font-family: var(--font-mono, monospace);
+}

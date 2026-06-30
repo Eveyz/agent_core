@@ -204,7 +204,7 @@ export function NewAgentModal({
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
                   placeholder="Instructions for the agent..."
-                  style={{ minHeight: "100px", resize: "vertical" }}
+                  style={{ color: "var(--text-main)", minHeight: "100px", resize: "vertical" }}
                 />
 
                 <div className="input-actions">

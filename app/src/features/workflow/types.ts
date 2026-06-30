@@ -4,6 +4,30 @@ export type NodeType = 'input' | 'output' | 'agent' | 'transform' | 'human_appro
 export type TrustMode = 'inherit' | 'trusted' | 'readonly';
 export type OnNodeFailure = 'abort' | 'continue' | 'skip';
 
+export type NodeRunStatus = 
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelling'
+  | 'cancelled'
+  | 'skipped';
+
+export type WorkflowRunStatus =
+  | 'idle'
+  | 'running'
+  | 'cancelling'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export interface LiveLogEntry {
+  id: string;
+  type: 'thought' | 'tool_call' | 'observation' | 'error' | 'warning';
+  content: string;
+  timestamp: string;
+}
+
 export interface NodeDef {
   id: string;
   workflow_id: string;
@@ -64,7 +88,7 @@ export interface WorkflowRunNodeResult {
   workflow_run_id: string;
   node_id: string;
   agent_history_id: string;
-  status: string;
+  status: NodeRunStatus | string; // Allow string for backend compat initially
   input: unknown;
   output: unknown;
   error: string;
@@ -75,11 +99,12 @@ export interface WorkflowRunNodeResult {
   started_at: string | null;
   finished_at: string | null;
   created_at: string;
+  live_logs?: LiveLogEntry[];
 }
 
 export interface WorkflowRunResult {
   run_id: string;
-  status: string;
+  status: WorkflowRunStatus | string;
   output: unknown;
   error: string;
   total_token_input: number;

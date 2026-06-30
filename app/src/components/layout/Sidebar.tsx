@@ -503,6 +503,7 @@ export const Sidebar = memo(function Sidebar({
                         <>
                           {visibleSessions.map((session) => {
                             const isSessionActive =
+                              activeView === "chat" &&
                               activeSessionId === session.id &&
                               activeProjectId === project.id;
                             return (

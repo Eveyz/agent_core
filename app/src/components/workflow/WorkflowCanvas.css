@@ -1,0 +1,17 @@
+.workflow-canvas-container {
+  flex: 1;
+  position: relative;
+  background: var(--bg-main);
+}
+
+.workflow-canvas-controls {
+  background: var(--bg-secondary) !important;
+  border: 1px solid var(--border-color) !important;
+  fill: var(--text-main) !important;
+}
+
+.workflow-canvas-minimap {
+  background: var(--bg-secondary) !important;
+  border: 1px solid var(--border-color) !important;
+  border-radius: 8px !important;
+}

@@ -39,7 +39,7 @@ import { SubagentDetailPage } from './components/chat/SubagentDetailPage';
 import { getActiveSessionTitle } from './utils/chatUtils';
 import { useResizableSidebar } from './hooks/useResizableSidebar';
 import { RightSidebar } from './components/layout/RightSidebar';
-import { AgentList } from './components/agents/AgentList';
+import { AgentsPage } from './components/agents/AgentsPage';
 import React, { Suspense } from 'react';
 const WorkflowEditor = React.lazy(() =>
   import('./components/workflow/WorkflowEditor').then(m => ({ default: m.WorkflowEditor }))
@@ -135,7 +135,7 @@ function App() {
   const prevViewingSubagentPathLength = useRef(0);
   useEffect(() => {
     if (prevViewingSubagentPathLength.current > 0 && viewingSubagentPath.length === 0) {
-      setTimeout(() => scrollToBottom(), 100);
+      setTimeout(() => scrollToBottom('auto'), 100);
     }
     prevViewingSubagentPathLength.current = viewingSubagentPath.length;
   }, [viewingSubagentPath.length, scrollToBottom]);
@@ -146,7 +146,7 @@ function App() {
       prevSessionIdRef.current = activeSessionId;
       if (activeSessionId) {
         // Delay scroll to ensure content has rendered
-        setTimeout(() => scrollToBottom(), 100);
+        setTimeout(() => scrollToBottom('auto'), 100);
       }
     }
   }, [activeSessionId, scrollToBottom]);
@@ -260,7 +260,7 @@ function App() {
         <SettingsModal />
 
         <main className="main-area">
-          <CosmicBackground />
+          {activeView === "chat" && <CosmicBackground />}
           <AppHeader
             sessionTitle={sessionTitle}
             viewingSubagentPath={viewingSubagentPath}
@@ -269,11 +269,12 @@ function App() {
             sidebarCollapsed={sidebarCollapsed}
             onExpandSidebar={() => setSidebarCollapsed(false)}
             rightSidebarExpanded={rightSidebarExpanded}
-            onToggleRightSidebar={() => setRightSidebarExpanded(!rightSidebarExpanded)}
+            onToggleRightSidebar={activeView === "chat" ? () => setRightSidebarExpanded(!rightSidebarExpanded) : undefined}
+            hideTitle={activeView !== "chat"}
           />
 
           {activeView === "agents" ? (
-            <AgentList />
+            <AgentsPage />
           ) : activeView === "workflows" ? (
             <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>Loading workflow editor...</div>}>
               <WorkflowEditor />
@@ -312,12 +313,14 @@ function App() {
           )}
         </main>
         
-        {rightSidebarExpanded && <div className="resizer-handle" onMouseDown={startRightDrag} />}
-        <RightSidebar 
-          sidebarRef={rightSidebarRef} 
-          isExpanded={rightSidebarExpanded} 
-          onToggle={() => setRightSidebarExpanded(false)} 
-        />
+        {activeView === "chat" && rightSidebarExpanded && <div className="resizer-handle" onMouseDown={startRightDrag} />}
+        {activeView === "chat" && (
+          <RightSidebar 
+            sidebarRef={rightSidebarRef} 
+            isExpanded={rightSidebarExpanded} 
+            onToggle={() => setRightSidebarExpanded(false)} 
+          />
+        )}
       </div>
     </div>
   );

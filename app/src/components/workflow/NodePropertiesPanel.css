@@ -1,0 +1,111 @@
+.node-properties-panel {
+  width: 300px;
+  border-left: 1px solid var(--border-color);
+  padding: 20px;
+  overflow-y: auto;
+  background: var(--bg-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.node-properties-locked {
+  width: 300px;
+  border-left: 1px solid var(--border-color);
+  padding: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  background: var(--bg-secondary);
+}
+
+.node-properties-title {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 16px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+}
+
+.node-properties-group {
+  margin-bottom: 16px;
+}
+
+.node-properties-label {
+  font-size: 13px;
+  display: block;
+  margin-bottom: 6px;
+  font-weight: 500;
+}
+
+.node-properties-input {
+  width: 100%;
+  font-size: 13px;
+  background: var(--bg-hover);
+}
+
+.node-properties-section {
+  border-top: 1px solid var(--border-color);
+  padding-top: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.node-properties-help-text {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.node-properties-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.node-properties-json-info {
+  display: flex;
+  gap: 8px;
+  background: rgba(59, 130, 246, 0.1);
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(59, 130, 246, 0.2);
+}
+
+.node-properties-json-info-text {
+  font-size: 11px;
+  color: var(--accent);
+  line-height: 1.4;
+}
+
+.node-properties-schema-label {
+  font-size: 12px;
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text-muted);
+}
+
+.node-properties-schema-input {
+  width: 100%;
+  min-height: 120px;
+  resize: vertical;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.node-properties-footer {
+  margin-top: auto;
+  padding-top: 24px;
+}
+
+.node-properties-delete-btn {
+  font-size: 13px;
+  width: 100%;
+  color: var(--danger);
+  border-color: rgba(239, 68, 68, 0.2);
+}

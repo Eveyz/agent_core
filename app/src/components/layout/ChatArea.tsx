@@ -9,7 +9,7 @@ interface ChatAreaProps {
   scrollRef: RefObject<HTMLDivElement | null>;
   contentRef: RefObject<HTMLDivElement | null>;
   isAtBottom: boolean;
-  scrollToBottom: () => void;
+  scrollToBottom: (behavior?: ScrollBehavior) => void;
   handleRetry: (id: string, text?: string) => void;
 }
 
@@ -41,7 +41,7 @@ export function ChatArea({
         </div>
       </div>
       {!isAtBottom && (
-        <button className="scroll-to-bottom-btn" onClick={scrollToBottom} title="Scroll to latest">
+        <button className="scroll-to-bottom-btn" onClick={() => scrollToBottom('auto')} title="Scroll to latest">
           <ChevronDownIcon size={18} />
         </button>
       )}

@@ -10,7 +10,7 @@ interface UseSessionLoaderProps {
   projectsLoaded: boolean;
   activeProjectId: string | null;
   activeSessionId: string | null;
-  scrollToBottom: () => void;
+  scrollToBottom: (behavior?: ScrollBehavior) => void;
 }
 
 export function useSessionLoader({
@@ -29,7 +29,7 @@ export function useSessionLoader({
         dispatch(setActiveSession(null));
       } else {
         // Scroll to bottom after session is loaded from backend
-        setTimeout(() => scrollToBottom(), 150);
+        setTimeout(() => scrollToBottom('auto'), 150);
       }
     });
   }, [projectsLoaded, dispatch, activeProjectId, activeSessionId, scrollToBottom]);

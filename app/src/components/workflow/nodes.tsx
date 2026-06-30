@@ -5,6 +5,9 @@ import ArrowDownToLineIcon from "lucide-react/dist/esm/icons/arrow-down-to-line.
 import ArrowUpFromLineIcon from "lucide-react/dist/esm/icons/arrow-up-from-line.mjs";
 import ShuffleIcon from "lucide-react/dist/esm/icons/shuffle.mjs";
 import CheckCircleIcon from "lucide-react/dist/esm/icons/check-circle.mjs";
+import XCircleIcon from "lucide-react/dist/esm/icons/x-circle.mjs";
+import LoaderIcon from "lucide-react/dist/esm/icons/loader-2.mjs";
+import "./nodes.css";
 
 export interface WorkflowNodeData {
   label: string;
@@ -35,44 +38,50 @@ function NodeShell({ data, selected }: NodeProps) {
   const d = data as WorkflowNodeData;
   const Icon = ICONS[d.nodeType] ?? BotIcon;
   const color = COLORS[d.nodeType] ?? "#64748b";
-  const isTerminal = d.nodeType === "input" || d.nodeType === "output";
-  const statusColor =
-    d.status === "running" ? "#f59e0b" :
-    d.status === "completed" ? "#22c55e" :
-    d.status === "failed" ? "#ef4444" :
-    d.status === "skipped" ? "#64748b" : undefined;
+  const isInput = d.nodeType === "input";
+  const isOutput = d.nodeType === "output";
+  
+  const statusClass = 
+    d.status === "running" ? "node-running" :
+    d.status === "completed" ? "node-completed" :
+    d.status === "failed" ? "node-error" :
+    d.status === "skipped" ? "node-skipped" : 
+    d.status === "cancelling" ? "node-cancelling" :
+    d.status === "cancelled" ? "node-cancelled" : "";
 
   return (
     <div
+      className={`workflow-node-shell ${selected ? 'selected' : ''} ${statusClass}`}
       style={{
-        background: "var(--bg-secondary, #1e1e2e)",
-        border: `2px solid ${selected ? color : statusColor ?? "var(--border-color, #333)"}`,
-        borderRadius: "10px",
-        padding: "10px 14px",
-        minWidth: "160px",
-        boxShadow: statusColor ? `0 0 12px ${statusColor}55` : "0 2px 8px rgba(0,0,0,0.3)",
-        position: "relative",
-      }}
+        '--node-color': color,
+      } as React.CSSProperties}
     >
-      {!isTerminal && (
-        <Handle type="target" position={Position.Left} style={{ background: color }} />
+      {!isInput && (
+        <Handle type="target" position={Position.Left} className="node-handle" />
       )}
-      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-        <Icon size={16} color={color} />
-        <div style={{ display: "flex", flexDirection: "column" }}>
-          <span style={{ fontSize: "11px", color: "var(--text-muted, #888)", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+      
+      <div className="node-content">
+        <div className="node-icon-wrapper">
+          <Icon size={16} />
+        </div>
+        
+        <div className="node-info">
+          <span className="node-type-label">
             {d.nodeType}
           </span>
-          <span style={{ fontSize: "13px", fontWeight: 600, color: "var(--text-main, #e0e0e0)" }}>
+          <span className="node-name">
             {d.label || d.agentName || "Untitled"}
           </span>
         </div>
+        
+        {/* Status indicators */}
+        {d.status === "running" && <LoaderIcon size={14} className="status-icon spin" color="#f59e0b" />}
+        {d.status === "completed" && <CheckCircleIcon size={14} className="status-icon" color="#22c55e" />}
+        {d.status === "failed" && <XCircleIcon size={14} className="status-icon" color="#ef4444" />}
       </div>
-      {isTerminal && (
-        <Handle type="source" position={Position.Right} style={{ background: color }} />
-      )}
-      {!isTerminal && (
-        <Handle type="source" position={Position.Right} style={{ background: color }} />
+
+      {!isOutput && (
+        <Handle type="source" position={Position.Right} className="node-handle" />
       )}
     </div>
   );

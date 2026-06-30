@@ -226,28 +226,30 @@ pub fn create(storage: &Storage, wf: &WorkflowDef) -> Result<WorkflowDef> {
     let input_schema = serde_json::to_string(&wf.input_schema)?;
     let config = serde_json::to_string(&wf.config)?;
 
-    let mut db = storage.conn();
-    let tx = db.transaction()?;
-    tx.execute(
-        "INSERT INTO workflows (id, name, description, input_schema, trust_mode, \
-         max_concurrent, on_node_failure, config, created_at, updated_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-        params![
-            id,
-            wf.name,
-            wf.description,
-            input_schema,
-            wf.trust_mode.as_str(),
-            wf.max_concurrent as i64,
-            wf.on_node_failure.as_str(),
-            config,
-            now,
-            now,
-        ],
-    )?;
-    insert_nodes(&tx, &id, &wf.nodes, &now)?;
-    insert_edges(&tx, &id, &wf.edges, &now)?;
-    tx.commit()?;
+    {
+        let mut db = storage.conn();
+        let tx = db.transaction()?;
+        tx.execute(
+            "INSERT INTO workflows (id, name, description, input_schema, trust_mode, \
+             max_concurrent, on_node_failure, config, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                id,
+                wf.name,
+                wf.description,
+                input_schema,
+                wf.trust_mode.as_str(),
+                wf.max_concurrent as i64,
+                wf.on_node_failure.as_str(),
+                config,
+                now,
+                now,
+            ],
+        )?;
+        insert_nodes(&tx, &id, &wf.nodes, &now)?;
+        insert_edges(&tx, &id, &wf.edges, &now)?;
+        tx.commit()?;
+    }
     get(storage, &id)
 }
 
@@ -335,29 +337,31 @@ pub fn save(storage: &Storage, wf: &WorkflowDef) -> Result<WorkflowDef> {
     let input_schema = serde_json::to_string(&wf.input_schema)?;
     let config = serde_json::to_string(&wf.config)?;
 
-    let mut db = storage.conn();
-    let tx = db.transaction()?;
-    tx.execute(
-        "UPDATE workflows SET name = ?2, description = ?3, input_schema = ?4, \
-         trust_mode = ?5, max_concurrent = ?6, on_node_failure = ?7, config = ?8, \
-         updated_at = ?9 WHERE id = ?1",
-        params![
-            wf.id,
-            wf.name,
-            wf.description,
-            input_schema,
-            wf.trust_mode.as_str(),
-            wf.max_concurrent as i64,
-            wf.on_node_failure.as_str(),
-            config,
-            now,
-        ],
-    )?;
-    tx.execute("DELETE FROM workflow_nodes WHERE workflow_id = ?1", params![wf.id])?;
-    tx.execute("DELETE FROM workflow_edges WHERE workflow_id = ?1", params![wf.id])?;
-    insert_nodes(&tx, &wf.id, &wf.nodes, &now)?;
-    insert_edges(&tx, &wf.id, &wf.edges, &now)?;
-    tx.commit()?;
+    {
+        let mut db = storage.conn();
+        let tx = db.transaction()?;
+        tx.execute(
+            "UPDATE workflows SET name = ?2, description = ?3, input_schema = ?4, \
+             trust_mode = ?5, max_concurrent = ?6, on_node_failure = ?7, config = ?8, \
+             updated_at = ?9 WHERE id = ?1",
+            params![
+                wf.id,
+                wf.name,
+                wf.description,
+                input_schema,
+                wf.trust_mode.as_str(),
+                wf.max_concurrent as i64,
+                wf.on_node_failure.as_str(),
+                config,
+                now,
+            ],
+        )?;
+        tx.execute("DELETE FROM workflow_nodes WHERE workflow_id = ?1", params![wf.id])?;
+        tx.execute("DELETE FROM workflow_edges WHERE workflow_id = ?1", params![wf.id])?;
+        insert_nodes(&tx, &wf.id, &wf.nodes, &now)?;
+        insert_edges(&tx, &wf.id, &wf.edges, &now)?;
+        tx.commit()?;
+    }
     get(storage, &wf.id)
 }
 
@@ -676,4 +680,33 @@ pub fn get_run_node_results(storage: &Storage, run_id: &str) -> Result<Vec<Workf
         results.push(row?);
     }
     Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_and_save_release_db_lock_before_get() {
+        let storage = Storage::new(":memory:").expect("in-memory storage");
+        let wf = WorkflowDef {
+            name: "Test Workflow".to_string(),
+            ..Default::default()
+        };
+
+        let created = create(&storage, &wf).expect("create should not deadlock");
+        assert_eq!(created.name, "Test Workflow");
+        assert!(!created.id.is_empty());
+
+        let saved = save(
+            &storage,
+            &WorkflowDef {
+                id: created.id.clone(),
+                name: "Renamed Workflow".to_string(),
+                ..created
+            },
+        )
+        .expect("save should not deadlock");
+        assert_eq!(saved.name, "Renamed Workflow");
+    }
 }

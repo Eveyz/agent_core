@@ -28,7 +28,7 @@ export function WorkflowRunView({
   onClose: () => void;
 }) {
   const lastRunResult = useAppSelector((s) => s.workflow.lastRunResult);
-  const running = useAppSelector((s) => s.workflow.running);
+  const running = useAppSelector((s) => s.workflow.isExecuting);
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [nodeResults, setNodeResults] = useState<WorkflowRunNodeResult[]>([]);

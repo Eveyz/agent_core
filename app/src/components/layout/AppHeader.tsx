@@ -14,6 +14,7 @@ interface AppHeaderProps {
   onExpandSidebar: () => void;
   rightSidebarExpanded?: boolean;
   onToggleRightSidebar?: () => void;
+  hideTitle?: boolean;
 }
 
 export function AppHeader({
@@ -25,11 +26,12 @@ export function AppHeader({
   onExpandSidebar,
   rightSidebarExpanded,
   onToggleRightSidebar,
+  hideTitle,
 }: AppHeaderProps) {
   const dispatch = useAppDispatch();
 
   return (
-    <header className="main-header">
+    <header className={`main-header ${hideTitle ? 'floating' : ''}`}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
         {sidebarCollapsed && (
           <>
@@ -50,12 +52,14 @@ export function AppHeader({
             </button>
           </>
         )}
-        <SessionTitle
-          sessionTitle={sessionTitle}
-          viewingSubagentPath={viewingSubagentPath}
-          activeSessionId={activeSessionId}
-          activeProjectId={activeProjectId}
-        />
+        {!hideTitle && (
+          <SessionTitle
+            sessionTitle={sessionTitle}
+            viewingSubagentPath={viewingSubagentPath}
+            activeSessionId={activeSessionId}
+            activeProjectId={activeProjectId}
+          />
+        )}
       </div>
       <div className="header-actions">
         {onToggleRightSidebar && !rightSidebarExpanded && (

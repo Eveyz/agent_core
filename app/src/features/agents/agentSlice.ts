@@ -92,6 +92,7 @@ interface AgentState {
   selectedAgentId: string | null;
   history: AgentHistoryEntry[];
   memories: AgentMemoryRecord[];
+  skillsLoading: boolean;
   running: boolean;
   runOutput: string | null;
 }
@@ -103,6 +104,7 @@ const initialState: AgentState = {
   selectedAgentId: null,
   history: [],
   memories: [],
+  skillsLoading: false,
   running: false,
   runOutput: null,
 };

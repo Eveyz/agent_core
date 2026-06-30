@@ -153,6 +153,14 @@
 .nav-item:hover {
   background: var(--bg-hover);
 }
+.nav-item.active {
+  background: var(--bg-hover);
+  color: var(--text-main);
+  font-weight: 500;
+}
+.nav-item.active svg {
+  color: var(--text-main);
+}
 .nav-item svg {
   color: var(--text-muted);
 }

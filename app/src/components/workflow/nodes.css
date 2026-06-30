@@ -1,0 +1,100 @@
+.workflow-node-shell {
+  background: var(--bg-secondary);
+  border: 2px solid var(--border-color);
+  border-radius: 10px;
+  padding: 10px 14px;
+  min-width: 160px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  position: relative;
+  transition: all 0.2s ease;
+}
+
+.workflow-node-shell.selected {
+  border-color: var(--node-color);
+  box-shadow: 0 0 0 2px var(--border-color), 0 0 12px var(--node-color);
+}
+
+.node-handle {
+  background: var(--node-color) !important;
+  width: 10px !important;
+  height: 10px !important;
+  border: 2px solid var(--bg-secondary) !important;
+}
+
+.node-content {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.node-icon-wrapper {
+  color: var(--node-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.node-info {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+.node-type-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.node-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
+}
+
+.status-icon {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+/* ── Runtime Observable States ── */
+
+@keyframes pulseBorder {
+  0% { border-color: rgba(245, 158, 11, 0.3); box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.2); }
+  50% { border-color: rgba(245, 158, 11, 1); box-shadow: 0 0 12px 2px rgba(245, 158, 11, 0.4); }
+  100% { border-color: rgba(245, 158, 11, 0.3); box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.2); }
+}
+
+.node-running {
+  animation: pulseBorder 2s infinite ease-in-out;
+  background: rgba(245, 158, 11, 0.05);
+}
+
+.node-completed {
+  border-color: rgba(34, 197, 94, 0.8) !important;
+  box-shadow: 0 0 12px rgba(34, 197, 94, 0.2);
+  background: rgba(34, 197, 94, 0.05);
+}
+
+.node-error {
+  border-color: rgba(239, 68, 68, 0.8) !important;
+  box-shadow: 0 0 12px rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.node-skipped, .node-cancelled {
+  opacity: 0.4;
+  filter: grayscale(100%);
+  border-style: dashed;
+}
+
+.node-cancelling {
+  border-color: rgba(245, 158, 11, 0.8);
+  border-style: dashed;
+  opacity: 0.8;
+}
