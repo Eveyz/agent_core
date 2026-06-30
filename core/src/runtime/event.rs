@@ -375,6 +375,11 @@ impl RunEvent {
                 explanation,
             },
             AgentEvent::SubagentTurnStart { .. } => return None,
+            // Workflow-level events (PLAN-0009) are not translated to RunEvents.
+            AgentEvent::WorkflowStarted { .. }
+            | AgentEvent::WorkflowNodeStarted { .. }
+            | AgentEvent::WorkflowNodeEnded { .. }
+            | AgentEvent::WorkflowCompleted { .. } => return None,
             // ContextCompacted doesn't exist in AgentEvent — Run emits it directly
         })
     }

@@ -1,4 +1,6 @@
 pub mod agent;
+pub mod agent_registry;
+pub mod workflow;
 pub mod background;
 pub mod client;
 pub mod comprehensive;

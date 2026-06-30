@@ -168,7 +168,152 @@ impl Storage {
                 finished_at TEXT,
                 status TEXT NOT NULL
             );
-            ",
+
+            -- ── PLAN-0009: User-Defined Agents & Multi-Agent Workflow ──
+
+            CREATE TABLE IF NOT EXISTS agents (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                system_prompt TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                skills TEXT NOT NULL DEFAULT '[]',
+                tools TEXT NOT NULL DEFAULT '[]',
+                permission_mode TEXT NOT NULL DEFAULT 'standard',
+                permission_rules TEXT NOT NULL DEFAULT '[]',
+                max_iterations INTEGER NOT NULL DEFAULT 50,
+                max_context_tokens INTEGER NOT NULL DEFAULT 32000,
+                memory_enabled INTEGER NOT NULL DEFAULT 1,
+                memory_group TEXT NOT NULL DEFAULT '',
+                icon TEXT NOT NULL DEFAULT '',
+                color TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agents_name ON agents(name);
+
+            CREATE TABLE IF NOT EXISTS agent_memory (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                memory_key TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                embedding BLOB,
+                importance REAL DEFAULT 0.5,
+                memory_strength REAL DEFAULT 1.0,
+                access_count INTEGER DEFAULT 0,
+                last_accessed_at TEXT,
+                category TEXT DEFAULT 'Conversation',
+                source TEXT DEFAULT 'conversation',
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agent_memory_key ON agent_memory(memory_key);
+            CREATE INDEX IF NOT EXISTS idx_agent_memory_created ON agent_memory(created_at);
+
+            CREATE TABLE IF NOT EXISTS agent_history (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+                session_id TEXT NOT NULL,
+                workflow_run_id TEXT DEFAULT '',
+                trigger TEXT NOT NULL DEFAULT 'manual',
+                input TEXT NOT NULL,
+                output TEXT NOT NULL DEFAULT '',
+                iterations_used INTEGER DEFAULT 0,
+                success INTEGER NOT NULL DEFAULT 1,
+                model_used TEXT NOT NULL DEFAULT '',
+                token_input INTEGER DEFAULT 0,
+                token_output INTEGER DEFAULT 0,
+                process_time_ms INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agent_history_agent ON agent_history(agent_id);
+            CREATE INDEX IF NOT EXISTS idx_agent_history_workflow ON agent_history(workflow_run_id);
+
+            CREATE TABLE IF NOT EXISTS workflows (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                input_schema TEXT NOT NULL DEFAULT '{}',
+                trust_mode TEXT NOT NULL DEFAULT 'inherit',
+                max_concurrent INTEGER DEFAULT 3,
+                on_node_failure TEXT NOT NULL DEFAULT 'abort',
+                config TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS workflow_nodes (
+                id TEXT PRIMARY KEY,
+                workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+                node_type TEXT NOT NULL,
+                label TEXT NOT NULL DEFAULT '',
+                agent_id TEXT DEFAULT '',
+                config TEXT NOT NULL DEFAULT '{}',
+                position_x REAL DEFAULT 0,
+                position_y REAL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_wf_nodes_workflow ON workflow_nodes(workflow_id);
+
+            CREATE TABLE IF NOT EXISTS workflow_edges (
+                id TEXT PRIMARY KEY,
+                workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+                source_node_id TEXT NOT NULL REFERENCES workflow_nodes(id) ON DELETE CASCADE,
+                target_node_id TEXT NOT NULL REFERENCES workflow_nodes(id) ON DELETE CASCADE,
+                source_handle TEXT DEFAULT '',
+                target_handle TEXT DEFAULT '',
+                label TEXT NOT NULL DEFAULT '',
+                condition TEXT NOT NULL DEFAULT '',
+                data_mapping TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_wf_edges_workflow ON workflow_edges(workflow_id);
+            CREATE INDEX IF NOT EXISTS idx_wf_edges_source ON workflow_edges(source_node_id);
+            CREATE INDEX IF NOT EXISTS idx_wf_edges_target ON workflow_edges(target_node_id);
+
+            CREATE TABLE IF NOT EXISTS workflow_runs (
+                id TEXT PRIMARY KEY,
+                workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
+                session_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                input TEXT NOT NULL DEFAULT '{}',
+                output TEXT NOT NULL DEFAULT '{}',
+                error TEXT NOT NULL DEFAULT '',
+                total_token_input INTEGER DEFAULT 0,
+                total_token_output INTEGER DEFAULT 0,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_wf_runs_workflow ON workflow_runs(workflow_id);
+            CREATE INDEX IF NOT EXISTS idx_wf_runs_status ON workflow_runs(status);
+
+            CREATE TABLE IF NOT EXISTS workflow_run_node_results (
+                id TEXT PRIMARY KEY,
+                workflow_run_id TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+                node_id TEXT NOT NULL,
+                agent_history_id TEXT DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                input TEXT NOT NULL DEFAULT '{}',
+                output TEXT NOT NULL DEFAULT '{}',
+                error TEXT NOT NULL DEFAULT '',
+                token_input INTEGER DEFAULT 0,
+                token_output INTEGER DEFAULT 0,
+                cost_usd REAL DEFAULT 0.0,
+                latency_ms INTEGER DEFAULT 0,
+                started_at TEXT,
+                finished_at TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_wf_run_nodes ON workflow_run_node_results(workflow_run_id);
+                        ",
         )?;
 
         // FTS5 full-text search indexes + triggers for automatic sync
@@ -201,6 +346,22 @@ impl Storage {
 
             INSERT OR IGNORE INTO recall_memory_fts(rowid, content) SELECT rowid, content FROM recall_memory;
             INSERT OR IGNORE INTO archival_memory_fts(rowid, content) SELECT rowid, content FROM archival_memory;
+
+            -- FTS5 for agent_memory (PLAN-0009 per-agent memory)
+            CREATE VIRTUAL TABLE IF NOT EXISTS agent_memory_fts USING fts5(content, tokenize='unicode61');
+
+            CREATE TRIGGER IF NOT EXISTS agent_memory_fts_ai AFTER INSERT ON agent_memory BEGIN
+                INSERT INTO agent_memory_fts(rowid, content) VALUES (new.rowid, new.content);
+            END;
+            CREATE TRIGGER IF NOT EXISTS agent_memory_fts_ad AFTER DELETE ON agent_memory BEGIN
+                DELETE FROM agent_memory_fts WHERE rowid = old.rowid;
+            END;
+            CREATE TRIGGER IF NOT EXISTS agent_memory_fts_au AFTER UPDATE ON agent_memory BEGIN
+                DELETE FROM agent_memory_fts WHERE rowid = old.rowid;
+                INSERT INTO agent_memory_fts(rowid, content) VALUES (new.rowid, new.content);
+            END;
+
+            INSERT OR IGNORE INTO agent_memory_fts(rowid, content) SELECT rowid, content FROM agent_memory;
             ",
         )?;
 
@@ -227,5 +388,34 @@ impl Storage {
 
     pub fn conn(&self) -> MutexGuard<'_, Connection> {
         self.db.lock()
+    }
+
+    /// Idempotently add a column to an existing table.
+    ///
+    /// Uses `PRAGMA table_info` to check whether the column already exists
+    /// before issuing `ALTER TABLE ... ADD COLUMN`, avoiding the
+    /// "duplicate column name" error on re-runs.
+    pub fn add_column_if_not_exists(
+        &self,
+        table: &str,
+        column: &str,
+        definition: &str,
+    ) -> Result<()> {
+        let db = self.db.lock();
+        let mut stmt = db.prepare(&format!("PRAGMA table_info({})", table))?;
+        let existing: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(|r| r.ok())
+            .collect();
+        if !existing.iter().any(|c| c == column) {
+            db.execute(
+                &format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, definition),
+                [],
+            )
+            .with_context(|| {
+                format!("failed to add column {} to table {}", column, table)
+            })?;
+        }
+        Ok(())
     }
 }

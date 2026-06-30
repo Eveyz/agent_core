@@ -19,48 +19,74 @@ tags: [agent, subagent, workflow, react-flow, multi-agent, memory, persistence]
 
 ## Objective
 
-让用户能够自定义 Agent（名字、system prompt、model、skills、tools、permissions），并使用 React Flow 可视化画布将多个 Agent 拖拽组合成一个 Multi-Agent Workflow（类似 Google ADK）。每个自定义 Agent 拥有独立的 Memory 和 History，可以复用、持续进化。后端提供完整的数据库持久化，支持 Agent 间的 Context 传递，且不影响现有主 Agent 的运行。
+让用户能够自定义 Agent（名字、system prompt、model、skills、tools、permissions），并使用 React Flow 可视化画布将多个 Agent 拖拽组合成一个 Multi-Agent Workflow（类似 Dify/n8n 的可视化工作流 + agent 节点）。每个自定义 Agent 拥有独立的 Memory 和 History，可以复用、持续进化。后端提供完整的数据库持久化，支持 Agent 间的 Context 传递，且以最小侵入方式集成到现有系统。
 
 ## Background
 
 ### 现状分析
 
-当前系统存在以下关键事实：
+当前系统存在以下关键事实（已逐条对照代码验证）：
 
-1. **`create_agent` 命令不存在**：`NewAgentModal.tsx:55` 调用了 `invoke("create_agent", ...)`，但 `app/src-tauri/src/lib.rs` 中并未注册该命令。该按钮点击后必定报错。
+1. **`create_agent` 命令不存在**：`NewAgentModal.tsx:55` 调用了 `invoke("create_agent", ...)`，但 `app/src-tauri/src/lib.rs:910` 的 `invoke_handler!` 中并未注册该命令。该按钮点击后必定报错。
 2. **Agent 不是持久化实体**：现有 Agent 是 `RunManager` → `Brain` → `Run` 的临时执行单元。Subagent 是运行时由 `subagent` / `subagents` tool 临时 spawn 的，不持久化到数据库，Run 结束即消失。
-3. **Memory 是全局共享的**：`MemoryManager` 持有一个全局 `session_id`（UUID），所有 conversation 都写入同一张 `recall_memory` 表，以 `session_id` 区分。没有 "agent-specific memory" 的概念 —— 不存在 `agent_id` 字段。
+3. **Memory 是全局共享的**：`MemoryManager`（`core/src/memory/mod.rs:27`）持有一个全局 `session_id: String`（UUID，line 32），所有 conversation 都写入同一张 `recall_memory` 表，以 `session_id` 区分。没有 "agent_id" 概念 —— `MemoryManager::new()`（line 38-44）的签名中不存在 `agent_id` 参数。
 4. **Skills 是文件系统级**：`SkillManager` 扫描文件系统目录中的 `SKILL.md`，不存储在数据库中。Skills 与 Agent 没有显式关联。
 5. **Teams 系统存在但未接入**：`core/src/teams/` 有 `AgentTeam` + `MessageBus`（基于 `Arc<Mutex<HashMap>>` 的 inbox 模式），但当前没有任何代码使用它。
-6. **前端无图/流库**：`package.json` 中没有 `react-flow` / `@xyflow/react` 或任何图可视化库。
-7. **Subagent 架构已成熟**：`Subagent` struct 拥有独立的 `Context`、`ToolRegistry`、`PermissionPolicy`、`HookRegistry`，通过 `EventSender`（mpsc channel）与父 Agent 通信。这是一个良好的基础。
+6. **前端无图/流库**：`app/package.json` 中没有 `react-flow` / `@xyflow/react` 或任何图可视化库。
+7. **`Subagent` 已与 Brain 解耦**：`core/src/subagent/mod.rs:40-79` 中 `Subagent` 拥有独立的 `client`、`context`、`registry`、`permission_policy`、`hook_registry`，`Subagent::new()` 不接受 `Arc<Brain>` 参数。这是自定义 Agent 执行体的理想基础。
+8. **`Run::new` 是 `pub(crate)`**（`core/src/runtime/run.rs:129`），且 `Run` 持有 `brain: Arc<Brain>`（私有字段，line 76）。外部代码无法直接构造 `Run`。
+9. **`Brain` 的 `memory` 和 `skill_manager` 字段是 `pub`**（`core/src/runtime/brain.rs:41,45`），`Brain::from_config`（line 61）内部通过 `Self::build_memory(&config)` 构造 `MemoryManager`。
+10. **`SubagentConfig` 只有 4 个字段**（`core/src/subagent/mod.rs:13-18`）：`system_prompt`、`tools`、`max_iterations`、`max_context_tokens`。缺少 `model`、`skills`、`permission_mode`、`memory_enabled`、`temperature` 等字段的映射通路。`AgentDef` 有 12+ 字段，映射到 `SubagentConfig` 存在 gap。
+11. **`Subagent` 不持有 `SkillManager`**（`core/src/subagent/mod.rs:40-49`）：Subagent 的 `ToolRegistry` 由外部传入，但没有 `SkillManager`。Skills 的加载/激活需要通过 `SkillManager`（`core/src/skills/mod.rs:69-74`）完成，目前没有方法将指定 skills 注入到一个独立的 Subagent 中。`register_skill_tools()`（`core/src/tools/skill.rs:8-16`）注册的是 `skill_list`/`skill_load`/`skill_deactivate`/`skill_reload` 工具，需要一个共享的 `SkillManager` 实例。
+12. **`teams/` 模块未被使用**：`core/src/teams/` 的 `AgentTeam` + `MessageBus` 编译通过但没有任何代码调用。与 `WorkflowContext` 是两种不同的通信模型（异步 inbox vs 同步 state），并存会导致困惑。
 
 ### 为什么现在做
 
 - 用户已经看到 `NewAgentModal` UI，但功能不完整（后端缺失）。
-- 系统已有 subagent、teams、memory 三层架构的基础设施，需要串联。
+- 系统已有 Subagent、Teams、Memory 三层架构的基础设施，需要串联。
 - Multi-Agent Workflow 是产品差异化的核心能力。
+
+### 定位澄清
+
+本方案是**可视化 DAG 工作流编排器**（ closer to Dify/n8n workflow + agent nodes），不是 Google ADK / AutoGen 式的动态多 agent 编排系统。区别：
+
+| 维度 | 本方案 (DAG Workflow) | ADK / AutoGen (Dynamic Orchestration) |
+|------|----------------------|--------------------------------------|
+| 拓扑 | 静态 DAG，运行前固定 | 动态，运行时决定下一个 agent |
+| 路由 | 条件边（V1 支持） | Agent 自主决策路由 |
+| 通信 | 结构化 state 传递 | 自由消息传递 |
+| 可预测性 | 高（拓扑确定） | 低（emergent behavior） |
+| 调试 | 容易（按节点追踪） | 困难 |
+| 适用场景 | 流水线式协作（研究→审查→修复） | 开放式协作（讨论→辩论→共识） |
+
+V1 做静态 DAG + 条件路由，足够覆盖绝大多数实际场景。动态编排是 V2+ 方向。
+
+---
 
 ## Scope
 
-### In Scope
+### In Scope (V1)
 
-- **Agent 持久化层**：数据库 schema 设计，存储自定义 Agent 定义（name、prompt、model、skills、tools、permissions）。
-- **Agent Memory 隔离**：每个自定义 Agent 拥有独立的 Memory 和 History，跨 session 持久化，可复用、可进化。
-- **Workflow 持久化层**：存储 React Flow 画布的节点/边/拓扑结构。
-- **后端执行引擎**：将 Workflow DAG 编译为执行计划，调度多个 Agent 协作，管理 Context 在节点间传递。
+- **Agent 持久化层**：数据库 schema，存储自定义 Agent 定义。
+- **Agent Memory 隔离**：每个自定义 Agent 拥有独立的 Memory 和 History，跨 session 持久化。
+- **Workflow 持久化层**：存储画布的节点/边/拓扑结构（库无关格式，非 React Flow 原始 JSON）。
+- **后端执行引擎**：DAG → 拓扑排序 → 分 stage 并行执行，条件边路由，结构化 state 传递。
 - **前端 Agent CRUD**：修复 `NewAgentModal`，实现 Agent 列表/编辑/删除。
-- **前端 Workflow Editor**：基于 React Flow 的可视化画布，拖拽 Agent 节点，连接边，配置传递关系。
-- **不影响主 Agent**：所有新增功能是增量式扩展，主 Agent（`RunManager` → `Brain` → `Run`）的执行路径不变。
+- **前端 Workflow Editor**：基于 React Flow 的可视化画布。
+- **条件路由**：基于节点输出的 `if/else` 条件分支（V1 核心原语，不是增强功能）。
+- **Workflow Trust Mode**：workflow 级别的权限策略，避免 coding agent 在 workflow 中被自动拒绝。
+- **并发控制**：semaphore 限制并行 agent 执行数。
+- **取消传播**：CancellationToken 从 workflow 级联到所有节点。
+- **节点级可观测性**：token/cost/latency 字段。
 
 ### Out of Scope
 
-- **分布式多机调度**：当前为单机本地执行，不涉及跨机器 Agent 调度。
-- **Agent 市场/共享**：不支持 Agent 的发布、下载、分享。
-- **实时协作编辑**：不支持多人同时编辑同一个 Workflow。
-- **Workflow 版本管理**：V1 不做 Workflow 的版本历史和 diff。
-- **动态拓扑**：Workflow 运行时不支持动态增删节点（拓扑在运行前固定）。
-- **重写主 Agent**：主 Agent 的执行路径保持不变，不迁移到新架构。
+- **动态编排**：运行时动态增删节点、agent 自主路由。
+- **循环（cycle）**：V1 仅 DAG。循环通过 `HumanApproval` 节点 + 手动重跑实现。
+- **Workflow 嵌套**：一个 Workflow 作为另一个 Workflow 的节点。
+- **Agent 市场/共享**：不支持发布、下载、分享。
+- **自动 Skill 生成**：Reflector 自动生成 Skill 列为 experimental，需人工确认后生效。
+- **分布式多机调度**。
 
 ---
 
@@ -68,10 +94,26 @@ tags: [agent, subagent, workflow, react-flow, multi-agent, memory, persistence]
 
 ### 设计原则
 
-1. **增量扩展，不破坏现有**：所有新功能通过新增模块和新增数据库表实现。`Brain`、`Run`、`RunManager` 的现有接口不变。自定义 Agent 和 Workflow 是在现有 `Subagent` 架构之上的封装层。
-2. **复用现有基础设施**：自定义 Agent 复用 `MemoryManager`、`SkillManager`、`ToolRegistry`、`PermissionPolicy`、`ContextEngine`。不重新造轮子。
-3. **Agent 是一等公民**：Agent 有唯一的 `agent_id`，持久化到数据库，有自己的 Memory、History、配置。可以被多个 Workflow 复用。
-4. **Workflow 是 DAG**：Workflow 是有向无环图，节点是 Agent（或特殊节点如 Input/Output/Human Approval），边定义 Context 传递方向。
+1. **Subagent 是执行原语**：自定义 Agent 的执行体是 `Subagent`，不是 `Run`。`Subagent` 已与 `Brain` 解耦（拥有独立的 `client`/`context`/`registry`/`permission_policy`），是 "持久化 + 带 memory + 可复用" 的天然载体。
+2. **最小侵入，不自我设限**：不声称 "零修改"。明确列出哪些现有文件需要小改、哪些只读访问、哪些完全不动。
+3. **复用现有基础设施**：`MemoryManager` 的存储/检索/评分逻辑通过泛化复用，不复制粘贴。`ToolRegistry`、`PermissionPolicy`、`ContextEngine` 直接复用。
+4. **Agent 是一等公民**：Agent 有 `agent_id`，持久化到数据库，有独立 Memory/History，可被多个 Workflow 复用。
+5. **库无关持久化**：后端存储 DAG 结构（节点表 + 边表），不存储 React Flow 的原始 JSON。React Flow 只是视图层。
+
+### 侵入性评估（逐文件）
+
+| 文件 | 改动级别 | 说明 |
+|------|---------|------|
+| `core/src/memory/storage.rs` | **扩展** | 新增 8 张表的 `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ADD COLUMN`（带 `PRAGMA table_info` 预检）。不修改现有表的 schema。 |
+| `core/src/subagent/mod.rs` | **小改** | `Subagent` 新增一个构造函数 `new_with_memory()`，接受 `Option<Arc<AgentMemoryStore>>` 参数。现有 `new()` 不变。 |
+| `core/src/runtime/brain.rs` | **只读访问** | `WorkflowExecutor` 通过 `brain.config` / `brain.skill_manager`（pub 字段）读取配置。不修改 Brain 的任何代码。 |
+| `core/src/runtime/run.rs` | **不动** | `Run::new` 是 `pub(crate)`，外部不调用。 |
+| `core/src/runtime/manager.rs` | **不动** | `RunManager` 的现有接口不变。 |
+| `core/src/memory/mod.rs` | **不动** | `MemoryManager` 的现有代码不变。 |
+| `core/src/lib.rs` | **扩展** | 新增 `pub mod agent_registry;` 和 `pub mod workflow;` 声明。 |
+| `app/src-tauri/src/lib.rs` | **扩展** | 新增 Tauri commands 注册。现有命令不变。 |
+| `app/src/components/ui/NewAgentModal.tsx` | **重写** | 扩展为完整 Agent Editor。 |
+| `app/package.json` | **扩展** | 新增 `@xyflow/react` 依赖。 |
 
 ### 整体架构图
 
@@ -100,25 +142,33 @@ tags: [agent, subagent, workflow, react-flow, multi-agent, memory, persistence]
 │                       Core Library (Rust)                              │
 │                                                                        │
 │  ┌──────────────────────────────────────────┐  ┌────────────────────┐  │
-│  │        NEW: Agent Registry                │  │  Existing: Brain   │  │
-│  │  ┌─────────────┐  ┌──────────────────┐   │  │  RunManager → Run  │  │
-│  │  │ AgentDef    │  │ AgentMemoryStore │   │  │  Subagent          │  │
+│  │        NEW: agent_registry/               │  │  EXISTING (只读):  │  │
+│  │  ┌─────────────┐  ┌──────────────────┐   │  │  Brain.config      │  │
+│  │  │ AgentDef    │  │ AgentMemoryStore │   │  │  Brain.skill_mgr   │  │
 │  │  │ (SQLite)    │  │ (per-agent_id)   │   │  │  MemoryManager     │  │
 │  │  └─────────────┘  └──────────────────┘   │  │  SkillManager      │  │
-│  └──────────────────────────────────────────┘  │  ToolRegistry      │  │
-│                                                │  PermissionPolicy  │  │
-│  ┌──────────────────────────────────────────┐  │  ContextEngine     │  │
-│  │     NEW: Workflow Engine                  │  │  SessionManager    │  │
-│  │  ┌─────────────┐  ┌──────────────────┐   │  │  Teams/MessageBus  │  │
-│  │  │ WorkflowDef │  │ ExecutionPlanner │   │  └────────────────────┘  │
-│  │  │ (SQLite)    │  │ (DAG → Runs)     │   │                          │
-│  │  └─────────────┘  └──────────────────┘   │                          │
+│  │  ┌─────────────┐                         │  │  ToolRegistry      │  │
+│  │  │ AgentHistory│                         │  │  PermissionPolicy  │  │
+│  │  │ Store       │                         │  │  ContextEngine     │  │
+│  │  └─────────────┘                         │  │  SessionManager    │  │
+│  └──────────────────────────────────────────┘  └────────────────────┘  │
+│                                                │                       │
+│  ┌──────────────────────────────────────────┐  │                       │
+│  │     NEW: workflow/                        │  │                       │
+│  │  ┌─────────────┐  ┌──────────────────┐   │  │  EXISTING (复用):    │  │
+│  │  │ WorkflowDef │  │ WorkflowPlanner  │   │  │  Subagent            │  │
+│  │  │ (SQLite)    │  │ (Kahn DAG sort)  │   │  │  SubagentConfig     │  │
+│  │  └─────────────┘  └──────────────────┘   │  │  SubagentResult     │  │
+│  │  ┌─────────────┐  ┌──────────────────┐   │  │  ToolOrchestrator   │  │
+│  │  │ WorkflowCtx │  │ WorkflowExecutor │───┼──┼─► Subagent::new()    │  │
+│  │  │ (State)     │  │ (stage并行)      │   │  │  Subagent::run()    │  │
+│  │  └─────────────┘  └──────────────────┘   │  └────────────────────┘  │
 │  └──────────────────────────────────────────┘                          │
 │                                                                        │
 │  ┌──────────────────────────────────────────────────────────────────┐  │
 │  │                    SQLite (~/.agverse/memory.db)                  │  │
 │  │                                                                  │  │
-│  │  EXISTING TABLES (不变):                                         │  │
+│  │  EXISTING TABLES (不动):                                         │  │
 │  │  memory_blocks, recall_memory, archival_memory,                  │  │
 │  │  conversation_summaries, sessions, session_messages,             │  │
 │  │  session_event_log, projects, cronjobs, cronjob_runs             │  │
@@ -131,30 +181,437 @@ tags: [agent, subagent, workflow, react-flow, multi-agent, memory, persistence]
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
+### 为什么用 Subagent 而不是 Run/Brain
+
+这是本方案的核心架构决策。reviewer 正确指出 `Subagent` 是更自然的复用对象，原因如下：
+
+| 维度 | `Run` (via `RunManager`) | `Subagent` |
+|------|--------------------------|------------|
+| 依赖 `Arc<Brain>` | **是**（`Run::new` 是 `pub(crate)`，接受 `brain: Arc<Brain>`） | **否**（`Subagent::new` 接受独立组件） |
+| 独立 Context | 是（但通过 Brain 构建） | **是**（自带 `Context::new(system_prompt, max_tokens)`） |
+| 独立 ToolRegistry | 是（但通过 `brain.build_tool_registry()`） | **是**（外部传入，可完全自定义） |
+| 独立 PermissionPolicy | 是（但通过 `brain.build_permission_policy()`） | **是**（外部传入 `PermissionConfig`） |
+| 独立 HookRegistry | 是 | **是**（自带 fresh `HookRegistry::new()`） |
+| 事件流 | `broadcast::Sender<Envelope>` | `Option<EventSender>`（mpsc，更轻量） |
+| 进程管理 | `ProcessSupervisor`（完整） | 无（通过父 Run 的 supervisor） |
+| 构造可见性 | `pub(crate)`（外部不可调） | `pub`（任何模块可调） |
+
+**结论**：`Subagent` 已经是一个自包含的 agent 执行体，只需要：
+1. 扩展一个 `new_with_memory()` 构造函数（接受 `Option<Arc<AgentMemoryStore>>`）
+2. 在 `run_with_sender()` 中增加 memory 注入（执行前检索）和存储（执行后写入）
+
+这比新建一个 `AgentRuntime` 去硬复用 `Run`/`Brain` 干净得多。
+
+### SubagentConfig 扩展设计
+
+reviewer 正确指出：`SubagentConfig` 只有 4 个字段，而 `AgentDef` 有 12+ 字段。直接映射存在 gap。以下是完整的映射方案：
+
+**当前 `SubagentConfig`（`core/src/subagent/mod.rs:13-18`）**：
+```rust
+pub struct SubagentConfig {
+    pub system_prompt: String,
+    pub tools: Vec<String>,
+    pub max_iterations: usize,
+    pub max_context_tokens: usize,
+}
+```
+
+**扩展后的 `SubagentConfig`**：
+```rust
+pub struct SubagentConfig {
+    // ── 现有字段（不变） ──
+    pub system_prompt: String,
+    pub tools: Vec<String>,           // 空 = 继承全部
+    pub max_iterations: usize,
+    pub max_context_tokens: usize,
+
+    // ── 新增字段（全部 Option，向后兼容） ──
+    pub model_override: Option<String>,        // "provider/model"，None = 用 parent 的
+    pub skills: Vec<String>,                   // skill names，空 = 无 skill
+    pub permission_mode: Option<String>,       // paranoid/standard/developer/permissive/yolo
+    pub memory_enabled: Option<u8>,            // None = 不启用 per-agent memory
+    pub temperature: Option<f64>,              // per-agent temperature
+}
+```
+
+**映射表**：
+
+| `AgentDef` 字段 | `SubagentConfig` 字段 | 说明 |
+|---|---|---|
+| `system_prompt` | `system_prompt` | 直接映射 |
+| `tools` | `tools` | 空 = 继承全部可用 tools |
+| `max_iterations` | `max_iterations` | 直接映射 |
+| `max_context_tokens` | `max_context_tokens` | 直接映射 |
+| `model` | `model_override` | 空字符串 → `None`（用默认 model） |
+| `skills` | `skills` | 直接映射 |
+| `permission_mode` | `permission_mode` | 直接映射 |
+| `memory_enabled` | `memory_enabled` | 0 → `None`（不启用），1/2 → `Some(value)` |
+| `temperature` | `temperature` | 从 `ProviderModelEntry` 获取（如果有） |
+
+**`Subagent::new()` 不变**：现有签名保持向后兼容。新增 `Subagent::new_with_config()` 接受扩展后的 `SubagentConfig`：
+
+```rust
+impl Subagent {
+    /// 现有构造函数 — 不变，用默认值填充新字段
+    pub fn new(role_name, config: SubagentConfig, model_config, registry, permission_config) -> Self {
+        // 新字段从 config 中取（Option 默认 None）
+        ...
+    }
+
+    /// 新增：完整构造，接受扩展配置 + memory store
+    pub fn new_full(
+        role_name: &str,
+        config: SubagentConfig,
+        brain: &Brain,                    // 只读：获取 model_config / skill_manager
+        memory_store: Option<Arc<AgentMemoryStore>>,
+        agent_id: Option<String>,
+    ) -> Self {
+        // 1. 解析 model_override → ModelConfig
+        let model_config = if let Some(ref model) = config.model_override {
+            brain.config.models.get(model).cloned()
+                .unwrap_or_else(|| brain.config.models.get(&brain.current_model_name()).unwrap().clone())
+        } else {
+            brain.config.models.get(&brain.current_model_name()).unwrap().clone()
+        };
+
+        // 2. 构建 ToolRegistry
+        let registry = if config.tools.is_empty() {
+            brain.build_tool_registry(AgentMode::Build)
+        } else {
+            ToolRegistry::from_names(&config.tools)
+        };
+
+        // 3. 注入 Skills（见下方 Skills 通路设计）
+        if !config.skills.is_empty() {
+            if let Some(ref sm) = brain.skill_manager {
+                inject_skills_to_registry(&config.skills, &mut registry, sm.clone());
+            }
+        }
+
+        // 4. 构建 PermissionConfig
+        let permission_config = if let Some(ref mode) = config.permission_mode {
+            build_permission_config_with_mode(mode, &brain.config.permissions)
+        } else {
+            brain.config.permissions.clone()
+        };
+
+        // 5. 调用现有 new() 逻辑 + 设置 memory
+        let mut sa = Self::new(role_name, config, &model_config, registry, permission_config);
+        sa.memory_store = memory_store;
+        sa.agent_id = agent_id;
+        sa
+    }
+}
+```
+
+### Skills 通路设计
+
+reviewer 正确指出：Subagent 不持有 `SkillManager`，Skills 的加载/激活需要通路。当前 `register_skill_tools()`（`core/src/tools/skill.rs:8-16`）注册的是 `skill_list`/`skill_load` 等管理工具，需要共享 `SkillManager` 实例。
+
+**方案：Tool 注入 + Content 注入（双通路）**
+
+Skill 有两个作用：(1) 提供 tool 能力（`provides_tools`），(2) 提供知识/context。两者都需要注入到 Subagent。
+
+#### 通路 1：Skill 内容注入到 Context（知识）
+
+```rust
+/// 在 SkillManager 上新增方法：将指定 skills 的内容注入到一个 ContextEngine
+impl SkillManager {
+    /// 将指定 skills 的内容加载并注入到 context 的 Active Memory segment
+    /// 复用 build_active_context() 的逻辑，但限定 skill 范围
+    pub fn inject_to_context(&self, skill_names: &[String], context: &mut Context) {
+        let mut parts = Vec::new();
+        for name in skill_names {
+            if let Some(manifest) = self.find_by_name(name) {
+                if let Ok(content) = self.load_content(manifest) {
+                    parts.push(format!("## Skill: {} (v{})\n{}\n",
+                        manifest.name, manifest.version, content));
+                }
+            }
+        }
+        if !parts.is_empty() {
+            let skill_text = format!(
+                "The following skills are loaded. Use their knowledge:\n\n{}",
+                parts.join("\n")
+            );
+            // 追加到现有的 Active Memory segment
+            let existing = context.get_segment_content("active_memory");
+            context.set_active_memory(&format!("{}\n\n{}", existing, skill_text));
+        }
+    }
+}
+```
+
+#### 通路 2：Skill Tools 注册到 ToolRegistry（能力）
+
+```rust
+/// 在 SkillManager 上新增方法：将指定 skills 关联的 tools 注册到 registry
+impl SkillManager {
+    /// 将指定 skills 声明的 provides_tools 注册到 ToolRegistry
+    /// 目前 provides_tools 是声明性元数据（不强制），此方法将其变为实际 tool 注册
+    pub fn register_tools_to(&self, skill_names: &[String], registry: &mut ToolRegistry) {
+        for name in skill_names {
+            if let Some(manifest) = self.find_by_name(name) {
+                for tool_name in &manifest.provides_tools {
+                    if let Some(tool) = build_tool_by_name(tool_name) {
+                        registry.register(tool);
+                    }
+                }
+            }
+        }
+    }
+}
+```
+
+#### 在 WorkflowExecutor 中的调用
+
+```rust
+// 在 execute_agent_node 中：
+let mut subagent = Subagent::new_full(...);
+
+// Skills 注入（在 Subagent 构造后、run 之前）
+if !agent_def.skills.is_empty() {
+    if let Some(ref sm) = self.brain.skill_manager {
+        let mgr = sm.lock();
+        // 通路 1: 内容注入到 context
+        mgr.inject_to_context(&agent_def.skills, &mut subagent.context);
+        // 通路 2: tools 注册到 registry
+        mgr.register_tools_to(&agent_def.skills, &mut subagent.registry);
+    }
+}
+```
+
+**设计理由**：
+- 方案 B（Tool 注入）比方案 A（纯 prompt 拼接）更完整，保留了 skill 的 tool 能力。
+- 两个通路互不冲突：内容注入提供知识，tool 注册提供能力。
+- `SkillManager` 的新方法是对现有代码的**扩展**，不修改现有方法签名。
+- Subagent 的 `SkillManager` 通过 `brain.skill_manager`（`pub` 字段）获取，不需要 Brain 改动。
+
+### SubagentConfig 扩展设计
+
+reviewer 正确指出：`SubagentConfig`（`core/src/subagent/mod.rs:13-18`）只有 4 个字段，而 `AgentDef` 有 12+ 字段。映射 gap 必须在写 executor 代码之前想清楚。
+
+#### 当前 SubagentConfig（4 字段）
+
+```rust
+pub struct SubagentConfig {
+    pub system_prompt: String,
+    pub tools: Vec<String>,
+    pub max_iterations: usize,
+    pub max_context_tokens: usize,
+}
+```
+
+#### 扩展后的 SubagentConfig
+
+```rust
+pub struct SubagentConfig {
+    // ── 现有字段（不变） ──
+    pub system_prompt: String,
+    pub tools: Vec<String>,           // empty = 继承全部
+    pub max_iterations: usize,
+    pub max_context_tokens: usize,
+
+    // ── 新增可选字段（默认 None/empty，向后兼容） ──
+    pub model: Option<String>,              // "provider/model"，None = 用传入的 model_config
+    pub skills: Vec<String>,                // skill names，empty = 无 skill
+    pub permission_mode: Option<String>,    // paranoid/standard/developer/permissive/yolo
+    pub permission_rules: Vec<ConfigRule>,  // 自定义 permission rules
+    pub memory_enabled: Option<u8>,         // None = 不启用 agent memory, 0/1/2 = stateless/standard/deep
+    pub temperature: Option<f64>,           // per-agent temperature override
+}
+```
+
+#### AgentDef → SubagentConfig 完整映射
+
+| AgentDef 字段 | SubagentConfig 字段 | 说明 |
+|---|---|---|
+| `system_prompt` | `system_prompt` | 直接映射 |
+| `tools` | `tools` | 直接映射，empty = 继承全部 |
+| `max_iterations` | `max_iterations` | 直接映射 |
+| `max_context_tokens` | `max_context_tokens` | 直接映射 |
+| `model` | `model` | `Option<String>`，空 → `None`（用全局 default） |
+| `skills` | `skills` | `Vec<String>`，skill names |
+| `permission_mode` | `permission_mode` | `Option<String>` |
+| `permission_rules` | `permission_rules` | `Vec<ConfigRule>`（反序列化自 JSON） |
+| `memory_enabled` | `memory_enabled` | `Option<u8>`，0=stateless, 1=standard, 2=deep |
+| `icon` / `color` | — | 仅前端使用，不传入 SubagentConfig |
+| `description` | — | 仅 UI 展示，不传入 SubagentConfig |
+
+#### Subagent 构造函数变更
+
+`Subagent::new()` 的签名需要小幅扩展，或新增一个更完整的构造函数：
+
+```rust
+impl Subagent {
+    /// 现有构造函数 — 保持不变，向后兼容
+    /// 内部调用 new_extended，用 config 中的默认值填充
+    pub fn new(
+        role_name: &str,
+        config: SubagentConfig,
+        model_config: &ModelConfig,
+        registry: ToolRegistry,
+        permission_config: PermissionConfig,
+    ) -> Self { ... }
+
+    /// 新增：完整构造函数，支持 per-agent model / memory / skills
+    pub fn new_extended(
+        role_name: &str,
+        config: SubagentConfig,
+        brain: &Brain,                    // 只读：获取 model_config / skill_manager
+        memory_store: Option<Arc<AgentMemoryStore>>,
+        agent_id: Option<String>,
+    ) -> Self {
+        // 1. 解析 model：config.model 或 brain 的 current_model
+        let model_config = Self::resolve_model(&config, brain);
+
+        // 2. 构建 ToolRegistry（如果 config.tools 非空则过滤，否则继承全部）
+        let registry = Self::resolve_registry(&config, brain);
+
+        // 3. 构建 PermissionConfig
+        let permission_config = Self::resolve_permissions(&config, brain);
+
+        // 4. 如果 config.skills 非空，注入 skill content 到 system_prompt
+        //    （详见 Skills 通路设计）
+        let system_prompt = Self::inject_skills(&config, brain);
+
+        // 5. 构造 Subagent
+        let mut sa = Self::new(role_name, &config_with_skills, &model_config, registry, permission_config);
+        sa.memory_store = memory_store;
+        sa.agent_id = agent_id;
+        sa
+    }
+}
+```
+
+### Skills 通路设计
+
+这是 reviewer 指出的第二个关键设计点。当前 `Subagent` 不持有 `SkillManager`，无法加载/激活 skills。
+
+#### 方案选择
+
+| 方案 | 做法 | 优劣 |
+|------|------|------|
+| **A: Prompt 注入** | 读取 SKILL.md 内容，拼接到 system_prompt | 简单，但 skill 的 tool 绑定丢掉了 |
+| **B: Tool 注入** | 通过 SkillManager 把 skill 注册为 tools + content 注入 | 完整保留 skill 的 tool 能力 |
+
+**选择方案 B**（Tool 注入），原因：
+- Subagent 已有独立的 `ToolRegistry`，可以把 skill 对应的 tool 直接注册进去
+- 不污染 parent 的 ToolRegistry
+- Skill content 仍然注入到 ContextEngine 的 Segment 6（LOADED SKILLS）
+
+#### 实现：`SkillManager::register_to()` 新方法
+
+```rust
+impl SkillManager {
+    /// 将指定 skills 的内容注入到 system_prompt，
+    /// 并注册 skill tools 到给定的 ToolRegistry。
+    /// 这是 Subagent 级别的 skill 注入 —— 不影响全局 SkillManager 状态。
+    pub fn register_to(
+        &self,
+        skill_names: &[String],
+        registry: &mut ToolRegistry,
+    ) -> Result<String> {
+        let mut skill_context = String::new();
+
+        for name in skill_names {
+            if let Some(manifest) = self.find_by_name(name) {
+                // 1. 加载 skill content
+                if let Ok(content) = self.load_content(manifest) {
+                    skill_context.push_str(&format!(
+                        "## Skill: {} (v{})\n{}\n\n",
+                        manifest.name, manifest.version, content
+                    ));
+                }
+
+                // 2. 如果 skill 声明了 provides_tools，注册对应 tools
+                //    （当前 provides_tools 是声明性的，未来可扩展为动态注册）
+            }
+        }
+
+        // 3. 注册 skill 管理工具（skill_list / skill_load / skill_deactivate）
+        //    让 Subagent 在运行时也能动态加载其他 skills
+        register_skill_tools(registry, /* 共享 SkillManager 的 Arc */);
+
+        Ok(skill_context)
+    }
+}
+```
+
+#### 执行时的 Skills 注入流程
+
+```
+WorkflowExecutor::execute_agent_node()
+  │
+  ├── 1. 从 AgentDef 获取 skills 列表
+  ├── 2. brain.skill_manager.lock().register_to(&skills, &mut registry)
+  │      ├── 返回 skill content 字符串
+  │      └── 注册 skill tools 到 Subagent 的 ToolRegistry
+  ├── 3. 将 skill content 追加到 Subagent 的 system_prompt
+  │      system_prompt = agent_def.system_prompt + "\n\n" + skill_context
+  └── 4. Subagent 的 ContextEngine Segment 6 (LOADED SKILLS) 自动包含
+         已激活 skills 的内容（通过 build_active_context）
+```
+
+**关键点**：`SkillManager` 是 `brain` 的 `pub` 字段（`Arc<Mutex<SkillManager>>`），`WorkflowExecutor` 可以通过 `brain.skill_manager` 只读访问。`register_to()` 是 `&self` 方法（不需要 `&mut self`），不会修改全局 SkillManager 的 `active_skills` 状态 —— 它只是读取 manifest 并返回 content + 注册 tools 到外部 registry。
+
+### teams/ 模块处理
+
+`core/src/teams/` 的 `MessageBus`（`Arc<Mutex<HashMap>>` inbox pattern）与 `WorkflowContext`（同步 state）是两种根本不同的通信模型：
+
+| | WorkflowContext | MessageBus |
+|---|---|---|
+| 通信模式 | 同步 HashMap，stage 结束时收集 | 异步 inbox，轮询/等待/回复 |
+| 适用 | DAG pipeline | Agent team negotiation（来回对话） |
+| 死锁风险 | 无（DAG 无环） | 有（循环依赖） |
+
+**决定**：V1 使用 `WorkflowContext`。在 `teams/mod.rs` 顶部添加 `#[deprecated]` 注释，标记为 "superseded by WorkflowContext in V1, may be revisited for V2 cyclic workflows"。避免两种模式并存导致困惑。
+
 ---
 
 ## 数据库 Schema 设计
 
-### 新增表（全部在现有 `~/.agverse/memory.db` 中，通过 idempotent CREATE TABLE IF NOT EXISTS）
+### 迁移策略
+
+现有代码（`core/src/memory/storage.rs`）只用 `CREATE TABLE IF NOT EXISTS`，从不 `ALTER`。本方案新增的表全部用 `CREATE TABLE IF NOT EXISTS`（幂等）。如果后续需要给已有新表加列，采用以下模式：
+
+```rust
+fn add_column_if_not_exists(conn: &Connection, table: &str, column: &str, def: &str) -> Result<()> {
+    // PRAGMA table_info 预检，避免 "duplicate column" 错误
+    let exists: bool = {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", table))?;
+        let rows: Vec<String> = stmt.query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(|r| r.ok()).collect();
+        rows.iter().any(|c| c == column)
+    };
+    if !exists {
+        conn.execute(&format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, def), [])?;
+    }
+    Ok(())
+}
+```
+
+### 新增表（全部在 `~/.agverse/memory.db` 中）
 
 ### 1. `agents` — 自定义 Agent 定义
 
 ```sql
 CREATE TABLE IF NOT EXISTS agents (
-    id TEXT PRIMARY KEY,                  -- UUID v4
-    name TEXT NOT NULL,                   -- 显示名，如 "Code Reviewer"
-    description TEXT NOT NULL DEFAULT '',  -- 简短描述
-    system_prompt TEXT NOT NULL DEFAULT '',-- Agent 的 system prompt
-    model TEXT NOT NULL DEFAULT '',        -- "provider/model" 格式，空则用全局 default_model
-    skills TEXT NOT NULL DEFAULT '[]',     -- JSON array of skill names
-    tools TEXT NOT NULL DEFAULT '[]',      -- JSON array of tool names (显式指定)
-    permission_mode TEXT NOT NULL DEFAULT 'standard',  -- paranoid/standard/developer/permissive/yolo
-    permission_rules TEXT NOT NULL DEFAULT '[]',       -- JSON: 自定义 permission rules
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    system_prompt TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',               -- "provider/model" or "" for default
+    skills TEXT NOT NULL DEFAULT '[]',            -- JSON array of skill names
+    tools TEXT NOT NULL DEFAULT '[]',             -- JSON array of tool names, empty = inherit all
+    permission_mode TEXT NOT NULL DEFAULT 'standard',
+    permission_rules TEXT NOT NULL DEFAULT '[]',  -- JSON: custom permission rules
     max_iterations INTEGER NOT NULL DEFAULT 50,
     max_context_tokens INTEGER NOT NULL DEFAULT 32000,
-    memory_enabled INTEGER NOT NULL DEFAULT 1,  -- 0=stateless, 1=standard, 2=deep
-    icon TEXT NOT NULL DEFAULT '',               -- 前端图标标识
-    color TEXT NOT NULL DEFAULT '',              -- 前端节点颜色
+    memory_enabled INTEGER NOT NULL DEFAULT 1,    -- 0=stateless, 1=standard, 2=deep
+    memory_group TEXT NOT NULL DEFAULT '',        -- 空=独立memory；非空=同组agent共享memory索引
+    icon TEXT NOT NULL DEFAULT '',
+    color TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -162,36 +619,54 @@ CREATE TABLE IF NOT EXISTS agents (
 CREATE INDEX IF NOT EXISTS idx_agents_name ON agents(name);
 ```
 
-**设计说明**：
-- `skills` / `tools` / `permission_rules` 用 JSON 字符串存储，避免额外的关联表。Agent 数量不会很大（几十个级别），JSON 解析开销可忽略。
-- `memory_enabled` 三档对应现有 `MemoryMode`（Stateless/Standard/Deep）。
-- `model` 为空时 fallback 到 `config.default_model`，允许 Agent 不绑定特定模型。
-- `permission_mode` + `permission_rules` 允许每个 Agent 有独立的权限策略，例如 "Code Reviewer" 可以是 readonly，"Builder" 可以是 full access。
-
-### 2. `agent_memory` — 每个 Agent 的持久化记忆
+### 2. `agent_memory` — Per-Agent / Memory Group 持久化记忆
 
 ```sql
 CREATE TABLE IF NOT EXISTS agent_memory (
     id TEXT PRIMARY KEY,
-    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-    role TEXT NOT NULL,                    -- "user" / "assistant" / "system"
+    agent_id TEXT NOT NULL,                   -- 写入 agent 的 ID（追溯来源）
+    memory_key TEXT NOT NULL,                 -- 隔离 key：默认 = agent_id；若 agent 在 memory_group 中则 = group name
+    role TEXT NOT NULL,
     content TEXT NOT NULL,
-    embedding BLOB,                        -- 384-dim f32 LE bytes (同 recall_memory)
+    embedding BLOB,
     importance REAL DEFAULT 0.5,
     memory_strength REAL DEFAULT 1.0,
     access_count INTEGER DEFAULT 0,
     last_accessed_at TEXT,
-    category TEXT DEFAULT 'Conversation',  -- Conversation/Decision/Code/Preference/Trivia
-    source TEXT DEFAULT 'conversation',    -- conversation / reflection / workflow
+    category TEXT DEFAULT 'Conversation',
+    source TEXT DEFAULT 'conversation',          -- conversation / reflection / workflow
     created_at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_agent_memory_agent ON agent_memory(agent_id);
+CREATE INDEX IF NOT EXISTS idx_agent_memory_key ON agent_memory(memory_key);
 CREATE INDEX IF NOT EXISTS idx_agent_memory_created ON agent_memory(created_at);
+```
+
+**`memory_key` 设计（Memory Sharing Group 支持）**：
+
+reviewer 建议添加 opt-in 的 memory sharing group，让同组 agent 共享一个 memory 索引。这是产品创新点。
+
+- `memory_key` 默认等于 `agent_id`（per-agent 隔离，V1 默认行为）
+- 如果 `agents.memory_group` 非空（如 `"code-quality"`），则同组所有 agent 的 `memory_key` 都设为 `"code-quality"`
+- `AgentMemoryStore` 按 `memory_key` 而非 `agent_id` 构建/检索 BM25/HNSW 索引
+- 这意味着 "Code Reviewer" 和 "Security Scanner" 如果都在 `"code-quality"` group 中，它们共享同一个 memory 索引
+
+**检索时的 key 解析**：
+```rust
+fn resolve_memory_key(agent_def: &AgentDef) -> &str {
+    if agent_def.memory_group.is_empty() {
+        &agent_def.id  // 默认：per-agent 隔离
+    } else {
+        &agent_def.memory_group  // 共享 group
+    }
+}
+```
+
+**`agent_id` 字段保留**：即使共享 group，每条 memory 仍记录是哪个 agent 写入的（溯源）。
 
 CREATE VIRTUAL TABLE IF NOT EXISTS agent_memory_fts USING fts5(content, tokenize='unicode61');
 
--- FTS 触发器（同 recall_memory 的模式）
+-- FTS triggers (同 recall_memory 模式)
 CREATE TRIGGER IF NOT EXISTS agent_memory_fts_ai AFTER INSERT ON agent_memory BEGIN
     INSERT INTO agent_memory_fts(rowid, content) VALUES (new.rowid, new.content);
 END;
@@ -204,12 +679,7 @@ CREATE TRIGGER IF NOT EXISTS agent_memory_fts_au AFTER UPDATE ON agent_memory BE
 END;
 ```
 
-**设计说明**：
-- 与 `recall_memory` 结构几乎一致，但以 `agent_id` 替代 `session_id` 作为隔离维度。
-- 复用 `SalienceScorer`、`EmbeddingModel`、`BM25Index`、`HNSWIndex` 的逻辑（代码层面泛化，不是复制粘贴）。
-- `source` 字段区分记忆来源：普通对话、reflection 自动提取、workflow 执行产出。
-- 每个 Agent 拥有独立的 Memory，意味着 "Code Reviewer" Agent 记住的所有代码审查经验，在每次被调用时都可以检索到。
-- **不共享**：Agent A 的 Memory 对 Agent B 不可见（除非通过 Workflow 的 Context 传递机制显式传递）。
+**与全局 `recall_memory` 完全独立**：不同的表、不同的索引、不同的 `MemoryManager` 实例。主 Agent 的 Memory 操作不经过 `agent_memory` 表，自定义 Agent 的 Memory 操作不经过 `recall_memory` 表。
 
 ### 3. `agent_history` — Agent 执行历史
 
@@ -217,28 +687,23 @@ END;
 CREATE TABLE IF NOT EXISTS agent_history (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-    session_id TEXT NOT NULL,              -- 关联到 sessions 表
-    workflow_run_id TEXT DEFAULT '',       -- 如果是 workflow 执行产生的，关联到 workflow_runs
-    trigger TEXT NOT NULL DEFAULT 'manual',-- manual / workflow / cronjob
-    input TEXT NOT NULL,                   -- 用户/上游传入的输入
-    output TEXT NOT NULL DEFAULT '',       -- Agent 最终输出
+    session_id TEXT NOT NULL,
+    workflow_run_id TEXT DEFAULT '',
+    trigger TEXT NOT NULL DEFAULT 'manual',      -- manual / workflow / cronjob
+    input TEXT NOT NULL,
+    output TEXT NOT NULL DEFAULT '',
     iterations_used INTEGER DEFAULT 0,
     success INTEGER NOT NULL DEFAULT 1,
     model_used TEXT NOT NULL DEFAULT '',
+    token_input INTEGER DEFAULT 0,               -- 输入 token 数
+    token_output INTEGER DEFAULT 0,              -- 输出 token 数
     process_time_ms INTEGER DEFAULT 0,
     created_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_history_agent ON agent_history(agent_id);
-CREATE INDEX IF NOT EXISTS idx_agent_history_session ON agent_history(session_id);
 CREATE INDEX IF NOT EXISTS idx_agent_history_workflow ON agent_history(workflow_run_id);
 ```
-
-**设计说明**：
-- 每次 Agent 被调用（无论手动还是 workflow 内）都记录一条历史。
-- `session_id` 复用现有 `sessions` 表，完整对话消息存在 `session_messages` 中，这里只存摘要。
-- `trigger` 区分来源：手动调用、Workflow 触发、Cronjob 触发。
-- 这使得 Agent "越用越强"：可以回顾历史，看到自己之前做了什么，成功还是失败。
 
 ### 4. `workflows` — Workflow 定义
 
@@ -247,45 +712,56 @@ CREATE TABLE IF NOT EXISTS workflows (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
-    input_schema TEXT NOT NULL DEFAULT '{}',   -- JSON: 输入参数定义
-    output_schema TEXT NOT NULL DEFAULT '{}',  -- JSON: 输出格式定义
-    config TEXT NOT NULL DEFAULT '{}',         -- JSON: 全局配置（max_concurrent, timeout, etc.）
+    input_schema TEXT NOT NULL DEFAULT '{}',     -- JSON: 输入参数定义
+    output_schema TEXT NOT NULL DEFAULT '{}',
+    config TEXT NOT NULL DEFAULT '{}',           -- JSON: max_concurrent, timeout, trust_mode
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
-
-CREATE INDEX IF NOT EXISTS idx_workflows_name ON workflows(name);
 ```
 
-### 5. `workflow_nodes` — Workflow 中的节点
+**`config` 字段内容**：
+```json
+{
+  "max_concurrent": 3,          // 并行节点数上限
+  "timeout_secs": 300,          // 单节点超时
+  "trust_mode": "inherit",      // inherit / trusted / readonly
+  "on_node_failure": "abort"    // abort / continue / skip
+}
+```
+
+### 5. `workflow_nodes` — 节点（库无关格式）
 
 ```sql
 CREATE TABLE IF NOT EXISTS workflow_nodes (
-    id TEXT PRIMARY KEY,                   -- UUID
+    id TEXT PRIMARY KEY,
     workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
-    node_type TEXT NOT NULL,               -- agent / input / output / human_approval / transform
-    agent_id TEXT DEFAULT '',              -- node_type='agent' 时关联到 agents 表
-    label TEXT NOT NULL DEFAULT '',        -- 节点显示名
-    position_x REAL NOT NULL DEFAULT 0,    -- React Flow 画布坐标
+    node_type TEXT NOT NULL,          -- agent / input / output / human_approval / transform
+    agent_id TEXT DEFAULT '',         -- node_type='agent' 时关联 agents 表
+    label TEXT NOT NULL DEFAULT '',
+    position_x REAL NOT NULL DEFAULT 0,  -- 画布坐标（仅前端使用）
     position_y REAL NOT NULL DEFAULT 0,
-    config TEXT NOT NULL DEFAULT '{}',     -- JSON: 节点特定配置
+    config TEXT NOT NULL DEFAULT '{}',   -- JSON: 节点特定配置
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_workflow_nodes_workflow ON workflow_nodes(workflow_id);
+CREATE INDEX IF NOT EXISTS idx_wf_nodes_workflow ON workflow_nodes(workflow_id);
 ```
 
-**节点类型（`node_type`）**：
-| 类型 | 说明 | config 内容 |
-|------|------|-------------|
-| `input` | Workflow 输入入口 | 输入变量定义 |
-| `output` | Workflow 输出口 | 输出格式定义 |
-| `agent` | Agent 执行节点 | agent_id, 输入模板, 输出变量名 |
-| `human_approval` | 人工审核节点 | 审核提示语, 超时行为 |
-| `transform` | 数据转换节点 | Jinja2/Handlebars 模板, 或 JS 表达式 |
+**库无关设计**：后端存储节点/边的结构化数据（`node_type`, `agent_id`, `config`），`position_x/y` 仅用于前端画布渲染。后端 executor 不解析 React Flow 的 `{nodes, edges, position}` JSON，而是从 `workflow_nodes` + `workflow_edges` 表读取自己的 DAG 表示。React Flow 只是视图层，可替换为任何其他图库。
 
-### 6. `workflow_edges` — Workflow 中的边
+**节点类型**：
+
+| `node_type` | 说明 | `config` 内容 |
+|-------------|------|--------------|
+| `input` | Workflow 输入入口 | 输入变量 schema |
+| `output` | Workflow 输出口 | 输出格式定义 |
+| `agent` | Agent 执行节点 | `input_template`, `output_key`, `tools_override` |
+| `human_approval` | 人工审核 | `prompt`, `timeout_secs`, `on_timeout` |
+| `transform` | 数据转换 | `template` (Jinja2-like), `output_key` |
+
+### 6. `workflow_edges` — 边（含条件路由）
 
 ```sql
 CREATE TABLE IF NOT EXISTS workflow_edges (
@@ -293,84 +769,63 @@ CREATE TABLE IF NOT EXISTS workflow_edges (
     workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
     source_node_id TEXT NOT NULL REFERENCES workflow_nodes(id) ON DELETE CASCADE,
     target_node_id TEXT NOT NULL REFERENCES workflow_nodes(id) ON DELETE CASCADE,
-    source_handle TEXT DEFAULT '',          -- 输出端口名（多输出节点）
-    target_handle TEXT DEFAULT '',          -- 输入端口名（多输入节点）
-    label TEXT NOT NULL DEFAULT '',         -- 边的标签/条件
-    condition TEXT NOT NULL DEFAULT '',     -- 条件表达式（空=无条件传递）
-    data_mapping TEXT NOT NULL DEFAULT '{}',-- JSON: 上下文映射规则
+    source_handle TEXT DEFAULT '',         -- 输出端口（多输出节点）
+    target_handle TEXT DEFAULT '',         -- 输入端口（多输入节点）
+    label TEXT NOT NULL DEFAULT '',
+    condition TEXT NOT NULL DEFAULT '',    -- 条件表达式，空=无条件
+    data_mapping TEXT NOT NULL DEFAULT '{}', -- JSON: 字段映射
     created_at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_workflow_edges_workflow ON workflow_edges(workflow_id);
-CREATE INDEX IF NOT EXISTS idx_workflow_edges_source ON workflow_edges(source_node_id);
-CREATE INDEX IF NOT EXISTS idx_workflow_edges_target ON workflow_edges(target_node_id);
+CREATE INDEX IF NOT EXISTS idx_wf_edges_workflow ON workflow_edges(workflow_id);
+CREATE INDEX IF NOT EXISTS idx_wf_edges_source ON workflow_edges(source_node_id);
+CREATE INDEX IF NOT EXISTS idx_wf_edges_target ON workflow_edges(target_node_id);
 ```
 
-**设计说明**：
-- `data_mapping` 定义 Context 如何从上游传递到下游，例如 `{"output": "review_result", "pass_through": true}`。
-- `condition` 支持简单的条件表达式，例如 `output.success == true`，用于条件分支。
-- React Flow 的边数据直接映射到这张表。
-
-### 7. `workflow_runs` — Workflow 执行记录
+### 7. `workflow_runs` — 执行记录
 
 ```sql
 CREATE TABLE IF NOT EXISTS workflow_runs (
     id TEXT PRIMARY KEY,
     workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE,
-    session_id TEXT NOT NULL,               -- 关联到 sessions 表
-    status TEXT NOT NULL DEFAULT 'pending', -- pending/running/completed/failed/cancelled
-    input TEXT NOT NULL DEFAULT '{}',       -- JSON: 实际输入
-    output TEXT NOT NULL DEFAULT '{}',      -- JSON: 最终输出
+    session_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending/running/completed/failed/cancelled
+    input TEXT NOT NULL DEFAULT '{}',
+    output TEXT NOT NULL DEFAULT '{}',
     error TEXT NOT NULL DEFAULT '',
+    total_token_input INTEGER DEFAULT 0,     -- 汇总
+    total_token_output INTEGER DEFAULT 0,
     started_at TEXT NOT NULL,
     finished_at TEXT,
     created_at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow ON workflow_runs(workflow_id);
-CREATE INDEX IF NOT EXISTS idx_workflow_runs_status ON workflow_runs(status);
+CREATE INDEX IF NOT EXISTS idx_wf_runs_workflow ON workflow_runs(workflow_id);
+CREATE INDEX IF NOT EXISTS idx_wf_runs_status ON workflow_runs(status);
 ```
 
-### 8. `workflow_run_node_results` — Workflow 执行中每个节点的结果
+### 8. `workflow_run_node_results` — 节点级结果（含可观测性字段）
 
 ```sql
 CREATE TABLE IF NOT EXISTS workflow_run_node_results (
     id TEXT PRIMARY KEY,
     workflow_run_id TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
     node_id TEXT NOT NULL,
-    agent_history_id TEXT DEFAULT '',       -- 关联到 agent_history（如果节点是 agent 类型）
-    status TEXT NOT NULL DEFAULT 'pending', -- pending/running/completed/failed/skipped
-    input TEXT NOT NULL DEFAULT '{}',       -- JSON: 该节点收到的输入
-    output TEXT NOT NULL DEFAULT '{}',      -- JSON: 该节点的输出
+    agent_history_id TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending/running/completed/failed/skipped
+    input TEXT NOT NULL DEFAULT '{}',
+    output TEXT NOT NULL DEFAULT '{}',
     error TEXT NOT NULL DEFAULT '',
+    token_input INTEGER DEFAULT 0,           -- 节点级 token 统计
+    token_output INTEGER DEFAULT 0,
+    cost_usd REAL DEFAULT 0.0,               -- 节点级成本估算
+    latency_ms INTEGER DEFAULT 0,            -- 节点级延迟
     started_at TEXT,
     finished_at TEXT,
     created_at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_workflow_run_nodes ON workflow_run_node_results(workflow_run_id);
-CREATE INDEX IF NOT EXISTS idx_workflow_run_nodes_node ON workflow_run_node_results(node_id);
-```
-
-### 表关系 ER 图
-
-```
-agents (1) ──────────< agent_memory (N)
-agents (1) ──────────< agent_history (N)
-agents (1) ──────────< workflow_nodes (N) [node_type='agent']
-
-workflows (1) ───────< workflow_nodes (N)
-workflows (1) ───────< workflow_edges (N)
-workflows (1) ───────< workflow_runs (N)
-
-workflow_nodes (1) ──< workflow_edges (N) [as source]
-workflow_nodes (1) ──< workflow_edges (N) [as target]
-
-workflow_runs (1) ───< workflow_run_node_results (N)
-workflow_run_node_results (N) >── agent_history (1) [optional]
-
-sessions (1) ────────< agent_history (N)
-sessions (1) ────────< workflow_runs (N)
+CREATE INDEX IF NOT EXISTS idx_wf_run_nodes ON workflow_run_node_results(workflow_run_id);
 ```
 
 ---
@@ -381,26 +836,27 @@ sessions (1) ────────< workflow_runs (N)
 
 ```
 core/src/
-├── agent_registry/          ← NEW: Agent 定义 CRUD + Agent Memory 管理
+├── agent_registry/          ← NEW
 │   ├── mod.rs               ← AgentRegistry 协调层
-│   ├── definition.rs        ← AgentDef struct + DB 操作
+│   ├── definition.rs        ← AgentDef + DB CRUD
 │   ├── memory.rs            ← AgentMemoryStore (per-agent memory 隔离)
-│   └── history.rs           ← AgentHistoryStore (执行历史)
-├── workflow/                ← NEW: Workflow 引擎
+│   └── history.rs           ← AgentHistoryStore
+├── workflow/                ← NEW
 │   ├── mod.rs               ← WorkflowEngine 协调层
-│   ├── definition.rs        ← WorkflowDef + NodeDef + EdgeDef + DB 操作
-│   ├── planner.rs           ← DAG → 执行计划 (拓扑排序 + 并行分组)
-│   ├── executor.rs          ← 执行计划 → 逐节点运行 (复用 Subagent/Run)
-│   └── context.rs           ← Context 传递机制 (节点间数据流转)
-├── runtime/                 ← EXISTING: 不修改
-├── memory/                  ← EXISTING: 不修改，但 AgentMemoryStore 复用其模式
-├── subagent/                ← EXISTING: 不修改，Workflow executor 复用 Subagent
+│   ├── definition.rs        ← WorkflowDef + NodeDef + EdgeDef + DB CRUD
+│   ├── planner.rs           ← Kahn 拓扑排序 + 环检测 + 并行分组
+│   ├── executor.rs          ← 分 stage 执行 + Subagent 调用
+│   ├── context.rs           ← 结构化 State + 条件路由
+│   └── trust.rs             ← TrustMode 策略
+├── subagent/                ← SMALL CHANGE: 新增 new_with_memory()
+├── runtime/                 ← EXISTING: 只读访问 brain.config / brain.skill_manager
+├── memory/                  ← EXISTING: 不修改
 └── ...
 ```
 
 ### 1. Agent Registry (`core/src/agent_registry/`)
 
-#### `AgentDef` — Agent 定义（对应 `agents` 表）
+#### `AgentDef`
 
 ```rust
 pub struct AgentDef {
@@ -408,14 +864,14 @@ pub struct AgentDef {
     pub name: String,
     pub description: String,
     pub system_prompt: String,
-    pub model: String,           // "provider/model" or "" for default
+    pub model: String,
     pub skills: Vec<String>,
-    pub tools: Vec<String>,      // empty = inherit all available tools
-    pub permission_mode: String, // paranoid/standard/developer/permissive/yolo
+    pub tools: Vec<String>,
+    pub permission_mode: String,
     pub permission_rules: serde_json::Value,
     pub max_iterations: usize,
     pub max_context_tokens: usize,
-    pub memory_enabled: u8,      // 0/1/2
+    pub memory_enabled: u8,  // 0/1/2
     pub icon: String,
     pub color: String,
     pub created_at: String,
@@ -423,152 +879,408 @@ pub struct AgentDef {
 }
 ```
 
-#### `AgentRegistry` — CRUD + 实例化
+#### `AgentRegistry` — CRUD + 组件构建
 
 ```rust
 pub struct AgentRegistry {
-    storage: Storage,  // 复用现有 SQLite Storage
+    storage: Storage,
 }
 
 impl AgentRegistry {
-    // CRUD
     pub fn create(&self, def: AgentDef) -> Result<AgentDef>;
     pub fn get(&self, id: &str) -> Result<AgentDef>;
     pub fn list(&self) -> Result<Vec<AgentDef>>;
     pub fn update(&self, id: &str, updates: &AgentDefUpdate) -> Result<AgentDef>;
     pub fn delete(&self, id: &str) -> Result<()>;
 
-    // 实例化：从 AgentDef 构建 SubagentConfig + 运行时组件
-    pub fn build_subagent_config(&self, def: &AgentDef, model_config: &ModelConfig) -> SubagentConfig;
-    pub fn build_permission_config(&self, def: &AgentDef, base: &PermissionConfig) -> PermissionConfig;
+    /// 从 AgentDef 构建 SubagentConfig
+    pub fn build_subagent_config(&self, def: &AgentDef) -> SubagentConfig {
+        SubagentConfig {
+            system_prompt: def.system_prompt.clone(),
+            tools: if def.tools.is_empty() { /* inherit all */ vec![] } else { def.tools.clone() },
+            max_iterations: def.max_iterations,
+            max_context_tokens: def.max_context_tokens,
+        }
+    }
+
+    /// 从 AgentDef 构建 PermissionConfig
+    pub fn build_permission_config(&self, def: &AgentDef, base: &PermissionConfig) -> PermissionConfig {
+        let mut config = base.clone();
+        config.mode = PermissionMode::from_str(&def.permission_mode);
+        // 合并 def.permission_rules 到 config.rules
+        config
+    }
+
+    /// 从 AgentDef 构建 ModelConfig（fallback 到全局 default_model）
+    pub fn build_model_config(&self, def: &AgentDef, brain: &Brain) -> ModelConfig {
+        if def.model.is_empty() {
+            brain.config.models.get(&brain.current_model_name()).cloned().unwrap()
+        } else {
+            brain.config.models.get(&def.model).cloned().unwrap_or_default()
+        }
+    }
 }
 ```
 
-**关键设计**：`AgentRegistry` 不直接执行 Agent，它只管理定义。执行由 `WorkflowExecutor` 或手动调用时，通过 `build_subagent_config()` 将 `AgentDef` 转换为现有 `SubagentConfig`，然后复用现有的 `Subagent::new()` + `Subagent::run_with_sender()` 执行。
-
-#### `AgentMemoryStore` — Per-Agent Memory
+#### `AgentMemoryStore` — Per-Agent Memory（复用 MemoryManager 模式，不复制代码）
 
 ```rust
 pub struct AgentMemoryStore {
     storage: Storage,
-    embedding_model: Option<EmbeddingModel>,
-    salience_scorer: SalienceScorer,
-    // Per-agent in-memory indexes (lazy-initialized)
-    bm25_indexes: Mutex<HashMap<String, BM25Index>>,
-    hnsw_indexes: Mutex<HashMap<String, HNSWIndex>>,
+    embedding_model: Arc<EmbeddingModel>,      // 共享全局 embedding model
+    salience_scorer: SalienceScorer,           // 共享全局 salience config
+    bm25_indexes: Mutex<HashMap<String, BM25Index>>,   // per-agent_id, lazy init
+    hnsw_indexes: Mutex<HashMap<String, HNSWIndex>>,   // per-agent_id, lazy init
 }
 
 impl AgentMemoryStore {
-    pub fn store(&self, agent_id: &str, role: &str, content: &str) -> Result<String>;
+    pub fn store(&self, agent_id: &str, role: &str, content: &str, source: &str) -> Result<String>;
     pub fn search(&self, agent_id: &str, query: &str, top_k: usize) -> Result<Vec<ScoredRecord>>;
     pub fn search_hybrid(&self, agent_id: &str, query: &str, top_k: usize) -> Result<Vec<ScoredRecord>>;
     pub fn consolidate(&self, agent_id: &str) -> Result<ConsolidationReport>;
     pub fn prune_cold(&self, agent_id: &str) -> Result<usize>;
     pub fn stats(&self, agent_id: &str) -> Result<MemoryStats>;
-    pub fn ensure_indexes(&self, agent_id: &str);  // lazy init BM25/HNSW
-}
-```
 
-**关键设计**：
-- 与全局 `MemoryManager` 的接口几乎一致，但所有操作都以 `agent_id` 为前缀。
-- BM25/HNSW 索引按 `agent_id` 分别构建，lazy-initialize（首次访问某 Agent 的 memory 时构建）。
-- 复用 `SalienceScorer`、`EmbeddingModel`、`BM25Index`、`HNSWIndex` 的实现，不复制代码。
-- **与全局 Memory 隔离**：全局 `recall_memory` 表和 `agent_memory` 表完全独立。主 Agent 的 Memory 不受影响。
+    /// 执行前检索相关记忆，格式化为 context 注入文本
+    pub fn build_context_injection(&self, agent_id: &str, query: &str, max_tokens: usize) -> String {
+        let memories = self.search_hybrid(agent_id, query, 5)?;
+        if memories.is_empty() { return String::new(); }
 
-#### `AgentHistoryStore` — 执行历史
-
-```rust
-pub struct AgentHistoryStore {
-    storage: Storage,
-}
-
-impl AgentHistoryStore {
-    pub fn record(&self, entry: AgentHistoryEntry) -> Result<String>;
-    pub fn list(&self, agent_id: &str, limit: usize) -> Result<Vec<AgentHistoryEntry>>;
-    pub fn get_recent(&self, agent_id: &str, n: usize) -> Result<Vec<AgentHistoryEntry>>;
-}
-```
-
-### 2. Workflow Engine (`core/src/workflow/`)
-
-#### `WorkflowDef` — Workflow 定义（对应 `workflows` + `workflow_nodes` + `workflow_edges`）
-
-```rust
-pub struct WorkflowDef {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub input_schema: serde_json::Value,
-    pub output_schema: serde_json::Value,
-    pub config: WorkflowConfig,
-    pub nodes: Vec<NodeDef>,
-    pub edges: Vec<EdgeDef>,
-}
-
-pub struct NodeDef {
-    pub id: String,
-    pub node_type: NodeType,  // Agent / Input / Output / HumanApproval / Transform
-    pub agent_id: Option<String>,
-    pub label: String,
-    pub position: (f64, f64),
-    pub config: serde_json::Value,
-}
-
-pub enum NodeType {
-    Input,
-    Output,
-    Agent,
-    HumanApproval,
-    Transform,
-}
-
-pub struct EdgeDef {
-    pub id: String,
-    pub source: String,
-    pub target: String,
-    pub source_handle: String,
-    pub target_handle: String,
-    pub label: String,
-    pub condition: String,
-    pub data_mapping: serde_json::Value,
-}
-```
-
-#### `WorkflowPlanner` — DAG → 执行计划
-
-```rust
-pub struct ExecutionPlan {
-    pub stages: Vec<ExecutionStage>,  // 拓扑排序后的分阶段执行
-}
-
-pub struct ExecutionStage {
-    pub nodes: Vec<String>,  // 同一 stage 内的节点可以并行执行
-}
-
-impl WorkflowPlanner {
-    pub fn plan(workflow: &WorkflowDef) -> Result<ExecutionPlan> {
-        // 1. 构建邻接表
-        // 2. Kahn 算法拓扑排序
-        // 3. 同层节点分组（无依赖关系的分到同一 stage）
-        // 4. 检测环（有环则报错）
+        let mut text = String::from("## Relevant Memory from Previous Executions\n\n");
+        for (i, mem) in memories.iter().enumerate() {
+            let entry = format!("### Memory {} (importance: {:.2})\n{}\n\n",
+                i + 1, mem.importance, mem.content);
+            // token 预算控制
+            if text.len() + entry.len() > max_tokens * 4 { break; }
+            text.push_str(&entry);
+        }
+        text
     }
 }
 ```
 
 **关键设计**：
-- 使用 Kahn 算法进行拓扑排序，将 DAG 分为多个 stage。
-- 同一 stage 内的节点无依赖关系，可以并行执行。
-- 如果检测到环，返回错误（Workflow 必须是 DAG）。
-- 条件边（`condition` 非空）在执行时动态评估，决定是否传递 Context。
+- 复用 `EmbeddingModel`、`SalienceScorer`、`BM25Index`、`HNSWIndex`、`MemoryConsolidator` 的实现（这些是独立的 struct，不绑定 `MemoryManager`）。
+- BM25/HNSW 索引按 `agent_id` 分别构建，lazy-initialize（首次访问某 Agent 的 memory 时构建）。不活跃 Agent 的索引在 LRU 超时后卸载。
+- 与全局 `MemoryManager` 完全独立：不同的表、不同的索引、不同的 Mutex。
 
-#### `WorkflowExecutor` — 执行计划 → 逐节点运行
+### 2. Subagent 扩展（`core/src/subagent/mod.rs` 的小改）
+
+新增一个构造函数和 memory 注入逻辑：
+
+```rust
+impl Subagent {
+    /// 现有构造函数 — 不变
+    pub fn new(role_name, config, model_config, registry, permission_config) -> Self { ... }
+
+    /// 新增：带 memory 的构造函数
+    pub fn new_with_memory(
+        role_name: &str,
+        config: SubagentConfig,
+        model_config: &ModelConfig,
+        registry: ToolRegistry,
+        permission_config: PermissionConfig,
+        memory_store: Option<Arc<AgentMemoryStore>>,
+        agent_id: Option<String>,
+    ) -> Self {
+        let mut sa = Self::new(role_name, config, model_config, registry, permission_config);
+        sa.memory_store = memory_store;
+        sa.agent_id = agent_id;
+        sa
+    }
+
+    /// 新增：在 run_with_sender 的开头，注入 memory
+    /// 在 self.context.add(Message::user(task)) 之前调用
+    fn inject_memory(&mut self, task: &str) {
+        if let (Some(ref store), Some(ref agent_id)) = (&self.memory_store, &self.agent_id) {
+            let injection = store.build_context_injection(agent_id, task, 2000);
+            if !injection.is_empty() {
+                // 注入到 ContextEngine 的 Active Memory segment
+                self.context.set_active_memory(&injection);
+            }
+        }
+    }
+
+    /// 新增：在 run_with_sender 结束后，存储 memory
+    fn persist_memory(&self, task: &str, output: &str) {
+        if let (Some(ref store), Some(ref agent_id)) = (&self.memory_store, &self.agent_id) {
+            let _ = store.store(agent_id, "user", task, "conversation");
+            let _ = store.store(agent_id, "assistant", output, "conversation");
+        }
+    }
+}
+```
+
+**Subagent struct 新增两个 field**：
+```rust
+pub struct Subagent {
+    // ... 现有字段 ...
+    memory_store: Option<Arc<AgentMemoryStore>>,  // NEW
+    agent_id: Option<String>,                     // NEW
+}
+```
+
+这是对 `subagent/mod.rs` 的唯一改动。现有 `new()` 和 `run_with_sender()` 的行为不变（`memory_store` 为 `None` 时走原逻辑）。
+
+### 3. Workflow Engine (`core/src/workflow/`)
+
+#### `WorkflowPlanner` — DAG → 执行计划
+
+```rust
+pub struct ExecutionPlan {
+    pub stages: Vec<ExecutionStage>,
+}
+
+pub struct ExecutionStage {
+    pub nodes: Vec<String>,  // 同一 stage 内的节点 ID，可并行执行
+}
+
+impl WorkflowPlanner {
+    pub fn plan(nodes: &[NodeDef], edges: &[EdgeDef]) -> Result<ExecutionPlan> {
+        // 1. 构建邻接表 (source -> [targets])
+        // 2. Kahn 算法拓扑排序
+        // 3. 同层节点分组（indegree 同时归零的分到同一 stage）
+        // 4. 检测环（剩余 indegree > 0 的节点构成环）
+        // 5. 返回 ExecutionPlan
+    }
+}
+```
+
+#### `WorkflowContext` — 结构化 State（非字符串模板）
+
+```rust
+/// 结构化共享状态 — 所有节点的输入/输出存储在这里
+/// 比字符串模板更安全：无模板注入风险、有类型校验、可字段级合并
+pub struct WorkflowContext {
+    /// 每个节点的输出（结构化 JSON）
+    node_outputs: RwLock<HashMap<String, serde_json::Value>>,
+    /// 全局共享 state（所有节点可读写）
+    shared: RwLock<serde_json::Value>,
+    /// Workflow 输入
+    input: serde_json::Value,
+}
+
+impl WorkflowContext {
+    /// 从上游节点的输出 + edge 的 data_mapping 解析出当前节点的输入
+    pub fn resolve_input(
+        &self,
+        node_id: &str,
+        incoming_edges: &[EdgeDef],
+    ) -> serde_json::Value {
+        let mut input = serde_json::Map::new();
+
+        for edge in incoming_edges {
+            let upstream_output = self.node_outputs.read().get(&edge.source_node_id)
+                .cloned().unwrap_or(serde_json::Value::Null);
+
+            let mapping: DataMapping = serde_json::from_str(&edge.data_mapping).unwrap_or_default();
+
+            if mapping.pass_through {
+                // 完整传递上游 output，以 source_node label 为 key
+                input.insert(edge.label.clone(), upstream_output);
+            } else {
+                // 字段级映射：从 upstream_output 中提取指定字段
+                if let Some(ref source_field) = mapping.source_field {
+                    if let Some(val) = upstream_output.get(source_field) {
+                        let target_key = mapping.target_field
+                            .as_ref().unwrap_or(source_field);
+                        input.insert(target_key.clone(), val.clone());
+                    }
+                }
+            }
+        }
+
+        // 注入全局 shared state
+        input.insert("_shared".into(), self.shared.read().clone());
+        // 注入 workflow 原始输入
+        input.insert("_workflow_input".into(), self.input.clone());
+
+        serde_json::Value::Object(input)
+    }
+
+    pub fn set_output(&self, node_id: &str, output: serde_json::Value) {
+        self.node_outputs.write().insert(node_id.to_string(), output);
+    }
+
+    pub fn update_shared(&self, key: &str, value: serde_json::Value) {
+        if let Some(obj) = self.shared.write().as_object_mut() {
+            obj.insert(key.to_string(), value);
+        }
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct DataMapping {
+    source_field: Option<String>,
+    target_field: Option<String>,
+    pass_through: bool,
+}
+```
+
+**与字符串模板的对比**：
+
+| 维度 | 字符串模板 `{{node-1.output}}` | 结构化 State |
+|------|-------------------------------|-------------|
+| 模板注入风险 | 有（上游输出含 `{{` 会误替换） | 无 |
+| 类型校验 | 无 | 有（JSON schema） |
+| 字段级合并 | 困难 | 原生支持 |
+| 调试 | 困难（字符串拼接） | 容易（结构化 JSON） |
+| 多上游汇聚 | 字符串拼接 | Map 合并 |
+
+#### 条件路由 — Router 模型（参考 LangGraph）
+
+reviewer 正确指出：独立条件边存在多边竞争、stage barrier 交互等复杂语义问题。参考 LangGraph 的 `conditional_edges` 模型，改用**节点级 Router**：一个节点有一个可选的 `router` 配置，返回目标节点名（或节点名列表用于 fork）。
+
+**语义对比**：
+
+| 模型 | 语义 | 竞态问题 |
+|------|------|---------|
+| 独立条件边（原方案） | 每条边各自 `if condition` | 多条边同时满足 → fork? switch? 不明确 |
+| Router（新方案） | 节点输出后，router 返回目标 | **无竞态**：router 返回唯一结果 |
+
+```rust
+/// 节点的路由配置 — 在 NodeDef.config 中
+///
+/// router 是一个 JSON 配置，定义了基于节点输出的路由规则：
+/// {
+///   "rules": [
+///     { "condition": "success == true", "targets": ["fixer_node"] },
+///     { "condition": "success == false", "targets": ["reporter_node"] },
+///     { "condition": "issues.length > 5", "targets": ["fixer_node", "reporter_node"] }
+///   ],
+///   "default": ["output_node"]  // 所有规则都不匹配时的默认目标
+/// }
+///
+/// 如果节点没有 router 配置，则所有出边无条件传递（原行为）。
+
+pub struct RouterConfig {
+    rules: Vec<RouterRule>,
+    default_targets: Vec<String>,
+}
+
+pub struct RouterRule {
+    condition: ConditionExpr,
+    targets: Vec<String>,  // 多个 target = fork（并行执行）
+}
+
+impl RouterConfig {
+    /// 根据节点输出决定下一步执行哪些节点
+    /// 返回节点 ID 列表（空 = 终止）
+    pub fn route(&self, output: &serde_json::Value) -> Vec<String> {
+        for rule in &self.rules {
+            if rule.condition.evaluate(output) {
+                return rule.targets.clone();
+            }
+        }
+        self.default_targets.clone()
+    }
+}
+
+struct ConditionExpr {
+    field: String,       // "success", "score", "issues.length"
+    operator: CondOp,    // ==, !=, >, <, >=, <=, contains
+    value: serde_json::Value,
+}
+
+impl ConditionExpr {
+    fn evaluate(&self, output: &serde_json::Value) -> bool {
+        let actual = output.get(&self.field);
+        match self.operator {
+            CondOp::Eq => actual == Some(&self.value),
+            CondOp::Ne => actual != Some(&self.value),
+            CondOp::Gt => /* numeric comparison */,
+            CondOp::Contains => /* string contains */,
+        }
+    }
+}
+```
+
+**与 Planner 的集成**：
+
+```
+WorkflowPlanner:
+  1. Kahn 拓扑排序时，忽略 router 条件（按所有出边排序）
+  2. 运行时，节点执行后调用 router.route(output)
+  3. Router 返回的 targets 即为实际要执行的下游节点
+  4. 不在 targets 中的下游节点标记为 skipped
+  5. Router 返回多个 target → 下一个 stage 中这些节点并行执行（fork）
+```
+
+**条件分支示例**：
+
+```
+                    ┌─ router rule: "success == true" → [Fixer]
+Agent A (Reviewer) ─┤
+                    └─ router rule: "success == false" → [Reporter]
+
+Agent A 输出 {success: true, result: "..."}
+  → router.route(output) 返回 ["Fixer"]
+  → Fixer 执行，Reporter 标记为 skipped
+
+Agent A 输出 {success: false, result: "..."}
+  → router.route(output) 返回 ["Reporter"]
+  → Reporter 执行，Fixer 标记为 skipped
+```
+
+**Fork 示例**：
+
+```
+Agent A 输出 {success: true, issues: [1,2,3,4,5,6]}  // 6 个 issues
+  → router rule: "issues.length > 5" → [Fixer, Reporter]
+  → Fixer 和 Reporter 在下一个 stage 并行执行
+```
+
+**与 `workflow_edges` 表的关系**：
+- `workflow_edges` 仍然存储所有可能的边（包括条件边），用于前端画布渲染和 planner 排序。
+- 边的 `condition` 字段被 `router` 配置取代。如果节点有 `router`，出边的 `condition` 字段忽略。
+- 如果节点没有 `router`，出边无条件传递（原行为）。
+
+#### TrustMode — Workflow 级权限策略
+
+```rust
+pub enum TrustMode {
+    /// 继承全局配置，Ask 级工具正常弹出审批
+    /// 适用场景：低风险 workflow
+    Inherit,
+
+    /// 信任模式：所有工具自动允许（相当于 workflow 级 Yolo）
+    /// 适用场景：用户明确信任的自动化 workflow
+    /// 审批通过 HumanApproval 节点显式插入
+    Trusted,
+
+    /// 只读模式：仅允许 ReadOnly 级工具
+    /// 适用场景：纯分析/审查 workflow
+    Readonly,
+}
+
+impl TrustMode {
+    pub fn build_permission_config(&self, base: &PermissionConfig, agent_def: &AgentDef) -> PermissionConfig {
+        let mut config = AgentRegistry.build_permission_config(agent_def, base);
+        match self {
+            TrustMode::Trusted => {
+                config.mode = PermissionMode::Yolo;
+            }
+            TrustMode::Readonly => {
+                config.mode = PermissionMode::Paranoid;
+                config.auto_allow_up_to = Some(DangerLevel::ReadOnly);
+            }
+            TrustMode::Inherit => { /* 用 agent_def 的 permission_mode */ }
+        }
+        config
+    }
+}
+```
+
+**设计理由**：reviewer 正确指出 "Approval 自动拒绝 = workflow 里的 coding agent 基本废了"。`Trusted` 模式让用户可以创建一个可信的自动化 workflow，bash/write 等工具自动放行，同时在关键节点插入 `HumanApproval` 节点做人工检查。
+
+#### `WorkflowExecutor` — 分 stage 执行
 
 ```rust
 pub struct WorkflowExecutor {
     registry: Arc<AgentRegistry>,
     memory_store: Arc<AgentMemoryStore>,
     history_store: Arc<AgentHistoryStore>,
-    brain: Arc<Brain>,  // 复用 Brain 的 config/client/skill_manager
+    brain: Arc<Brain>,               // 只读：获取 config / skill_manager
     session_manager: Arc<Mutex<SessionManager>>,
 }
 
@@ -579,137 +1291,173 @@ impl WorkflowExecutor {
         input: serde_json::Value,
         session_id: &str,
         event_tx: broadcast::Sender<Envelope>,
-    ) -> Result<serde_json::Value>;
+        cancel_token: CancellationToken,
+    ) -> Result<serde_json::Value> {
+        let plan = WorkflowPlanner::plan(&workflow.nodes, &workflow.edges)?;
+        let ctx = Arc::new(WorkflowContext::new(input.clone()));
+        let trust_mode = TrustMode::from_config(&workflow.config);
+        let max_concurrent = workflow.config.max_concurrent.unwrap_or(3);
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
+        let mut total_tokens = (0i64, 0i64);
 
-    async fn execute_stage(
-        &self,
-        stage: &ExecutionStage,
-        ctx: &WorkflowContext,
-        event_tx: &broadcast::Sender<Envelope>,
-    ) -> Result<()>;
+        // 创建 workflow_run 记录
+        let run_id = self.create_workflow_run(&workflow.id, session_id, &input)?;
 
-    async fn execute_node(
+        for (stage_idx, stage) in plan.stages.iter().enumerate() {
+            // 检查取消
+            if cancel_token.is_cancelled() { break; }
+
+            // 并行执行 stage 内所有节点
+            let mut handles = Vec::new();
+            for node_id in &stage.nodes {
+                let node = workflow.nodes.iter().find(|n| &n.id == node_id).unwrap();
+
+                // 检查条件边 — 如果所有入边都不满足，跳过
+                if !self.should_execute(node, &workflow.edges, &ctx) {
+                    self.mark_node_skipped(&run_id, &node.id)?;
+                    continue;
+                }
+
+                let input = ctx.resolve_input(&node.id, &workflow.edges);
+                let handle = self.spawn_node_execution(
+                    node.clone(), input, ctx.clone(), trust_mode.clone(),
+                    semaphore.clone(), cancel_token.clone(),
+                    event_tx.clone(), run_id.clone(),
+                );
+                handles.push(handle);
+            }
+
+            // 等待 stage 内所有节点完成
+            let results = futures::future::join_all(handles).await;
+
+            // 收集结果
+            for (node_id, result) in results {
+                match result {
+                    Ok((output, tokens)) => {
+                        ctx.set_output(&node_id, output);
+                        total_tokens.0 += tokens.0;
+                        total_tokens.1 += tokens.1;
+                    }
+                    Err(e) => {
+                        match workflow.config.on_node_failure {
+                            FailurePolicy::Abort => return Err(e),
+                            FailurePolicy::Continue => { /* 标记 failed，继续 */ }
+                            FailurePolicy::Skip => { /* 标记 skipped，下游也 skip */ }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 获取 output 节点的输出
+        let output = ctx.get_output_node_result();
+        self.complete_workflow_run(&run_id, &output, total_tokens)?;
+        Ok(output)
+    }
+
+    async fn execute_agent_node(
         &self,
         node: &NodeDef,
         input: serde_json::Value,
-        ctx: &WorkflowContext,
+        agent_def: &AgentDef,
+        trust_mode: &TrustMode,
+        cancel_token: CancellationToken,
         event_tx: &broadcast::Sender<Envelope>,
-    ) -> Result<serde_json::Value>;
+    ) -> Result<(serde_json::Value, (i64, i64))> {
+        // 1. 从 AgentDef 构建组件
+        let subagent_config = self.registry.build_subagent_config(agent_def);
+        let model_config = self.registry.build_model_config(agent_def, &self.brain);
+        let permission_config = trust_mode.build_permission_config(
+            &self.brain.config.permissions, agent_def);
+
+        // 2. 构建 ToolRegistry
+        let registry = if agent_def.tools.is_empty() {
+            self.brain.build_tool_registry(AgentMode::Build)
+        } else {
+            ToolRegistry::from_names(&agent_def.tools)
+        };
+
+        // 3. 构建 Subagent（带 memory）
+        let memory = if agent_def.memory_enabled > 0 {
+            Some(self.memory_store.clone())
+        } else { None };
+
+        let mut subagent = Subagent::new_with_memory(
+            &agent_def.name, subagent_config, &model_config,
+            registry, permission_config, memory, Some(agent_def.id.clone()),
+        );
+
+        // 4. 组装输入（结构化 JSON → 可读文本）
+        let task = self.format_agent_input(&node.config, &input);
+
+        // 5. 执行（Subagent 内部会注入 memory + 执行后存储 memory）
+        let result = tokio::select! {
+            _ = cancel_token.cancelled() => return Err(anyhow!("cancelled")),
+            r = subagent.run_with_sender(&task, Some(event_tx.clone().into())) => r?,
+        };
+
+        // 6. 记录历史
+        self.history_store.record(AgentHistoryEntry {
+            agent_id: agent_def.id.clone(),
+            session_id: session_id.to_string(),
+            workflow_run_id: run_id.clone(),
+            trigger: "workflow".to_string(),
+            input: task,
+            output: result.output.clone(),
+            iterations_used: result.iterations_used,
+            success: result.success,
+            model_used: model_config.model_id.clone(),
+            token_input: result.token_input,
+            token_output: result.token_output,
+            process_time_ms: result.elapsed_ms,
+            ..
+        })?;
+
+        // 7. 返回结构化输出
+        let output = serde_json::json!({
+            "result": result.output,
+            "success": result.success,
+            "iterations": result.iterations_used,
+        });
+
+        Ok((output, (result.token_input, result.token_output)))
+    }
 }
 ```
 
-**执行流程**：
+#### 取消传播
 
 ```
-1. WorkflowExecutor::execute(workflow, input)
-   │
-   ├── 创建 workflow_run 记录 (status=running)
-   ├── 创建 WorkflowContext (存储所有节点的输入/输出)
-   │
-   ├── for stage in plan.stages:
-   │   │
-   │   ├── 并行执行 stage 内所有节点 (tokio::JoinSet)
-   │   │   │
-   │   │   ├── execute_node(node, input_from_upstream):
-   │   │   │   │
-   │   │   │   ├── NodeDef::Agent:
-   │   │   │   │   ├── 从 AgentRegistry 获取 AgentDef
-   │   │   │   │   ├── 构建 SubagentConfig (system_prompt, tools, max_iterations)
-   │   │   │   │   ├── 构建 ToolRegistry (从 AgentDef.tools 过滤)
-   │   │   │   │   ├── 构建 PermissionPolicy (从 AgentDef.permission_mode)
-   │   │   │   │   ├── 检索 Agent Memory (agent_memory search) → 注入 context
-   │   │   │   │   ├── 创建 Subagent::new() + run_with_sender(input)
-   │   │   │   │   ├── 执行完成后：
-   │   │   │   │   │   ├── 存储 conversation 到 agent_memory
-   │   │   │   │   │   ├── 记录到 agent_history
-   │   │   │   │   │   └── 返回 output
-   │   │   │   │   │
-   │   │   │   ├── NodeDef::Transform:
-   │   │   │   │   ├── 执行模板渲染 (Jinja2/Handlebars)
-   │   │   │   │   └── 返回渲染结果
-   │   │   │   │
-   │   │   │   ├── NodeDef::HumanApproval:
-   │   │   │   │   ├── 发送 ApprovalRequired 事件
-   │   │   │   │   ├── 等待用户审批 (oneshot channel)
-   │   │   │   │   └── 返回 {approved: bool, comment: string}
-   │   │   │   │
-   │   │   │   ├── NodeDef::Input:
-   │   │   │   │   └── 返回 workflow input
-   │   │   │   │
-   │   │   │   └── NodeDef::Output:
-   │   │   │       └── 设置 workflow output
-   │   │   │
-   │   │   └── 收集所有节点输出 → 更新 WorkflowContext
-   │   │
-   │   └── 评估条件边 → 决定下游节点是否执行
-   │
-   ├── 更新 workflow_run (status=completed, output=...)
-   └── 返回最终输出
+用户点击 Cancel
+  │
+  ▼
+WorkflowExecutor 收到 CancellationToken.cancel()
+  │
+  ├── 当前 stage 中正在运行的节点:
+  │   ├── tokio::select! { _ = cancel_token.cancelled() => return Err("cancelled") }
+  │   └── Subagent 的 run_with_sender 被 abort
+  │
+  ├── 后续 stages 不再执行
+  │
+  └── workflow_run 记录标记为 cancelled
 ```
 
-#### `WorkflowContext` — 节点间 Context 传递
+`CancellationToken` 是 `Clone` 的，从 `WorkflowExecutor` 传到每个 `execute_agent_node`，再通过 `tokio::select!` 传播到 `Subagent::run_with_sender()`。Subagent 内部的 LLM stream 和 tool execution 也通过 `CancellationToken` 感知取消。
 
-```rust
-pub struct WorkflowContext {
-    // 每个节点的输出
-    node_outputs: RwLock<HashMap<String, serde_json::Value>>,
-    // 全局共享上下文（所有节点可读）
-    shared: RwLock<serde_json::Value>,
-    // 输入参数
-    input: serde_json::Value,
-}
+### 4. 与现有系统的关系
 
-impl WorkflowContext {
-    // 上游节点输出 → 下游节点输入
-    pub fn resolve_input(
-        &self,
-        node_id: &str,
-        edges: &[EdgeDef],
-    ) -> serde_json::Value;
-
-    // 节点执行完成后存储输出
-    pub fn set_output(
-        &self,
-        node_id: &str,
-        output: serde_json::Value,
-    );
-}
-```
-
-**Context 传递机制**：
-
-```
-┌───────────┐     edge(data_mapping)      ┌───────────┐
-│  Node A   │ ──────────────────────────► │  Node B   │
-│ (Agent)   │   output: {result: "..."}   │ (Agent)   │
-└───────────┘                              └───────────┘
-
-data_mapping = {
-    "source_field": "output.result",     // 从 A 的 output.result 取值
-    "target_field": "input.context",      // 放入 B 的 input.context
-    "pass_through": true                  // 同时传递 A 的完整 output
-}
-```
-
-- `data_mapping` 定义字段级别的映射规则。
-- `pass_through: true` 时，上游的完整 output 作为 `context` 字段附加到下游 input。
-- 多个上游节点连到同一下游时，inputs 合并为数组。
-- 条件边：`condition` 字段求值为 `true` 时传递，`false` 时跳过下游节点。
-
-### 3. 与现有系统的关系
-
-| 现有组件 | 是否修改 | 如何复用 |
-|---------|---------|---------|
-| `RunManager` / `Brain` / `Run` | **不修改** | Workflow Executor 从 Brain 获取 config/client/skill_manager |
-| `Subagent` | **不修改** | Workflow 中的 Agent 节点通过 `Subagent::new()` + `run_with_sender()` 执行 |
-| `MemoryManager` | **不修改** | 主 Agent 的全局 Memory 保持不变。Agent Memory 是独立的新表 + 新 Store |
-| `SkillManager` | **不修改** | Agent 节点执行时，Subagent 的 SkillManager 从 Brain 继承 |
-| `ToolRegistry` | **不修改** | Agent 节点通过 `ToolRegistry::from_names(agent_def.tools)` 构建 |
-| `PermissionPolicy` | **不修改** | Agent 节点通过 `PermissionConfig` + `agent_def.permission_mode` 构建 |
-| `ContextEngine` | **不修改** | Subagent 内部的 ContextEngine 照常工作 |
-| `SessionManager` | **不修改** | Workflow Run 创建 session，Agent 执行创建 sub-session（parent_session_id 链接） |
-| `teams/MessageBus` | **可选复用** | V2 可考虑用 MessageBus 替代 WorkflowContext 做更灵活的 Agent 间通信 |
-| `Storage` (SQLite) | **扩展** | 新增 8 张表，通过 `CREATE TABLE IF NOT EXISTS` idempotent 添加 |
+| 现有组件 | 改动 | 复用方式 |
+|---------|------|---------|
+| `RunManager` / `Run` | **不动** | Workflow 不创建 Run，不经过 RunManager |
+| `Brain` | **只读访问** | `brain.config` / `brain.skill_manager` (pub 字段) |
+| `Subagent` | **小改**：新增 `new_with_memory()` + 2 个 field | Workflow agent 节点的执行体 |
+| `MemoryManager` | **不动** | 主 Agent 的全局 Memory 不受影响 |
+| `Storage` (SQLite) | **扩展**：新增 8 张表 | 同一个 `~/.agverse/memory.db` |
+| `SkillManager` | **不动** | Agent 执行时通过 brain.skill_manager 获取 |
+| `ToolRegistry` | **不动** | `from_names()` 或 `brain.build_tool_registry()` |
+| `PermissionPolicy` | **不动** | TrustMode 构建 `PermissionConfig` 传入 Subagent |
+| `ContextEngine` | **不动** | Subagent 内部的 ContextEngine 照常工作 |
+| `SessionManager` | **不动** | Workflow Run 创建 session，复用现有机制 |
 
 ---
 
@@ -725,59 +1473,51 @@ data_mapping = {
 }
 ```
 
-> 使用 `@xyflow/react`（React Flow v12，已更名）而非旧版 `reactflow`。这是 React 19 兼容的最新版本。
-
 ### 新增前端结构
 
 ```
 app/src/
 ├── features/
-│   ├── agents/                    ← NEW: Agent 管理状态
-│   │   ├── agentSlice.ts          ← Redux slice: agents[], loading, error
-│   │   ├── types.ts               ← AgentDef, AgentHistory, etc.
-│   │   └── thunks.ts              ← fetchAgents, createAgent, updateAgent, deleteAgent
-│   └── workflow/                  ← NEW: Workflow 管理状态
-│       ├── workflowSlice.ts       ← Redux slice: workflows[], activeWorkflow, runState
-│       ├── types.ts               ← WorkflowDef, NodeDef, EdgeDef, WorkflowRun
-│       └── thunks.ts              ← fetchWorkflows, createWorkflow, executeWorkflow
+│   ├── agents/                    ← NEW
+│   │   ├── agentSlice.ts
+│   │   ├── types.ts
+│   │   └── thunks.ts
+│   └── workflow/                  ← NEW
+│       ├── workflowSlice.ts
+│       ├── types.ts
+│       └── thunks.ts
 ├── components/
-│   ├── agents/                    ← NEW: Agent 管理组件
-│   │   ├── AgentList.tsx          ← Agent 列表侧边面板
-│   │   ├── AgentEditor.tsx        ← Agent 编辑器（扩展 NewAgentModal）
-│   │   └── AgentMemoryViewer.tsx  ← 查看 Agent Memory
-│   └── workflow/                  ← NEW: Workflow 编辑器组件
-│       ├── WorkflowEditor.tsx     ← React Flow 画布主组件
-│       ├── WorkflowSidebar.tsx    ← Agent 节点拖拽面板
-│       ├── AgentNode.tsx          ← 自定义 React Flow 节点
-│       ├── InputNode.tsx          ← 输入节点
-│       ├── OutputNode.tsx         ← 输出节点
-│       ├── TransformNode.tsx      ← 数据转换节点
-│       ├── ApprovalNode.tsx       ← 人工审核节点
-│       ├── EdgeConfigPanel.tsx    ← 边配置面板（data_mapping）
-│       └── WorkflowRunView.tsx    ← 运行时状态可视化
+│   ├── agents/                    ← NEW
+│   │   ├── AgentList.tsx
+│   │   ├── AgentEditor.tsx        ← 扩展 NewAgentModal
+│   │   └── AgentMemoryViewer.tsx
+│   └── workflow/                  ← NEW
+│       ├── WorkflowEditor.tsx     ← React Flow 画布
+│       ├── WorkflowSidebar.tsx    ← Node Palette
+│       ├── AgentNode.tsx
+│       ├── InputNode.tsx
+│       ├── OutputNode.tsx
+│       ├── TransformNode.tsx
+│       ├── ApprovalNode.tsx
+│       ├── EdgeConfigPanel.tsx
+│       └── WorkflowRunView.tsx
 ```
 
-### Agent CRUD UI（修复 NewAgentModal）
+### Agent Editor（修复 NewAgentModal）
 
-扩展现有 `NewAgentModal.tsx`，增加以下字段：
-- **Tools**：多选下拉（从 `ToolRegistry` 的可用 tools 列表选择）
-- **Permission Mode**：下拉选择（paranoid/standard/developer/permissive/yolo）
-- **Memory**：开关 + 模式选择（stateless/standard/deep）
-- **Max Iterations**：数字输入
-- **Max Context Tokens**：数字输入
-- **Icon / Color**：图标和颜色选择器（用于 React Flow 节点样式）
-
-保存时调用新增的 `create_agent` / `update_agent` Tauri command（后端实现）。
+扩展现有 `NewAgentModal.tsx`，增加：
+- **Tools**：多选（从可用 tools 列表选择，空 = 继承全部）
+- **Permission Mode**：下拉（paranoid/standard/developer/permissive/yolo）
+- **Memory**：开关 + 模式（stateless/standard/deep）
+- **Max Iterations / Max Context Tokens**：数字输入
+- **Icon / Color**：用于 React Flow 节点样式
 
 ### React Flow Workflow Editor
 
-#### 画布布局
-
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  Workflow Toolbar: [Save] [Run] [Validate] [Export]             │
+│  Toolbar: [Save] [Run] [Validate]                               │
 ├──────────┬──────────────────────────────────────────────────────┤
-│          │                                                      │
 │  Node    │              React Flow Canvas                       │
 │  Palette │                                                      │
 │          │   ┌────────┐     ┌────────────┐     ┌────────┐      │
@@ -785,279 +1525,176 @@ app/src/
 │  > Agent │   └────────┘     │ Code       │     └────────┘      │
 │  > Trans │                  │ Reviewer   │                      │
 │  > Apprv │                  └────────────┘                      │
-│  > Output│                       │                              │
+│  > Output│                       │ condition: output.success   │
 │          │                       ▼                              │
 │  Agents: │                  ┌────────────┐                      │
 │  [Code   │                  │  Agent B   │                      │
-│   Revwr] │                  │  Security  │                      │
-│  [Bldr]  │                  │  Scanner   │                      │
-│  [Test]  │                  └────────────┘                      │
-│          │                                                      │
+│   Revwr] │                  │  Fixer     │                      │
+│  [Bldr]  │                  └────────────┘                      │
+│  [Test]  │                                                      │
 ├──────────┴──────────────────────────────────────────────────────┤
-│  Node Config Panel (选中节点时显示)                               │
-│  - Agent: Code Reviewer                                         │
-│  - Input Template: {{upstream.output}}                          │
-│  - Output Variable: review_result                               │
+│  Node Config / Edge Config Panel                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-#### 自定义节点组件 (`AgentNode.tsx`)
+#### 数据流：React Flow ↔ 后端
 
-```tsx
-function AgentNode({ data, id }: NodeProps<AgentNodeData>) {
-  const status = data.runStatus; // idle / running / completed / failed
-  return (
-    <div className={`workflow-agent-node status-${status}`}>
-      <div className="node-header" style={{ background: data.color }}>
-        {data.icon && <data.icon size={14} />}
-        <span>{data.label}</span>
-      </div>
-      <div className="node-body">
-        <p className="node-desc">{data.description}</p>
-        {data.runStatus === 'running' && <Spinner />}
-        {data.runStatus === 'completed' && <CheckIcon size={12} />}
-        {data.runStatus === 'failed' && <XIcon size={12} />}
-      </div>
-      {/* React Flow Handles (输入/输出端口) */}
-      <Handle type="target" position={Position.Left} />
-      <Handle type="source" position={Position.Right} />
-    </div>
-  );
-}
+```
+React Flow (前端)                     Database (后端)
+  nodes: Node[]                       
+  edges: Edge[]                       
+       │                              
+  保存时:                              
+       ├─ nodes → workflow_nodes 表 (node_type, agent_id, config, position)
+       ├─ edges → workflow_edges 表 (source, target, condition, data_mapping)
+       │
+  加载时:                              
+       └─ workflow_nodes + workflow_edges → 转换为 React Flow nodes/edges
 ```
 
-#### 交互流程
+React Flow 的 `nodes` 和 `edges` 是前端运行时状态，保存时序列化为后端表格式。加载时从后端表反序列化为 React Flow 格式。**后端 executor 不接触 React Flow 的数据结构**。
 
-1. **拖拽创建**：从左侧 Node Palette 拖拽 Agent 到画布 → 创建 `workflow_nodes` 记录。
-2. **连线**：从节点输出端口拖到另一节点输入端口 → 创建 `workflow_edges` 记录。
-3. **配置**：点击节点 → 右侧/底部面板显示配置项（input template、output variable、tools override 等）。
-4. **保存**：点击 Save → 将 React Flow 的 nodes/edges 序列化 → 调用 `save_workflow` Tauri command → 写入数据库。
-5. **验证**：点击 Validate → 后端执行 `WorkflowPlanner::plan()` → 检测环、孤立节点、缺失配置 → 返回错误列表。
-6. **运行**：点击 Run → 调用 `execute_workflow` Tauri command → 后端创建 `workflow_runs` 记录 → 执行 → 前端通过 `agent-event` 流接收节点状态更新。
+---
 
-### 状态管理
+## Tauri Commands
 
-#### `agentSlice.ts`
+### Agent CRUD
 
-```typescript
-interface AgentState {
-  agents: AgentDef[];
-  loading: boolean;
-  error: string | null;
-  selectedAgentId: string | null;
-}
+```rust
+#[tauri::command]
+async fn create_agent(name, description, system_prompt, model, skills, tools,
+    permission_mode, permission_rules, max_iterations, max_context_tokens,
+    memory_enabled, icon, color, state) -> Result<AgentDef, String>;
 
-// Thunks: fetchAgents, createAgent, updateAgent, deleteAgent, getAgentMemory
+#[tauri::command]
+async fn list_agents(state) -> Result<Vec<AgentDef>, String>;
+
+#[tauri::command]
+async fn get_agent(id, state) -> Result<AgentDef, String>;
+
+#[tauri::command]
+async fn update_agent(id, updates, state) -> Result<AgentDef, String>;
+
+#[tauri::command]
+async fn delete_agent(id, state) -> Result<(), String>;
+
+#[tauri::command]
+async fn search_agent_memory(agent_id, query, top_k, state) -> Result<Vec<Value>, String>;
+
+#[tauri::command]
+async fn get_agent_history(agent_id, limit, state) -> Result<Vec<Value>, String>;
+
+#[tauri::command]
+async fn run_agent_standalone(agent_id, input, session_id, state) -> Result<String, String>;
 ```
 
-#### `workflowSlice.ts`
+### Workflow CRUD + Execution
 
-```typescript
-interface WorkflowState {
-  workflows: WorkflowDef[];
-  activeWorkflow: WorkflowDef | null;
-  // React Flow nodes/edges (编辑时状态)
-  nodes: Node[];
-  edges: Edge[];
-  // 运行时状态
-  runState: WorkflowRunState | null;
-  // 每个节点的运行状态
-  nodeRunStates: Record<string, NodeRunStatus>;
-}
+```rust
+#[tauri::command]
+async fn create_workflow(name, description, state) -> Result<WorkflowDef, String>;
+
+#[tauri::command]
+async fn list_workflows(state) -> Result<Vec<WorkflowDef>, String>;
+
+#[tauri::command]
+async fn get_workflow(id, state) -> Result<WorkflowDef, String>;
+
+#[tauri::command]
+async fn save_workflow(id, name, description, nodes, edges, config, state) -> Result<WorkflowDef, String>;
+
+#[tauri::command]
+async fn delete_workflow(id, state) -> Result<(), String>;
+
+#[tauri::command]
+async fn validate_workflow(id, state) -> Result<ValidationResult, String>;
+
+#[tauri::command]
+async fn execute_workflow(id, input, session_id, state) -> Result<String, String>;
+
+#[tauri::command]
+async fn cancel_workflow_run(run_id, state) -> Result<(), String>;
+
+#[tauri::command]
+async fn get_workflow_run(run_id, state) -> Result<WorkflowRun, String>;
+
+#[tauri::command]
+async fn list_workflow_runs(workflow_id, limit, state) -> Result<Vec<WorkflowRun>, String>;
 ```
 
 ---
 
-## Tauri Commands 设计
+## Context 传递机制
 
-### Agent CRUD Commands
-
-```rust
-#[tauri::command]
-async fn create_agent(
-    name: String,
-    description: String,
-    system_prompt: String,
-    model: String,
-    skills: Vec<String>,
-    tools: Vec<String>,
-    permission_mode: String,
-    permission_rules: serde_json::Value,
-    max_iterations: usize,
-    max_context_tokens: usize,
-    memory_enabled: u8,
-    icon: String,
-    color: String,
-    state: State<'_, AppState>,
-) -> Result<AgentDef, String>;
-
-#[tauri::command]
-async fn list_agents(state: State<'_, AppState>) -> Result<Vec<AgentDef>, String>;
-
-#[tauri::command]
-async fn get_agent(id: String, state: State<'_, AppState>) -> Result<AgentDef, String>;
-
-#[tauri::command]
-async fn update_agent(id: String, updates: serde_json::Value, state: State<'_, AppState>) -> Result<AgentDef, String>;
-
-#[tauri::command]
-async fn delete_agent(id: String, state: State<'_, AppState>) -> Result<(), String>;
-
-#[tauri::command]
-async fn search_agent_memory(agent_id: String, query: String, top_k: usize, state: State<'_, AppState>) -> Result<Vec<serde_json::Value>, String>;
-
-#[tauri::command]
-async fn get_agent_history(agent_id: String, limit: usize, state: State<'_, AppState>) -> Result<Vec<serde_json::Value>, String>;
-
-#[tauri::command]
-async fn run_agent_standalone(
-    agent_id: String,
-    input: String,
-    session_id: Option<String>,
-    state: State<'_, AppState>,
-) -> Result<String, String>;  // returns run_id (复用 Run 事件流)
-```
-
-### Workflow CRUD Commands
-
-```rust
-#[tauri::command]
-async fn create_workflow(name: String, description: String, state: State<'_, AppState>) -> Result<WorkflowDef, String>;
-
-#[tauri::command]
-async fn list_workflows(state: State<'_, AppState>) -> Result<Vec<WorkflowDef>, String>;
-
-#[tauri::command]
-async fn get_workflow(id: String, state: State<'_, AppState>) -> Result<WorkflowDef, String>;
-
-#[tauri::command]
-async fn save_workflow(
-    id: String,
-    name: String,
-    description: String,
-    nodes: serde_json::Value,   // React Flow nodes
-    edges: serde_json::Value,   // React Flow edges
-    config: serde_json::Value,
-    state: State<'_, AppState>,
-) -> Result<WorkflowDef, String>;
-
-#[tauri::command]
-async fn delete_workflow(id: String, state: State<'_, AppState>) -> Result<(), String>;
-
-#[tauri::command]
-async fn validate_workflow(id: String, state: State<'_, AppState>) -> Result<ValidationResult, String>;
-
-#[tauri::command]
-async fn execute_workflow(
-    id: String,
-    input: serde_json::Value,
-    session_id: Option<String>,
-    state: State<'_, AppState>,
-) -> Result<String, String>;  // returns workflow_run_id
-
-#[tauri::command]
-async fn get_workflow_run(run_id: String, state: State<'_, AppState>) -> Result<WorkflowRun, String>;
-
-#[tauri::command]
-async fn list_workflow_runs(workflow_id: String, limit: usize, state: State<'_, AppState>) -> Result<Vec<WorkflowRun>, String>;
-```
-
----
-
-## Context 传递机制详细设计
-
-### 问题
-
-Agent 间 Context 传递是 Multi-Agent System 的核心难题。需要决定：
-
-1. **传什么**：完整的对话历史？仅最终输出？结构化数据？
-2. **怎么传**：直接注入 system prompt？作为 user message？还是结构化 JSON？
-3. **粒度**：字段级映射 vs 全量传递。
-
-### 方案：结构化 JSON + 模板渲染
+### 结构化 State 传递（非字符串模板）
 
 ```
 上游 Agent A 输出:
 {
   "result": "代码审查完成，发现3个问题...",
-  "issues": [...],
-  "metadata": {"files_reviewed": 5, "time_ms": 12000}
+  "issues": ["null check missing", "unwrap without context"],
+  "success": true,
+  "metadata": {"files_reviewed": 5}
 }
 
        │
        │  Edge data_mapping:
-       │  {
-       │    "source_field": "result",
-       │    "target_field": "context",
-       │    "pass_through": false
-       │  }
+       │  { "source_field": "result", "target_field": "context", "pass_through": false }
        │
+       │  Edge condition:
+       │  "success == true"  ← 条件路由
        ▼
 
-下游 Agent B 输入:
+下游 Agent B 输入 (结构化 JSON):
 {
   "task": "根据审查结果修复代码",
-  "context": "代码审查完成，发现3个问题..."  // ← 来自 Agent A
+  "context": "代码审查完成，发现3个问题...",   // ← 来自 Agent A.result
+  "_shared": { ... },                         // ← 全局共享 state
+  "_workflow_input": { ... }                   // ← 原始输入
 }
 ```
 
-### Context 注入到 Agent 的方式
+### Agent 输入组装
 
-Agent 节点执行时，输入被组装为一条 user message：
+结构化 JSON → 可读文本（注入 Subagent 的 user message）：
 
-```
-## Task
-{node.config.task_template 渲染后的内容}
+```rust
+fn format_agent_input(node_config: &Value, input: &Value) -> String {
+    let task_template = node_config.get("input_template")
+        .and_then(|t| t.as_str()).unwrap_or("Complete the following task:");
 
-## Context from Upstream
-{上游传递的结构化数据，格式化为可读文本}
+    // 安全的模板渲染：只替换 {{field}} 不做递归求值
+    let task = render_template_safe(task_template, input);
 
-## Additional Instructions
-{node.config.instructions}
-```
+    let mut msg = format!("## Task\n{}\n\n", task);
 
-这保持了与现有 `Subagent` 接口的兼容性 —— Subagent 的 `run(task: &str)` 只需要一个字符串输入。
+    // 注入上游 context
+    if let Some(obj) = input.as_object() {
+        let context_fields: Vec<_> = obj.iter()
+            .filter(|(k, _)| !k.starts_with('_'))
+            .collect();
+        if !context_fields.is_empty() {
+            msg.push_str("## Context from Upstream\n\n");
+            for (key, val) in context_fields {
+                msg.push_str(&format!("### {}\n{}\n\n", key, format_value(val)));
+            }
+        }
+    }
 
-### 多上游汇聚
-
-当一个节点有多个上游时：
-
-```
-Agent A ──┐
-          ├──► Agent C
-Agent B ──┘
-```
-
-Agent C 的输入：
-
-```
-## Task
-{C 的 task}
-
-## Context from Upstream Agents
-
-### From: Code Reviewer (Agent A)
-{A 的输出}
-
-### From: Security Scanner (Agent B)
-{B 的输出}
+    msg
+}
 ```
 
-### 条件分支
-
-边上的 `condition` 字段支持简单表达式：
+### 条件分支示例
 
 ```
-condition: "output.success == true"
+                    ┌─ condition: "success == true" ───► Agent B (Fixer)
+Agent A (Reviewer) ─┤
+                    └─ condition: "success == false" ──► Agent C (Reporter)
 ```
 
-执行时，对上游节点的 output JSON 求值。支持：
-- `output.field == value`
-- `output.field != value`
-- `output.field contains "keyword"`
-- `output.field > 100`
-
-不满足条件的边不传递 Context，下游节点如果没有其他满足条件的上游边，则被标记为 `skipped`。
+- Agent A 输出 `{success: true, result: "..."}` → 条件 `success == true` 满足 → Agent B 执行
+- 条件 `success == false` 不满足 → Agent C 被标记为 `skipped`
 
 ---
 
@@ -1065,67 +1702,41 @@ condition: "output.success == true"
 
 ### "越用越强" 的实现
 
-每个自定义 Agent 通过以下机制持续进化：
+每次自定义 Agent 执行时：
 
-1. **Memory 积累**：每次执行后，对话存储到 `agent_memory` 表。下次执行前，检索相关记忆注入 context。
-   - 例如 "Code Reviewer" 第 10 次审查代码时，可以回忆起前 9 次审查中发现的常见问题模式。
+1. **执行前 — Memory 检索注入**：用 input 作为 query 检索 `agent_memory`（hybrid search: BM25 + HNSW + Salience），top-5 结果注入 Subagent 的 ContextEngine Active Memory segment。限制 2000 tokens。
+2. **执行后 — Memory 存储**：对话存储到 `agent_memory`（user message + assistant output）。
+3. **执行后 — History 记录**：记录到 `agent_history`（含 token/cost/latency）。
+4. **定期 — Consolidation**：对 `agent_memory` 执行去重（`MemoryConsolidator`）和冷记忆淘汰（`prune_cold`）。
+5. **Deep 模式 — Reflection**：`memory_enabled = 2` 时，后台从对话中提取事实写入 `agent_memory`（`source = "reflection"`）。
 
-2. **History 回顾**：`agent_history` 记录每次执行的输入/输出/成功与否。可以在 system prompt 中注入最近 N 次执行摘要。
-   - 例如 "你最近 5 次执行中，有 2 次因为遗漏边界条件而失败，请特别注意。"
+### Experimental: Auto-Skill Generation（人工确认后生效）
 
-3. **Memory 检索注入**：Agent 执行前，自动用 input 作为 query 检索 `agent_memory`，将 top-K 结果注入 context 的 Active Memory segment。
-   - 复用现有 `SalienceScorer` + Ebbinghaus 衰减 + 重要性评分机制。
+> **标记为 experimental**：自动 skill 生成的质量在业界未被证明可靠。产出为**草稿**，必须人工确认后才生效。
 
-4. **Consolidation**：定期对 `agent_memory` 执行去重和升级（`consolidate`），将高频访问的记忆强化，冷记忆淘汰。
-   - 复用现有 `MemoryConsolidator` 逻辑。
-
-5. **Reflection**（Deep 模式）：如果 Agent 的 `memory_enabled = 2`（Deep），后台 `ReflectionDaemon` 自动从对话中提取事实，写入 `agent_memory`。
-   - 复用现有 `ReflectionDaemon` 逻辑，但 target 表从 `recall_memory` 改为 `agent_memory`。
-
-### 进化数据流
-
-```
-Agent 执行
-  │
-  ├── 执行前:
-  │   ├── search agent_memory(input, top_k=5) → 相关记忆
-  │   ├── get_recent_history(agent_id, n=3) → 最近执行摘要
-  │   └── 注入到 Subagent 的 ContextEngine (Active Memory segment)
-  │
-  ├── 执行中:
-  │   └── Subagent 正常运行 (LLM + tools + skills)
-  │
-  └── 执行后:
-      ├── store agent_memory(role="user", content=input)
-      ├── store agent_memory(role="assistant", content=output)
-      ├── record agent_history(agent_id, input, output, success)
-      └── if memory_enabled == 2: trigger ReflectionDaemon
-```
+- Reflector 分析 `agent_history`，识别重复模式（如 "Code Reviewer" 连续 5 次都检查了 null safety）
+- 生成 skill 草稿（`reflector-{slug}.md`），写入 `~/.agverse/skills/drafts/`
+- 前端通知用户审核草稿
+- 用户确认后移动到 `~/.agverse/skills/`，下次 SkillManager scan 时自动加载
+- **未确认的草稿不会被加载**
 
 ---
 
-## 与主 Agent 的隔离保证
-
-### 隔离原则
+## 隔离保证
 
 | 维度 | 主 Agent | 自定义 Agent |
 |------|---------|-------------|
 | Memory 表 | `recall_memory` | `agent_memory` |
 | Memory 索引 | 全局 BM25/HNSW | per-agent_id BM25/HNSW |
-| Session | `sessions` (session_type='main') | `sessions` (session_type='subagent' 或新增 'custom_agent') |
-| Config | `config.toml` 全局配置 | `agents` 表中的 per-agent 配置 |
-| 执行路径 | `RunManager` → `Brain` → `Run` | `WorkflowExecutor` → `Subagent::new()` → `run_with_sender()` |
-| 事件流 | `broadcast::Sender<Envelope>` | 同一个 broadcast（通过 `subagent_id` 区分） |
-| 工具 | `ToolRegistry::with_defaults()` + 全部注册 | `ToolRegistry::from_names(agent_def.tools)` 过滤 |
-| 权限 | 全局 `PermissionConfig` | per-agent `PermissionConfig` (mode + rules) |
+| Memory Mutex | `MemoryManager` 的 Mutex | `AgentMemoryStore` 的 Mutex |
+| Session | `sessions` (type='main') | `sessions` (type='subagent') |
+| Config | `config.toml` | `agents` 表 |
+| 执行路径 | `RunManager` → `Run` | `WorkflowExecutor` → `Subagent` |
+| 工具 | `ToolRegistry::with_defaults()` | `ToolRegistry::from_names()` 或继承 |
+| 权限 | 全局 `PermissionConfig` | TrustMode + per-agent `PermissionConfig` |
+| 事件流 | `broadcast::Sender<Envelope>` | 同一 broadcast（通过 `subagent_id` 区分） |
 
-### 不影响主 Agent 的具体措施
-
-1. **数据库表隔离**：新增 8 张表，不修改现有 10 张表的 schema。所有新表的读写操作通过独立的 `AgentRegistry` / `AgentMemoryStore` / `WorkflowEngine`，不触碰 `MemoryManager` / `SessionManager` 的现有方法。
-2. **执行路径隔离**：主 Agent 通过 `RunManager::create_run()` 执行。自定义 Agent 通过 `WorkflowExecutor::execute_node()` 执行，使用 `Subagent::new()` 构造，不创建新的 `Run`。
-3. **Memory 隔离**：`agent_memory` 表以 `agent_id` 为隔离维度，与 `recall_memory` 的 `session_id` 完全独立。`AgentMemoryStore` 是独立 struct，不共享 `MemoryManager` 的状态。
-4. **配置隔离**：自定义 Agent 的配置存在 `agents` 表中，不修改 `config.toml`。`AgentDef.model` 为空时 fallback 到全局 `default_model`，但不覆盖全局配置。
-5. **事件流复用**：自定义 Agent 执行时复用现有 `broadcast::Sender<Envelope>` 事件流，事件通过 `subagent_id` 字段区分。前端已有 `SubagentStarted` / `SubagentEnded` 等事件处理逻辑，可直接复用。
+**主 Agent 的 Memory 操作完全不经过 `agent_memory` 表，自定义 Agent 的 Memory 操作完全不经过 `recall_memory` 表。两者使用不同的 Mutex，不存在锁竞争。**
 
 ---
 
@@ -1133,68 +1744,66 @@ Agent 执行
 
 ### Phase 1: 后端基础设施（Agent 持久化 + Memory 隔离）
 
-| ID | Task | Owner | Status | ETA |
-|----|------|-------|--------|-----|
-| T1 | 设计并实现 8 张新数据库表的 schema + migrations | agent_core | Todo | TBD |
-| T2 | 实现 `AgentRegistry` (CRUD + `build_subagent_config` / `build_permission_config`) | agent_core | Todo | TBD |
-| T3 | 实现 `AgentMemoryStore` (store / search / search_hybrid / consolidate) | agent_core | Todo | TBD |
-| T4 | 实现 `AgentHistoryStore` (record / list / get_recent) | agent_core | Todo | TBD |
-| T5 | 实现 Tauri Commands: `create_agent` / `list_agents` / `get_agent` / `update_agent` / `delete_agent` | agent_core | Todo | TBD |
-| T6 | 实现 Tauri Commands: `search_agent_memory` / `get_agent_history` / `run_agent_standalone` | agent_core | Todo | TBD |
-| T7 | 实现 Agent 执行时的 Memory 注入逻辑 (执行前检索 + 执行后存储) | agent_core | Todo | TBD |
+| ID | Task | Status |
+|----|------|--------|
+| T1 | 实现 8 张新表 schema + `add_column_if_not_exists` 迁移工具函数 | Todo |
+| T2 | 实现 `AgentRegistry` (CRUD + `build_subagent_config` / `build_permission_config` / `build_model_config`) | Todo |
+| T3 | 实现 `AgentMemoryStore` (store / search / search_hybrid / consolidate / build_context_injection) | Todo |
+| T4 | 实现 `AgentHistoryStore` (record / list / get_recent) | Todo |
+| T5 | 扩展 `Subagent`：新增 `new_with_memory()` + 2 个 field + memory 注入/存储逻辑 | Todo |
+| T6 | 实现 Tauri Commands: agent CRUD + memory search + history + run_standalone | Todo |
+| T7 | 验证：主 Agent 功能不受影响（现有测试全部通过） | Todo |
 
 ### Phase 2: 后端 Workflow 引擎
 
-| ID | Task | Owner | Status | ETA |
-|----|------|-------|--------|-----|
-| T8 | 实现 `WorkflowDef` + `NodeDef` + `EdgeDef` + DB CRUD | agent_core | Todo | TBD |
-| T9 | 实现 `WorkflowPlanner` (Kahn 拓扑排序 + 环检测 + 并行分组) | agent_core | Todo | TBD |
-| T10 | 实现 `WorkflowContext` (node_outputs + data_mapping 解析 + 条件边评估) | agent_core | Todo | TBD |
-| T11 | 实现 `WorkflowExecutor` (stage 并行执行 + agent/transform/approval 节点) | agent_core | Todo | TBD |
-| T12 | 实现 Tauri Commands: workflow CRUD + `execute_workflow` + `validate_workflow` | agent_core | Todo | TBD |
-| T13 | Workflow 执行事件流 (复用 broadcast Envelope, 新增 `WorkflowNodeStarted` / `WorkflowNodeEnded` 事件) | agent_core | Todo | TBD |
+| ID | Task | Status |
+|----|------|--------|
+| T8 | 实现 `WorkflowDef` + `NodeDef` + `EdgeDef` + DB CRUD | Todo |
+| T9 | 实现 `WorkflowPlanner` (Kahn 拓扑排序 + 环检测 + 并行分组) | Todo |
+| T10 | 实现 `WorkflowContext` (结构化 state + data_mapping + 条件路由评估) | Todo |
+| T11 | 实现 `TrustMode` (Inherit / Trusted / Readonly) | Todo |
+| T12 | 实现 `WorkflowExecutor` (stage 并行 + semaphore + cancel 传播 + 节点级 token/cost 统计) | Todo |
+| T13 | 实现 Tauri Commands: workflow CRUD + execute + cancel + run history | Todo |
+| T14 | 新增事件类型: `WorkflowNodeStarted` / `WorkflowNodeEnded` / `WorkflowCompleted` | Todo |
 
 ### Phase 3: 前端 Agent CRUD
 
-| ID | Task | Owner | Status | ETA |
-|----|------|-------|--------|-----|
-| T14 | 安装 `@xyflow/react` 依赖 | agent_core | Todo | TBD |
-| T15 | 实现 `agentSlice` (Redux state + thunks) | agent_core | Todo | TBD |
-| T16 | 扩展 `NewAgentModal` → `AgentEditor` (增加 tools / permissions / memory / max_iterations 字段) | agent_core | Todo | TBD |
-| T17 | 实现 `AgentList` 侧边面板 (列出/搜索/删除 Agent) | agent_core | Todo | TBD |
-| T18 | 实现 `AgentMemoryViewer` (查看 Agent 的 memory 和 history) | agent_core | Todo | TBD |
+| ID | Task | Status |
+|----|------|--------|
+| T15 | 安装 `@xyflow/react` 依赖 | Todo |
+| T16 | 实现 `agentSlice` + thunks | Todo |
+| T17 | 扩展 `NewAgentModal` → `AgentEditor` (增加 tools/permissions/memory/max_iterations) | Todo |
+| T18 | 实现 `AgentList` 侧边面板 | Todo |
+| T19 | 实现 `AgentMemoryViewer` | Todo |
 
 ### Phase 4: 前端 Workflow Editor
 
-| ID | Task | Owner | Status | ETA |
-|----|------|-------|--------|----- |
-| T19 | 实现 `workflowSlice` (Redux state + thunks) | agent_core | Todo | TBD |
-| T20 | 实现 `WorkflowEditor` 主画布 (React Flow + 自定义节点/边) | agent_core | Todo | TBD |
-| T21 | 实现 `WorkflowSidebar` (Node Palette + Agent 列表拖拽) | agent_core | Todo | TBD |
-| T22 | 实现自定义节点组件 (`AgentNode` / `InputNode` / `OutputNode` / `TransformNode` / `ApprovalNode`) | agent_core | Todo | TBD |
-| T23 | 实现 `EdgeConfigPanel` (data_mapping / condition 配置) | agent_core | Todo | TBD |
-| T24 | 实现 `WorkflowRunView` (运行时节点状态可视化 + 事件流监听) | agent_core | Todo | TBD |
+| ID | Task | Status |
+|----|------|--------|
+| T20 | 实现 `workflowSlice` + thunks | Todo |
+| T21 | 实现 `WorkflowEditor` 画布 (React Flow + 自定义节点/边) | Todo |
+| T22 | 实现 `WorkflowSidebar` (Node Palette + Agent 拖拽) | Todo |
+| T23 | 实现自定义节点组件 (Agent / Input / Output / Transform / Approval) | Todo |
+| T24 | 实现 `EdgeConfigPanel` (data_mapping + condition 配置) | Todo |
+| T25 | 实现 `WorkflowRunView` (节点状态可视化 + 事件流 + token/cost 显示) | Todo |
 
 ### Phase 5: 集成测试与打磨
 
-| ID | Task | Owner | Status | ETA |
-|----|------|-------|--------|-----|
-| T25 | 端到端测试: 创建 Agent → 在 Workflow 中使用 → 执行 → 验证 Memory 积累 | agent_core | Todo | TBD |
-| T26 | 验证主 Agent 不受影响 (现有功能回归测试) | agent_core | Todo | TBD |
-| T27 | Workflow 验证器 UI (显示错误/警告) | agent_core | Todo | TBD |
-| T28 | Workflow Run 历史 + 结果查看 | agent_core | Todo | TBD |
+| ID | Task | Status |
+|----|------|--------|
+| T26 | 端到端: 创建 Agent → Workflow 中使用 → 执行 → 验证 Memory 积累 | Todo |
+| T27 | 回归测试: 主 Agent 功能完全正常 | Todo |
+| T28 | Workflow 验证器 UI (环检测/孤立节点/缺失配置) | Todo |
+| T29 | 条件路由端到端测试 | Todo |
+| T30 | TrustMode 各模式测试 | Todo |
 
----
+### Phase 6: Experimental — Agent 进化
 
-## Milestones
-
-| Milestone | Description | Target Date |
-|-----------|-------------|-------------|
-| M1 | 后端 Agent 持久化 + Memory 隔离就绪 (T1-T7) | TBD |
-| M2 | 后端 Workflow 引擎就绪 (T8-T13) | TBD |
-| M3 | 前端 Agent CRUD 就绪，`create_agent` 可用 (T14-T18) | TBD |
-| M4 | 前端 Workflow Editor 可拖拽/保存/运行 (T19-T24) | TBD |
-| M5 | 端到端测试通过，主 Agent 无回归 (T25-T28) | TBD |
+| ID | Task | Status |
+|----|------|--------|
+| T31 | Reflector 分析 agent_history → 生成 skill 草稿 (写入 drafts/) | Todo |
+| T32 | 前端 skill 草稿审核 UI | Todo |
+| T33 | 确认后 skill 生效 + 加载测试 | Todo |
 
 ---
 
@@ -1202,49 +1811,57 @@ Agent 执行
 
 | Risk | Impact | Likelihood | Mitigation |
 |------|--------|------------|------------|
-| Agent Memory 的 BM25/HNSW per-agent 索引内存膨胀 | Med | Med | 索引 lazy-init，仅活跃 Agent 的索引常驻内存。不活跃 Agent 的索引在超时后卸载，下次访问重建。 |
-| Workflow 执行中某个 Agent 节点超时/失败导致整个 Workflow 卡住 | High | Med | 每个 Agent 节点设置 timeout（可配置），超时后标记为 failed，条件边可配置失败行为（abort / skip / use_default）。 |
-| 大量 Agent 并行执行导致 LLM API rate limit | High | High | `WorkflowConfig.max_concurrent` 限制并行度。Executor 使用 semaphore 控制并发。 |
-| React Flow 画布数据与后端 DAG 不一致（前端画了环但后端未检测） | Med | Low | 保存时后端强制 `validate_workflow`，前端在保存前预检。运行前再次验证。 |
-| Agent Memory 检索注入导致 context 过长 | Med | Med | 限制注入的 memory 条数（top_k=5）和总 token 数（如 2000 tokens）。超出时按 salience score 截断。 |
-| 主 Agent 性能受影响 | High | Low | 所有新增表的读写走独立 Storage 连接或独立 Mutex，不与 `MemoryManager` 的 Mutex 竞争。Workflow 执行在独立 tokio task 中运行。 |
-| Subagent 的 tool 权限泄漏（Agent 配置了不该有的 tool） | High | Low | `build_subagent_config` 时严格按 `AgentDef.tools` 过滤，empty = 继承全部。Permission 层面额外校验。 |
+| Agent Memory 的 per-agent BM25/HNSW 索引内存膨胀 | Med | Med | 索引 lazy-init + LRU 淘汰（不活跃 Agent 的索引超时卸载） |
+| Workflow 节点超时导致整个 Workflow 卡住 | High | Med | 每节点 timeout（可配置）+ `on_node_failure` 策略（abort/continue/skip） |
+| 大量 Agent 并行执行撞 LLM API rate limit | High | High | `Semaphore` 限制并行度（默认 3）+ 指数退避重试 |
+| React Flow 画布数据与后端 DAG 不一致 | Med | Low | 保存时后端强制 `validate_workflow`；运行前再次验证 |
+| Agent Memory 注入导致 context 过长 | Med | Med | 限制 top_k=5 + 总 token ≤ 2000 + salience 截断 |
+| 主 Agent 性能受影响 | High | Low | 独立 Mutex + 独立表 + Workflow 执行在独立 tokio task |
+| 条件表达式解析出错 | Med | Med | 解析失败时默认 `true`（传递）+ 记录 warning 日志 |
+| Trusted 模式下 Agent 执行危险操作 | High | Med | 前端创建 Trusted workflow 时二次确认 + 审计日志 |
+| Auto-skill 生成垃圾内容 | Med | Med | **Experimental**：草稿必须人工确认后生效 |
 
 ---
 
 ## Success Criteria
 
-1. 用户可以在 `NewAgentModal`（扩展版）中创建自定义 Agent，保存后数据持久化到 SQLite。
-2. 用户可以查看 Agent 列表，编辑/删除已有 Agent。
+1. 用户可以在 `AgentEditor` 中创建自定义 Agent，保存后持久化到 SQLite。
+2. 用户可以查看/编辑/删除 Agent。
 3. 用户可以在 React Flow 画布上拖拽 Agent 节点，连线组成 Workflow，保存到数据库。
-4. 用户可以点击 Run 执行 Workflow，前端实时显示每个节点的运行状态。
-5. 每次自定义 Agent 执行后，对话存储到该 Agent 的独立 Memory（`agent_memory` 表）。
-6. 同一个 Agent 再次执行时，能够检索到之前的 Memory 并注入 context（"越用越强"）。
-7. 主 Agent（现有 chat 功能）的行为和性能不受任何影响。
-8. Workflow 支持条件分支、并行执行、人工审核节点。
-9. Workflow 执行结果和每个节点的输入/输出可追溯（`workflow_run_node_results` 表）。
+4. 用户可以配置**节点级 Router**（如 `success == true` 时走 Fixer，否则走 Reporter），Workflow 执行时自动路由。
+5. 用户可以设置 Workflow 的 **TrustMode**（Trusted 模式下 bash/write 自动放行）。
+6. 用户点击 Run 执行 Workflow，前端实时显示每个节点的运行状态、token 消耗、延迟。
+7. 每次自定义 Agent 执行后，对话存储到该 Agent 的独立 Memory。
+8. 同一 Agent 再次执行时，能检索到之前的 Memory 并注入 context。
+9. 主 Agent（现有 chat）的行为和性能不受任何影响。
+10. 用户可以取消正在执行的 Workflow，所有节点停止。
+11. Workflow 执行结果和每个节点的输入/输出/token/cost 可追溯。
+12. (Experimental) Reflector 可生成 skill 草稿，用户审核后生效。
 
 ---
 
 ## Open Questions
 
-1. **Agent Memory 是否需要跨 Agent 共享？** 当前设计是每个 Agent 独立 Memory。如果需要共享（例如 "Code Reviewer" 和 "Security Scanner" 共享代码库知识），是否需要引入 "Memory Group" 概念？还是通过 Workflow 的 Context 传递来间接共享？
-   - **建议**：V1 不做跨 Agent Memory 共享。通过 Workflow Context 传递实现间接共享。V2 再考虑 Memory Group。
+1. **Agent Memory 跨 Agent 共享？**
+   - V1 已支持 opt-in 的 `memory_group`：同组 agent 共享一个 memory 索引（`memory_key` = group name）。默认 `memory_group` 为空（per-agent 隔离）。是否需要更细粒度的共享规则（如 read-only access to other agent's memory）留到 V2。
 
-2. **Workflow 是否支持循环（cycle）？** 当前设计是 DAG（无环）。某些场景可能需要循环（例如 "审查 → 修复 → 再审查" 直到通过）。
-   - **建议**：V1 仅支持 DAG。循环通过 `HumanApproval` 节点 + 手动重新运行实现。V2 考虑引入 `Loop` 节点类型。
+2. **Workflow 是否支持循环？**
+   - 建议：V1 仅 DAG。通过 `HumanApproval` 节点 + 手动重跑实现 "审查→修复→再审查" 循环。V2 考虑 `Loop` 节点。
 
-3. **Agent 的 system prompt 是否支持模板变量？** 例如 `{{project_name}}`、`{{current_date}}`。
-   - **建议**：V1 不支持模板变量。system prompt 是静态文本。V2 考虑支持 Jinja2 模板。
+3. **Agent system prompt 是否支持模板变量？**
+   - 建议：V1 不支持。system prompt 是静态文本。V2 考虑 Jinja2 模板。
 
-4. **Workflow 是否嵌套？** 一个 Workflow 能否作为另一个 Workflow 的节点？
-   - **建议**：V1 不支持嵌套。每个 Workflow 是独立的。V2 考虑 `WorkflowNode` 类型。
+4. **Workflow 是否嵌套？**
+   - 建议：V1 不支持。V2 考虑 `SubWorkflow` 节点类型。
 
-5. **Agent 执行时是否复用现有的 `Run` 事件流（`broadcast::Sender<Envelope>`）？** 还是创建独立的事件流？
-   - **建议**：复用现有事件流。Workflow 内的 Agent 执行产生 `SubagentStarted` / `SubagentEnded` 等事件，前端已有处理逻辑。新增 `WorkflowNodeStarted` / `WorkflowNodeEnded` 事件用于 Workflow 级别状态追踪。
+5. **`teams/` 模块的处置？**
+   - `core/src/teams/`（`AgentTeam` + `MessageBus`）与 `WorkflowContext` 是两种不同的通信模型（异步 inbox vs 同步 state）。为避免并存导致困惑，**标记 `teams/` 为 deprecated**，在模块顶部添加 `#![deprecated]` 注释。V1 不删除代码（保持编译），但不接入新功能。V2 如果做循环工作流（agent 间来回协商），再重新启用 MessageBus。V3 如确认不用则移除。
 
-6. **前端是否需要独立的 Workflow 页面/路由？** 还是在现有 Sidebar 中新增入口？
-   - **建议**：在 Sidebar 中新增 "Workflows" 入口，打开新的全屏画布视图（类似独立的 Workflow Editor 页面）。不干扰现有 Chat 视图。
+6. **前端 Workflow 入口位置？**
+   - 建议：Sidebar 新增 "Workflows" 入口，打开全屏画布视图。不干扰现有 Chat 视图。
+
+7. **Node 类型是否用 trait 层次替代扁平枚举？**
+   - V1 用扁平枚举（`agent` / `input` / `output` / `transform` / `human_approval`），简单够用。V3 如果做插件系统（第三方 node 类型），再迁移到 `WorkflowNode` trait + 具体实现。
 
 ---
 
@@ -1252,7 +1869,9 @@ Agent 执行
 
 | Date | Author | Change |
 |------|--------|--------|
-| 2026-06-30 | agent_core | Created as Draft (AI-generated) |
+| 2026-06-30 | agent_core | Created as Draft (v1) |
+| 2026-06-30 | agent_core | Rev1: (1) Explicit Subagent as execution primitive, (2) Dropped "zero modification" claim, (3) Conditional routing moved to V1, (4) Structured state replaces string templates, (5) Added TrustMode, (6) Added migration framework, (7) Added token/cost/latency fields, (8) Added semaphore + cancel propagation, (9) Auto-skill marked experimental, (10) Aligned positioning as DAG workflow |
+| 2026-06-30 | agent_core | Rev2: (1) Added SubagentConfig extension design with full AgentDef→SubagentConfig mapping, (2) Added Skills pathway design (Tool injection + Content injection dual path), (3) Added Memory Sharing Group (`memory_group` / `memory_key`), (4) Replaced per-edge conditions with node-level Router model (LangGraph-style), (5) Added teams/ deprecation note, (6) Added Node trait hierarchy as Open Question for V3 |
 
 ---
 *Generated by AI Agent (agent_core)*

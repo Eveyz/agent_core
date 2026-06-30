@@ -609,6 +609,7 @@ impl Tool for TaskExecuteTool {
             tools: custom_tools,
             max_iterations: 50,
             max_context_tokens: 32000,
+            ..SubagentConfig::default()
         };
 
         let mut subagent = Subagent::new(

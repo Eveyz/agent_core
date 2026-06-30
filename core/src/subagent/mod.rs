@@ -1,6 +1,9 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
+
+use crate::agent_registry::memory::AgentMemoryStore;
 
 use crate::client::OpenAIClient;
 use crate::config::ModelConfig;
@@ -15,6 +18,23 @@ pub struct SubagentConfig {
     pub tools: Vec<String>,
     pub max_iterations: usize,
     pub max_context_tokens: usize,
+
+    // ── PLAN-0009 extensions (all optional, backward compatible) ──
+    /// "provider/model" override; None = use the model_config passed to new().
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Skill names to inject into this subagent.
+    #[serde(default)]
+    pub skills: Vec<String>,
+    /// Permission mode override (paranoid/standard/developer/permissive/yolo).
+    #[serde(default)]
+    pub permission_mode: Option<String>,
+    /// None = per-agent memory disabled; Some(0/1/2) = stateless/standard/deep.
+    #[serde(default)]
+    pub memory_enabled: Option<u8>,
+    /// Per-agent temperature override.
+    #[serde(default)]
+    pub temperature: Option<f64>,
 }
 
 impl Default for SubagentConfig {
@@ -24,6 +44,11 @@ impl Default for SubagentConfig {
             tools: Vec::new(),
             max_iterations: 50,
             max_context_tokens: 32000,
+            model: None,
+            skills: Vec::new(),
+            permission_mode: None,
+            memory_enabled: None,
+            temperature: None,
         }
     }
 }
@@ -46,6 +71,11 @@ pub struct Subagent {
     registry: ToolRegistry,
     permission_policy: crate::permission::PermissionPolicy,
     hook_registry: crate::hooks::HookRegistry,
+    /// Per-agent memory store (PLAN-0009). When set, memories are injected
+    /// before execution and persisted after.
+    memory_store: Option<Arc<AgentMemoryStore>>,
+    /// The agent definition id this subagent was built from (for memory keying).
+    agent_id: Option<String>,
 }
 
 impl Subagent {
@@ -75,7 +105,29 @@ impl Subagent {
             registry,
             permission_policy,
             hook_registry: crate::hooks::HookRegistry::new(),
+            memory_store: None,
+            agent_id: None,
         }
+    }
+
+    /// Construct a subagent with an optional per-agent memory store.
+    ///
+    /// `agent_id` is used as the memory isolation key. When both
+    /// `memory_store` and `agent_id` are `Some`, the subagent injects relevant
+    /// memories before execution and persists the conversation afterward.
+    pub fn new_with_memory(
+        role_name: &str,
+        config: SubagentConfig,
+        model_config: &ModelConfig,
+        registry: ToolRegistry,
+        permission_config: crate::permission::PermissionConfig,
+        memory_store: Option<Arc<AgentMemoryStore>>,
+        agent_id: Option<String>,
+    ) -> Self {
+        let mut sa = Self::new(role_name, config, model_config, registry, permission_config);
+        sa.memory_store = memory_store;
+        sa.agent_id = agent_id;
+        sa
     }
 
     pub async fn run(&mut self, task: &str) -> Result<SubagentResult> {
@@ -87,6 +139,8 @@ impl Subagent {
         task: &str,
         event_sender: Option<EventSender>,
     ) -> Result<SubagentResult> {
+        // PLAN-0009: inject relevant memories before the task is added.
+        self.inject_memory(task);
         self.context.add(Message::user(task));
 
         // Emit SubagentStart
@@ -159,6 +213,7 @@ impl Subagent {
                     });
                 }
 
+                self.persist_memory(task, &all_text);
                 return Ok(SubagentResult {
                     subagent_id: self.id.clone(),
                     role_name: self.role_name.clone(),
@@ -277,6 +332,7 @@ impl Subagent {
             all_text.clone()
         };
 
+        self.persist_memory(task, &all_text);
         Ok(SubagentResult {
             subagent_id: self.id.clone(),
             role_name: self.role_name.clone(),
@@ -407,6 +463,45 @@ impl Subagent {
         };
 
         Ok((text_buffer, tool_calls))
+    }
+
+    /// Inject relevant memories from the per-agent store into the context's
+    /// active-memory segment (appended to any existing content).
+    fn inject_memory(&mut self, task: &str) {
+        let (Some(store), Some(agent_id)) = (&self.memory_store, &self.agent_id) else {
+            return;
+        };
+        let injection = store.build_context_injection(agent_id, task, 2000);
+        if injection.is_empty() {
+            return;
+        }
+        let existing = self
+            .context
+            .segment("active_memory")
+            .map(|s| s.content.as_str())
+            .unwrap_or("")
+            .to_string();
+        if existing.is_empty() {
+            self.context.set_active_memory(&injection);
+        } else {
+            self.context.set_active_memory(&format!("{existing}\n\n{injection}"));
+        }
+    }
+
+    /// Persist the conversation turn (user task + assistant output) to the
+    /// per-agent memory store. Errors are logged and swallowed.
+    fn persist_memory(&self, task: &str, output: &str) {
+        let (Some(store), Some(agent_id)) = (&self.memory_store, &self.agent_id) else {
+            return;
+        };
+        if let Err(e) = store.store(agent_id, agent_id, "user", task, "conversation") {
+            tracing::warn!("failed to persist agent memory (user): {e}");
+        }
+        if !output.is_empty() {
+            if let Err(e) = store.store(agent_id, agent_id, "assistant", output, "conversation") {
+                tracing::warn!("failed to persist agent memory (assistant): {e}");
+            }
+        }
     }
 
     pub fn id(&self) -> &str {

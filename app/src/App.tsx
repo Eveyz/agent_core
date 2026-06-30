@@ -39,6 +39,9 @@ import { SubagentDetailPage } from './components/chat/SubagentDetailPage';
 import { getActiveSessionTitle } from './utils/chatUtils';
 import { useResizableSidebar } from './hooks/useResizableSidebar';
 import { RightSidebar } from './components/layout/RightSidebar';
+import { AgentList } from './components/agents/AgentList';
+import { WorkflowEditor } from './components/workflow/WorkflowEditor';
+import type { AppView } from './components/layout/Sidebar';
 
 import './App.css';
 
@@ -59,6 +62,7 @@ function App() {
 
   const activeProject = projects.find((p) => p.id === activeProjectId);
   const [activeTab, setActiveTab] = useState<'code' | 'write'>('code');
+  const [activeView, setActiveView] = useState<AppView>('chat');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [rightSidebarExpanded, setRightSidebarExpanded] = useState(false);
 
@@ -236,6 +240,8 @@ function App() {
             onTabChange={setActiveTab}
             onOpenSettings={handleOpenSettings}
             collapsed={sidebarCollapsed}
+            activeView={activeView}
+            onNavigate={setActiveView}
           />
         </div>
         {!sidebarCollapsed && <div className="resizer-handle" onMouseDown={startLeftDrag} />}
@@ -254,7 +260,11 @@ function App() {
             onToggleRightSidebar={() => setRightSidebarExpanded(!rightSidebarExpanded)}
           />
 
-          {viewingSubagentPath.length > 0 && activeSubagent ? (
+          {activeView === "agents" ? (
+            <AgentList />
+          ) : activeView === "workflows" ? (
+            <WorkflowEditor />
+          ) : viewingSubagentPath.length > 0 && activeSubagent ? (
             <SubagentDetailPage
               subagent={activeSubagent}
               isProcessing={isProcessing}
@@ -275,15 +285,17 @@ function App() {
             />
           )}
 
-          <ChatInput
-            isProcessing={isProcessing}
-            onSend={handleSend}
-            currentModel={defaultModel}
-            onAbort={handleAbort}
-            onSteer={handleSteer}
-            disabled={viewingSubagentPath.length > 0}
-            disabledMessage="the input chat is disabled for the subagent"
-          />
+          {activeView === "chat" && (
+            <ChatInput
+              isProcessing={isProcessing}
+              onSend={handleSend}
+              currentModel={defaultModel}
+              onAbort={handleAbort}
+              onSteer={handleSteer}
+              disabled={viewingSubagentPath.length > 0}
+              disabledMessage="the input chat is disabled for the subagent"
+            />
+          )}
         </main>
         
         {rightSidebarExpanded && <div className="resizer-handle" onMouseDown={startRightDrag} />}

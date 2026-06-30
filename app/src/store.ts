@@ -2,6 +2,8 @@ import { configureStore, createListenerMiddleware } from '@reduxjs/toolkit';
 import chatReducer, { agentEventsBatch, resyncRun, clearPendingGap } from './features/chat/chatSlice';
 import settingsReducer from './features/settings/settingsSlice';
 import projectReducer from './features/project/projectSlice';
+import agentReducer from './features/agents/agentSlice';
+import workflowReducer from './features/workflow/workflowSlice';
 
 // ── Listener middleware (P2-1) ────────────────────────────────────────
 // Replaces the Promise.resolve().then() side-effect that was inside the
@@ -44,6 +46,8 @@ export const store = configureStore({
     chat: chatReducer,
     settings: settingsReducer,
     project: projectReducer,
+    agents: agentReducer,
+    workflow: workflowReducer,
   },
   middleware: (getDefaultMiddleware) =>
     getDefaultMiddleware().prepend(listenerMiddleware.middleware),

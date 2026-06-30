@@ -233,6 +233,29 @@ pub enum AgentEvent {
     Aborted {
         reason: String,
     },
+
+    // ── Workflow lifecycle (PLAN-0009) ─────────────────────────────
+    WorkflowStarted {
+        workflow_id: String,
+        run_id: String,
+    },
+    WorkflowNodeStarted {
+        run_id: String,
+        node_id: String,
+        node_type: String,
+        label: String,
+    },
+    WorkflowNodeEnded {
+        run_id: String,
+        node_id: String,
+        status: String,
+        output: serde_json::Value,
+    },
+    WorkflowCompleted {
+        run_id: String,
+        status: String,
+        output: serde_json::Value,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

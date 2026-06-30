@@ -474,6 +474,7 @@ Do NOT attempt to read or process image files.";
         tools: final_tool_names,
         max_iterations,
         max_context_tokens: 32000,
+        ..SubagentConfig::default()
     };
 
     let mut subagent = Subagent::new(

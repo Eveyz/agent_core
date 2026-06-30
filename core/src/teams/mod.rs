@@ -1,4 +1,10 @@
-pub mod bus;
+//! DEPRECATED (PLAN-0009): This module is superseded by `workflow::WorkflowContext`
+     //! in V1. The async inbox-based MessageBus model conflicts with the synchronous
+     //! DAG state model used by the workflow engine. This code is kept for compilation
+     //! but not wired into any new functionality. It may be revisited for V2 cyclic
+     //! workflows (agent-to-agent negotiation) or removed in V3.
+     #![allow(deprecated)]
+     pub mod bus;
 
 pub use bus::MessageBus;
 

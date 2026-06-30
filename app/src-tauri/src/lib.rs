@@ -16,6 +16,10 @@ struct AppState {
     project_manager: Arc<Mutex<agent_core::ProjectManager>>,
     session_manager: Arc<agent_core::SessionManager>,
     storage: agent_core::memory::storage::Storage,
+    /// PLAN-0009: custom agent registry (CRUD over the `agents` table).
+    agent_registry: agent_core::agent_registry::AgentRegistry,
+    /// PLAN-0009: active workflow run cancel tokens (run_id -> token).
+    workflow_cancels: Arc<AsyncMutex<std::collections::HashMap<String, agent_core::CancellationToken>>>,
 }
 
 // ── Frontend message type for session save/load ──────────────────────
@@ -812,6 +816,606 @@ async fn toggle_cronjob(state: State<'_, AppState>, id: String, enabled: bool) -
     .map_err(|e| format!("toggle_cronjob task failed: {e}"))?
 }
 
+// ── PLAN-0009: Custom Agent CRUD ────────────────────────────────────
+
+/// Build an [`AgentMemoryStore`] from the Brain's embedding configuration.
+fn build_agent_memory_store(
+    brain: &Brain,
+    storage: agent_core::memory::storage::Storage,
+) -> agent_core::agent_registry::AgentMemoryStore {
+    if let Some(ref mem) = brain.config.memory {
+        if mem.embedding_enabled {
+            if let Ok(model) =
+                agent_core::memory::embedding::EmbeddingModel::new(&mem.embedding_model)
+            {
+                return agent_core::agent_registry::AgentMemoryStore::new(
+                    storage,
+                    std::sync::Arc::new(model),
+                );
+            }
+        }
+    }
+    agent_core::agent_registry::AgentMemoryStore::without_embedding(storage)
+}
+
+/// Inject skill content into a system prompt (content path).
+fn inject_skill_content(
+    brain: &Brain,
+    skills: &[String],
+    system_prompt: &str,
+) -> String {
+    let mut prompt = system_prompt.to_string();
+    if let Some(ref sm) = brain.skill_manager {
+        let mgr = sm.lock();
+        for name in skills {
+            if let Ok(Some(content)) = mgr.load_skill_context(name) {
+                if !prompt.is_empty() {
+                    prompt.push_str("\n\n");
+                }
+                prompt.push_str(&content);
+            }
+        }
+    }
+    prompt
+}
+
+/// List the names of all available tools (for the agent editor's tool picker).
+#[tauri::command]
+async fn list_available_tools(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let run_manager = state.run_manager.lock().await;
+    let brain = run_manager.brain().clone();
+    drop(run_manager);
+    let registry = brain.build_tool_registry(agent_core::AgentMode::Build);
+    Ok(registry.list_names().iter().map(|s| s.to_string()).collect())
+}
+
+#[tauri::command]
+async fn create_agent(
+    state: State<'_, AppState>,
+    name: String,
+    description: Option<String>,
+    system_prompt: Option<String>,
+    model: Option<String>,
+    skills: Option<Vec<String>>,
+    tools: Option<Vec<String>>,
+    permission_mode: Option<String>,
+    max_iterations: Option<usize>,
+    max_context_tokens: Option<usize>,
+    memory_enabled: Option<u8>,
+    memory_group: Option<String>,
+    icon: Option<String>,
+    color: Option<String>,
+) -> Result<agent_core::agent_registry::AgentDef, String> {
+    let registry = state.agent_registry.clone();
+    let now = chrono::Utc::now().to_rfc3339();
+    let def = agent_core::agent_registry::AgentDef {
+        id: String::new(),
+        name,
+        description: description.unwrap_or_default(),
+        system_prompt: system_prompt.unwrap_or_default(),
+        model: model.unwrap_or_default(),
+        skills: skills.unwrap_or_default(),
+        tools: tools.unwrap_or_default(),
+        permission_mode: permission_mode.unwrap_or_else(|| "standard".to_string()),
+        permission_rules: serde_json::Value::Array(Vec::new()),
+        max_iterations: max_iterations.unwrap_or(50),
+        max_context_tokens: max_context_tokens.unwrap_or(32000),
+        memory_enabled: memory_enabled.unwrap_or(1),
+        memory_group: memory_group.unwrap_or_default(),
+        icon: icon.unwrap_or_default(),
+        color: color.unwrap_or_default(),
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    let storage = registry.storage().clone();
+    tokio::task::spawn_blocking(move || {
+        agent_core::agent_registry::create(&storage, &def).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("create_agent task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn list_agents(state: State<'_, AppState>) -> Result<Vec<agent_core::agent_registry::AgentDef>, String> {
+    let storage = state.storage.clone();
+    tokio::task::spawn_blocking(move || {
+        agent_core::agent_registry::list(&storage).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("list_agents task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn get_agent(state: State<'_, AppState>, id: String) -> Result<agent_core::agent_registry::AgentDef, String> {
+    let storage = state.storage.clone();
+    tokio::task::spawn_blocking(move || {
+        agent_core::agent_registry::get(&storage, &id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("get_agent task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn update_agent(
+    state: State<'_, AppState>,
+    id: String,
+    name: Option<String>,
+    description: Option<String>,
+    system_prompt: Option<String>,
+    model: Option<String>,
+    skills: Option<Vec<String>>,
+    tools: Option<Vec<String>>,
+    permission_mode: Option<String>,
+    permission_rules: Option<serde_json::Value>,
+    max_iterations: Option<usize>,
+    max_context_tokens: Option<usize>,
+    memory_enabled: Option<u8>,
+    memory_group: Option<String>,
+    icon: Option<String>,
+    color: Option<String>,
+) -> Result<agent_core::agent_registry::AgentDef, String> {
+    let storage = state.storage.clone();
+    let updates = agent_core::agent_registry::AgentDefUpdate {
+        name,
+        description,
+        system_prompt,
+        model,
+        skills,
+        tools,
+        permission_mode,
+        permission_rules,
+        max_iterations,
+        max_context_tokens,
+        memory_enabled,
+        memory_group,
+        icon,
+        color,
+    };
+    tokio::task::spawn_blocking(move || {
+        agent_core::agent_registry::update(&storage, &id, &updates).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("update_agent task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn delete_agent(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let storage = state.storage.clone();
+    tokio::task::spawn_blocking(move || {
+        agent_core::agent_registry::delete(&storage, &id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("delete_agent task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn search_agent_memory(
+    state: State<'_, AppState>,
+    agent_id: String,
+    query: String,
+    top_k: Option<usize>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let run_manager = state.run_manager.lock().await;
+    let brain = run_manager.brain().clone();
+    drop(run_manager);
+    let storage = state.storage.clone();
+    let def = {
+        let storage = storage.clone();
+        tokio::task::spawn_blocking(move || {
+            agent_core::agent_registry::get(&storage, &agent_id).map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| format!("task failed: {e}"))??
+    };
+    let memory_key = def.memory_key().to_string();
+    let store = build_agent_memory_store(&brain, storage);
+    let top_k = top_k.unwrap_or(5);
+    tokio::task::spawn_blocking(move || {
+        let records = store.search(&memory_key, &query, top_k).map_err(|e| e.to_string())?;
+        Ok(records
+            .into_iter()
+            .map(|r| serde_json::json!({
+                "id": r.id,
+                "role": r.role,
+                "content": r.content,
+                "importance": r.importance,
+                "category": format!("{:?}", r.category),
+                "created_at": r.created_at,
+            }))
+            .collect::<Vec<_>>())
+    })
+    .await
+    .map_err(|e| format!("search_agent_memory task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn get_agent_history(
+    state: State<'_, AppState>,
+    agent_id: String,
+    limit: Option<usize>,
+) -> Result<Vec<agent_core::agent_registry::AgentHistoryEntry>, String> {
+    let storage = state.storage.clone();
+    let limit = limit.unwrap_or(50);
+    tokio::task::spawn_blocking(move || {
+        agent_core::agent_registry::history::list(&storage, &agent_id, limit).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("get_agent_history task failed: {e}"))?
+}
+
+/// Run a custom agent standalone (outside of a workflow).
+#[tauri::command]
+async fn run_agent_standalone(
+    state: State<'_, AppState>,
+    app_handle: AppHandle,
+    agent_id: String,
+    input: String,
+    session_id: Option<String>,
+) -> Result<String, String> {
+    use agent_core::subagent::Subagent;
+
+    let run_manager = state.run_manager.lock().await;
+    let brain = run_manager.brain().clone();
+    drop(run_manager);
+
+    // Fetch the agent definition.
+    let storage = state.storage.clone();
+    let def = {
+        let s = storage.clone();
+        tokio::task::spawn_blocking(move || {
+            agent_core::agent_registry::get(&s, &agent_id).map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| format!("task failed: {e}"))??
+    };
+
+    // Build runtime components from the Brain.
+    let mut subagent_config = agent_core::agent_registry::build_subagent_config(&def);
+    // Inject skill content into the system prompt (content path).
+    subagent_config.system_prompt =
+        inject_skill_content(&brain, &def.skills, &subagent_config.system_prompt);
+
+    let model_config = agent_core::agent_registry::build_model_config(&def, &brain.config);
+    let permission_config =
+        agent_core::agent_registry::build_permission_config(&def, &brain.config.permissions);
+
+    // Build tool registry: inherit all if tools empty, else named subset.
+    let registry = if def.tools.is_empty() {
+        brain.build_tool_registry(agent_core::AgentMode::Build)
+    } else {
+        agent_core::ToolRegistry::from_names(&def.tools)
+    };
+
+    // Build the per-agent memory store (if enabled).
+    let memory = if def.memory_enabled > 0 {
+        let store = build_agent_memory_store(&brain, storage.clone());
+        Some(std::sync::Arc::new(store))
+    } else {
+        None
+    };
+
+    let mut subagent = Subagent::new_with_memory(
+        &def.name,
+        subagent_config,
+        &model_config,
+        registry,
+        permission_config,
+        memory,
+        Some(def.id.clone()),
+    );
+
+    let session = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let started = std::time::Instant::now();
+    let _ = app_handle; // (event emission wired later via event_tx)
+
+    let result = subagent.run(&input).await.map_err(|e| e.to_string())?;
+    let elapsed_ms = started.elapsed().as_millis() as i64;
+
+    // Record execution history.
+    let entry = agent_core::agent_registry::AgentHistoryEntry {
+        agent_id: def.id.clone(),
+        session_id: session,
+        workflow_run_id: String::new(),
+        trigger: "manual".to_string(),
+        input: input.clone(),
+        output: result.output.clone(),
+        iterations_used: result.iterations_used as u32,
+        success: result.success,
+        model_used: model_config.model_id.clone(),
+        process_time_ms: elapsed_ms,
+        ..Default::default()
+    };
+    let history_storage = storage.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let _ = agent_core::agent_registry::history::record(&history_storage, &entry);
+    })
+    .await;
+
+    Ok(result.output)
+}
+
+/// Validate a workflow definition (cycle detection, orphan nodes, missing config).
+/// Takes raw node/edge definitions (not a persisted workflow id) so the user
+/// can validate before saving.
+#[tauri::command]
+async fn validate_workflow(
+    nodes: Vec<agent_core::workflow::NodeDef>,
+    edges: Vec<agent_core::workflow::EdgeDef>,
+) -> Result<agent_core::workflow::ValidationResult, String> {
+    let wf = agent_core::workflow::WorkflowDef {
+        nodes,
+        edges,
+        ..Default::default()
+    };
+    Ok(agent_core::workflow::validate(&wf))
+}
+
+// ── PLAN-0009: Workflow CRUD + Execution ────────────────────────────
+
+#[tauri::command]
+async fn create_workflow(
+    state: State<'_, AppState>,
+    name: String,
+    description: Option<String>,
+) -> Result<agent_core::workflow::WorkflowDef, String> {
+    let storage = state.storage.clone();
+    let wf = agent_core::workflow::WorkflowDef {
+        name,
+        description: description.unwrap_or_default(),
+        ..Default::default()
+    };
+    tokio::task::spawn_blocking(move || {
+        agent_core::workflow::create(&storage, &wf).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("create_workflow task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn list_workflows(state: State<'_, AppState>) -> Result<Vec<agent_core::workflow::WorkflowDef>, String> {
+    let storage = state.storage.clone();
+    tokio::task::spawn_blocking(move || {
+        agent_core::workflow::list(&storage).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("list_workflows task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn get_workflow(state: State<'_, AppState>, id: String) -> Result<agent_core::workflow::WorkflowDef, String> {
+    let storage = state.storage.clone();
+    tokio::task::spawn_blocking(move || {
+        agent_core::workflow::get(&storage, &id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("get_workflow task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn save_workflow(
+    state: State<'_, AppState>,
+    id: String,
+    name: String,
+    description: Option<String>,
+    nodes: Vec<agent_core::workflow::NodeDef>,
+    edges: Vec<agent_core::workflow::EdgeDef>,
+    trust_mode: Option<String>,
+    max_concurrent: Option<usize>,
+    on_node_failure: Option<String>,
+    input_schema: Option<serde_json::Value>,
+    config: Option<serde_json::Value>,
+) -> Result<agent_core::workflow::WorkflowDef, String> {
+    let storage = state.storage.clone();
+    let wf = agent_core::workflow::WorkflowDef {
+        id,
+        name,
+        description: description.unwrap_or_default(),
+        input_schema: input_schema.unwrap_or_else(|| serde_json::json!({})),
+        trust_mode: trust_mode
+            .as_deref()
+            .map(agent_core::workflow::TrustMode::from_str)
+            .unwrap_or_default(),
+        max_concurrent: max_concurrent.unwrap_or(3),
+        on_node_failure: on_node_failure
+            .as_deref()
+            .map(agent_core::workflow::OnNodeFailure::from_str)
+            .unwrap_or_default(),
+        config: config.unwrap_or_else(|| serde_json::json!({})),
+        nodes,
+        edges,
+        created_at: String::new(),
+        updated_at: String::new(),
+    };
+    tokio::task::spawn_blocking(move || {
+        agent_core::workflow::save(&storage, &wf).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("save_workflow task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn delete_workflow(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let storage = state.storage.clone();
+    tokio::task::spawn_blocking(move || {
+        agent_core::workflow::delete(&storage, &id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("delete_workflow task failed: {e}"))?
+}
+
+/// Execute a workflow. Returns the run result.
+///
+/// Emits `workflow_event` Tauri events for real-time node status updates.
+#[tauri::command]
+async fn run_workflow(
+    state: State<'_, AppState>,
+    app_handle: AppHandle,
+    workflow_id: String,
+    input: Option<serde_json::Value>,
+    session_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    use agent_core::workflow::{WorkflowExecutor, get as get_workflow_def};
+
+    // Load the workflow definition.
+    let storage = state.storage.clone();
+    let wf = {
+        let s = storage.clone();
+        let wid = workflow_id.clone();
+        tokio::task::spawn_blocking(move || {
+            get_workflow_def(&s, &wid).map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| format!("task failed: {e}"))??
+    };
+
+    // Access the Brain.
+    let run_manager = state.run_manager.lock().await;
+    let brain = run_manager.brain().clone();
+    drop(run_manager);
+
+    let input = input.unwrap_or_else(|| serde_json::json!({}));
+    let session = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    // Create a cancel token and register it.
+    let cancel_token = agent_core::CancellationToken::new();
+    let run_id_placeholder = uuid::Uuid::new_v4().to_string();
+    {
+        let mut cancels = state.workflow_cancels.lock().await;
+        cancels.insert(run_id_placeholder.clone(), cancel_token.clone());
+    }
+
+    // Event channel: forward workflow events to the frontend.
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<agent_core::types::AgentEvent>();
+    let app_handle_clone = app_handle.clone();
+    tokio::spawn(async move {
+        while let Some(ev) = event_rx.recv().await {
+            let _ = app_handle_clone.emit("workflow_event", &ev);
+        }
+    });
+
+    let executor = WorkflowExecutor::new(storage.clone(), brain);
+    let result = executor
+        .execute(&wf, input, &session, cancel_token, Some(event_tx))
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Clean up the cancel token.
+    {
+        let mut cancels = state.workflow_cancels.lock().await;
+        cancels.remove(&run_id_placeholder);
+    }
+
+    Ok(serde_json::json!({
+        "run_id": result.run_id,
+        "status": result.status,
+        "output": result.output,
+        "error": result.error,
+        "total_token_input": result.total_token_input,
+        "total_token_output": result.total_token_output,
+    }))
+}
+
+/// Cancel a running workflow.
+#[tauri::command]
+async fn cancel_workflow_run(state: State<'_, AppState>, run_id: String) -> Result<(), String> {
+    let mut cancels = state.workflow_cancels.lock().await;
+    if let Some(token) = cancels.remove(&run_id) {
+        token.cancel();
+        Ok(())
+    } else {
+        Err(format!("no active workflow run with id '{run_id}'"))
+    }
+}
+
+#[tauri::command]
+async fn list_workflow_runs(
+    state: State<'_, AppState>,
+    workflow_id: String,
+    limit: Option<usize>,
+) -> Result<Vec<agent_core::workflow::WorkflowRun>, String> {
+    let storage = state.storage.clone();
+    let limit = limit.unwrap_or(20);
+    tokio::task::spawn_blocking(move || {
+        agent_core::workflow::list_runs(&storage, &workflow_id, limit).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("list_workflow_runs task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn get_workflow_run_results(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<Vec<agent_core::workflow::WorkflowRunNodeResult>, String> {
+    let storage = state.storage.clone();
+    tokio::task::spawn_blocking(move || {
+        agent_core::workflow::get_run_node_results(&storage, &run_id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("get_workflow_run_results task failed: {e}"))?
+}
+
+// ── PLAN-0009 Phase 6: Skill Draft Generation (Experimental) ────────
+
+/// Resolve the skill drafts directory (~/.agverse/skill_drafts/).
+fn skill_drafts_dir() -> std::path::PathBuf {
+    agent_core::paths::get_agverse_dir().join("skill_drafts")
+}
+
+/// Resolve the user skills directory (~/.agverse/skills/).
+fn user_skills_dir() -> std::path::PathBuf {
+    agent_core::paths::get_agverse_dir().join("skills")
+}
+
+#[tauri::command]
+async fn generate_agent_skill_drafts(
+    state: State<'_, AppState>,
+    agent_id: String,
+    limit: Option<usize>,
+) -> Result<agent_core::agent_registry::DraftGenerationResult, String> {
+    let storage = state.storage.clone();
+    let drafts_dir = skill_drafts_dir();
+    let limit = limit.unwrap_or(100);
+    tokio::task::spawn_blocking(move || {
+        agent_core::agent_registry::generate_drafts(&storage, &agent_id, &drafts_dir, limit)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("generate_agent_skill_drafts task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn list_skill_drafts() -> Result<Vec<agent_core::agent_registry::SkillDraft>, String> {
+    let drafts_dir = skill_drafts_dir();
+    tokio::task::spawn_blocking(move || {
+        agent_core::agent_registry::list_drafts(&drafts_dir).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("list_skill_drafts task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn approve_skill_draft(name: String) -> Result<(), String> {
+    let drafts_dir = skill_drafts_dir();
+    let skills_dir = user_skills_dir();
+    tokio::task::spawn_blocking(move || {
+        agent_core::agent_registry::approve_draft(&drafts_dir, &skills_dir, &name)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("approve_skill_draft task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn reject_skill_draft(name: String) -> Result<(), String> {
+    let drafts_dir = skill_drafts_dir();
+    tokio::task::spawn_blocking(move || {
+        agent_core::agent_registry::reject_draft(&drafts_dir, &name).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("reject_skill_draft task failed: {e}"))?
+}
+
 // ── App entry point ──────────────────────────────────────────────────
 
 pub fn run() {
@@ -902,6 +1506,8 @@ pub fn run() {
                 project_manager,
                 session_manager,
                 storage: storage.clone(),
+                agent_registry: agent_core::agent_registry::AgentRegistry::new(storage.clone()),
+                workflow_cancels: Arc::new(AsyncMutex::new(std::collections::HashMap::new())),
             });
             Ok(())
         })
@@ -917,7 +1523,14 @@ pub fn run() {
             list_projects, create_project, delete_project, rename_project, open_in_explorer,
             list_git_branches, switch_git_branch, get_project_sessions,
             get_agverse_md, get_skills, invalidate_skills_cache,
-            list_cronjobs, create_cronjob, update_cronjob, delete_cronjob, toggle_cronjob
+            list_cronjobs, create_cronjob, update_cronjob, delete_cronjob, toggle_cronjob,
+            list_available_tools,
+            create_agent, list_agents, get_agent, update_agent, delete_agent,
+            search_agent_memory, get_agent_history, run_agent_standalone,
+            validate_workflow,
+            create_workflow, list_workflows, get_workflow, save_workflow, delete_workflow,
+            run_workflow, cancel_workflow_run, list_workflow_runs, get_workflow_run_results,
+            generate_agent_skill_drafts, list_skill_drafts, approve_skill_draft, reject_skill_draft
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

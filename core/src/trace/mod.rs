@@ -145,6 +145,10 @@ fn event_tag(event: &AgentEvent) -> &'static str {
         AgentEvent::ApprovalRequired { .. } => "ApprovalRequired",
         AgentEvent::Error(_) => "Error",
         AgentEvent::Aborted { .. } => "Aborted",
+        AgentEvent::WorkflowStarted { .. } => "WorkflowStarted",
+        AgentEvent::WorkflowNodeStarted { .. } => "WorkflowNodeStarted",
+        AgentEvent::WorkflowNodeEnded { .. } => "WorkflowNodeEnded",
+        AgentEvent::WorkflowCompleted { .. } => "WorkflowCompleted",
     }
 }
 

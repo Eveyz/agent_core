@@ -28,6 +28,8 @@ import FolderIcon from "lucide-react/dist/esm/icons/folder.mjs";
 import SettingsIcon from "lucide-react/dist/esm/icons/settings.mjs";
 import SmartphoneIcon from "lucide-react/dist/esm/icons/smartphone.mjs";
 import BotIcon from "lucide-react/dist/esm/icons/bot.mjs";
+import WorkflowIcon from "lucide-react/dist/esm/icons/workflow.mjs";
+import SparklesIcon from "lucide-react/dist/esm/icons/sparkles.mjs";
 import TrashIcon from "lucide-react/dist/esm/icons/trash.mjs";
 import PencilIcon from "lucide-react/dist/esm/icons/pencil.mjs";
 import ExternalLinkIcon from "lucide-react/dist/esm/icons/external-link.mjs";
@@ -188,16 +190,22 @@ function SessionContextMenu({
 
 // ── Sidebar ──────────────────────────────────────────────────────────
 
+export type AppView = "chat" | "agents" | "workflows";
+
 export const Sidebar = memo(function Sidebar({
   activeTab,
   onTabChange,
   onOpenSettings,
   collapsed,
+  activeView = "chat",
+  onNavigate,
 }: {
   activeTab: "code" | "write";
   onTabChange: (tab: "code" | "write") => void;
   onOpenSettings: () => void;
   collapsed: boolean;
+  activeView?: AppView;
+  onNavigate?: (view: AppView) => void;
 }) {
   const dispatch = useAppDispatch();
   const projects = useSelector((state: RootState) => state.project.projects);
@@ -375,7 +383,7 @@ export const Sidebar = memo(function Sidebar({
       <div className="toggle-group">
         <button
           className={`toggle-btn ${activeTab === "code" ? "active" : ""}`}
-          onClick={() => onTabChange("code")}
+          onClick={() => { onTabChange("code"); onNavigate?.("chat"); }}
         >
           <BotIcon size={14} /> Code
         </button>
@@ -390,10 +398,22 @@ export const Sidebar = memo(function Sidebar({
       {/* Quick actions */}
       <div className="sidebar-nav" style={{ marginBottom: "4px" }}>
         <div
+          className={`nav-item ${activeView === "agents" ? "active" : ""}`}
+          onClick={() => onNavigate?.("agents")}
+        >
+          <BotIcon size={14} /> Agents
+        </div>
+        <div
+          className={`nav-item ${activeView === "workflows" ? "active" : ""}`}
+          onClick={() => onNavigate?.("workflows")}
+        >
+          <WorkflowIcon size={14} /> Workflows
+        </div>
+        <div
           className="nav-item"
           onClick={() => setIsNewAgentOpen(true)}
         >
-          <BotIcon size={14} /> + New Agent
+          <SparklesIcon size={14} /> + New Agent
         </div>
         <div
           className="nav-item"
