@@ -14,7 +14,7 @@ export type {
 } from './types';
 export {
   selectEntryIds, selectEntryById, selectSubagentById,
-  selectPendingApprovalCount,
+  selectPendingApprovalCount, selectActivePendingApproval,
 } from './selectors';
 export { entriesToMessages, entriesToEventLog, stringifyResult } from './utils';
 

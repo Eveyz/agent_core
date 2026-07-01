@@ -10,6 +10,7 @@ interface EntryRowProps {
   defaultModel: string;
   handleRetry: (id: string, text?: string) => void;
   isProcessing: boolean;
+  onSend?: (msg: string) => void;
 }
 
 export const EntryRow = memo(function EntryRow({
@@ -17,6 +18,7 @@ export const EntryRow = memo(function EntryRow({
   defaultModel,
   handleRetry,
   isProcessing,
+  onSend,
 }: EntryRowProps) {
   const entry = useSelector((state: RootState) => selectEntryById(state, entryId));
   if (!entry) return null;
@@ -26,7 +28,7 @@ export const EntryRow = memo(function EntryRow({
   } else {
     return (
       <div className="message-row agent-row">
-        <AgentTurnUI entry={entry} />
+        <AgentTurnUI entry={entry} onSend={onSend} />
       </div>
     );
   }

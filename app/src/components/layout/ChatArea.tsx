@@ -11,6 +11,7 @@ interface ChatAreaProps {
   isAtBottom: boolean;
   scrollToBottom: (behavior?: ScrollBehavior) => void;
   handleRetry: (id: string, text?: string) => void;
+  onSend?: (msg: string) => void;
 }
 
 export function ChatArea({
@@ -22,6 +23,7 @@ export function ChatArea({
   isAtBottom,
   scrollToBottom,
   handleRetry,
+  onSend,
 }: ChatAreaProps) {
   return (
     <>
@@ -36,6 +38,7 @@ export function ChatArea({
               isProcessing={isProcessing}
               scrollRef={scrollRef}
               forceVisible={index >= entryIds.length - 3}
+              onSend={onSend}
             />
           ))}
         </div>

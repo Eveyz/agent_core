@@ -209,3 +209,113 @@
   50% { opacity: 0.5; }
 }
 
+/* Styling for approval overlay */
+.approval-overlay-container {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 0 40px 24px;
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+  z-index: 10;
+  animation: slideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.approval-overlay-card {
+  width: 100%;
+  max-width: 800px;
+  background: var(--bg-input); /* matches the chat input */
+  border: 1.5px solid var(--accent); /* standout border */
+  border-radius: var(--radius-xl);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  backdrop-filter: blur(8px);
+}
+
+.approval-overlay-card .approval-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.approval-overlay-card .approval-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-main);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.approval-overlay-card .approval-explanation {
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+
+.approval-overlay-card .approval-args pre {
+  background: var(--overlay-0_04);
+  border: 1px solid var(--border-color);
+  padding: 12px;
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  color: var(--text-main);
+  overflow-x: auto;
+  max-height: 160px;
+  margin: 0;
+}
+
+.approval-overlay-card .approval-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.approval-overlay-card .approval-actions button {
+  padding: 8px 16px;
+  border-radius: var(--radius-lg);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.2s ease;
+}
+
+.approval-overlay-card .btn-deny {
+  background: var(--overlay-0_04);
+  color: var(--text-main);
+  border-color: var(--border-color);
+}
+.approval-overlay-card .btn-deny:hover {
+  background: var(--overlay-0_08);
+  border-color: var(--text-dim);
+}
+
+.approval-overlay-card .btn-allow {
+  background: var(--accent);
+  color: var(--text-inverse);
+}
+.approval-overlay-card .btn-allow:hover {
+  opacity: 0.95;
+  box-shadow: 0 0 8px var(--accent);
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+

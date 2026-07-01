@@ -11,7 +11,6 @@ import ToolBlockUI from './ToolBlockUI';
 import EditFileWidget from './EditFileWidget';
 import ReadFileWidget from './ReadFileWidget';
 import BashWidget from './BashWidget';
-import ApprovalBlockUI from './ApprovalBlockUI';
 import SubagentSpawnWidget, { SubagentCard } from './SubagentWidgets';
 import { generateSmartToolsLabel } from './turnHelpers';
 
@@ -121,10 +120,7 @@ const TurnIterationUI = memo(function TurnIterationUI({
             />
           );
         } else if (b.type === 'approval') {
-          // The user requested to hide the standalone approval block completely
-          // and only show the inline "Approved" badge on the tool itself.
-          if (b.status !== 'pending') return null;
-          return <ApprovalBlockUI key={`approval-${b.prompt_id}-${idx}`} block={b} />;
+          return null;
         }
         return null;
       })}

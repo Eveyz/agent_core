@@ -1,10 +1,12 @@
-import { memo } from 'react';
+import { memo, useState } from 'react';
 import { useSelector } from 'react-redux';
 import { RootState } from '../../store';
 import CheckCircleIcon from 'lucide-react/dist/esm/icons/check-circle.mjs';
 import CircleIcon from 'lucide-react/dist/esm/icons/circle.mjs';
 import LoaderIcon from 'lucide-react/dist/esm/icons/loader.mjs';
 import AlertCircleIcon from 'lucide-react/dist/esm/icons/alert-circle.mjs';
+import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
+import ChevronRightIcon from 'lucide-react/dist/esm/icons/chevron-right.mjs';
 
 function statusIcon(status: string) {
   switch (status) {
@@ -21,6 +23,7 @@ function statusIcon(status: string) {
 
 function TodoPanel() {
   const todo = useSelector((state: RootState) => state.chat.todo);
+  const [collapsed, setCollapsed] = useState(true);
 
   if (!todo || todo.length === 0) return null;
 
@@ -29,21 +32,35 @@ function TodoPanel() {
 
   return (
     <div className="todo-panel">
-      <div className="todo-header">
-        <span className="todo-title">Plan</span>
-        <span className="todo-progress-text">{completed}/{todo.length}</span>
+      <div 
+        className="todo-header" 
+        onClick={() => setCollapsed(!collapsed)}
+        style={{ cursor: 'pointer', userSelect: 'none', marginBottom: collapsed ? 0 : 8 }}
+      >
+        <span className="todo-title-group" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          {collapsed ? <ChevronRightIcon size={14} style={{ color: 'var(--text-dim)' }} /> : <ChevronDownIcon size={14} style={{ color: 'var(--text-dim)' }} />}
+          <span className="todo-title">Plan</span>
+        </span>
+        <span className="todo-progress-text">
+          {completed}/{todo.length} Completed
+        </span>
       </div>
-      <div className="todo-progress-bar">
-        <div className="todo-progress-fill" style={{ width: `${pct}%` }} />
-      </div>
-      <ul className="todo-list">
-        {todo.map((item) => (
-          <li key={item.id} className={`todo-item todo-item-${item.status}`}>
-            {statusIcon(item.status)}
-            <span className="todo-desc">{item.description}</span>
-          </li>
-        ))}
-      </ul>
+      
+      {!collapsed && (
+        <>
+          <div className="todo-progress-bar">
+            <div className="todo-progress-fill" style={{ width: `${pct}%` }} />
+          </div>
+          <ul className="todo-list">
+            {todo.map((item) => (
+              <li key={item.id} className={`todo-item todo-item-${item.status}`}>
+                {statusIcon(item.status)}
+                <span className="todo-desc">{item.description}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
     </div>
   );
 }

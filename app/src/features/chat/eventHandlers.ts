@@ -14,6 +14,120 @@ import {
   truncateResult,
   stringifyResult,
 } from './utils';
+import type { AnyBlock } from './utils';
+
+// ── Block-level helpers (shared between main agent + subagent) ───────
+
+/** Find a tool block by call_id (or the first active tool block if callId is empty). */
+function findToolBlock(blocks: AnyBlock[] | undefined, callId: string): AnyBlock | undefined {
+  if (!blocks) return undefined;
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i];
+    if (b.type === 'tool' && (callId ? b.call_id === callId : b.active)) {
+      return b;
+    }
+  }
+  return undefined;
+}
+
+/** Close ALL streaming blocks and active tool blocks. Used on turn/subagent end. */
+function finalizeAllBlocks(blocks: AnyBlock[] | undefined): void {
+  if (!blocks) return;
+  for (const b of blocks) {
+    if ('isStreaming' in b && b.isStreaming) {
+      b.isStreaming = false;
+      if (b.type === 'thinking') b.endTime = Date.now();
+    }
+    if (b.type === 'tool' && b.active) {
+      b.active = false;
+      if (!b.endTime) b.endTime = Date.now();
+      if (b.result === undefined) b.result = '';
+    }
+  }
+}
+
+// ── Unified block operations (work on any block array) ──────────────
+
+function pushMessageStart(blocks: AnyBlock[], messageId: string | undefined): void {
+  blocks.push({
+    type: 'thinking',
+    text: '',
+    isStreaming: true,
+    message_id: messageId,
+    startTime: Date.now(),
+  });
+}
+
+function applyMessageUpdate(
+  state: ChatState,
+  blocks: AnyBlock[],
+  thinkKey: string,
+  messageId: string | undefined,
+  delta: DeltaPayload
+): void {
+  const processed = processThinkBuffer(state._thinkBuffers, thinkKey, delta);
+  appendDeltaToBlocks(blocks, processed, messageId);
+}
+
+function applyMessageEnd(
+  state: ChatState,
+  blocks: AnyBlock[],
+  messageId?: string
+): void {
+  if (messageId) delete state._thinkBuffers[messageId];
+  closeStreamingBlock(blocks, messageId);
+}
+
+function pushToolStart(blocks: AnyBlock[], callId: string, name: string, args?: unknown): void {
+  closeStreamingBlock(blocks);
+  blocks.push({
+    type: 'tool',
+    call_id: callId,
+    name,
+    args,
+    result: '',
+    active: true,
+    is_error: false,
+    startTime: Date.now(),
+  });
+}
+
+function applyToolUpdate(blocks: AnyBlock[], callId: string, partialResult: unknown): void {
+  const block = findToolBlock(blocks, callId);
+  if (block && block.type === 'tool') {
+    block.result += typeof partialResult === 'string' ? partialResult : JSON.stringify(partialResult);
+  }
+}
+
+function applyToolEnd(blocks: AnyBlock[], callId: string, result: unknown, isError: boolean): void {
+  const block = findToolBlock(blocks, callId);
+  if (block && block.type === 'tool') {
+    block.active = false;
+    block.is_error = isError;
+    block.endTime = Date.now();
+    block.result = truncateResult(stringifyResult(result));
+  }
+}
+
+function pushApproval(
+  blocks: AnyBlock[],
+  promptId: string,
+  toolName: string,
+  toolInput: unknown,
+  dangerLevel: string,
+  explanation: string
+): void {
+  closeStreamingBlock(blocks);
+  blocks.push({
+    type: 'approval',
+    prompt_id: promptId,
+    tool_name: toolName,
+    tool_input: toolInput,
+    danger_level: dangerLevel,
+    explanation,
+    status: 'pending',
+  });
+}
 
 // ── Turn lookup ──────────────────────────────────────────────────────
 
@@ -107,29 +221,21 @@ export function handleCacheInfo(state: ChatState, hitRate: number): void {
 export function handleMessageStart(state: ChatState, messageId: string | undefined): void {
   const turn = getActiveTurn(state);
   if (turn && turn.type === 'turn' && turn.blocks) {
-    turn.blocks.push({
-      type: 'thinking',
-      text: '',
-      isStreaming: true,
-      message_id: messageId,
-      startTime: Date.now()
-    });
+    pushMessageStart(turn.blocks, messageId);
   }
 }
 
 export function handleMessageUpdate(state: ChatState, messageId: string | undefined, delta: DeltaPayload): void {
   const turn = getActiveTurn(state);
   if (turn && turn.type === 'turn' && turn.blocks) {
-    const processed = processThinkBuffer(state._thinkBuffers, messageId ?? '_nomsg', delta);
-    appendDeltaToBlocks(turn.blocks, processed, messageId);
+    applyMessageUpdate(state, turn.blocks, messageId ?? '_nomsg', messageId, delta);
   }
 }
 
 export function handleMessageEnd(state: ChatState, messageId?: string): void {
-  if (messageId) delete state._thinkBuffers[messageId];
   const turn = getActiveTurn(state);
   if (turn && turn.type === 'turn' && turn.blocks) {
-    closeStreamingBlock(turn.blocks, messageId);
+    applyMessageEnd(state, turn.blocks, messageId);
   }
 }
 
@@ -141,34 +247,14 @@ export function handleToolStart(
 ): void {
   const turn = getActiveTurn(state);
   if (turn && turn.type === 'turn' && turn.blocks) {
-    closeStreamingBlock(turn.blocks);
-    turn.blocks.push({
-      type: 'tool',
-      call_id: toolCallId,
-      name: toolName,
-      args,
-      result: '',
-      active: true,
-      is_error: false,
-      startTime: Date.now(),
-    });
+    pushToolStart(turn.blocks, toolCallId, toolName, args);
   }
 }
 
 export function handleToolUpdate(state: ChatState, toolCallId: string, partialResult: unknown): void {
   const turn = getActiveTurn(state);
   if (turn && turn.type === 'turn' && turn.blocks) {
-    let block = undefined;
-    for (let i = turn.blocks.length - 1; i >= 0; i--) {
-      const b = turn.blocks[i];
-      if (b.type === 'tool' && (toolCallId ? b.call_id === toolCallId : b.active)) {
-        block = b;
-        break;
-      }
-    }
-    if (block && block.type === 'tool') {
-      block.result += typeof partialResult === 'string' ? partialResult : JSON.stringify(partialResult);
-    }
+    applyToolUpdate(turn.blocks, toolCallId, partialResult);
   }
 }
 
@@ -180,20 +266,7 @@ export function handleToolEnd(
 ): void {
   const turn = getActiveTurn(state);
   if (turn && turn.type === 'turn' && turn.blocks) {
-    let block = undefined;
-    for (let i = turn.blocks.length - 1; i >= 0; i--) {
-      const b = turn.blocks[i];
-      if (b.type === 'tool' && (toolCallId ? b.call_id === toolCallId : b.active)) {
-        block = b;
-        break;
-      }
-    }
-    if (block && block.type === 'tool') {
-      block.active = false;
-      block.is_error = isError;
-      block.endTime = Date.now();
-      block.result = truncateResult(stringifyResult(result));
-    }
+    applyToolEnd(turn.blocks, toolCallId, result, isError);
   }
 }
 
@@ -207,22 +280,12 @@ export function handleApprovalRequired(
 ): void {
   const turn = getActiveTurn(state);
   if (turn && turn.type === 'turn' && turn.blocks) {
-    closeStreamingBlock(turn.blocks);
-    turn.blocks.push({
-      type: 'approval',
-      prompt_id: promptId,
-      tool_name: toolName,
-      tool_input: toolInput,
-      danger_level: dangerLevel,
-      explanation,
-      status: 'pending',
-    });
+    pushApproval(turn.blocks, promptId, toolName, toolInput, dangerLevel, explanation);
   }
 }
 
 export function handleAgentEnd(state: ChatState): void {
   state.isProcessing = false;
-  state.todo = [];
   for (const entry of state.entries) {
     if (entry.type === 'turn' && !entry.endTime) {
       entry.endTime = Date.now();
@@ -238,13 +301,9 @@ export function handleError(state: ChatState, errorText: string): void {
     closeStreamingBlock(turn.blocks);
     stopDanglingSubagents(state, turn);
     const lastBlock = turn.blocks[turn.blocks.length - 1];
-    const isRetryError = errorText.toLowerCase().includes('retrying model call');
     if (lastBlock && lastBlock.type === 'error') {
-      const lastText = typeof lastBlock.text === 'string' ? lastBlock.text : '';
-      if (isRetryError && lastText.toLowerCase().includes('retrying model call')) {
-        lastBlock.text = errorText;
-        return;
-      }
+      lastBlock.text = errorText;
+      return;
     }
     turn.blocks.push({ type: 'error', text: errorText });
   } else {
@@ -303,13 +362,7 @@ export function handleSubagentMessageStart(
   const sa = state.subagents[subagentId];
   if (sa) {
     if (!sa.blocks) sa.blocks = [];
-    sa.blocks.push({
-      type: 'thinking',
-      text: '',
-      isStreaming: true,
-      message_id: messageId,
-      startTime: Date.now()
-    });
+    pushMessageStart(sa.blocks, messageId);
   }
 }
 
@@ -321,16 +374,14 @@ export function handleSubagentMessageUpdate(
 ): void {
   const sa = state.subagents[subagentId];
   if (sa) {
-    const processed = processThinkBuffer(state._thinkBuffers, messageId ?? `_sa_${subagentId}`, delta);
-    appendDeltaToBlocks(sa.blocks, processed, messageId);
+    applyMessageUpdate(state, sa.blocks, messageId ?? `_sa_${subagentId}`, messageId, delta);
   }
 }
 
 export function handleSubagentMessageEnd(state: ChatState, subagentId: string, messageId?: string): void {
-  if (messageId) delete state._thinkBuffers[messageId];
   const sa = state.subagents[subagentId];
   if (sa) {
-    closeStreamingBlock(sa.blocks, messageId);
+    applyMessageEnd(state, sa.blocks, messageId);
   }
 }
 
@@ -343,33 +394,14 @@ export function handleSubagentToolStart(
 ): void {
   const sa = state.subagents[subagentId];
   if (sa) {
-    closeStreamingBlock(sa.blocks);
-    sa.blocks.push({
-      type: 'tool',
-      call_id: toolCallId,
-      name: toolName,
-      args,
-      result: '',
-      active: true,
-      is_error: false,
-    });
+    pushToolStart(sa.blocks, toolCallId, toolName, args);
   }
 }
 
 export function handleSubagentToolUpdate(state: ChatState, subagentId: string, toolCallId: string, partialResult: unknown): void {
   const sa = state.subagents[subagentId];
   if (sa) {
-    let block = undefined;
-    for (let i = sa.blocks.length - 1; i >= 0; i--) {
-      const b = sa.blocks[i];
-      if (b.type === 'tool' && (toolCallId ? b.call_id === toolCallId : b.active)) {
-        block = b;
-        break;
-      }
-    }
-    if (block && block.type === 'tool') {
-      block.result += typeof partialResult === 'string' ? partialResult : JSON.stringify(partialResult);
-    }
+    applyToolUpdate(sa.blocks, toolCallId, partialResult);
   }
 }
 
@@ -382,19 +414,7 @@ export function handleSubagentToolEnd(
 ): void {
   const sa = state.subagents[subagentId];
   if (sa) {
-    let block = undefined;
-    for (let i = sa.blocks.length - 1; i >= 0; i--) {
-      const b = sa.blocks[i];
-      if (b.type === 'tool' && (toolCallId ? b.call_id === toolCallId : b.active)) {
-        block = b;
-        break;
-      }
-    }
-    if (block && block.type === 'tool') {
-      block.result = truncateResult(stringifyResult(result));
-      block.active = false;
-      block.is_error = isError;
-    }
+    applyToolEnd(sa.blocks, toolCallId, result, isError);
   }
 }
 
@@ -409,16 +429,7 @@ export function handleSubagentApprovalRequired(
 ): void {
   const sa = state.subagents[subagentId];
   if (sa) {
-    closeStreamingBlock(sa.blocks);
-    sa.blocks.push({
-      type: 'approval',
-      prompt_id: promptId,
-      tool_name: toolName,
-      tool_input: toolInput,
-      danger_level: dangerLevel,
-      explanation,
-      status: 'pending',
-    });
+    pushApproval(sa.blocks, promptId, toolName, toolInput, dangerLevel, explanation);
   }
 }
 
@@ -433,12 +444,7 @@ export function handleSubagentEnd(
     sa.status = success ? 'done' : 'error';
     sa.iterations_used = iterationsUsed;
     sa.endTime = Date.now();
-    sa.blocks.forEach((b) => {
-      if (b.isStreaming) {
-        b.isStreaming = false;
-        if (b.type === 'thinking') b.endTime = Date.now();
-      }
-    });
+    finalizeAllBlocks(sa.blocks);
   }
 }
 
@@ -452,12 +458,7 @@ export function stopDanglingSubagents(state: ChatState, turn: ChatEntry): void {
     if (sa && sa.status === 'working') {
       sa.status = 'error';
       sa.endTime = Date.now();
-      sa.blocks.forEach((b) => {
-        if (b.isStreaming) {
-          b.isStreaming = false;
-          if (b.type === 'thinking') b.endTime = Date.now();
-        }
-      });
+      finalizeAllBlocks(sa.blocks);
     }
   }
 }
@@ -485,7 +486,7 @@ export function resolveApprovalBlock(state: ChatState, promptId: string, choice?
   }
 }
 
-// ── Core event processing (extracted for batch dispatch, PERF-1) ──────
+// ── Core event processing ────────────────────────────────────────────
 
 export function processSingleEvent(state: ChatState, payload: string | Record<string, unknown>): void {
   let raw: Record<string, unknown>;
@@ -527,10 +528,10 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
   const isBackground = targetSessionId && targetSessionId !== state.activeSessionId;
 
   // Temporarily swap references if it's a background session event
-  let originalEntries = state.entries;
-  let originalIsProcessing = state.isProcessing;
-  let originalSubagents = state.subagents;
-  let originalRunId = state.runId;
+  const originalEntries = state.entries;
+  const originalIsProcessing = state.isProcessing;
+  const originalSubagents = state.subagents;
+  const originalRunId = state.runId;
 
   if (isBackground) {
     state.entries = state.entriesBySession[targetSessionId] || [];
@@ -539,115 +540,126 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
     state.runId = state.runIdBySession[targetSessionId] ?? null;
   }
 
-  if (typeof ev.seq === 'number' && typeof ev.run_id === 'string') {
-    const prev = state.lastSeqByRun[ev.run_id];
-    if (prev !== undefined && ev.seq > prev + 1) {
-      console.warn(
-        `[agent-event] gap detected for run ${ev.run_id}: expected ${prev + 1}, got ${ev.seq} (${ev.seq - prev - 1} missing); triggering resync`
-      );
-      state._pendingGap = { runId: ev.run_id, fromSeq: prev };
-    }
-    state.lastSeqByRun[ev.run_id] = ev.seq;
-  }
+  try {
+    // Set _pendingTurnId BEFORE lifecycle handlers that may call handleError/getActiveTurn
+    state._pendingTurnId = ev.turn_id;
 
-  if (ev.event === 'state_changed' && ev.to) {
-    state.runState = ev.to as RunState;
-    if (ev.to === 'completed' || ev.to === 'cancelled' || ev.to === 'failed') {
-      handleAgentEnd(state);
+    // Seq gap detection
+    if (typeof ev.seq === 'number' && typeof ev.run_id === 'string') {
+      const prev = state.lastSeqByRun[ev.run_id];
+      if (prev !== undefined && ev.seq > prev + 1) {
+        console.warn(
+          `[agent-event] gap detected for run ${ev.run_id}: expected ${prev + 1}, got ${ev.seq} (${ev.seq - prev - 1} missing); triggering resync`
+        );
+        state._pendingGap = { runId: ev.run_id, fromSeq: prev };
+      }
+      state.lastSeqByRun[ev.run_id] = ev.seq;
     }
-  } else if (ev.event === 'run_started') {
-    state.runState = 'running';
-  } else if (ev.event === 'run_paused') {
-    state.runState = 'paused';
-  } else if (ev.event === 'run_resumed') {
-    state.runState = 'running';
-  } else if (ev.event === 'run_completed' || ev.event === 'run_cancelled') {
-    state.isProcessing = false;
-    state.runId = null;
-    handleAgentEnd(state);
-  } else if (ev.event === 'run_failed') {
-    state.isProcessing = false;
-    state.runId = null;
-    handleError(state, ev.error ?? 'run failed');
-    for (const entry of state.entries) {
-      if (entry.type === 'turn' && !entry.endTime) {
-        entry.endTime = Date.now();
-        stopDanglingSubagents(state, entry);
+
+    // Run lifecycle events
+    if (ev.event === 'state_changed' && ev.to) {
+      state.runState = ev.to as RunState;
+      if (ev.to === 'completed' || ev.to === 'cancelled' || ev.to === 'failed') {
+        handleAgentEnd(state);
+      }
+    } else if (ev.event === 'run_started') {
+      state.runState = 'running';
+      if (!isBackground) {
+        state.todo = [];
+      }
+    } else if (ev.event === 'run_paused') {
+      state.runState = 'paused';
+    } else if (ev.event === 'run_resumed') {
+      state.runState = 'running';
+    } else if (ev.event === 'run_completed' || ev.event === 'run_cancelled') {
+      state.isProcessing = false;
+      state.runId = null;
+      handleAgentEnd(state);
+    } else if (ev.event === 'run_failed') {
+      state.isProcessing = false;
+      state.runId = null;
+      handleError(state, ev.error ?? 'run failed');
+      for (const entry of state.entries) {
+        if (entry.type === 'turn' && !entry.endTime) {
+          entry.endTime = Date.now();
+          stopDanglingSubagents(state, entry);
+        }
       }
     }
+
+    // Event-specific dispatch
+    switch (ev.event) {
+      case 'turn_started':
+        handleTurnStart(state, ev.index ?? 0, ev.turn_id);
+        break;
+      case 'cache_info':
+        handleCacheInfo(state, ev.hit_rate ?? -1.0);
+        break;
+      case 'turn_ended':
+        handleTurnEnded(state);
+        break;
+      case 'message_start':
+        if (ev.subagent_id) handleSubagentMessageStart(state, ev.subagent_id, ev.message_id);
+        else handleMessageStart(state, ev.message_id);
+        break;
+      case 'message_update':
+      case 'model_streaming':
+        if (ev.subagent_id) handleSubagentMessageUpdate(state, ev.subagent_id, ev.message_id, ev.delta ?? {});
+        else handleMessageUpdate(state, ev.message_id, ev.delta ?? {});
+        break;
+      case 'message_end':
+        if (ev.subagent_id) handleSubagentMessageEnd(state, ev.subagent_id, ev.message_id);
+        else handleMessageEnd(state, ev.message_id);
+        break;
+      case 'tool_started':
+        if (ev.subagent_id) handleSubagentToolStart(state, ev.subagent_id, ev.call_id ?? '', ev.name ?? '', ev.args);
+        else handleToolStart(state, ev.call_id ?? '', ev.name ?? '', ev.args);
+        break;
+      case 'tool_update':
+        if (ev.subagent_id) handleSubagentToolUpdate(state, ev.subagent_id, ev.call_id ?? '', ev.partial ?? '');
+        else handleToolUpdate(state, ev.call_id ?? '', ev.partial ?? '');
+        break;
+      case 'tool_ended':
+        if (ev.subagent_id) handleSubagentToolEnd(state, ev.subagent_id, ev.call_id ?? '', ev.result ?? '', ev.is_error ?? false);
+        else handleToolEnd(state, ev.call_id ?? '', ev.result ?? '', ev.is_error ?? false);
+        break;
+      case 'approval_required':
+        if (ev.subagent_id) handleSubagentApprovalRequired(state, ev.subagent_id, ev.prompt_id ?? '', ev.tool_name ?? '', ev.tool_input, ev.danger_level ?? '', ev.explanation ?? '');
+        else handleApprovalRequired(state, ev.prompt_id ?? '', ev.tool_name ?? '', ev.tool_input, ev.danger_level ?? '', ev.explanation ?? '');
+        break;
+      case 'approval_resolved':
+        resolveApprovalBlock(state, ev.prompt_id ?? '', ev.choice);
+        break;
+      case 'error':
+        handleError(state, ((ev as unknown as Record<string, unknown>).message as string | undefined) ?? 'unknown error');
+        break;
+      case 'subagent_started':
+        handleSubagentStart(state, ev.subagent_id ?? '', ev.parent_call_id, ev.role_name, ev.task ?? '');
+        break;
+      case 'subagent_ended':
+        handleSubagentEnd(state, ev.subagent_id ?? '', ev.success ?? false, ev.iterations_used);
+        break;
+      case 'todo_updated':
+        state.todo = (ev.items as TodoItem[]) ?? [];
+        break;
+      default:
+        break;
+    }
+  } finally {
+    if (isBackground) {
+      state.entriesBySession[targetSessionId] = state.entries;
+      state.processingBySession[targetSessionId] = state.isProcessing;
+      state.subagentsBySession[targetSessionId] = state.subagents;
+      state.runIdBySession[targetSessionId] = state.runId;
+
+      state.entries = originalEntries;
+      state.isProcessing = originalIsProcessing;
+      state.subagents = originalSubagents;
+      state.runId = originalRunId;
+    }
   }
 
-  state._pendingTurnId = ev.turn_id;
-
-  switch (ev.event) {
-    case 'turn_started':
-      handleTurnStart(state, ev.index ?? 0, ev.turn_id);
-      break;
-    case 'cache_info':
-      handleCacheInfo(state, ev.hit_rate ?? -1.0);
-      break;
-    case 'turn_ended':
-      handleTurnEnded(state);
-      break;
-    case 'message_start':
-      if (ev.subagent_id) handleSubagentMessageStart(state, ev.subagent_id, ev.message_id);
-      else handleMessageStart(state, ev.message_id);
-      break;
-    case 'message_update':
-    case 'model_streaming':
-      if (ev.subagent_id) handleSubagentMessageUpdate(state, ev.subagent_id, ev.message_id, ev.delta ?? {});
-      else handleMessageUpdate(state, ev.message_id, ev.delta ?? {});
-      break;
-    case 'message_end':
-      if (ev.subagent_id) handleSubagentMessageEnd(state, ev.subagent_id, ev.message_id);
-      else handleMessageEnd(state, ev.message_id);
-      break;
-    case 'tool_started':
-      if (ev.subagent_id) handleSubagentToolStart(state, ev.subagent_id, ev.call_id ?? '', ev.name ?? '', ev.args);
-      else handleToolStart(state, ev.call_id ?? '', ev.name ?? '', ev.args);
-      break;
-    case 'tool_update':
-      if (ev.subagent_id) handleSubagentToolUpdate(state, ev.subagent_id, ev.call_id ?? '', ev.partial ?? '');
-      else handleToolUpdate(state, ev.call_id ?? '', ev.partial ?? '');
-      break;
-    case 'tool_ended':
-      if (ev.subagent_id) handleSubagentToolEnd(state, ev.subagent_id, ev.call_id ?? '', ev.result ?? '', ev.is_error ?? false);
-      else handleToolEnd(state, ev.call_id ?? '', ev.result ?? '', ev.is_error ?? false);
-      break;
-    case 'approval_required':
-      if (ev.subagent_id) handleSubagentApprovalRequired(state, ev.subagent_id, ev.prompt_id ?? '', ev.tool_name ?? '', ev.tool_input, ev.danger_level ?? '', ev.explanation ?? '');
-      else handleApprovalRequired(state, ev.prompt_id ?? '', ev.tool_name ?? '', ev.tool_input, ev.danger_level ?? '', ev.explanation ?? '');
-      break;
-    case 'approval_resolved':
-      resolveApprovalBlock(state, ev.prompt_id ?? '', ev.choice);
-      break;
-    case 'error':
-      handleError(state, ((ev as unknown as Record<string, unknown>).message as string | undefined) ?? 'unknown error');
-      break;
-    case 'subagent_started':
-      handleSubagentStart(state, ev.subagent_id ?? '', ev.parent_call_id, ev.role_name, ev.task ?? '');
-      break;
-    case 'subagent_ended':
-      handleSubagentEnd(state, ev.subagent_id ?? '', ev.success ?? false, ev.iterations_used);
-      break;
-    case 'todo_updated':
-      state.todo = (ev.items as TodoItem[]) ?? [];
-      break;
-    default:
-      break;
-  }
-
-  if (isBackground) {
-    state.entriesBySession[targetSessionId] = state.entries;
-    state.processingBySession[targetSessionId] = state.isProcessing;
-    state.subagentsBySession[targetSessionId] = state.subagents;
-    state.runIdBySession[targetSessionId] = state.runId;
-
-    state.entries = originalEntries;
-    state.isProcessing = originalIsProcessing;
-    state.subagents = originalSubagents;
-    state.runId = originalRunId;
-  } else if (state.activeSessionId) {
+  if (!isBackground && state.activeSessionId) {
     state.entriesBySession[state.activeSessionId] = state.entries;
     state.processingBySession[state.activeSessionId] = state.isProcessing;
     state.subagentsBySession[state.activeSessionId] = state.subagents;

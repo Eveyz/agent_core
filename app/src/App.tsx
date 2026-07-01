@@ -9,6 +9,7 @@ import {
   runIdSet,
   selectEntryIds,
   selectPendingApprovalCount,
+  selectActivePendingApproval,
   selectSubagentById,
 } from './features/chat/chatSlice';
 import { openSettings, fetchConfig } from './features/settings/settingsSlice';
@@ -31,6 +32,7 @@ import { Sidebar } from './components/layout/Sidebar';
 import { CosmicBackground } from './components/layout/CosmicBackground';
 import { EmptyState } from './components/chat/EmptyState';
 import { ChatInput } from './components/chat/ChatInput';
+import ApprovalBlockUI from './components/chat/ApprovalBlockUI';
 import SettingsModal from './components/settings/SettingsModal';
 import { CustomTitleBar } from './components/layout/CustomTitleBar';
 import { AppHeader } from './components/layout/AppHeader';
@@ -149,6 +151,7 @@ function App() {
 
   // Track pending approvals — scroll to bottom when a new one appears
   const pendingApprovalCount = useSelector(selectPendingApprovalCount);
+  const activePendingApproval = useSelector(selectActivePendingApproval);
   const viewingSubagentPath = useSelector((state: RootState) => state.chat.viewingSubagentPath, shallowEqual);
 
   const activeSubagentId = viewingSubagentPath.length > 0 ? viewingSubagentPath[viewingSubagentPath.length - 1].id : null;
@@ -336,19 +339,33 @@ function App() {
               isAtBottom={isAtBottom}
               scrollToBottom={scrollToBottom}
               handleRetry={handleRetry}
+              onSend={handleSend}
             />
           )}
 
           {activeView === "chat" && (
-            <ChatInput
-              isProcessing={isProcessing}
-              onSend={handleSend}
-              currentModel={defaultModel}
-              onAbort={handleAbort}
-              onSteer={handleSteer}
-              disabled={viewingSubagentPath.length > 0 || isResuming}
-              disabledMessage={isResuming ? "Resuming session..." : "the input chat is disabled for the subagent"}
-            />
+            <div className="chat-input-wrapper-relative" style={{ position: 'relative', width: '100%' }}>
+              <ChatInput
+                isProcessing={isProcessing}
+                onSend={handleSend}
+                currentModel={defaultModel}
+                onAbort={handleAbort}
+                onSteer={handleSteer}
+                disabled={viewingSubagentPath.length > 0 || isResuming || !!activePendingApproval}
+                disabledMessage={
+                  isResuming
+                    ? "Resuming session..."
+                    : activePendingApproval
+                    ? "Awaiting approval..."
+                    : "the input chat is disabled for the subagent"
+                }
+              />
+              {activePendingApproval && (
+                <div className="approval-overlay-container">
+                  <ApprovalBlockUI block={activePendingApproval} isOverlay={true} />
+                </div>
+              )}
+            </div>
           )}
         </main>
         

@@ -12,7 +12,13 @@ const APPROVAL_LABELS: Record<string, string> = {
   allow_persistent: 'Allowed (always)',
 };
 
-const ApprovalBlockUI = memo(function ApprovalBlockUI({ block }: { block: ApprovalBlock }) {
+const ApprovalBlockUI = memo(function ApprovalBlockUI({
+  block,
+  isOverlay = false,
+}: {
+  block: ApprovalBlock;
+  isOverlay?: boolean;
+}) {
   const dispatch = useAppDispatch();
   const [chosenAction, setChosenAction] = useState<string | null>(null);
 
@@ -48,10 +54,14 @@ const ApprovalBlockUI = memo(function ApprovalBlockUI({ block }: { block: Approv
     );
   }
 
+  const containerClass = isOverlay ? 'approval-overlay-card' : 'approval-block';
+
   return (
-    <div className="approval-block">
+    <div className={containerClass}>
       <div className="approval-header">
-        <span className="approval-title">Approval Required: {block.tool_name}</span>
+        <span className="approval-title">
+          Approval Required: <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{block.tool_name}</span>
+        </span>
         {block.danger_level ? (
           <span className={`danger-badge danger-${block.danger_level}`}>{block.danger_level}</span>
         ) : null}
@@ -60,7 +70,7 @@ const ApprovalBlockUI = memo(function ApprovalBlockUI({ block }: { block: Approv
       <div className="approval-args">
         <pre>{typeof block.tool_input === 'string' ? block.tool_input : JSON.stringify(block.tool_input, null, 2)}</pre>
       </div>
-      <div className="approval-actions approval-actions-style">
+      <div className="approval-actions">
         <button className="btn-deny" onClick={() => handleApprove('deny')}>Deny Once</button>
         <button className="btn-deny" onClick={() => handleApprove('deny_persistent')}>Deny Always</button>
         <button className="btn-allow" onClick={() => handleApprove('allow_once')}>Allow Once</button>

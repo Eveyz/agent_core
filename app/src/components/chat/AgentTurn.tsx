@@ -3,6 +3,7 @@ import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
 import ChevronRightIcon from 'lucide-react/dist/esm/icons/chevron-right.mjs';
 import LoaderIcon from 'lucide-react/dist/esm/icons/loader.mjs';
 import AlertTriangleIcon from 'lucide-react/dist/esm/icons/alert-triangle.mjs';
+import BanIcon from 'lucide-react/dist/esm/icons/ban.mjs';
 import FileCheckIcon from 'lucide-react/dist/esm/icons/file-check.mjs';
 import type { ChatEntry, TurnBlock } from '../../features/chat/chatSlice';
 import { formatTime } from '../../utils/format';
@@ -104,7 +105,13 @@ function FilesChangedCard({ files }: { files: FileChangeItem[] }) {
   );
 }
 
-export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: ChatEntry }) {
+export const AgentTurnUI = memo(function AgentTurnUI({
+  entry,
+  onSend,
+}: {
+  entry: ChatEntry;
+  onSend?: (msg: string) => void;
+}) {
   const isProcessing = !!(entry.startTime && !entry.endTime);
   const isDone = !!(entry.endTime);
 
@@ -273,10 +280,40 @@ export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: ChatEnt
               )
             ) : item.type === 'error' ? (
               (!collapsed || idx === renderItems.length - 1) && (
-                <div className="error-block-style">
-                  <AlertTriangleIcon size={16} style={{ flexShrink: 0 }} />
-                  <span style={{ lineHeight: '1.4' }}>{item.data.text}</span>
-                </div>
+                item.data.text.includes("maximum number of steps") ||
+                item.data.text.includes("Reached the maximum number of steps") ||
+                item.data.text.includes("reached the maximum number of steps") ? (
+                  <div className="warning-block-style">
+                    <div className="warning-block-content">
+                      <AlertTriangleIcon size={16} style={{ flexShrink: 0 }} />
+                      <span style={{ lineHeight: '1.4' }}>You have been working in this project in a while.</span>
+                    </div>
+                    {onSend && (
+                      <button 
+                        className="continue-btn" 
+                        onClick={() => onSend("continue")}
+                        disabled={isProcessing}
+                      >
+                        Continue
+                      </button>
+                    )}
+                  </div>
+                ) : item.data.text.toLowerCase().includes("interrupted") ? (
+                  <div className="interrupted-block-style">
+                    <div className="interrupted-content">
+                      <BanIcon size={14} className="interrupted-icon" style={{ flexShrink: 0 }} />
+                      <div className="interrupted-text-wrapper">
+                        <span className="interrupted-title">Execution Interrupted</span>
+                        <span className="interrupted-subtitle">The task was cancelled before completion</span>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="error-block-style">
+                    <AlertTriangleIcon size={16} style={{ flexShrink: 0 }} />
+                    <span style={{ lineHeight: '1.4' }}>{item.data.text}</span>
+                  </div>
+                )
               )
             ) : (
               !collapsed && <TurnIterationUI iteration={item.data} />

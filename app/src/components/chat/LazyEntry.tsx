@@ -11,6 +11,7 @@ interface LazyEntryProps {
    * bottom) without waiting for the IntersectionObserver, so streaming
    * output mounts instantly. */
   forceVisible: boolean;
+  onSend?: (msg: string) => void;
 }
 
 // Height used for off-screen placeholders so the scrollbar and the
@@ -45,6 +46,7 @@ export const LazyEntry = memo(function LazyEntry({
   isProcessing,
   scrollRef,
   forceVisible,
+  onSend,
 }: LazyEntryProps) {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const [visible, setVisible] = useState(forceVisible);
@@ -76,6 +78,7 @@ export const LazyEntry = memo(function LazyEntry({
         defaultModel={defaultModel}
         handleRetry={handleRetry}
         isProcessing={isProcessing}
+        onSend={onSend}
       />
     );
   }

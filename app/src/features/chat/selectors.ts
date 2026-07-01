@@ -37,3 +37,38 @@ export const selectPendingApprovalCount = createSelector(
     return count;
   }
 );
+
+export const selectActivePendingApproval = createSelector(
+  [
+    (state: { chat: ChatState }) => state.chat.entries,
+    (state: { chat: ChatState }) => state.chat.subagents,
+  ],
+  (entries: ChatEntry[], subagents: Record<string, SubagentEntry>) => {
+    for (const entry of entries) {
+      if (entry.type !== 'turn' || !entry.blocks) continue;
+      for (const b of entry.blocks) {
+        if (b.type === 'approval' && b.status === 'pending') {
+          return b;
+        }
+      }
+    }
+    for (const sa of Object.values(subagents)) {
+      if (!sa.blocks) continue;
+      for (const b of sa.blocks) {
+        if (b.type === 'approval' && b.status === 'pending') {
+          return {
+            type: 'approval',
+            prompt_id: b.prompt_id ?? '',
+            tool_name: b.tool_name ?? '',
+            tool_input: b.tool_input,
+            danger_level: b.danger_level ?? '',
+            explanation: b.explanation ?? '',
+            status: b.status ?? 'pending',
+          } as const;
+        }
+      }
+    }
+    return null;
+  }
+);
+
