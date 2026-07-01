@@ -33,14 +33,14 @@ export function AgentMemoryTab({ agent }: AgentMemoryTabProps) {
           <h3 style={{ fontSize: "16px", fontWeight: 600, margin: 0, color: "var(--text-main)" }}>Core Memory / agverse.md</h3>
         </div>
         <div style={{ 
-          background: "rgba(255, 255, 255, 0.02)", 
-          border: "1px solid rgba(255, 255, 255, 0.08)", 
+          background: "var(--overlay-0_02)", 
+          border: "1px solid var(--overlay-0_08)", 
           borderRadius: "12px", 
           padding: "20px",
           flex: 1,
           color: "var(--text-muted)",
           fontSize: "13px",
-          fontFamily: "var(--font-mono, monospace)",
+          fontFamily: "var(--font-mono)",
           whiteSpace: "pre-wrap",
           overflowY: "auto"
         }}>
@@ -67,14 +67,14 @@ export function AgentMemoryTab({ agent }: AgentMemoryTabProps) {
 
         <div style={{ display: "flex", flexDirection: "column", gap: "12px", overflowY: "auto", paddingRight: "8px" }}>
           {memories.length === 0 ? (
-            <div style={{ textAlign: "center", padding: "40px", color: "var(--text-muted)", fontSize: "13px", background: "rgba(255,255,255,0.02)", borderRadius: "12px" }}>
+            <div style={{ textAlign: "center", padding: "40px", color: "var(--text-muted)", fontSize: "13px", background: "var(--overlay-0_02)", borderRadius: "12px" }}>
               No memories found. The agent needs to run more tasks to form long-term memories.
             </div>
           ) : (
             memories.map((m) => (
               <div key={m.id} style={{ 
-                background: "rgba(255, 255, 255, 0.03)", 
-                border: "1px solid rgba(255, 255, 255, 0.06)", 
+                background: "var(--overlay-0_03)", 
+                border: "1px solid var(--overlay-0_06)", 
                 borderRadius: "8px", 
                 padding: "16px" 
               }}>

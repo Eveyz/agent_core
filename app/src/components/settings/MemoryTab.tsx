@@ -172,7 +172,7 @@ export default function MemoryTab() {
                 flex: 1,
                 padding: '12px',
                 borderRadius: '8px',
-                border: `2px solid ${currentMode === mode ? 'var(--accent-color, #6366f1)' : 'var(--border-color)'}`,
+                border: `2px solid ${currentMode === mode ? 'var(--accent)' : 'var(--border-color)'}`,
                 background: currentMode === mode ? 'var(--accent-bg, rgba(99, 102, 241, 0.1))' : 'var(--bg-tertiary)',
                 cursor: switchingMode ? 'wait' : 'pointer',
                 display: 'flex',
@@ -188,7 +188,7 @@ export default function MemoryTab() {
                 <span style={{ fontWeight: 600, fontSize: '13px' }}>
                   {MODE_DESCRIPTIONS[mode].label}
                 </span>
-                {currentMode === mode && <CheckIcon size={14} style={{ color: 'var(--accent-color, #6366f1)' }} />}
+                {currentMode === mode && <CheckIcon size={14} style={{ color: 'var(--accent)' }} />}
               </div>
               <span style={{ fontSize: '11px', color: 'var(--text-secondary)', textAlign: 'left', lineHeight: '1.3' }}>
                 {MODE_DESCRIPTIONS[mode].desc}

@@ -8,24 +8,24 @@
 
 .subagent-card {
   border: 1px solid var(--border-color);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--overlay-0_02);
   overflow: hidden;
   transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .subagent-card:hover {
-  border-color: rgba(160, 216, 255, 0.3);
-  box-shadow: 0 0 15px rgba(160, 216, 255, 0.1), inset 0 0 10px rgba(160, 216, 255, 0.05);
+  border-color: var(--accent-border);
+  box-shadow: 0 0 15px var(--accent-subtle), inset 0 0 10px var(--accent-subtle);
 }
 
 .subagent-card.subagent-working {
-  border-color: rgba(250, 204, 21, 0.25);
+  border-color: var(--warning-border);
 }
 
 .subagent-card.subagent-working:hover {
-  border-color: rgba(250, 204, 21, 0.4);
-  box-shadow: 0 0 15px rgba(250, 204, 21, 0.1), inset 0 0 10px rgba(250, 204, 21, 0.05);
+  border-color: var(--warning-border);
+  box-shadow: 0 0 15px var(--warning-bg), inset 0 0 10px rgba(250, 204, 21, 0.05);
 }
 
 .subagent-header {
@@ -42,33 +42,33 @@
 }
 
 .subagent-id {
-  color: #d2a8ff;
+  color: var(--subagent-color);
   font-weight: 600;
-  font-family: 'Fira Code', 'Menlo', monospace;
+  font-family: var(--font-mono);
 }
 
 .subagent-badge-pending {
-  background: rgba(249, 115, 22, 0.15);
-  color: #fb923c;
+  background: var(--warning-bg);
+  color: var(--warning);
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   font-size: 10px;
   font-weight: 600;
-  border: 1px solid rgba(249, 115, 22, 0.3);
+  border: 1px solid var(--warning-border);
   text-transform: uppercase;
   margin-left: 6px;
   animation: pulse-orange 2s infinite;
 }
 
 @keyframes pulse-orange {
-  0% { box-shadow: 0 0 0 0 rgba(249, 115, 22, 0.4); }
+  0% { box-shadow: 0 0 0 0 var(--warning-border); }
   70% { box-shadow: 0 0 0 4px rgba(249, 115, 22, 0); }
   100% { box-shadow: 0 0 0 0 rgba(249, 115, 22, 0); }
 }
 
 .subagent-card.subagent-needs-approval {
-  border-color: rgba(249, 115, 22, 0.4);
-  box-shadow: 0 0 10px rgba(249, 115, 22, 0.1);
+  border-color: var(--warning-border);
+  box-shadow: 0 0 10px var(--warning-bg);
 }
 
 .subagent-status {
@@ -119,7 +119,7 @@
   display: inline-block;
   width: 14px;
   height: 14px;
-  border-radius: 50%;
+  border-radius: var(--radius-full);
   background: var(--spinner-core);
   position: relative;
   flex-shrink: 0;
@@ -128,7 +128,7 @@
   content: '';
   position: absolute;
   inset: -3px;
-  border-radius: 50%;
+  border-radius: var(--radius-full);
   background: conic-gradient(
     from 0deg,
     transparent 0%,
@@ -145,7 +145,7 @@
   content: '';
   position: absolute;
   inset: -1px;
-  border-radius: 50%;
+  border-radius: var(--radius-full);
   background: conic-gradient(
     from 180deg,
     transparent 0%,
@@ -165,11 +165,11 @@
 .light-wave-text {
   background: linear-gradient(
     90deg,
-    #666 0%,
+    var(--text-tertiary) 0%,
     #999 25%,
     #e8e8ec 50%,
     #999 75%,
-    #666 100%
+    var(--text-tertiary) 100%
   );
   background-size: 200% 100%;
   -webkit-background-clip: text;

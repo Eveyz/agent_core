@@ -100,8 +100,8 @@ export function SkillDrafts({
   };
 
   return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 9998, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onClose}>
-      <div style={{ width: "640px", maxHeight: "80vh", background: "var(--bg-secondary, #1e1e2e)", borderRadius: "12px", display: "flex", flexDirection: "column", overflow: "hidden" }} onClick={(e) => e.stopPropagation()}>
+    <div style={{ position: "fixed", inset: 0, background: "var(--shadow-xl)", zIndex: 9998, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onClose}>
+      <div style={{ width: "640px", maxHeight: "80vh", background: "var(--bg-secondary)", borderRadius: "12px", display: "flex", flexDirection: "column", overflow: "hidden" }} onClick={(e) => e.stopPropagation()}>
         {/* Header */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 18px", borderBottom: "1px solid var(--border-color)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -113,7 +113,7 @@ export function SkillDrafts({
 
         <div style={{ padding: "14px 18px", overflowY: "auto", flex: 1 }}>
           {/* Experimental banner */}
-          <div style={{ padding: "8px 12px", background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.3)", borderRadius: "6px", fontSize: "12px", color: "var(--warning, #f59e0b)", marginBottom: "12px" }}>
+          <div style={{ padding: "8px 12px", background: "var(--warning-bg)", border: "1px solid var(--warning-border)", borderRadius: "6px", fontSize: "12px", color: "var(--warning)", marginBottom: "12px" }}>
             ⚡ Experimental: Drafts are generated from execution history and require human review before activation.
           </div>
 
@@ -151,7 +151,7 @@ export function SkillDrafts({
                   <div style={{ fontSize: "13px", fontWeight: 600 }}>{draft.name}</div>
                   <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>{draft.description}</div>
                 </div>
-                <span style={{ fontSize: "10px", color: "var(--text-muted)", background: "var(--bg-main, #0d0d14)", padding: "2px 6px", borderRadius: "4px" }}>
+                <span style={{ fontSize: "10px", color: "var(--text-muted)", background: "var(--bg-app)", padding: "2px 6px", borderRadius: "4px" }}>
                   {draft.samples_analyzed} samples
                 </span>
               </div>
@@ -163,14 +163,14 @@ export function SkillDrafts({
               {draft.triggers.length > 0 && (
                 <div style={{ display: "flex", gap: "4px", flexWrap: "wrap", marginBottom: "8px" }}>
                   {draft.triggers.map(t => (
-                    <span key={t} style={{ fontSize: "10px", background: "rgba(82,168,255,0.12)", color: "var(--accent)", padding: "2px 6px", borderRadius: "4px" }}>{t}</span>
+                    <span key={t} style={{ fontSize: "10px", background: "var(--accent-subtle)", color: "var(--accent)", padding: "2px 6px", borderRadius: "4px" }}>{t}</span>
                   ))}
                 </div>
               )}
 
               {/* Expandable body */}
               {expandedDraft === draft.name && (
-                <pre style={{ background: "var(--bg-main, #0d0d14)", padding: "8px", borderRadius: "4px", fontSize: "10px", maxHeight: "200px", overflowY: "auto", margin: "0 0 8px 0", whiteSpace: "pre-wrap" }}>
+                <pre style={{ background: "var(--bg-app)", padding: "8px", borderRadius: "4px", fontSize: "10px", maxHeight: "200px", overflowY: "auto", margin: "0 0 8px 0", whiteSpace: "pre-wrap" }}>
                   {draft.body}
                 </pre>
               )}
@@ -185,7 +185,7 @@ export function SkillDrafts({
                 </button>
                 <button
                   className="btn-primary"
-                  style={{ fontSize: "11px", padding: "3px 8px", background: "var(--success, #22c55e)" }}
+                  style={{ fontSize: "11px", padding: "3px 8px", background: "var(--success)" }}
                   onClick={() => handleApprove(draft.name)}
                   disabled={actioning === draft.name}
                 >

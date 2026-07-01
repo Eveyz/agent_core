@@ -35,7 +35,7 @@ export function AgentHistoryTab({ agent }: AgentHistoryTabProps) {
           top: "10px", 
           bottom: "10px", 
           width: "2px", 
-          background: "rgba(255, 255, 255, 0.05)",
+          background: "var(--overlay-0_05)",
           zIndex: 0
         }} />
 
@@ -57,8 +57,8 @@ export function AgentHistoryTab({ agent }: AgentHistoryTabProps) {
                 width: "24px", 
                 height: "24px", 
                 borderRadius: "50%", 
-                background: h.success ? "rgba(34, 197, 94, 0.2)" : "rgba(239, 68, 68, 0.2)",
-                color: h.success ? "var(--success, #22c55e)" : "var(--danger, #ef4444)",
+                background: h.success ? "var(--success-border)" : "var(--danger-border)",
+                color: h.success ? "var(--success)" : "var(--danger)",
                 display: "flex", 
                 alignItems: "center", 
                 justifyContent: "center",
@@ -71,8 +71,8 @@ export function AgentHistoryTab({ agent }: AgentHistoryTabProps) {
               {/* Content Card */}
               <div style={{ 
                 flex: 1, 
-                background: "rgba(255, 255, 255, 0.02)", 
-                border: "1px solid rgba(255, 255, 255, 0.06)", 
+                background: "var(--overlay-0_02)", 
+                border: "1px solid var(--overlay-0_06)", 
                 borderRadius: "12px", 
                 padding: "20px" 
               }}>
@@ -89,7 +89,7 @@ export function AgentHistoryTab({ agent }: AgentHistoryTabProps) {
                     <div style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "12px", color: "var(--text-muted)" }}>
                       <ClockIcon size={12} /> {h.process_time_ms}ms
                     </div>
-                    <div style={{ fontSize: "12px", color: "var(--text-muted)", background: "rgba(255,255,255,0.05)", padding: "2px 8px", borderRadius: "4px" }}>
+                    <div style={{ fontSize: "12px", color: "var(--text-muted)", background: "var(--overlay-0_05)", padding: "2px 8px", borderRadius: "4px" }}>
                       Iter: {h.iterations_used}
                     </div>
                   </div>
@@ -98,7 +98,7 @@ export function AgentHistoryTab({ agent }: AgentHistoryTabProps) {
                 <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
                   <div>
                     <div style={{ fontSize: "11px", textTransform: "uppercase", fontWeight: 600, color: "var(--text-muted)", marginBottom: "6px" }}>Input Task</div>
-                    <div style={{ fontSize: "13px", color: "var(--text-main)", background: "rgba(0,0,0,0.2)", padding: "12px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.03)" }}>
+                    <div style={{ fontSize: "13px", color: "var(--text-main)", background: "var(--shadow-md)", padding: "12px", borderRadius: "8px", border: "1px solid var(--overlay-0_03)" }}>
                       {h.input}
                     </div>
                   </div>
@@ -109,10 +109,10 @@ export function AgentHistoryTab({ agent }: AgentHistoryTabProps) {
                       <div style={{ 
                         fontSize: "13px", 
                         color: h.success ? "var(--text-main)" : "var(--danger)", 
-                        background: "rgba(0,0,0,0.2)", 
+                        background: "var(--shadow-md)", 
                         padding: "12px", 
                         borderRadius: "8px", 
-                        border: "1px solid rgba(255,255,255,0.03)",
+                        border: "1px solid var(--overlay-0_03)",
                         whiteSpace: "pre-wrap",
                         maxHeight: "150px",
                         overflowY: "auto"

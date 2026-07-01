@@ -54,7 +54,7 @@ const SubagentCard = memo(function SubagentCard({ subagentId }: { subagentId: st
     if (!subagent) return null;
     if (subagent.status === 'working') return <div className="black-hole-spinner" style={{ width: 12, height: 12 }} />;
     if (subagent.status === 'done') return <CheckIcon size={12} color="var(--success)" />;
-    if (subagent.status === 'error') return <XIcon size={12} color="#f87171" />;
+    if (subagent.status === 'error') return <XIcon size={12} color="var(--danger)" />;
     return null;
   }, [subagent?.status]);
 

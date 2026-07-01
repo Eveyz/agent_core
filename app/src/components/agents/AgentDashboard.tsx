@@ -27,7 +27,7 @@ export function AgentDashboard({ agent }: AgentDashboardProps) {
       <div className="agent-dashboard-header">
         <div className="agent-header-main">
           <div className="agent-header-icon">
-            <BotIcon size={24} color={agent.color || "var(--accent, #3b82f6)"} />
+            <BotIcon size={24} color={agent.color || "var(--accent)"} />
           </div>
           <div className="agent-header-info">
             <h1 className="agent-name">{agent.name}</h1>

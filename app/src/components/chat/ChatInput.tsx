@@ -208,12 +208,12 @@ export const ChatInput = memo(function ChatInput({
                 onClick={() => insertAutocompleteItem(item)}
                 onMouseEnter={() => setSelectedIndex(idx)}
               >
-                {item.icon === 'folder' && <FolderIcon size={14} color="#808080" />}
-                {item.icon === 'file' && <FileIcon size={14} color="#808080" />}
-                {item.icon === 'file-code' && <FileCodeIcon size={14} color="#808080" />}
-                {item.icon === 'file-json' && <FileJsonIcon size={14} color="#808080" />}
-                {item.icon === 'file-text' && <FileTextIcon size={14} color="#808080" />}
-                {item.icon === 'file-image' && <ImageIcon size={14} color="#808080" />}
+                {item.icon === 'folder' && <FolderIcon size={14} color="var(--text-tertiary)" />}
+                {item.icon === 'file' && <FileIcon size={14} color="var(--text-tertiary)" />}
+                {item.icon === 'file-code' && <FileCodeIcon size={14} color="var(--text-tertiary)" />}
+                {item.icon === 'file-json' && <FileJsonIcon size={14} color="var(--text-tertiary)" />}
+                {item.icon === 'file-text' && <FileTextIcon size={14} color="var(--text-tertiary)" />}
+                {item.icon === 'file-image' && <ImageIcon size={14} color="var(--text-tertiary)" />}
                 {item.icon === 'lang-js' && <SiJavascript size={14} color="#f7df1e" />}
                 {item.icon === 'lang-ts' && <SiTypescript size={14} color="#3178c6" />}
                 {item.icon === 'lang-jsx' && <SiReact size={14} color="#61dafb" />}
@@ -223,8 +223,8 @@ export const ChatInput = memo(function ChatInput({
                 {item.icon === 'lang-css' && <SiCss size={14} color="#1572b6" />}
                 {item.icon === 'lang-rs' && <SiRust size={14} color="#dea584" />}
                 {item.icon === 'lang-html' && <SiHtml5 size={14} color="#e34f26" />}
-                {item.icon === 'command' && <TerminalSquareIcon size={14} color="#52A8FF" />}
-                {item.icon === 'skill' && <ZapIcon size={14} color="#a855f7" />}
+                {item.icon === 'command' && <TerminalSquareIcon size={14} color="var(--accent)" />}
+                {item.icon === 'skill' && <ZapIcon size={14} color="var(--violet-500)" />}
                 <span className="autocomplete-label">{item.label}</span>
               </div>
             ))}
@@ -304,7 +304,7 @@ export const ChatInput = memo(function ChatInput({
                   alignItems: 'center',
                   gap: '4px',
                   cursor: 'pointer',
-                  color: branchError ? '#ff5f57' : undefined,
+                  color: branchError ? 'var(--danger)' : undefined,
                 }}
                 onClick={() => setShowBranchDropdown((s) => !s)}
                 title={branchError || undefined}
@@ -319,7 +319,7 @@ export const ChatInput = memo(function ChatInput({
                   style={{ bottom: '24px', left: 0, minWidth: '180px', maxHeight: '240px', overflowY: 'auto' }}
                 >
                   {branches.length === 0 && (
-                    <div className="dropdown-item" style={{ color: '#808080', cursor: 'default' }}>
+                    <div className="dropdown-item" style={{ color: 'var(--text-tertiary)', cursor: 'default' }}>
                       {branchError ? 'Not a git repo' : 'No branches'}
                     </div>
                   )}

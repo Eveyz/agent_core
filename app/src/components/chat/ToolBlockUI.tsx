@@ -247,7 +247,7 @@ const ToolBlockUI = memo(function ToolBlockUI({
             <ToolIcon
               size={13}
               className={`step-icon tool-icon-margin ${isSearching ? 'step-icon-searching' : ''}`}
-              color={is_error ? '#f87171' : 'var(--text-muted)'}
+              color={is_error ? 'var(--danger)' : 'var(--text-muted)'}
             />
           );
         })()}

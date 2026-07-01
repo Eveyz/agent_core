@@ -11,12 +11,12 @@
   top: -4px;
   right: -4px;
   background: var(--accent);
-  color: white;
+  color: var(--text-inverse);
   font-size: 9px;
   font-weight: 600;
   min-width: 14px;
   height: 14px;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -47,7 +47,7 @@
   align-items: center;
   justify-content: center;
   padding: 4px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   transition: color 0.2s, background 0.2s;
   flex-shrink: 0;
 }
@@ -103,7 +103,7 @@
 }
 
 .skill-dropdown-item.selected {
-  background: rgba(82, 168, 255, 0.08);
+  background: var(--accent-subtle);
 }
 
 .skill-dropdown-item:focus-visible {
@@ -142,14 +142,5 @@
   max-width: 260px;
 }
 
-/* Animation for dropdown */
-@keyframes slide-up {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
+/* Animation: uses @keyframes slide-up defined in settings.css */
+

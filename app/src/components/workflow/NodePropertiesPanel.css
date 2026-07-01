@@ -70,10 +70,10 @@
 .node-properties-json-info {
   display: flex;
   gap: 8px;
-  background: rgba(59, 130, 246, 0.1);
+  background: var(--accent-subtle);
   padding: 10px;
-  border-radius: 8px;
-  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--accent-border);
 }
 
 .node-properties-json-info-text {
@@ -95,7 +95,7 @@
   resize: vertical;
   font-size: 12px;
   font-family: var(--font-mono);
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--shadow-md);
 }
 
 .node-properties-footer {
@@ -107,5 +107,5 @@
   font-size: 13px;
   width: 100%;
   color: var(--danger);
-  border-color: rgba(239, 68, 68, 0.2);
+  border-color: var(--danger-border);
 }

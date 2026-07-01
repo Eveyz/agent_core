@@ -191,7 +191,7 @@ export function NewAgentModal({
                 {selectedSkills.length > 0 && (
                   <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", padding: "12px 12px 0 12px" }}>
                     {selectedSkills.map(s => (
-                      <div key={s} style={{ display: "flex", alignItems: "center", gap: "4px", background: "rgba(82, 168, 255, 0.15)", color: "var(--accent)", padding: "4px 8px", borderRadius: "6px", fontSize: "12px", userSelect: "none" }}>
+                      <div key={s} style={{ display: "flex", alignItems: "center", gap: "4px", background: "var(--accent-subtle)", color: "var(--accent)", padding: "4px 8px", borderRadius: "6px", fontSize: "12px", userSelect: "none" }}>
                         <span style={{ fontWeight: 500 }}>{s}</span>
                         <XIcon size={14} style={{ cursor: "pointer", opacity: 0.7 }} onClick={() => setSelectedSkills(selectedSkills.filter(sk => sk !== s))} />
                       </div>
@@ -389,7 +389,7 @@ export function NewAgentModal({
                 {selectedTools.length > 0 && (
                   <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", marginBottom: "6px" }}>
                     {selectedTools.map(t => (
-                      <div key={t} style={{ display: "flex", alignItems: "center", gap: "4px", background: "rgba(82, 168, 255, 0.12)", color: "var(--accent)", padding: "3px 7px", borderRadius: "5px", fontSize: "12px" }}>
+                      <div key={t} style={{ display: "flex", alignItems: "center", gap: "4px", background: "var(--accent-subtle)", color: "var(--accent)", padding: "3px 7px", borderRadius: "5px", fontSize: "12px" }}>
                         <span>{t}</span>
                         <XIcon size={12} style={{ cursor: "pointer", opacity: 0.7 }} onClick={() => setSelectedTools(selectedTools.filter(x => x !== t))} />
                       </div>

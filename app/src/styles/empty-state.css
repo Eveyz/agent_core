@@ -13,7 +13,7 @@
 /* PERF-8: Reduced blur from 70px to 30px — visually similar, ~5x cheaper GPU compositing */
 .cosmic-glow {
   position: absolute;
-  border-radius: 50%;
+  border-radius: var(--radius-full);
   filter: blur(30px);
   pointer-events: none;
   will-change: filter;
@@ -24,7 +24,7 @@
   top: 5%;
   left: 50%;
   transform: translateX(-50%);
-  background: radial-gradient(circle, rgba(59, 130, 246, 0.3) 0%, transparent 65%);
+  background: radial-gradient(circle, var(--accent-border) 0%, transparent 65%);
   opacity: 0.55;
 }
 .cosmic-glow-2 {
@@ -89,25 +89,25 @@
 .sun {
   width: 36px;
   height: 36px;
-  border-radius: 50%;
-  background: radial-gradient(circle at 35% 35%, #fef3c7, #f59e0b, #d97706);
+  border-radius: var(--radius-full);
+  background: radial-gradient(circle at 35% 35%, #fef3c7, var(--warning), #d97706);
   box-shadow:
-    0 0 20px rgba(245, 158, 11, 0.4),
-    0 0 40px rgba(245, 158, 11, 0.2),
+    0 0 20px var(--warning-border),
+    0 0 40px var(--warning-border),
     0 0 60px rgba(217, 119, 6, 0.1);
   position: relative;
   z-index: 2;
   animation: sun-pulse 4s ease-in-out infinite;
 }
 @keyframes sun-pulse {
-  0%, 100% { box-shadow: 0 0 20px rgba(245, 158, 11, 0.4), 0 0 40px rgba(245, 158, 11, 0.2), 0 0 60px rgba(217, 119, 6, 0.1); }
-  50% { box-shadow: 0 0 28px rgba(245, 158, 11, 0.55), 0 0 56px rgba(245, 158, 11, 0.3), 0 0 84px rgba(217, 119, 6, 0.15); }
+  0%, 100% { box-shadow: 0 0 20px var(--warning-border), 0 0 40px var(--warning-border), 0 0 60px rgba(217, 119, 6, 0.1); }
+  50% { box-shadow: 0 0 28px var(--warning-border), 0 0 56px var(--warning-border), 0 0 84px rgba(217, 119, 6, 0.15); }
 }
 
 /* Planet orbits */
 .planet-orbit {
   position: absolute;
-  border-radius: 50%;
+  border-radius: var(--radius-full);
   border: 1px solid var(--overlay-0_05);
 }
 .orbit-1 {
@@ -133,7 +133,7 @@
 /* Planets */
 .planet {
   position: absolute;
-  border-radius: 50%;
+  border-radius: var(--radius-full);
   top: 50%;
   left: 100%;
   transform: translate(-50%, -50%);

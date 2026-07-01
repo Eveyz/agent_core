@@ -56,7 +56,7 @@ export function AgentList({ agents, selectedAgentId }: AgentListProps) {
               onClick={() => dispatch(setSelectedAgent(agent.id))}
             >
               <div className="agent-item-icon">
-                <BotIcon size={18} color={agent.color || "var(--accent, #3b82f6)"} />
+                <BotIcon size={18} color={agent.color || "var(--accent)"} />
               </div>
               <div className="agent-item-content">
                 <div className="agent-item-name">{agent.name}</div>

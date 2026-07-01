@@ -13,14 +13,14 @@
   color: var(--text-dim);
   font-size: 11px;
   padding: 2px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
 }
 
 .subagent-view-btn:hover {
-  color: #d2a8ff;
-  border-color: rgba(160, 216, 255, 0.4);
+  color: var(--subagent-color);
+  border-color: var(--accent-border);
   background: var(--overlay-0_04);
 }
 
@@ -36,7 +36,7 @@
 }
 
 .header-breadcrumb-name {
-  color: #d2a8ff;
+  color: var(--subagent-color);
   font-weight: 500;
   max-width: 180px;
   overflow: hidden;
@@ -53,9 +53,9 @@
 }
 
 .subagent-detail-title {
-  color: #d2a8ff;
+  color: var(--subagent-color);
   font-weight: 600;
-  font-family: 'Fira Code', 'Menlo', monospace;
+  font-family: var(--font-mono);
   font-size: 13px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -76,7 +76,7 @@
 .edit-diff-body {
   margin-top: 6px;
   border: 1px solid var(--border-color);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   overflow: hidden;
   background: var(--overlay-0_02);
 }
@@ -84,7 +84,7 @@
 .edit-diff-path {
   padding: 6px 10px;
   font-size: 11px;
-  font-family: 'Fira Code', 'Menlo', monospace;
+  font-family: var(--font-mono);
   color: var(--text-dim);
   background: var(--overlay-0_04);
   border-bottom: 1px solid var(--border-color);
@@ -94,7 +94,7 @@
 }
 
 .edit-diff-table {
-  font-family: 'Fira Code', 'Menlo', monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   overflow-x: auto;
   max-height: 400px;
@@ -128,13 +128,13 @@
 }
 
 .diff-row.diff-add .diff-new-content {
-  background: rgba(34, 197, 94, 0.12);
-  color: #4ade80;
+  background: var(--success-bg);
+  color: var(--success);
 }
 
 .diff-row.diff-del .diff-old-content {
-  background: rgba(239, 68, 68, 0.12);
-  color: #f87171;
+  background: var(--danger-bg);
+  color: var(--danger);
 }
 
 .diff-row.diff-add .diff-old-content,
@@ -161,29 +161,29 @@
 
 /* ── Edit File label: highlighted filename + colored stats ────────── */
 .edit-file-name {
-  color: #d2a8ff;
+  color: var(--subagent-color);
   font-weight: 600;
-  font-family: 'Fira Code', 'Menlo', monospace;
+  font-family: var(--font-mono);
 }
 
 .edit-file-range {
   color: var(--text-dim);
-  font-family: 'Fira Code', 'Menlo', monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
 }
 
 .edit-file-stats {
-  font-family: 'Fira Code', 'Menlo', monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
 }
 
 .edit-file-stats .stat-add {
-  color: #4ade80;
+  color: var(--success);
   font-weight: 600;
 }
 
 .edit-file-stats .stat-del {
-  color: #f87171;
+  color: var(--danger);
   font-weight: 600;
 }
 
@@ -220,7 +220,7 @@
   padding: 20px;
   width: 100%;
   max-width: 400px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 4px 12px var(--shadow-sm);
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -289,11 +289,11 @@
 }
 
 .btn-deny {
-  background: #ef4444;
-  color: white;
+  background: var(--danger);
+  color: var(--text-inverse);
 }
 .btn-deny:hover {
-  background: #dc2626;
+  background: var(--danger-strong);
 }
 
 /* AgentTurn.tsx Extracted Styles */
@@ -342,12 +342,12 @@
 }
 
 .error-block-style {
-  color: #ef4444;
+  color: var(--danger);
   font-size: 13px;
   padding: 10px 14px;
-  background: var(--danger-bg, rgba(239,68,68,0.06));
-  border: 1px solid var(--danger-border, rgba(239,68,68,0.2));
-  border-radius: 8px;
+  background: var(--danger-bg, var(--danger-bg));
+  border: 1px solid var(--danger-border, var(--danger-border));
+  border-radius: var(--radius-md);
   margin-top: 12px;
   margin-bottom: 12px;
   display: flex;
@@ -470,7 +470,7 @@
 }
 
 .todo-item-blocked .todo-desc {
-  color: var(--danger-color, #e57373);
+  color: var(--danger-color, var(--danger));
 }
 
 .todo-icon {
@@ -478,7 +478,7 @@
 }
 
 .todo-icon-completed {
-  color: #4caf50;
+  color: var(--success);
 }
 
 .todo-icon-in-progress {
@@ -487,11 +487,11 @@
 }
 
 .todo-icon-blocked {
-  color: var(--danger-color, #e57373);
+  color: var(--danger-color, var(--danger));
 }
 
 .todo-icon-pending {
-  color: var(--text-secondary, #888);
+  color: var(--text-secondary, var(--text-tertiary));
 }
 
 @keyframes spin {
@@ -595,8 +595,8 @@
   justify-content: center;
   font-size: 9px;
   font-weight: 700;
-  color: #ffffff;
-  border-radius: 3px;
+  color: var(--text-inverse);
+  border-radius: var(--radius-xs);
   width: 24px;
   height: 16px;
   text-transform: uppercase;
@@ -631,7 +631,7 @@
 }
 
 .file-change-stats {
-  font-family: monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   display: flex;
   gap: 6px;
@@ -640,10 +640,10 @@
 }
 
 .file-change-stat-add {
-  color: var(--success, #00ac3a);
+  color: var(--success);
 }
 
 .file-change-stat-del {
-  color: #f87171;
+  color: var(--danger);
 }
 

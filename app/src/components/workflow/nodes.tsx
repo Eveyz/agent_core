@@ -27,17 +27,17 @@ const ICONS: Record<string, typeof BotIcon> = {
 };
 
 const COLORS: Record<string, string> = {
-  input: "#22c55e",
+  input: "var(--success)",
   output: "#6366f1",
-  agent: "#3b82f6",
-  transform: "#f59e0b",
+  agent: "var(--accent)",
+  transform: "var(--warning)",
   human_approval: "#ec4899",
 };
 
 function NodeShell({ data, selected }: NodeProps) {
   const d = data as WorkflowNodeData;
   const Icon = ICONS[d.nodeType] ?? BotIcon;
-  const color = COLORS[d.nodeType] ?? "#64748b";
+  const color = COLORS[d.nodeType] ?? "var(--slate-500)";
   const isInput = d.nodeType === "input";
   const isOutput = d.nodeType === "output";
   
@@ -75,9 +75,9 @@ function NodeShell({ data, selected }: NodeProps) {
         </div>
         
         {/* Status indicators */}
-        {d.status === "running" && <LoaderIcon size={14} className="status-icon spin" color="#f59e0b" />}
-        {d.status === "completed" && <CheckCircleIcon size={14} className="status-icon" color="#22c55e" />}
-        {d.status === "failed" && <XCircleIcon size={14} className="status-icon" color="#ef4444" />}
+        {d.status === "running" && <LoaderIcon size={14} className="status-icon spin" color="var(--warning)" />}
+        {d.status === "completed" && <CheckCircleIcon size={14} className="status-icon" color="var(--success)" />}
+        {d.status === "failed" && <XCircleIcon size={14} className="status-icon" color="var(--danger)" />}
       </div>
 
       {!isOutput && (

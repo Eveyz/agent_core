@@ -59,7 +59,7 @@ export default function SkillsTab() {
               }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div style={{ fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <ZapIcon size={14} style={{ color: 'var(--accent-color)' }} />
+                    <ZapIcon size={14} style={{ color: 'var(--accent)' }} />
                     {skill.name}
                   </div>
                   <div style={{ fontSize: '11px', color: 'var(--text-secondary)', background: 'var(--bg-secondary)', padding: '2px 6px', borderRadius: '4px' }}>

@@ -57,16 +57,16 @@
   background: transparent;
   color: var(--text-main);
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   margin-bottom: 4px;
   font-weight: 400;
   transition: all 0.2s;
 }
 
 .workflow-sidebar-item.active {
-  background: rgba(59, 130, 246, 0.15);
+  background: var(--accent-subtle);
   color: var(--accent);
-  border-color: rgba(59, 130, 246, 0.3);
+  border-color: var(--accent-border);
   font-weight: 500;
 }
 
@@ -89,7 +89,7 @@
   cursor: grab;
   background: var(--bg-hover);
   border: 1px solid var(--border-color);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   text-align: center;
   user-select: none;
 }
@@ -114,9 +114,9 @@
   font-size: 13px;
   padding: 10px 12px;
   cursor: grab;
-  background: rgba(59, 130, 246, 0.05);
-  border: 1px solid rgba(59, 130, 246, 0.2);
-  border-radius: 6px;
+  background: var(--accent-subtle);
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
   display: flex;
   align-items: center;
   gap: 8px;

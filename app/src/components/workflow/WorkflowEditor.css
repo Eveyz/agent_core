@@ -15,9 +15,9 @@
 .workflow-create-error {
   padding: 8px 16px;
   font-size: 13px;
-  color: var(--danger, #ef4444);
-  background: rgba(239, 68, 68, 0.08);
-  border-bottom: 1px solid rgba(239, 68, 68, 0.2);
+  color: var(--danger, var(--danger));
+  background: var(--danger-bg);
+  border-bottom: 1px solid var(--danger-border);
 }
 
 .workflow-empty-state {

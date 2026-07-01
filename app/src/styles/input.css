@@ -12,7 +12,7 @@
   padding: 14px 16px;
   background: var(--overlay-0_02);
   border: 1px solid var(--overlay-0_06);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   cursor: pointer;
   text-align: left;
   color: var(--text-dim);
@@ -23,9 +23,9 @@
 }
 .prompt-card:hover {
   background: var(--overlay-0_04);
-  border-color: rgba(139, 92, 246, 0.2);
+  border-color: var(--accent-border);
   transform: translateY(-2px);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3), 0 0 20px rgba(139, 92, 246, 0.06);
+  box-shadow: 0 8px 24px var(--shadow-md), 0 0 20px var(--accent-subtle);
   color: var(--text-main);
 }
 .prompt-card:active {
@@ -35,19 +35,19 @@
   flex-shrink: 0;
   width: 28px;
   height: 28px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--overlay-0_03);
   border: 1px solid var(--overlay-0_06);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: rgba(139, 92, 246, 0.7);
+  color: var(--violet-500);
   transition: all 0.25s ease;
 }
 .prompt-card:hover .prompt-card-icon {
-  background: rgba(139, 92, 246, 0.08);
-  border-color: rgba(139, 92, 246, 0.15);
-  color: rgba(139, 92, 246, 0.9);
+  background: var(--accent-subtle);
+  border-color: var(--accent-border);
+  color: var(--violet-500);
 }
 .prompt-card-text {
   padding-top: 4px;
@@ -74,7 +74,7 @@
   max-width: 800px;
   background: var(--bg-input);
   border: 1px solid var(--border-color);
-  border-radius: 16px;
+  border-radius: var(--radius-xl);
   display: flex;
   flex-direction: column;
   transition: border-color 0.2s;
@@ -126,10 +126,10 @@
 }
 
 .mention-token {
-  background: rgba(82, 168, 255, 0.15);
+  background: var(--accent-subtle);
   color: var(--accent);
-  border-radius: 3px;
-  box-shadow: 0 0 0 2px rgba(82, 168, 255, 0.15);
+  border-radius: var(--radius-xs);
+  box-shadow: 0 0 0 2px var(--accent-subtle);
 }
 
 .input-actions {
@@ -163,7 +163,7 @@
   cursor: pointer;
   background: transparent;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 3px 8px;
   transition: background 0.15s;
 }
@@ -185,7 +185,7 @@
 
 .model-selector-id {
   color: var(--text-dim);
-  font-family: 'Fira Code', 'Menlo', monospace;
+  font-family: var(--font-mono);
   font-size: 10px;
 }
 

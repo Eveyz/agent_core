@@ -34,7 +34,7 @@ const ReadFileWidget = memo(function ReadFileWidget({
       <div
         className={`step-row ${active ? 'step-row-active' : ''} ${is_error ? 'step-row-error' : ''} step-row-default`}
       >
-        {(() => { const ToolIcon = getToolIcon('read_file'); return <ToolIcon size={13} className="step-icon tool-icon-margin" color={is_error ? '#f87171' : 'var(--text-muted)'} />; })()}
+        {(() => { const ToolIcon = getToolIcon('read_file'); return <ToolIcon size={13} className="step-icon tool-icon-margin" color={is_error ? 'var(--danger)' : 'var(--text-muted)'} />; })()}
         <span className="step-label edit-file-label">
           {labelPrefix} <span className="edit-file-name">{fileName}</span>
           {range && <span className="edit-file-range"> · {range}</span>}

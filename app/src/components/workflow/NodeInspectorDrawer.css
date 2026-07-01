@@ -1,7 +1,7 @@
 .node-inspector-overlay {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
+  background: var(--shadow-lg);
   z-index: 100;
   display: flex;
   justify-content: flex-end;
@@ -11,7 +11,7 @@
   width: 450px;
   background: var(--bg-main);
   border-left: 1px solid var(--border-color);
-  box-shadow: -4px 0 24px rgba(0, 0, 0, 0.2);
+  box-shadow: -4px 0 24px var(--shadow-md);
   display: flex;
   flex-direction: column;
   animation: slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
@@ -41,7 +41,7 @@
 .node-inspector-status {
   font-size: 11px;
   padding: 2px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   background: var(--bg-hover);
   text-transform: capitalize;
 }
@@ -52,7 +52,7 @@
   border: none;
   color: var(--text-muted);
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
 }
 
 .node-inspector-close-btn:hover {
@@ -93,11 +93,11 @@
 .node-inspector-output-box {
   background: var(--bg-hover);
   border: 1px solid var(--border-color);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 12px;
   font-size: 13px;
   white-space: pre-wrap;
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
   color: var(--text-main);
   line-height: 1.5;
 }
@@ -111,7 +111,7 @@
 .node-inspector-metric-card {
   background: var(--bg-hover);
   border: 1px solid var(--border-color);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 12px;
 }
 
@@ -124,5 +124,5 @@
 .node-inspector-metric-value {
   font-size: 14px;
   font-weight: 600;
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
 }

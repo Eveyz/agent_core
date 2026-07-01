@@ -39,7 +39,7 @@
   padding: 40px;
   background: var(--bg-hover);
   border: 1px dashed var(--border-color);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
 }
 
 .agents-empty-state .empty-state-content h3 {

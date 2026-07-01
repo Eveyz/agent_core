@@ -177,7 +177,7 @@ const TurnIterationUI = memo(function TurnIterationUI({
             className={`step-row ${isStreaming ? 'step-row-active' : ''}`}
             onClick={() => setThoughtCollapsed(!thoughtCollapsed)}
           >
-            <BrainIcon size={13} className={`step-icon ${isStreaming ? 'step-icon-thinking' : ''}`} color={isStreaming ? undefined : "#888"} />
+            <BrainIcon size={13} className={`step-icon ${isStreaming ? 'step-icon-thinking' : ''}`} color={isStreaming ? undefined : "var(--text-tertiary)"} />
             <span className="step-label step-label-bold">{thoughtLabel}</span>
             {thoughtCollapsed ? <ChevronRightIcon size={12} className="step-chevron" /> : <ChevronDownIcon size={12} className="step-chevron" />}
           </div>
@@ -203,7 +203,7 @@ const TurnIterationUI = memo(function TurnIterationUI({
               className={`step-row ${isStreaming ? 'step-row-active' : ''}`}
               onClick={() => setToolsCollapsed(!toolsCollapsed)}
             >
-              <WrenchIcon size={13} className="step-icon" color={isStreaming ? undefined : "#888"} />
+              <WrenchIcon size={13} className="step-icon" color={isStreaming ? undefined : "var(--text-tertiary)"} />
               <span className="step-label step-label-bold">{toolsLabel}</span>
               {toolsCollapsed ? <ChevronRightIcon size={12} className="step-chevron" /> : <ChevronDownIcon size={12} className="step-chevron" />}
             </div>

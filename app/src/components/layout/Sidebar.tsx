@@ -448,7 +448,7 @@ export const Sidebar = memo(function Sidebar({
         <div className="projects-list">
           {regularProjects.length === 0 && (
             <div
-              style={{ padding: "16px 20px", color: "#666", fontSize: "12px" }}
+              style={{ padding: "16px 20px", color: "var(--text-tertiary)", fontSize: "12px" }}
             >
               No projects yet. Click the folder icon above to add one.
             </div>
@@ -607,7 +607,7 @@ export const Sidebar = memo(function Sidebar({
               if (defaultSessions.length === 0) {
                 return (
                   <div
-                    style={{ padding: "8px 20px", color: "#666", fontSize: "12px" }}
+                    style={{ padding: "8px 20px", color: "var(--text-tertiary)", fontSize: "12px" }}
                   >
                     No chats yet. Click the plus icon above to start one.
                   </div>
@@ -718,8 +718,8 @@ export const Sidebar = memo(function Sidebar({
 
 function FolderOpenIcon({ isOpen, size }: { isOpen: boolean; size: number }) {
   if (!isOpen) {
-    return <FolderIcon size={size} color="#9ca3af" />;
+    return <FolderIcon size={size} color="var(--text-tertiary)" />;
   }
   // Open folder: use a different color or style
-  return <FolderIcon size={size} color="#fbbf24" />;
+  return <FolderIcon size={size} color="var(--warning)" />;
 }

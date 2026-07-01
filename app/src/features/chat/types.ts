@@ -81,6 +81,7 @@ export interface ChatState {
   processingBySession: Record<string, boolean>;
   subagentsBySession: Record<string, Record<string, SubagentEntry>>;
   runIdBySession: Record<string, string | null>;
+  runIdToSessionId: Record<string, string>;
   activeSessionId: string | null;
   isResuming: boolean;
   _resumedFromBackend: boolean;

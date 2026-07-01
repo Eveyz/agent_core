@@ -26,7 +26,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   font-weight: 500;
 }
 
@@ -47,7 +47,7 @@
   width: 100%;
   background: var(--bg-input);
   border: 1px solid var(--border-color);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 8px 12px 8px 32px;
   color: var(--text-main);
   font-size: 13px;
@@ -78,7 +78,7 @@
   align-items: flex-start;
   gap: 12px;
   padding: 12px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   cursor: pointer;
   margin-bottom: 4px;
   transition: all 0.2s ease;
@@ -97,7 +97,7 @@
 .agent-item-icon {
   background: var(--bg-main);
   padding: 8px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   display: flex;
   align-items: center;
   justify-content: center;

@@ -21,8 +21,8 @@ export function AgentSkillsTab({ agent }: AgentSkillsTabProps) {
         <div style={{ 
           textAlign: "center", 
           padding: "60px", 
-          background: "rgba(255,255,255,0.02)", 
-          border: "1px dashed rgba(255, 255, 255, 0.1)", 
+          background: "var(--overlay-0_02)", 
+          border: "1px dashed var(--overlay-0_1)", 
           borderRadius: "16px" 
         }}>
           <WandIcon size={32} color="var(--text-muted)" style={{ marginBottom: "16px", opacity: 0.5 }} />
@@ -37,8 +37,8 @@ export function AgentSkillsTab({ agent }: AgentSkillsTabProps) {
         }}>
           {skills.map((skillName) => (
             <div key={skillName} style={{ 
-              background: "linear-gradient(145deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.02) 100%)",
-              border: "1px solid rgba(255, 255, 255, 0.08)", 
+              background: "linear-gradient(145deg, var(--overlay-0_05) 0%, var(--overlay-0_02) 100%)",
+              border: "1px solid var(--overlay-0_08)", 
               borderRadius: "12px", 
               padding: "20px",
               display: "flex",
@@ -50,7 +50,7 @@ export function AgentSkillsTab({ agent }: AgentSkillsTabProps) {
                   width: "40px", 
                   height: "40px", 
                   borderRadius: "10px", 
-                  background: "rgba(59, 130, 246, 0.15)",
+                  background: "var(--accent-subtle)",
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",

@@ -476,8 +476,8 @@ export function ReviewTab() {
                     {!pathHint && <div style={{ flex: 1 }} />}
                     
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginRight: '12px', fontSize: '12px', fontWeight: 600 }}>
-                      {file.additions > 0 && <span style={{ color: '#22c55e' }}>+{file.additions}</span>}
-                      {file.deletions > 0 && <span style={{ color: '#ef4444' }}>-{file.deletions}</span>}
+                      {file.additions > 0 && <span style={{ color: 'var(--success)' }}>+{file.additions}</span>}
+                      {file.deletions > 0 && <span style={{ color: 'var(--danger)' }}>-{file.deletions}</span>}
                       {file.additions === 0 && file.deletions === 0 && <span style={{ color: 'var(--text-muted)' }}>0</span>}
                     </div>
                     

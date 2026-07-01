@@ -17,10 +17,10 @@
 .error-block-warning {
   display: flex;
   gap: 8px;
-  background: rgba(245, 158, 11, 0.1);
+  background: var(--warning-bg);
   padding: 12px;
-  border-radius: 8px;
-  border: 1px solid rgba(245, 158, 11, 0.2);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--warning-border);
 }
 
 .error-block-warning-text {
@@ -30,12 +30,12 @@
 }
 
 .error-block-stack {
-  background: rgba(239, 68, 68, 0.05);
-  border-radius: 8px;
+  background: var(--danger-bg);
+  border-radius: var(--radius-md);
   padding: 16px;
   font-size: 13px;
   color: var(--danger);
-  border: 1px solid rgba(239, 68, 68, 0.2);
+  border: 1px solid var(--danger-border);
   white-space: pre-wrap;
-  font-family: var(--font-mono, monospace);
+  font-family: var(--font-mono);
 }

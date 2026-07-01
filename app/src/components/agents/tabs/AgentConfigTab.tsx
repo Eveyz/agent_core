@@ -112,8 +112,8 @@ export function AgentConfigTab({ agent }: AgentConfigTabProps) {
   // We reuse most of the NewAgentModal UI but adapted for the tab
   return (
     <div className="agent-config-tab">
-      {error && <div style={{ color: "var(--danger)", fontSize: "13px", padding: "12px", background: "rgba(239, 68, 68, 0.1)", borderRadius: "6px", marginBottom: "20px" }}>{error}</div>}
-      {successMsg && <div style={{ color: "var(--success, #22c55e)", fontSize: "13px", padding: "12px", background: "rgba(34, 197, 94, 0.1)", borderRadius: "6px", marginBottom: "20px" }}>{successMsg}</div>}
+      {error && <div style={{ color: "var(--danger)", fontSize: "13px", padding: "12px", background: "var(--danger-bg)", borderRadius: "6px", marginBottom: "20px" }}>{error}</div>}
+      {successMsg && <div style={{ color: "var(--success)", fontSize: "13px", padding: "12px", background: "var(--success-bg)", borderRadius: "6px", marginBottom: "20px" }}>{successMsg}</div>}
 
       <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: "40px" }}>
         {/* Left Column: Core Prompts & Identity */}
@@ -146,7 +146,7 @@ export function AgentConfigTab({ agent }: AgentConfigTabProps) {
               {selectedSkills.length > 0 && (
                 <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", padding: "12px 12px 0 12px", background: "var(--bg-secondary)" }}>
                   {selectedSkills.map(s => (
-                    <div key={s} style={{ display: "flex", alignItems: "center", gap: "4px", background: "rgba(82, 168, 255, 0.15)", color: "var(--accent)", padding: "4px 8px", borderRadius: "6px", fontSize: "12px", userSelect: "none" }}>
+                    <div key={s} style={{ display: "flex", alignItems: "center", gap: "4px", background: "var(--accent-subtle)", color: "var(--accent)", padding: "4px 8px", borderRadius: "6px", fontSize: "12px", userSelect: "none" }}>
                       <span style={{ fontWeight: 500 }}>{s}</span>
                       <XIcon size={14} style={{ cursor: "pointer", opacity: 0.7 }} onClick={() => setSelectedSkills(selectedSkills.filter(sk => sk !== s))} />
                     </div>
@@ -281,7 +281,7 @@ export function AgentConfigTab({ agent }: AgentConfigTabProps) {
 
         {/* Right Column: Execution Rules */}
         <div style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
-          <div style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "12px", padding: "20px" }}>
+          <div style={{ background: "var(--overlay-0_02)", border: "1px solid var(--overlay-0_08)", borderRadius: "12px", padding: "20px" }}>
             <h3 style={{ fontSize: "14px", fontWeight: 600, color: "var(--text-main)", margin: "0 0 16px 0" }}>Execution Rules</h3>
             
             <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
@@ -336,13 +336,13 @@ export function AgentConfigTab({ agent }: AgentConfigTabProps) {
             </div>
           </div>
 
-          <div style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: "12px", padding: "20px" }}>
+          <div style={{ background: "var(--overlay-0_02)", border: "1px solid var(--overlay-0_08)", borderRadius: "12px", padding: "20px" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "0 0 16px 0" }}>
               <h3 style={{ fontSize: "14px", fontWeight: 600, color: "var(--text-main)", margin: 0 }}>Tools Integration</h3>
               <button
                 className="icon-btn"
                 onClick={() => setShowToolDropdown(!showToolDropdown)}
-                style={{ padding: "4px 10px", fontSize: "12px", background: "rgba(255,255,255,0.05)" }}
+                style={{ padding: "4px 10px", fontSize: "12px", background: "var(--overlay-0_05)" }}
               >
                 {showToolDropdown ? "Done" : "Manage"}
               </button>
@@ -355,7 +355,7 @@ export function AgentConfigTab({ agent }: AgentConfigTabProps) {
             ) : (
               <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                 {selectedTools.map(t => (
-                  <div key={t} style={{ display: "flex", alignItems: "center", gap: "6px", background: "rgba(82, 168, 255, 0.12)", color: "var(--accent)", padding: "4px 10px", borderRadius: "6px", fontSize: "13px" }}>
+                  <div key={t} style={{ display: "flex", alignItems: "center", gap: "6px", background: "var(--accent-subtle)", color: "var(--accent)", padding: "4px 10px", borderRadius: "6px", fontSize: "13px" }}>
                     <span>{t}</span>
                     <XIcon size={12} style={{ cursor: "pointer", opacity: 0.7 }} onClick={() => setSelectedTools(selectedTools.filter(x => x !== t))} />
                   </div>
@@ -364,7 +364,7 @@ export function AgentConfigTab({ agent }: AgentConfigTabProps) {
             )}
             
             {showToolDropdown && (
-              <div style={{ border: "1px solid rgba(255,255,255,0.1)", borderRadius: "8px", maxHeight: "200px", overflowY: "auto", padding: "8px", marginTop: "12px", background: "var(--bg-main)" }}>
+              <div style={{ border: "1px solid var(--overlay-0_1)", borderRadius: "8px", maxHeight: "200px", overflowY: "auto", padding: "8px", marginTop: "12px", background: "var(--bg-main)" }}>
                 <input
                   type="text"
                   className="settings-input"
@@ -387,7 +387,7 @@ export function AgentConfigTab({ agent }: AgentConfigTabProps) {
                     >
                       <div style={{
                         width: "14px", height: "14px", borderRadius: "3px",
-                        border: `1px solid ${isSelected ? "var(--accent)" : "rgba(255,255,255,0.2)"}`,
+                        border: `1px solid ${isSelected ? "var(--accent)" : "var(--overlay-0_2)"}`,
                         background: isSelected ? "var(--accent)" : "transparent",
                         display: "flex", alignItems: "center", justifyContent: "center",
                         flexShrink: 0

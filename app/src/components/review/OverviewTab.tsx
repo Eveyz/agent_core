@@ -192,9 +192,9 @@ export function OverviewTab() {
   const statusDot = (status: string) => {
     const map: Record<string, string> = {
       pending: 'var(--text-muted)',
-      in_progress: '#fbbf24',
-      completed: '#34d399',
-      blocked: '#f87171',
+      in_progress: 'var(--warning)',
+      completed: 'var(--success)',
+      blocked: 'var(--danger)',
     };
     return (
       <span
@@ -230,7 +230,7 @@ export function OverviewTab() {
                     subagents.map((sa: any) => (
                       <div key={sa.id} className="overview-file-row" title={sa.id}>
                         <span className="overview-file-icon">
-                          <BotIcon size={14} style={{ color: 'var(--accent, #006efe)' }} />
+                          <BotIcon size={14} style={{ color: 'var(--accent)' }} />
                         </span>
                         <span className="overview-file-name">{sa.name || sa.role || 'Subagent'}</span>
                         <span className="overview-file-path">{sa.role}</span>

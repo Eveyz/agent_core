@@ -33,6 +33,7 @@ const initialState: ChatState = {
   processingBySession: {},
   subagentsBySession: {},
   runIdBySession: {},
+  runIdToSessionId: {},
   activeSessionId: null,
   isResuming: false,
   _resumedFromBackend: false,

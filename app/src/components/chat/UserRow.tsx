@@ -7,7 +7,7 @@ import XIcon from 'lucide-react/dist/esm/icons/x.mjs';
 import type { ChatEntry } from '../../features/chat/chatSlice';
 
 const flexColumnEnd = { display: 'flex', flexDirection: 'column' as const, alignItems: 'flex-end', gap: '6px' };
-const flexRowMeta = { display: 'flex', gap: '12px', color: '#555', fontSize: '11px', paddingRight: '4px' };
+const flexRowMeta = { display: 'flex', gap: '12px', color: 'var(--text-tertiary)', fontSize: '11px', paddingRight: '4px' };
 const cursorPointer = { cursor: 'pointer' as const };
 
 export const UserRow = memo(function UserRow({ entry, modelName, onRetry, isProcessing, hideActions }: {

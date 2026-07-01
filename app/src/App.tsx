@@ -68,7 +68,7 @@ const SessionLoader = () => (
         </div>
       </div>
       <h1 className="empty-state-title" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-        <LoaderIcon className="animate-spin" size={24} style={{ color: 'var(--accent-primary, #3b82f6)' }} />
+        <LoaderIcon className="animate-spin" size={24} style={{ color: 'var(--accent)' }} />
         Resuming Session...
       </h1>
       <p className="empty-state-subtitle">Restoring conversation history and environment context.</p>

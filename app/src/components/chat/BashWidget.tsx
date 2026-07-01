@@ -65,7 +65,7 @@ const BashWidget = memo(function BashWidget({
         className={`step-row ${active ? 'step-row-active' : ''} ${is_error ? 'step-row-error' : ''} step-row-pointer`}
         onClick={() => setCollapsed(!collapsed)}
       >
-        {(() => { const ToolIcon = getToolIcon(toolName); return <ToolIcon size={13} className="step-icon tool-icon-margin" color={is_error ? '#f87171' : 'var(--text-muted)'} />; })()}
+        {(() => { const ToolIcon = getToolIcon(toolName); return <ToolIcon size={13} className="step-icon tool-icon-margin" color={is_error ? 'var(--danger)' : 'var(--text-muted)'} />; })()}
         <span className="step-label bash-label">
           {customLabel ? (
             customLabel

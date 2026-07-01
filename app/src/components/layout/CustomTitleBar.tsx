@@ -47,7 +47,7 @@ export function CustomTitleBar({
           height: 28,
           borderRadius: 6,
           cursor: "pointer",
-          color: "#000",
+          color: "var(--text-primary)",
           marginRight: 4,
           // @ts-ignore
           WebkitAppRegion: "no-drag",
@@ -55,7 +55,7 @@ export function CustomTitleBar({
           appRegion: "no-drag",
         }}
         onMouseEnter={(e) =>
-          (e.currentTarget.style.background = "rgba(255,255,255,0.1)")
+          (e.currentTarget.style.background = "var(--overlay-0_1)")
         }
         onMouseLeave={(e) =>
           (e.currentTarget.style.background = "transparent")

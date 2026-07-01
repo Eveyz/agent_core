@@ -501,15 +501,42 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
 
   if (!raw || typeof raw.event !== 'string') return;
   const ev = raw as unknown as RunEventPayload;
+  if (!ev.run_id) return;
 
+  // Track runId to sessionId mapping
   if (ev.event === 'run_created') {
-    if (ev.session_id === state.activeSessionId) {
-      state.runId = ev.run_id ?? null;
+    if (ev.session_id) {
+      if (!state.runIdToSessionId) {
+        state.runIdToSessionId = {};
+      }
+      state.runIdToSessionId[ev.run_id] = ev.session_id;
+      state.runIdBySession[ev.session_id] = ev.run_id;
+      if (ev.session_id === state.activeSessionId) {
+        state.runId = ev.run_id;
+      }
     }
   }
 
-  if (ev.run_id !== state.runId) {
-    return;
+  const targetSessionId = ev.session_id || (state.runIdToSessionId && state.runIdToSessionId[ev.run_id]);
+  if (!targetSessionId) {
+    if (ev.run_id !== state.runId) {
+      return;
+    }
+  }
+
+  const isBackground = targetSessionId && targetSessionId !== state.activeSessionId;
+
+  // Temporarily swap references if it's a background session event
+  let originalEntries = state.entries;
+  let originalIsProcessing = state.isProcessing;
+  let originalSubagents = state.subagents;
+  let originalRunId = state.runId;
+
+  if (isBackground) {
+    state.entries = state.entriesBySession[targetSessionId] || [];
+    state.isProcessing = state.processingBySession[targetSessionId] ?? false;
+    state.subagents = state.subagentsBySession[targetSessionId] ?? {};
+    state.runId = state.runIdBySession[targetSessionId] ?? null;
   }
 
   if (typeof ev.seq === 'number' && typeof ev.run_id === 'string') {
@@ -526,7 +553,7 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
   if (ev.event === 'state_changed' && ev.to) {
     state.runState = ev.to as RunState;
     if (ev.to === 'completed' || ev.to === 'cancelled' || ev.to === 'failed') {
-      state.isProcessing = false;
+      handleAgentEnd(state);
     }
   } else if (ev.event === 'run_started') {
     state.runState = 'running';
@@ -608,5 +635,22 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
       break;
     default:
       break;
+  }
+
+  if (isBackground) {
+    state.entriesBySession[targetSessionId] = state.entries;
+    state.processingBySession[targetSessionId] = state.isProcessing;
+    state.subagentsBySession[targetSessionId] = state.subagents;
+    state.runIdBySession[targetSessionId] = state.runId;
+
+    state.entries = originalEntries;
+    state.isProcessing = originalIsProcessing;
+    state.subagents = originalSubagents;
+    state.runId = originalRunId;
+  } else if (state.activeSessionId) {
+    state.entriesBySession[state.activeSessionId] = state.entries;
+    state.processingBySession[state.activeSessionId] = state.isProcessing;
+    state.subagentsBySession[state.activeSessionId] = state.subagents;
+    state.runIdBySession[state.activeSessionId] = state.runId;
   }
 }

@@ -15,7 +15,7 @@
   font-weight: 500;
   background: var(--bg-main);
   border: 1px solid var(--border-color);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 
 .toolbar-divider {
@@ -35,8 +35,8 @@
   font-size: 13px;
   padding: 6px 16px;
   gap: 6px;
-  background: var(--success, #22c55e);
-  border-color: var(--success, #22c55e);
+  background: var(--success, var(--success));
+  border-color: var(--success, var(--success));
   font-weight: 600;
 }
 
@@ -44,8 +44,8 @@
   font-size: 13px;
   padding: 6px 16px;
   gap: 6px;
-  background: var(--danger, #ef4444);
-  border-color: var(--danger, #ef4444);
+  background: var(--danger, var(--danger));
+  border-color: var(--danger, var(--danger));
   font-weight: 600;
 }
 
@@ -55,7 +55,7 @@
 
 .toolbar-unsaved {
   font-size: 12px;
-  color: var(--warning, #f59e0b);
+  color: var(--warning, var(--warning));
   display: flex;
   align-items: center;
   gap: 4px;
@@ -67,10 +67,10 @@
 
 .toolbar-msg-success {
   font-size: 12px;
-  color: var(--success, #22c55e);
+  color: var(--success, var(--success));
 }
 
 .toolbar-msg-danger {
   font-size: 12px;
-  color: var(--danger, #ef4444);
+  color: var(--danger, var(--danger));
 }

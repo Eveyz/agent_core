@@ -60,7 +60,7 @@ export function DocumentTab({ projectPath, relativePaths, title, placeholderMess
   if (loading) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '12px', color: 'var(--text-muted)' }}>
-        <LoaderIcon className="animate-spin" size={20} style={{ color: 'var(--accent, #006efe)' }} />
+        <LoaderIcon className="animate-spin" size={20} style={{ color: 'var(--accent)' }} />
         <span>Loading {title}...</span>
       </div>
     );

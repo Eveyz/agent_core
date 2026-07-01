@@ -120,7 +120,7 @@ export function WorkflowCanvas({
         nodeTypes={nodeTypes as unknown as NodeTypes}
         fitView
       >
-        <Background color="var(--border-color, rgba(255,255,255,0.1))" gap={20} />
+        <Background color="var(--border-color, var(--overlay-0_1))" gap={20} />
         <Controls className="workflow-canvas-controls" />
         <MiniMap
           className="workflow-canvas-minimap"
