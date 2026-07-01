@@ -77,10 +77,11 @@
   border-radius: var(--radius-xl);
   display: flex;
   flex-direction: column;
-  transition: border-color 0.2s;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 .input-container:focus-within {
-  border-color: var(--accent);
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 3px var(--accent-subtle);
 }
 
 .chat-input {

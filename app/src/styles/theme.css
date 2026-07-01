@@ -71,6 +71,11 @@
   --accent-subtle: rgba(59, 130, 246, 0.10);
   --accent-border: rgba(59, 130, 246, 0.25);
 
+  /* Stop Button Color Tokens */
+  --stop-btn-color: #cc5a71;
+  --stop-btn-hover: #e0627d;
+  --stop-btn-bg:    rgba(204, 90, 113, 0.10);
+
   /* ── Semantic: Status ── */
   --success:        #5eba7c;
   --success-bg:     rgba(94, 186, 124, 0.10);
@@ -222,6 +227,11 @@
   --accent-hover:  #1d4ed8;
   --accent-subtle: rgba(37, 99, 235, 0.08);
   --accent-border: rgba(37, 99, 235, 0.20);
+
+  /* Stop Button Color Tokens */
+  --stop-btn-color: #be3e5b;
+  --stop-btn-hover: #d25370;
+  --stop-btn-bg:    rgba(190, 62, 91, 0.08);
 
   /* ── Semantic: Status ── */
   --success:        #16a34a;

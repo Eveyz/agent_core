@@ -136,11 +136,11 @@
 }
 
 .send-btn.stop-btn {
-  color: var(--danger);
+  color: var(--stop-btn-color);
 }
 .send-btn.stop-btn:hover {
-  color: var(--danger-strong);
-  background: var(--danger-bg);
+  color: var(--stop-btn-hover);
+  background: var(--stop-btn-bg);
 }
 
 .input-footer {
