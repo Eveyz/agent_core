@@ -1,9 +1,19 @@
+/* Reset ReactFlow default styles for input and output node wrappers */
+.react-flow__node-input,
+.react-flow__node-output {
+  background: none !important;
+  border: none !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+  width: auto !important;
+}
+
 .workflow-node-shell {
   background: var(--bg-secondary);
   border: 2px solid var(--border-color);
-  border-radius: 10px;
-  padding: 10px 14px;
-  min-width: 160px;
+  border-radius: 8px;
+  padding: 6px 12px;
+  min-width: 100px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   position: relative;
   transition: all 0.2s ease;
@@ -24,7 +34,7 @@
 .node-content {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 
 .node-icon-wrapper {
@@ -41,20 +51,20 @@
 }
 
 .node-type-label {
-  font-size: 11px;
+  font-size: 9px;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 
 .node-name {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-main);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 120px;
+  max-width: 80px;
 }
 
 .status-icon {

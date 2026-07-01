@@ -55,8 +55,8 @@ impl ProjectManager {
     pub fn create(&self, path: &str) -> Result<Project> {
         let db = self.storage.conn();
         
-        // Check if a project with the same path already exists
-        if let Ok(mut stmt) = db.prepare("SELECT id, name, path, created_at, updated_at FROM projects WHERE path = ?1") {
+        // Check if a project with the same path already exists (excluding '__adhoc_chat__')
+        if let Ok(mut stmt) = db.prepare("SELECT id, name, path, created_at, updated_at FROM projects WHERE path = ?1 AND id != '__adhoc_chat__'") {
             if let Ok(existing) = stmt.query_row([path], |row| {
                 Ok(Project {
                     id: row.get(0)?,
@@ -123,6 +123,9 @@ impl ProjectManager {
 
     /// Update project name.
     pub fn rename(&self, project_id: &str, new_name: &str) -> Result<bool> {
+        if project_id == "__adhoc_chat__" {
+            return Ok(false);
+        }
         let db = self.storage.conn();
         let now = Utc::now().to_rfc3339();
         let changed = db.execute(
@@ -134,6 +137,9 @@ impl ProjectManager {
 
     /// Delete a project and optionally its sessions.
     pub fn delete(&self, project_id: &str) -> Result<bool> {
+        if project_id == "__adhoc_chat__" {
+            return Ok(false);
+        }
         let db = self.storage.conn();
         // Delete associated sessions first
         db.execute(

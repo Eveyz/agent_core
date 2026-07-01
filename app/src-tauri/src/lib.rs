@@ -393,8 +393,8 @@ async fn search_files(query: String, path: Option<String>) -> Result<Vec<std::co
 // ── Config commands ──────────────────────────────────────────────────
 
 #[tauri::command]
-fn get_config(state: State<'_, AppState>) -> Result<agent_core::config::Config, String> {
-    let manager = state.run_manager.blocking_lock();
+async fn get_config(state: State<'_, AppState>) -> Result<agent_core::config::Config, String> {
+    let manager = state.run_manager.lock().await;
     Ok(manager.brain().config.clone())
 }
 
@@ -450,10 +450,18 @@ async fn create_session(state: State<'_, AppState>, project_id: String) -> Resul
                 .map_err(|e| e.to_string())?
                 .ok_or_else(|| "Project not found".to_string())?
         };
-        let cwd = project.path.clone();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let cwd = if project_id == "__adhoc_chat__" {
+            let chat_dir = agent_core::paths::get_agverse_dir().join("chats").join(&session_id);
+            std::fs::create_dir_all(&chat_dir)
+                .map_err(|e| format!("Failed to create chat directory: {e}"))?;
+            chat_dir.to_string_lossy().to_string()
+        } else {
+            project.path.clone()
+        };
         let model = "default";
-        let session_id = sm
-            .save_with_project(None, &messages, &cwd, model, Some(&project_id))
+        let _ = sm
+            .save_with_project(Some(&session_id), &messages, &cwd, model, Some(&project_id))
             .map_err(|e| e.to_string())?;
         let _ = sm.rename(&session_id, "New Session");
         let meta = sm
@@ -509,7 +517,14 @@ async fn save_session_messages(
             .iter()
             .map(|m| m.to_agent_message())
             .collect();
-        sm.save(Some(&session_id), &messages, &cwd, &model_used)
+        let project_id = sm.get_project_id(&session_id).ok().flatten();
+        let final_cwd = if project_id.as_deref() == Some("__adhoc_chat__") {
+            let chat_dir = agent_core::paths::get_agverse_dir().join("chats").join(&session_id);
+            chat_dir.to_string_lossy().to_string()
+        } else {
+            cwd
+        };
+        sm.save(Some(&session_id), &messages, &final_cwd, &model_used)
             .map_err(|e| e.to_string())?;
         if let (Some(pt), Some(tt)) = (process_time_ms, thought_time_ms) {
             sm.save_timing(&session_id, pt, tt)
@@ -690,6 +705,24 @@ async fn get_project_sessions(
 async fn get_agverse_md() -> Result<String, String> {
     let path = agent_core::paths::get_global_agverse_md_path();
     std::fs::read_to_string(&path).map_err(|e| format!("Failed to read agverse.md: {e}"))
+}
+
+#[tauri::command]
+async fn read_file(path: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || {
+        let resolved_path = if path.starts_with("~/") {
+            let home = agent_core::paths::get_agverse_dir()
+                .parent()
+                .ok_or_else(|| "Failed to get home dir".to_string())?
+                .to_path_buf();
+            home.join(&path[2..])
+        } else {
+            std::path::PathBuf::from(path)
+        };
+        std::fs::read_to_string(&resolved_path).map_err(|e| format!("Failed to read file: {e}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 // ── Skills cache ───────────────────────────────────────────────────────
@@ -1493,6 +1526,24 @@ pub fn run() {
             let project_manager = Arc::new(Mutex::new(
                 agent_core::ProjectManager::new(storage.clone())
             ));
+
+            // Seed the default container project and migrate legacy sessions
+            {
+                let db = storage.conn();
+                let now = chrono::Utc::now().to_rfc3339();
+                let path = std::env::current_dir()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| ".".to_string());
+                let _ = db.execute(
+                    "INSERT OR IGNORE INTO projects (id, name, path, created_at, updated_at) VALUES ('__adhoc_chat__', 'Default', ?1, ?2, ?2)",
+                    agent_core::rusqlite::params![&path, &now],
+                );
+                let _ = db.execute(
+                    "UPDATE sessions SET project_id = '__adhoc_chat__' WHERE project_id IS NULL OR project_id = ''",
+                    [],
+                );
+            }
+
             let session_manager = Arc::new(
                 agent_core::SessionManager::new(storage.clone())
             );
@@ -1522,7 +1573,7 @@ pub fn run() {
             save_session_messages, resume_session,
             list_projects, create_project, delete_project, rename_project, open_in_explorer,
             list_git_branches, switch_git_branch, get_project_sessions,
-            get_agverse_md, get_skills, invalidate_skills_cache,
+            get_agverse_md, read_file, get_skills, invalidate_skills_cache,
             list_cronjobs, create_cronjob, update_cronjob, delete_cronjob, toggle_cronjob,
             list_available_tools,
             create_agent, list_agents, get_agent, update_agent, delete_agent,

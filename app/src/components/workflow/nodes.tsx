@@ -57,7 +57,7 @@ function NodeShell({ data, selected }: NodeProps) {
       } as React.CSSProperties}
     >
       {!isInput && (
-        <Handle type="target" position={Position.Left} className="node-handle" />
+        <Handle type="target" position={Position.Top} className="node-handle" />
       )}
       
       <div className="node-content">
@@ -81,7 +81,7 @@ function NodeShell({ data, selected }: NodeProps) {
       </div>
 
       {!isOutput && (
-        <Handle type="source" position={Position.Right} className="node-handle" />
+        <Handle type="source" position={Position.Bottom} className="node-handle" />
       )}
     </div>
   );

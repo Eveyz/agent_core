@@ -19,6 +19,11 @@ pub fn default_rules_with_danger() -> Vec<(ToolPermissionPattern, DangerLevel, A
             DangerLevel::ReadOnly,
             ApprovalLevel::Allow,
         ),
+        (
+            ToolPermissionPattern::simple("glob"),
+            DangerLevel::ReadOnly,
+            ApprovalLevel::Allow,
+        ),
         // ── File write (mutable) ─────────────────────────────────────
         (
             ToolPermissionPattern::simple("write_file"),
@@ -165,6 +170,11 @@ pub fn default_rules() -> Vec<super::PermissionRule> {
         },
         super::PermissionRule {
             tool_pattern: "grep".to_string(),
+            action_pattern: None,
+            level: ApprovalLevel::Allow,
+        },
+        super::PermissionRule {
+            tool_pattern: "glob".to_string(),
             action_pattern: None,
             level: ApprovalLevel::Allow,
         },

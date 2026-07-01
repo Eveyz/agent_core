@@ -146,6 +146,9 @@ export function generateSmartToolsLabel(toolBlocks: TurnBlock[], isStreaming: bo
   const regularTools = toolBlocks.filter(b => b.type === 'tool' && !isSubagentTool(b));
   if (regularTools.length === 0) return isStreaming ? 'Calling tool...' : 'Called tool';
 
+  const isAnyToolActive = regularTools.some(b => b.type === 'tool' && b.active);
+  const isExecuting = isStreaming || isAnyToolActive;
+
   const counts: Record<string, number> = {};
   for (const t of regularTools) {
     if (t.type === 'tool') {
@@ -156,37 +159,37 @@ export function generateSmartToolsLabel(toolBlocks: TurnBlock[], isStreaming: bo
   const parts: string[] = [];
   const editCount = counts['edit'] || 0;
   if (editCount > 0) {
-    parts.push(isStreaming ? `Editing ${editCount} file${editCount > 1 ? 's' : ''}` : `Edited ${editCount} file${editCount > 1 ? 's' : ''}`);
+    parts.push(isExecuting ? `Editing ${editCount} file${editCount > 1 ? 's' : ''}` : `Edited ${editCount} file${editCount > 1 ? 's' : ''}`);
   }
 
   const createCount = (counts['write_file'] || 0) + (counts['write_to_file'] || 0);
   if (createCount > 0) {
-    parts.push(isStreaming ? `Creating ${createCount} file${createCount > 1 ? 's' : ''}` : `Created ${createCount} file${createCount > 1 ? 's' : ''}`);
+    parts.push(isExecuting ? `Creating ${createCount} file${createCount > 1 ? 's' : ''}` : `Created ${createCount} file${createCount > 1 ? 's' : ''}`);
   }
 
   const readCount = counts['read_file'] || 0;
   if (readCount > 0) {
-    parts.push(isStreaming ? `Reading ${readCount} file${readCount > 1 ? 's' : ''}` : `Read ${readCount} file${readCount > 1 ? 's' : ''}`);
+    parts.push(isExecuting ? `Reading ${readCount} file${readCount > 1 ? 's' : ''}` : `Read ${readCount} file${readCount > 1 ? 's' : ''}`);
   }
 
   const searchCount = (counts['tavily_search'] || 0) + (counts['webfetch'] || 0);
   if (searchCount > 0) {
-    parts.push(isStreaming ? `Searching ${searchCount} quer${searchCount > 1 ? 'ies' : 'y'}` : `Searched ${searchCount} quer${searchCount > 1 ? 'ies' : 'y'}`);
+    parts.push(isExecuting ? `Searching ${searchCount} quer${searchCount > 1 ? 'ies' : 'y'}` : `Searched ${searchCount} quer${searchCount > 1 ? 'ies' : 'y'}`);
   }
 
   const bashCount = counts['bash'] || 0;
   if (bashCount > 0) {
-    parts.push(isStreaming ? `Running ${bashCount} command${bashCount > 1 ? 's' : ''}` : `Ran ${bashCount} command${bashCount > 1 ? 's' : ''}`);
+    parts.push(isExecuting ? `Running ${bashCount} command${bashCount > 1 ? 's' : ''}` : `Ran ${bashCount} command${bashCount > 1 ? 's' : ''}`);
   }
 
   const grepCount = (counts['grep_search'] || 0) + (counts['grep'] || 0) + (counts['glob_search'] || 0) + (counts['glob'] || 0);
   if (grepCount > 0) {
-    parts.push(isStreaming ? `Searching ${grepCount} pattern${grepCount > 1 ? 's' : ''}` : `Searched ${grepCount} pattern${grepCount > 1 ? 's' : ''}`);
+    parts.push(isExecuting ? `Searching ${grepCount} pattern${grepCount > 1 ? 's' : ''}` : `Searched ${grepCount} pattern${grepCount > 1 ? 's' : ''}`);
   }
 
   const memorySearchCount = (counts['archival_memory_search'] || 0) + (counts['conversation_search'] || 0) + (counts['conversation_search_date'] || 0);
   if (memorySearchCount > 0) {
-    parts.push(isStreaming ? `Searching ${memorySearchCount} memor${memorySearchCount > 1 ? 'ies' : 'y'}` : `Searched ${memorySearchCount} memor${memorySearchCount > 1 ? 'ies' : 'y'}`);
+    parts.push(isExecuting ? `Searching ${memorySearchCount} memor${memorySearchCount > 1 ? 'ies' : 'y'}` : `Searched ${memorySearchCount} memor${memorySearchCount > 1 ? 'ies' : 'y'}`);
   }
 
   let taskCount = 0;
@@ -200,21 +203,21 @@ export function generateSmartToolsLabel(toolBlocks: TurnBlock[], isStreaming: bo
   }
 
   if (taskCount > 0) {
-    parts.push(isStreaming ? `Updating ${taskCount} task${taskCount > 1 ? 's' : ''}` : `Updated ${taskCount} task${taskCount > 1 ? 's' : ''}`);
+    parts.push(isExecuting ? `Updating ${taskCount} task${taskCount > 1 ? 's' : ''}` : `Updated ${taskCount} task${taskCount > 1 ? 's' : ''}`);
   }
 
   if (otherCount > 0 || parts.length === 0) {
     if (parts.length === 0) {
-      return isStreaming ? `Calling ${otherCount} tool${otherCount > 1 ? 's' : ''}...` : `Called ${otherCount} tool${otherCount > 1 ? 's' : ''}`;
+      return isExecuting ? `Calling ${otherCount} tool${otherCount > 1 ? 's' : ''}...` : `Called ${otherCount} tool${otherCount > 1 ? 's' : ''}`;
     } else {
-      parts.push(isStreaming ? `calling ${otherCount} other tool${otherCount > 1 ? 's' : ''}` : `called ${otherCount} other tool${otherCount > 1 ? 's' : ''}`);
+      parts.push(isExecuting ? `calling ${otherCount} other tool${otherCount > 1 ? 's' : ''}` : `called ${otherCount} other tool${otherCount > 1 ? 's' : ''}`);
     }
   }
 
   let label = parts.join(', ');
   // Capitalize first letter
   label = label.charAt(0).toUpperCase() + label.slice(1);
-  if (isStreaming) label += '...';
+  if (isExecuting) label += '...';
   
   return label;
 }

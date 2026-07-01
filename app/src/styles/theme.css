@@ -11,6 +11,7 @@
   --text-dim: #8f8f8f;
   --accent: #006efe;
   --success: #00ac3a;
+  --tool-color: #60a5fa;
 
   --radius-sm: 6px;
   --radius-md: 10px;
@@ -64,6 +65,7 @@
   --text-dim: #8f8f8f;
   --accent: #006bff;
   --success: #28a948;
+  --tool-color: #1d4ed8;
   --spinner-core: radial-gradient(circle at 40% 40%, #fde047 30%, #f59e0b 70%);
   --spinner-corona-1: rgba(250, 204, 21, 0.6);
   --spinner-corona-2: rgba(249, 115, 22, 0.4);

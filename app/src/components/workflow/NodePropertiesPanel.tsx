@@ -1,5 +1,4 @@
 import type { Node, Edge } from "@xyflow/react";
-import type { WorkflowRunNodeResult } from "../../features/workflow/types";
 import type { AgentDef } from "../../features/agents/types";
 import { RouterEditor, type RouterConfig } from "./EdgeConfigPanel";
 import InfoIcon from "lucide-react/dist/esm/icons/info.mjs";

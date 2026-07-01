@@ -195,11 +195,15 @@ export function entriesToEventLog(
         processTimeMs += entry.endTime - entry.startTime;
       }
 
-      if (entry.startTime || entry.endTime) {
+      if (entry.startTime || entry.endTime || entry.cacheHitRate !== undefined) {
         eventLog.push({
           turn_index: assistantIdx,
           event_type: 'turn_meta',
-          payload: { startTime: entry.startTime, endTime: entry.endTime },
+          payload: { 
+            startTime: entry.startTime, 
+            endTime: entry.endTime, 
+            cacheHitRate: entry.cacheHitRate 
+          },
         });
       }
 

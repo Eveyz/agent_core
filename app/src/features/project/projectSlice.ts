@@ -282,7 +282,8 @@ export const projectSlice = createSlice({
         if (state.activeProjectId) {
           const stillExists = state.projects.some((p) => p.id === state.activeProjectId);
           if (!stillExists) {
-            state.activeProjectId = state.projects[0]?.id ?? null;
+            const nextProject = state.projects.find((p) => p.id !== '__adhoc_chat__') || state.projects[0];
+            state.activeProjectId = nextProject?.id ?? null;
             state.activeSessionId = null;
             state.sessionMessages = [];
             if (state.activeProjectId) {
@@ -293,8 +294,9 @@ export const projectSlice = createSlice({
             }
           }
         } else if (state.projects.length > 0) {
-          state.activeProjectId = state.projects[0].id;
-          localStorage.setItem(STORAGE_KEY, state.projects[0].id);
+          const nextProject = state.projects.find((p) => p.id !== '__adhoc_chat__') || state.projects[0];
+          state.activeProjectId = nextProject.id;
+          localStorage.setItem(STORAGE_KEY, nextProject.id);
         }
       })
       .addCase(fetchProjects.rejected, (state, action) => {

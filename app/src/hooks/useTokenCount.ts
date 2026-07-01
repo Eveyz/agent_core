@@ -60,3 +60,21 @@ const selectTurnCount = createSelector(
 export function useTurnCount(): number {
   return useAppSelector(selectTurnCount);
 }
+
+const selectLatestCacheHitRate = createSelector(
+  [selectEntries],
+  (entries) => {
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i];
+      if (entry.type === 'turn') {
+        return entry.cacheHitRate !== undefined ? entry.cacheHitRate : null;
+      }
+    }
+    return null;
+  }
+);
+
+export function useCacheHitRate(): number | null {
+  return useAppSelector(selectLatestCacheHitRate);
+}
+

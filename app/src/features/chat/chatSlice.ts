@@ -34,6 +34,7 @@ const initialState: ChatState = {
   subagentsBySession: {},
   runIdBySession: {},
   activeSessionId: null,
+  isResuming: false,
   _resumedFromBackend: false,
   _thinkBuffers: {},
   _pendingGap: null,
@@ -225,7 +226,14 @@ export const chatSlice = createSlice({
     },
   },
   extraReducers: (builder) => {
+    builder.addCase(resumeSession.pending, (state) => {
+      state.isResuming = true;
+    });
+    builder.addCase(resumeSession.rejected, (state) => {
+      state.isResuming = false;
+    });
     builder.addCase(resumeSession.fulfilled, (state, action) => {
+      state.isResuming = false;
       if (state.entries.length > 0) return;
       const { messages, event_log } = action.payload;
       state.entries = [];
@@ -320,11 +328,13 @@ export const chatSlice = createSlice({
 
           let startTime: number | undefined = undefined;
           let endTime: number | undefined = undefined;
+          let cacheHitRate: number | undefined = undefined;
           for (const ev of turnEvents) {
             if (ev.event_type === 'turn_meta' && ev.payload) {
               const meta = ev.payload as Record<string, unknown>;
               startTime = meta.startTime as number | undefined;
               endTime = meta.endTime as number | undefined;
+              cacheHitRate = meta.cacheHitRate as number | undefined;
               break;
             }
           }
@@ -349,6 +359,7 @@ export const chatSlice = createSlice({
             subagentIds,
             startTime,
             endTime,
+            cacheHitRate,
           });
         }
       }

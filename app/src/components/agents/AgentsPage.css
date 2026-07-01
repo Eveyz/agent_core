@@ -34,7 +34,7 @@
   color: var(--text-muted);
 }
 
-.empty-state-content {
+.agents-empty-state .empty-state-content {
   text-align: center;
   padding: 40px;
   background: var(--bg-hover);
@@ -42,13 +42,13 @@
   border-radius: 12px;
 }
 
-.empty-state-content h3 {
+.agents-empty-state .empty-state-content h3 {
   margin: 0 0 8px 0;
   font-size: 16px;
   color: var(--text-main);
 }
 
-.empty-state-content p {
+.agents-empty-state .empty-state-content p {
   margin: 0;
   font-size: 13px;
 }

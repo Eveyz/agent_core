@@ -497,3 +497,153 @@
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+
+/* ── Files Changed Indicator ────────────────────────────────────── */
+.files-changed-card {
+  width: 100%;
+  max-width: 800px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-sidebar);
+  margin: 4px 0 12px 0;
+  font-size: 13px;
+  overflow: hidden;
+  box-shadow: none;
+}
+
+.files-changed-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.files-changed-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  color: var(--text-main);
+}
+
+.files-changed-summary-text {
+  color: var(--text-muted);
+}
+
+.files-changed-chevron {
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+}
+
+.files-changed-actions {
+  display: flex;
+  align-items: center;
+}
+
+.files-changed-review-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-hover);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-main);
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.files-changed-review-btn:hover {
+  background: var(--overlay-0_1);
+  border-color: var(--text-dim);
+}
+
+.files-changed-list {
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-main);
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.file-change-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 0;
+}
+
+.file-change-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.file-lang-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  color: #ffffff;
+  border-radius: 3px;
+  width: 24px;
+  height: 16px;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+/* Specific Badge Colors */
+.file-badge-ts { background: #3178c6; }
+.file-badge-tsx { background: #3178c6; }
+.file-badge-js { background: #f7df1e; color: #000000; }
+.file-badge-jsx { background: #f7df1e; color: #000000; }
+.file-badge-rs { background: #d75f00; }
+.file-badge-md { background: #083fa6; }
+.file-badge-json { background: #008080; }
+.file-badge-css { background: #563d7c; }
+.file-badge-html { background: #e34c26; }
+.file-badge-default { background: var(--text-dim); }
+
+.file-change-name {
+  font-weight: 500;
+  color: var(--text-main);
+  flex-shrink: 0;
+}
+
+.file-change-path {
+  color: var(--text-dim);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-left: 6px;
+}
+
+.file-change-stats {
+  font-family: monospace;
+  font-size: 11px;
+  display: flex;
+  gap: 6px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.file-change-stat-add {
+  color: var(--success, #00ac3a);
+}
+
+.file-change-stat-del {
+  color: #f87171;
+}
+

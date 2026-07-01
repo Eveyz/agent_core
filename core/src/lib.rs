@@ -79,3 +79,4 @@ pub use teams::{AgentTeam, MessageBus, TeamMessage, TeamMessageType};
 pub use todo::{TodoItem, TodoList, TodoStatus};
 pub use trace::TraceCollector;
 pub use worktree::{WorktreeManager, WorktreeRecord, WorktreeStatus};
+pub use rusqlite;

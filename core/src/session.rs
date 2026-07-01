@@ -181,33 +181,39 @@ impl SessionManager {
         let now = Utc::now().to_rfc3339();
         let msg_count = messages.len() as u32;
 
-        let id = match session_id {
+        let exists = match session_id {
             Some(id) => {
-                // Update existing session
-                db.execute(
-                    "UPDATE sessions SET message_count = ?1, updated_at = ?2, end_time = ?3, cwd = ?4, model_used = ?5 WHERE id = ?6",
-                    rusqlite::params![msg_count, now, now, cwd, model_used, id],
-                )?;
-                // Delete old messages and re-insert
-                db.execute(
-                    "DELETE FROM session_messages WHERE session_id = ?1",
-                    rusqlite::params![id],
-                )?;
-                id.to_string()
+                let mut stmt = db.prepare("SELECT 1 FROM sessions WHERE id = ?1")?;
+                stmt.exists(rusqlite::params![id])?
             }
-            None => {
-                let new_id = uuid::Uuid::new_v4().to_string();
-                // Auto-generate title from first user message
-                let title = Self::auto_title(messages);
-                let parent = parent_session_id.unwrap_or("");
-                let proj = project_id.unwrap_or("");
-                db.execute(
-                    "INSERT INTO sessions (id, title, start_time, message_count, cwd, model_used, parent_session_id, session_type, project_id, mode, created_at, updated_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
-                    rusqlite::params![new_id, title, now, msg_count, cwd, model_used, parent, session_type, proj, "build", now],
-                )?;
-                new_id
-            }
+            None => false,
+        };
+
+        let id = if exists {
+            let id = session_id.unwrap();
+            // Update existing session
+            db.execute(
+                "UPDATE sessions SET message_count = ?1, updated_at = ?2, end_time = ?3, cwd = ?4, model_used = ?5 WHERE id = ?6",
+                rusqlite::params![msg_count, now, now, cwd, model_used, id],
+            )?;
+            // Delete old messages and re-insert
+            db.execute(
+                "DELETE FROM session_messages WHERE session_id = ?1",
+                rusqlite::params![id],
+            )?;
+            id.to_string()
+        } else {
+            let new_id = session_id.map(|s| s.to_string()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            // Auto-generate title from first user message
+            let title = Self::auto_title(messages);
+            let parent = parent_session_id.unwrap_or("");
+            let proj = project_id.unwrap_or("");
+            db.execute(
+                "INSERT INTO sessions (id, title, start_time, message_count, cwd, model_used, parent_session_id, session_type, project_id, mode, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
+                rusqlite::params![new_id, title, now, msg_count, cwd, model_used, parent, session_type, proj, "build", now],
+            )?;
+            new_id
         };
 
         // Insert messages
@@ -281,6 +287,18 @@ impl SessionManager {
 
         match rows.next() {
             Some(Ok(meta)) => Ok(Some(meta)),
+            Some(Err(e)) => Err(e.into()),
+            None => Ok(None),
+        }
+    }
+
+    /// Get the project ID associated with a session.
+    pub fn get_project_id(&self, session_id: &str) -> Result<Option<String>> {
+        let db = self.storage.conn();
+        let mut stmt = db.prepare("SELECT project_id FROM sessions WHERE id = ?1")?;
+        let mut rows = stmt.query_map(rusqlite::params![session_id], |row| row.get::<_, String>(0))?;
+        match rows.next() {
+            Some(Ok(proj_id)) => Ok(Some(proj_id)),
             Some(Err(e)) => Err(e.into()),
             None => Ok(None),
         }

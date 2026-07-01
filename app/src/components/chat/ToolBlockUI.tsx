@@ -6,6 +6,94 @@ import { MarkdownContent } from './MarkdownContent';
 import { getToolIcon } from './toolIcons';
 import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
 import CopyIcon from 'lucide-react/dist/esm/icons/copy.mjs';
+import CheckCircleIcon from 'lucide-react/dist/esm/icons/check-circle.mjs';
+import CircleIcon from 'lucide-react/dist/esm/icons/circle.mjs';
+import LoaderIcon from 'lucide-react/dist/esm/icons/loader.mjs';
+import AlertCircleIcon from 'lucide-react/dist/esm/icons/alert-circle.mjs';
+
+interface TodoItem {
+  id: string;
+  status: 'completed' | 'in_progress' | 'blocked' | 'pending';
+  description: string;
+}
+
+interface ParsedTodoResult {
+  headerMessage?: string;
+  items: TodoItem[];
+  summaryText?: string;
+  totalCount: number;
+  completedCount: number;
+}
+
+function parseTodoResult(result: string): ParsedTodoResult | null {
+  if (!result) return null;
+  
+  const lines = result.split('\n');
+  const items: TodoItem[] = [];
+  let headerMessage = '';
+  let summaryText = '';
+  let inPlanSection = false;
+  
+  for (let line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    
+    if (trimmed.startsWith('== Current Plan ==')) {
+      inPlanSection = true;
+      continue;
+    }
+    
+    if (trimmed.startsWith('== Todo:')) {
+      summaryText = trimmed.replace(/==/g, '').trim();
+      inPlanSection = false;
+      continue;
+    }
+    
+    if (inPlanSection) {
+      // e.g. [x] 1 completed: Search for stocks...
+      const match = trimmed.match(/^(\[ \]|\[~\]|\[x\]|\[!\])\s+(\d+|\w+)\s+(pending|in_progress|completed|blocked):\s*(.*)$/);
+      if (match) {
+        items.push({
+          id: match[2],
+          status: match[3] as any,
+          description: match[4],
+        });
+      }
+    } else if (!summaryText) {
+      if (headerMessage) {
+        headerMessage += '\n' + trimmed;
+      } else {
+        headerMessage = trimmed;
+      }
+    }
+  }
+  
+  if (items.length === 0) return null;
+  
+  const completedCount = items.filter(i => i.status === 'completed').length;
+  
+  return {
+    headerMessage,
+    items,
+    summaryText,
+    totalCount: items.length,
+    completedCount,
+  };
+}
+
+function todoStatusIcon(status: string) {
+  switch (status) {
+    case 'completed':
+      return <CheckCircleIcon size={14} className="todo-icon todo-icon-completed" />;
+    case 'in_progress':
+      return <LoaderIcon size={14} className="todo-icon todo-icon-in-progress" />;
+    case 'blocked':
+      return <AlertCircleIcon size={14} className="todo-icon todo-icon-blocked" />;
+    default:
+      return <CircleIcon size={14} className="todo-icon todo-icon-pending" />;
+  }
+}
+
 
 const ToolBlockUI = memo(function ToolBlockUI({
   name,
@@ -26,13 +114,14 @@ const ToolBlockUI = memo(function ToolBlockUI({
   endTime?: number;
   approvalStatus?: 'approved' | 'denied';
 }) {
-  const [collapsed, setCollapsed] = useState(!active);
+  const isExpandable = name !== 'write_file' && name !== 'write_to_file';
+  const [collapsed, setCollapsed] = useState(isExpandable ? !active : true);
   const [prevActive, setPrevActive] = useState(active);
   const [copied, setCopied] = useState(false);
 
   if (active !== prevActive) {
     setPrevActive(active);
-    setCollapsed(!active);
+    setCollapsed(isExpandable ? !active : true);
   }
 
   const handleCopy = async (e: React.MouseEvent) => {
@@ -59,10 +148,10 @@ const ToolBlockUI = memo(function ToolBlockUI({
   const displayLabel = useMemo(() => {
     if (name === 'tavily_search') {
       const query = (args as Record<string, unknown> | undefined)?.query as string | undefined;
-      if (query) return `Search "${query}"`;
+      if (query) return active ? `Searching "${query}"` : `Searched "${query}"`;
     } else if (name === 'webfetch') {
       const url = (args as Record<string, unknown> | undefined)?.url as string | undefined;
-      if (url) return `Fetch ${url}`;
+      if (url) return active ? `Fetching ${url}` : `Fetched ${url}`;
     } else if (name === 'write_file' || name === 'write_to_file') {
       const path = ((args as Record<string, unknown> | undefined)?.TargetFile || (args as Record<string, unknown> | undefined)?.file_path || (args as Record<string, unknown> | undefined)?.path) as string | undefined;
       if (path) {
@@ -146,10 +235,22 @@ const ToolBlockUI = memo(function ToolBlockUI({
         }
       `}</style>
       <div
-        className={`step-row ${active ? 'step-row-active' : ''} ${is_error ? 'step-row-error' : ''} step-row-pointer`}
-        onClick={() => setCollapsed(!collapsed)}
+        className={`step-row ${active ? 'step-row-active' : ''} ${is_error ? 'step-row-error' : ''} ${isExpandable ? 'step-row-pointer' : 'step-row-default'}`}
+        onClick={() => {
+          if (isExpandable) setCollapsed(!collapsed);
+        }}
       >
-        {(() => { const ToolIcon = getToolIcon(name); return <ToolIcon size={13} className="step-icon tool-icon-margin" color={is_error ? '#f87171' : (active ? 'var(--text-muted)' : 'var(--text-muted)')} />; })()}
+        {(() => {
+          const ToolIcon = getToolIcon(name);
+          const isSearching = active && (name === 'tavily_search' || name === 'webfetch');
+          return (
+            <ToolIcon
+              size={13}
+              className={`step-icon tool-icon-margin ${isSearching ? 'step-icon-searching' : ''}`}
+              color={is_error ? '#f87171' : 'var(--text-muted)'}
+            />
+          );
+        })()}
         <span className="step-label tool-name tool-name-flex">
           <span>{displayLabel}</span>
           {startTime && endTime && (
@@ -163,10 +264,10 @@ const ToolBlockUI = memo(function ToolBlockUI({
           {approvalStatus === 'denied' && (
             <span className="approval-status-badge status-denied approval-badge-style">Denied</span>
           )}
-          {collapsed ? <ChevronRightIcon size={12} className="step-chevron" /> : <ChevronDownIcon size={12} className="step-chevron" />}
+          {isExpandable && (collapsed ? <ChevronRightIcon size={12} className="step-chevron" /> : <ChevronDownIcon size={12} className="step-chevron" />)}
         </div>
       </div>
-      {!collapsed && (
+      {!collapsed && isExpandable && (
         <div className="step-body">
           {formattedArgs && !hideInput && (
             <div className="tool-section">
@@ -216,6 +317,36 @@ const ToolBlockUI = memo(function ToolBlockUI({
                       })()}
                     </div>
                   </div>
+                ) : name.startsWith('todo_') && parseTodoResult(result) ? (
+                  (() => {
+                    const parsed = parseTodoResult(result)!;
+                    return (
+                      <div className="tool-result-content scrollable-markdown" style={{ padding: '12px 16px', borderRadius: 'var(--radius-lg)' }}>
+                        {parsed.headerMessage && (
+                          <div style={{ marginBottom: '12px', fontSize: '13px', color: 'var(--text-main)', fontWeight: 500, borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
+                            {parsed.headerMessage}
+                          </div>
+                        )}
+                        <div className="todo-panel" style={{ margin: 0, background: 'transparent', border: 'none', padding: 0 }}>
+                          <div className="todo-header">
+                            <span className="todo-title">Current Plan</span>
+                            <span className="todo-progress-text">{parsed.completedCount}/{parsed.totalCount}</span>
+                          </div>
+                          <div className="todo-progress-bar">
+                            <div className="todo-progress-fill" style={{ width: `${(parsed.completedCount / (parsed.totalCount || 1)) * 100}%` }} />
+                          </div>
+                          <ul className="todo-list">
+                            {parsed.items.map((item) => (
+                              <li key={item.id} className={`todo-item todo-item-${item.status}`}>
+                                {todoStatusIcon(item.status)}
+                                <span className="todo-desc">{item.description}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      </div>
+                    );
+                  })()
                 ) : (
                   <div style={{ position: 'relative' }}>
                     <button className="code-block-copy-btn" onClick={handleCopy} title="Copy output" style={{ position: 'absolute', top: '8px', right: '12px', display: 'flex', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '4px', padding: '4px', cursor: 'pointer', color: 'var(--text-muted)', zIndex: 10 }}>

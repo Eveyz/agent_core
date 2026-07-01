@@ -85,6 +85,25 @@ export function handleTurnStart(state: ChatState, turnIndex: number, turnId?: st
   }
 }
 
+export function handleCacheInfo(state: ChatState, hitRate: number): void {
+  let turn = getActiveTurn(state);
+  if (!turn) {
+    for (let i = state.entries.length - 1; i >= 0; i--) {
+      if (state.entries[i].type === 'turn') {
+        turn = state.entries[i];
+        break;
+      }
+    }
+  }
+  if (turn && turn.type === 'turn') {
+    if (hitRate === -1.0) {
+      turn.cacheHitRate = undefined;
+    } else {
+      turn.cacheHitRate = hitRate;
+    }
+  }
+}
+
 export function handleMessageStart(state: ChatState, messageId: string | undefined): void {
   const turn = getActiveTurn(state);
   if (turn && turn.type === 'turn' && turn.blocks) {
@@ -536,6 +555,9 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
   switch (ev.event) {
     case 'turn_started':
       handleTurnStart(state, ev.index ?? 0, ev.turn_id);
+      break;
+    case 'cache_info':
+      handleCacheInfo(state, ev.hit_rate ?? -1.0);
       break;
     case 'turn_ended':
       handleTurnEnded(state);

@@ -23,6 +23,7 @@ pub struct ToolOrchestrator<'a> {
     /// Per-Run approval resolver. If `None`, falls back to the global map
     /// (for backward compat with the old Agent path).
     pub approval_resolver: Option<ApprovalResolver>,
+    pub session_id: Option<String>,
 }
 
 impl<'a> ToolOrchestrator<'a> {
@@ -400,6 +401,13 @@ impl<'a> ToolOrchestrator<'a> {
             }
         };
 
+        let mut modified_args = args;
+        if let Some(ref sid) = self.session_id {
+            if let Some(obj) = modified_args.as_object_mut() {
+                obj.insert("_session_id".to_string(), serde_json::Value::String(sid.clone()));
+            }
+        }
+
         // Create event channel for tools that emit structured events (e.g. subagent) and streaming updates.
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
 
@@ -420,7 +428,7 @@ impl<'a> ToolOrchestrator<'a> {
 
         // Forward tool-internal events to the main event stream in real
         // time so the TUI can render them as they happen.
-        let tool_fut = tool.execute_with_stream(args, Some(on_update), Some(event_tx));
+        let tool_fut = tool.execute_with_stream(modified_args, Some(on_update), Some(event_tx));
         let drain_fut = async {
             while let Some(event) = event_rx.recv().await {
                 on_event(event, tool_call_id);

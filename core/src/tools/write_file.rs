@@ -42,18 +42,28 @@ impl Tool for WriteFileTool {
             .as_str()
             .context("missing required parameter 'content'")?;
 
-        if let Some(parent) = std::path::Path::new(path).parent()
-            && !parent.as_os_str().is_empty()
-        {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create parent dirs for: {path}"))?;
+        let session_id = args.get("_session_id").and_then(|v| v.as_str());
+        let resolved_path = if let Some(sid) = session_id {
+            crate::paths::redirect_if_artifact(path, sid)
+        } else {
+            std::path::PathBuf::from(path)
+        };
+        let resolved_path_str = resolved_path.to_string_lossy().to_string();
+
+        if let Some(parent) = resolved_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("failed to create parent dirs for: {resolved_path_str}"))?;
+            }
         }
 
-        std::fs::write(path, content).with_context(|| format!("failed to write file: {path}"))?;
+        std::fs::write(&resolved_path, content)
+            .with_context(|| format!("failed to write file: {resolved_path_str}"))?;
 
         Ok(format!(
-            "Successfully wrote {} bytes to {path}",
-            content.len()
+            "Successfully wrote {} bytes to {}",
+            content.len(),
+            resolved_path_str
         ))
     }
 }

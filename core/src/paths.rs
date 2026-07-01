@@ -39,3 +39,31 @@ pub fn get_cli_history_dir() -> PathBuf {
 pub fn get_global_agverse_md_path() -> PathBuf {
     get_agverse_dir().join("agverse.md")
 }
+
+/// Helper to check if a file path is a system artifact or user-uploaded media
+/// and redirect it to the session's chat folder if so.
+pub fn redirect_if_artifact(path: &str, session_id: &str) -> PathBuf {
+    let path_obj = std::path::Path::new(path);
+    let file_name = path_obj.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    let name_lower = file_name.to_lowercase();
+
+    // System artifacts: plan.md, implementation_plan.md, walkthrough.md, task.md
+    // Or media files (.png, .jpg, .jpeg, .webp, .gif)
+    let is_artifact = name_lower == "plan.md"
+        || name_lower == "implementation_plan.md"
+        || name_lower == "walkthrough.md"
+        || name_lower == "task.md"
+        || name_lower.ends_with(".png")
+        || name_lower.ends_with(".jpg")
+        || name_lower.ends_with(".jpeg")
+        || name_lower.ends_with(".webp")
+        || name_lower.ends_with(".gif");
+
+    if is_artifact {
+        let chat_dir = get_agverse_dir().join("chats").join(session_id);
+        let _ = std::fs::create_dir_all(&chat_dir);
+        chat_dir.join(file_name)
+    } else {
+        PathBuf::from(path)
+    }
+}

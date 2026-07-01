@@ -28,7 +28,6 @@ import { fetchAgents } from "../../features/agents/agentSlice";
 import type { WorkflowDef } from "../../features/workflow/types";
 import { EdgeConfigPanel } from "./EdgeConfigPanel";
 import { WorkflowRunView } from "./WorkflowRunView";
-import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { ReactFlowProvider } from "@xyflow/react";
 import { rfToNodeDef, rfToEdgeDef } from "../../features/workflow/converters";

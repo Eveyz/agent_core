@@ -447,7 +447,7 @@
 .tool-name {
   font-family: 'Fira Code', 'Menlo', monospace;
   font-weight: 500;
-  color: var(--accent);
+  color: var(--tool-color);
 }
 
 .tool-status-icon {
@@ -946,4 +946,24 @@
   padding: 8px;
   border-left: 2px solid #FF5F56;
   background: rgba(255, 95, 86, 0.1);
+}
+
+/* ── Tool Searching animations ──────────────────────────────────── */
+.step-icon-searching {
+  animation: spin-search 2s linear infinite;
+  color: var(--tool-color) !important;
+}
+
+@keyframes spin-search {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.step-row-active .tool-name {
+  animation: breathing-light 2s ease-in-out infinite;
+}
+
+@keyframes breathing-light {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
 }

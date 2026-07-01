@@ -38,23 +38,31 @@ impl Tool for EditTool {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("missing 'new_string'"))?;
 
-        let old_content = std::fs::read_to_string(file_path)
-            .map_err(|e| anyhow::anyhow!("failed to read '{}': {}", file_path, e))?;
+        let session_id = args.get("_session_id").and_then(|v| v.as_str());
+        let resolved_path = if let Some(sid) = session_id {
+            crate::paths::redirect_if_artifact(file_path, sid)
+        } else {
+            std::path::PathBuf::from(file_path)
+        };
+        let resolved_path_str = resolved_path.to_string_lossy().to_string();
+
+        let old_content = std::fs::read_to_string(&resolved_path)
+            .map_err(|e| anyhow::anyhow!("failed to read '{}': {}", resolved_path_str, e))?;
 
         let count = old_content.matches(old_string).count();
         if count == 0 {
-            anyhow::bail!("old_string not found in '{}'", file_path);
+            anyhow::bail!("old_string not found in '{}'", resolved_path_str);
         }
         if count > 1 {
             anyhow::bail!(
                 "old_string found {} times in '{}'; provide more context to make it unique",
                 count,
-                file_path
+                resolved_path_str
             );
         }
 
         let new_content = old_content.replacen(old_string, new_string, 1);
-        std::fs::write(file_path, &new_content)?;
+        std::fs::write(&resolved_path, &new_content)?;
 
         // Compute the line range of the edited region (1-based) in the
         // *original* file, so the UI can show "Edited lines L12–L18".

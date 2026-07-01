@@ -690,6 +690,7 @@ impl Agent {
                 tool_execution_mode: self.tool_execution_mode,
                 cancel_token: self.cancel_token.clone(),
                 approval_resolver: None,
+                session_id: self.current_session_id.clone(),
             };
             orchestrator
                 .execute_tools(&tool_calls, &|ev, _call_id: &str| on_event(ev))

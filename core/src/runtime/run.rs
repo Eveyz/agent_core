@@ -705,6 +705,7 @@ impl Run {
                 tool_execution_mode: self.tool_execution_mode,
                 cancel_token: self.cancel.clone(),
                 approval_resolver: Some(approval_resolver),
+                session_id: self.session_id.clone(),
             };
             orchestrator
                 .execute_tools(&tool_calls, &move |ev, parent_call_id: &str| {

@@ -55,6 +55,7 @@ export interface ChatEntry {
   startTime?: number;
   endTime?: number;
   subagentIds?: string[];
+  cacheHitRate?: number;
 }
 
 export interface SkillManifest {
@@ -81,6 +82,7 @@ export interface ChatState {
   subagentsBySession: Record<string, Record<string, SubagentEntry>>;
   runIdBySession: Record<string, string | null>;
   activeSessionId: string | null;
+  isResuming: boolean;
   _resumedFromBackend: boolean;
   _thinkBuffers: Record<string, string>;
   _pendingGap: { runId: string; fromSeq: number } | null;
@@ -108,7 +110,8 @@ export type RunEventType =
   | 'context_compacted' | 'error'
   | 'subagent_started' | 'subagent_ended'
   | 'process_spawned' | 'process_killed'
-  | 'todo_updated';
+  | 'todo_updated'
+  | 'cache_info';
 
 export interface RunEventPayload {
   event: RunEventType;
@@ -150,6 +153,9 @@ export interface RunEventPayload {
   child_id?: string;
   label?: string;
   items?: { id: string; description: string; status: string }[];
+  hit_tokens?: number;
+  miss_tokens?: number;
+  hit_rate?: number;
 }
 
 export type RunState = 'created' | 'running' | 'awaiting_approval' | 'awaiting_input' | 'paused' | 'completed' | 'cancelled' | 'failed';

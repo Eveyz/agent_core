@@ -1,0 +1,88 @@
+import { useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import LoaderIcon from 'lucide-react/dist/esm/icons/loader.mjs';
+import FileTextIcon from 'lucide-react/dist/esm/icons/file-text.mjs';
+import { MarkdownContent } from '../chat/MarkdownContent';
+
+interface DocumentTabProps {
+  projectPath: string | undefined;
+  relativePaths: string[];
+  title: string;
+  placeholderMessage: string;
+}
+
+export function DocumentTab({ projectPath, relativePaths, title, placeholderMessage }: DocumentTabProps) {
+  const [content, setContent] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!projectPath) {
+      setLoading(false);
+      setContent(null);
+      return;
+    }
+
+    let isMounted = true;
+    setLoading(true);
+
+    // Helper function to try paths sequentially
+    const tryReadPaths = async (index: number) => {
+      if (index >= relativePaths.length) {
+        if (isMounted) {
+          setContent(null);
+          setLoading(false);
+        }
+        return;
+      }
+
+      const fullPath = relativePaths[index].startsWith('~/') || relativePaths[index].startsWith('/')
+        ? relativePaths[index]
+        : `${projectPath}/${relativePaths[index]}`;
+      try {
+        const fileContent = await invoke<string>('read_file', { path: fullPath });
+        if (isMounted) {
+          setContent(fileContent);
+          setLoading(false);
+        }
+      } catch (err) {
+        // If it fails, try the next path
+        tryReadPaths(index + 1);
+      }
+    };
+
+    tryReadPaths(0);
+
+    return () => {
+      isMounted = false;
+    };
+  }, [projectPath, relativePaths]);
+
+  if (loading) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '12px', color: 'var(--text-muted)' }}>
+        <LoaderIcon className="animate-spin" size={20} style={{ color: 'var(--accent, #006efe)' }} />
+        <span>Loading {title}...</span>
+      </div>
+    );
+  }
+
+  if (!content) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', padding: '24px', textAlign: 'center', color: 'var(--text-dim)', gap: '12px' }}>
+        <FileTextIcon size={24} style={{ opacity: 0.5 }} />
+        <div style={{ fontSize: '14px', fontWeight: 500, color: 'var(--text-muted)' }}>No {title} Found</div>
+        <p style={{ fontSize: '12px', maxWidth: '280px', margin: 0, lineHeight: 1.5 }}>
+          {placeholderMessage}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="document-tab-container" style={{ flex: 1, overflowY: 'auto', padding: '16px', display: 'flex', flexDirection: 'column' }}>
+      <div className="markdown-body" style={{ fontSize: '13.5px', lineHeight: 1.6 }}>
+        <MarkdownContent content={content} />
+      </div>
+    </div>
+  );
+}

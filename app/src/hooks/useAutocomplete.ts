@@ -1,9 +1,11 @@
 import { useState, useCallback, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { parseMentions, findMentionBoundaries } from '../utils/mentions';
+import { useSkills } from './useSkills';
 
 export type IconType = 'folder' | 'file' | 'command' | 'file-code' | 'file-json' | 'file-image' | 'file-text'
-  | 'lang-js' | 'lang-ts' | 'lang-jsx' | 'lang-tsx' | 'lang-py' | 'lang-go' | 'lang-css' | 'lang-rs' | 'lang-html';
+  | 'lang-js' | 'lang-ts' | 'lang-jsx' | 'lang-tsx' | 'lang-py' | 'lang-go' | 'lang-css' | 'lang-rs' | 'lang-html'
+  | 'skill';
 
 export interface AutocompleteItem {
   label: string;
@@ -57,14 +59,35 @@ export function useAutocomplete(
   input: string,
   setInput: (v: string) => void,
   textareaRef: React.RefObject<HTMLTextAreaElement | null>,
-  projectPath?: string
+  projectPath?: string,
+  isChatMode?: boolean
 ) {
+  const { skills } = useSkills();
   const [showAutocomplete, setShowAutocomplete] = useState(false);
   const [autocompleteItems, setAutocompleteItems] = useState<AutocompleteItem[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [triggerInfo, setTriggerInfo] = useState<{ start: number; end: number; type: '@' | '/' } | null>(null);
 
   const fetchDirectoryEntries = useCallback(async (query: string) => {
+    const q = query.toLowerCase();
+    const matchedSkills = skills.filter(
+      (skill) =>
+        skill.name.toLowerCase().includes(q) ||
+        skill.description.toLowerCase().includes(q) ||
+        skill.triggers?.some((t) => t.toLowerCase().includes(q))
+    );
+    const skillItems: AutocompleteItem[] = matchedSkills.map((skill) => ({
+      label: `skill:${skill.name}`,
+      value: skill.name,
+      icon: 'skill',
+    }));
+
+    if (isChatMode) {
+      setAutocompleteItems(skillItems);
+      setSelectedIndex(0);
+      return;
+    }
+
     try {
       const entries = await invoke<Array<{ name: string; type: string }>>('search_files', { 
         query, 
@@ -78,12 +101,13 @@ export function useAutocomplete(
           icon: e.type === 'dir' ? 'folder' : getFileIcon(e.name),
         };
       });
-      setAutocompleteItems(mapped);
+      setAutocompleteItems([...skillItems, ...mapped]);
       setSelectedIndex(0);
     } catch {
-      setAutocompleteItems([]);
+      setAutocompleteItems(skillItems);
+      setSelectedIndex(0);
     }
-  }, [projectPath]);
+  }, [projectPath, skills, isChatMode]);
 
   const closeAutocomplete = useCallback(() => {
     setShowAutocomplete(false);
@@ -98,8 +122,12 @@ export function useAutocomplete(
       const after = input.slice(triggerInfo.end);
       let insertValue = item.value;
       if (triggerInfo.type === '@') {
-        const isDir = item.icon === 'folder';
-        insertValue = `@${item.label}${isDir ? '/' : ''} `;
+        if (item.icon === 'skill') {
+          insertValue = `@skill:${item.value} `;
+        } else {
+          const isDir = item.icon === 'folder';
+          insertValue = `@${item.label}${isDir ? '/' : ''} `;
+        }
       }
       const newValue = before + insertValue + after;
       setInput(newValue);

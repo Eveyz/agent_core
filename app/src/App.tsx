@@ -45,8 +45,36 @@ const WorkflowEditor = React.lazy(() =>
   import('./components/workflow/WorkflowEditor').then(m => ({ default: m.WorkflowEditor }))
 );
 import type { AppView } from './components/layout/Sidebar';
+import LoaderIcon from 'lucide-react/dist/esm/icons/loader.mjs';
 
 import './App.css';
+
+const SessionLoader = () => (
+  <div className="empty-state">
+    <div className="star-field" />
+    <div className="cosmic-glow cosmic-glow-1" />
+    <div className="cosmic-glow cosmic-glow-2" />
+    <div className="empty-state-content">
+      <div className="solar-system">
+        <div className="sun" />
+        <div className="planet-orbit orbit-1">
+          <div className="planet planet-1" />
+        </div>
+        <div className="planet-orbit orbit-2">
+          <div className="planet planet-2" />
+        </div>
+        <div className="planet-orbit orbit-3">
+          <div className="planet planet-3" />
+        </div>
+      </div>
+      <h1 className="empty-state-title" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+        <LoaderIcon className="animate-spin" size={24} style={{ color: 'var(--accent-primary, #3b82f6)' }} />
+        Resuming Session...
+      </h1>
+      <p className="empty-state-subtitle">Restoring conversation history and environment context.</p>
+    </div>
+  </div>
+);
 
 function App() {
   const dispatch = useAppDispatch();
@@ -55,6 +83,7 @@ function App() {
   const entryIds = useSelector(selectEntryIds);
   const entriesLength = useSelector((state: RootState) => state.chat.entries.length);
   const isProcessing = useSelector((state: RootState) => state.chat.isProcessing);
+  const isResuming = useSelector((state: RootState) => state.chat.isResuming);
   const defaultModel = useSelector((state: RootState) => state.settings.config?.default_model || '');
   const appearance = useSelector((state: RootState) => state.settings.appearance);
   
@@ -77,6 +106,14 @@ function App() {
       setActiveView("chat");
     }
   }, [activeSessionId]);
+
+  useEffect(() => {
+    const handleOpenRightSidebar = () => {
+      setRightSidebarExpanded(true);
+    };
+    window.addEventListener('open-right-sidebar', handleOpenRightSidebar);
+    return () => window.removeEventListener('open-right-sidebar', handleOpenRightSidebar);
+  }, []);
 
   const { sidebarRef: leftSidebarRef, onMouseDown: startLeftDrag } = useResizableSidebar(260, 200, 600, 'left');
   const { sidebarRef: rightSidebarRef, onMouseDown: startRightDrag } = useResizableSidebar(550, 300, 1200, 'right');
@@ -285,6 +322,8 @@ function App() {
               isProcessing={isProcessing}
               defaultModel={defaultModel}
             />
+          ) : isResuming ? (
+            <SessionLoader />
           ) : entriesLength === 0 ? (
             <EmptyState onSend={handleSend} />
           ) : (
@@ -307,8 +346,8 @@ function App() {
               currentModel={defaultModel}
               onAbort={handleAbort}
               onSteer={handleSteer}
-              disabled={viewingSubagentPath.length > 0}
-              disabledMessage="the input chat is disabled for the subagent"
+              disabled={viewingSubagentPath.length > 0 || isResuming}
+              disabledMessage={isResuming ? "Resuming session..." : "the input chat is disabled for the subagent"}
             />
           )}
         </main>

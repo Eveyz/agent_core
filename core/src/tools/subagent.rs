@@ -477,6 +477,8 @@ Do NOT attempt to read or process image files.";
         ..SubagentConfig::default()
     };
 
+    let session_id = args.get("_session_id").and_then(|v| v.as_str()).map(|s| s.to_string());
+
     let mut subagent = Subagent::new(
         id,
         config,
@@ -484,6 +486,7 @@ Do NOT attempt to read or process image files.";
         tool_registry,
         permission_config.clone(),
     );
+    subagent.session_id = session_id;
     let result = subagent.run_with_sender(task, event_sender).await?;
 
     // Collect subagent messages for session saving

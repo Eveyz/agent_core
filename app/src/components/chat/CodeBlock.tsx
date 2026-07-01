@@ -78,7 +78,7 @@ function runDrain(): void {
           ? highlighter.codeToHtml(job.code, {
               lang: (job.lang || 'plaintext') as BundledLanguage,
               themes: { light: 'github-light', dark: 'github-dark' },
-              defaultColor: null,
+              defaultColor: false,
               colorsRendering: 'css-vars',
             })
           : plainHtml(job.code);

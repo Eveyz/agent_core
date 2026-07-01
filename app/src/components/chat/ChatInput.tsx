@@ -15,6 +15,7 @@ import FileTextIcon from 'lucide-react/dist/esm/icons/file-text.mjs';
 import ImageIcon from 'lucide-react/dist/esm/icons/image.mjs';
 import GitBranchIcon from 'lucide-react/dist/esm/icons/git-branch.mjs';
 import SquareIcon from 'lucide-react/dist/esm/icons/square.mjs';
+import ZapIcon from 'lucide-react/dist/esm/icons/zap.mjs';
 import TodoPanel from './TodoPanel';
 
 import { 
@@ -26,7 +27,7 @@ import { SkillSelector } from './SkillSelector';
 import ModeSelector from './ModeSelector';
 import { useAutocomplete } from '../../hooks/useAutocomplete';
 import { useGitBranch } from '../../hooks/useGitBranch';
-import { useTokenCount, useTurnCount } from '../../hooks/useTokenCount';
+import { useTokenCount, useTurnCount, useCacheHitRate } from '../../hooks/useTokenCount';
 import type { SkillManifest } from '../../features/chat/types';
 import '../../styles/skill-selector.css';
 
@@ -70,7 +71,7 @@ export const ChatInput = memo(function ChatInput({
     handleMentionBackspace,
     handleChange,
     highlightedHTML,
-  } = useAutocomplete(input, setInput, textareaRef, activeProject?.path);
+  } = useAutocomplete(input, setInput, textareaRef, activeProject?.path, activeProjectId === '__adhoc_chat__');
 
   const {
     branches,
@@ -223,6 +224,7 @@ export const ChatInput = memo(function ChatInput({
                 {item.icon === 'lang-rs' && <SiRust size={14} color="#dea584" />}
                 {item.icon === 'lang-html' && <SiHtml5 size={14} color="#e34f26" />}
                 {item.icon === 'command' && <TerminalSquareIcon size={14} color="#52A8FF" />}
+                {item.icon === 'skill' && <ZapIcon size={14} color="#a855f7" />}
                 <span className="autocomplete-label">{item.label}</span>
               </div>
             ))}
@@ -294,45 +296,47 @@ export const ChatInput = memo(function ChatInput({
       {!disabled && (
       <div className="input-footer">
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <div ref={branchDropdownRef} style={{ position: 'relative' }}>
-            <span
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '4px',
-                cursor: 'pointer',
-                color: branchError ? '#ff5f57' : undefined,
-              }}
-              onClick={() => setShowBranchDropdown((s) => !s)}
-              title={branchError || undefined}
-            >
-              <GitBranchIcon size={10} />
-              {activeBranch || (activeProject ? activeProject.name : 'No project')}
-              {showBranchDropdown ? <ChevronUpIcon size={10} /> : <ChevronDownIcon size={10} />}
-            </span>
-            {showBranchDropdown && (
-              <div
-                className="dropdown-menu dropdown-menu-up"
-                style={{ bottom: '24px', left: 0, minWidth: '180px', maxHeight: '240px', overflowY: 'auto' }}
+          {!(activeProjectId === '__adhoc_chat__') && (
+            <div ref={branchDropdownRef} style={{ position: 'relative' }}>
+              <span
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  cursor: 'pointer',
+                  color: branchError ? '#ff5f57' : undefined,
+                }}
+                onClick={() => setShowBranchDropdown((s) => !s)}
+                title={branchError || undefined}
               >
-                {branches.length === 0 && (
-                  <div className="dropdown-item" style={{ color: '#808080', cursor: 'default' }}>
-                    {branchError ? 'Not a git repo' : 'No branches'}
-                  </div>
-                )}
-                {branches.map((branch) => (
-                  <div
-                    key={branch}
-                    className={`dropdown-item ${activeBranch === branch ? 'dropdown-item-active' : ''}`}
-                    onClick={() => handleSwitchBranch(branch)}
-                  >
-                    <GitBranchIcon size={12} />
-                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{branch}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+                <GitBranchIcon size={10} />
+                {activeBranch || (activeProject ? activeProject.name : 'No project')}
+                {showBranchDropdown ? <ChevronUpIcon size={10} /> : <ChevronDownIcon size={10} />}
+              </span>
+              {showBranchDropdown && (
+                <div
+                  className="dropdown-menu dropdown-menu-up"
+                  style={{ bottom: '24px', left: 0, minWidth: '180px', maxHeight: '240px', overflowY: 'auto' }}
+                >
+                  {branches.length === 0 && (
+                    <div className="dropdown-item" style={{ color: '#808080', cursor: 'default' }}>
+                      {branchError ? 'Not a git repo' : 'No branches'}
+                    </div>
+                  )}
+                  {branches.map((branch) => (
+                    <div
+                      key={branch}
+                      className={`dropdown-item ${activeBranch === branch ? 'dropdown-item-active' : ''}`}
+                      onClick={() => handleSwitchBranch(branch)}
+                    >
+                      <GitBranchIcon size={12} />
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{branch}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           <ChatStats />
         </div>
         <div>{isProcessing ? 'Press Esc to stop' : 'Type @ for files, / for commands'}</div>
@@ -345,10 +349,14 @@ export const ChatInput = memo(function ChatInput({
 const ChatStats = memo(function ChatStats() {
   const tokenCount = useTokenCount();
   const turnCount = useTurnCount();
+  const cacheHitRate = useCacheHitRate();
   return (
     <>
       <span>{tokenCount >= 1000 ? `${(tokenCount / 1000).toFixed(1)}k` : tokenCount} tokens</span>
       <span>{turnCount} turns</span>
+      {cacheHitRate !== null && (
+        <span>Cache hit: {Math.round(cacheHitRate * 100)}%</span>
+      )}
     </>
   );
 });

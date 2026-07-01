@@ -218,6 +218,9 @@ export const Sidebar = memo(function Sidebar({
   const isProcessing = useSelector(
     (state: RootState) => state.chat.isProcessing,
   );
+  const isResuming = useSelector(
+    (state: RootState) => state.chat.isResuming,
+  );
   const defaultModel = useSelector(
     (state: RootState) => state.settings.config?.default_model || "",
   );
@@ -261,6 +264,11 @@ export const Sidebar = memo(function Sidebar({
       dispatch(fetchProjectSessions(activeProjectId));
     }
   }, [activeProjectId, dispatch]);
+
+  // Fetch default project sessions on mount for the Chat section
+  useEffect(() => {
+    dispatch(fetchProjectSessions('__adhoc_chat__'));
+  }, [dispatch]);
 
   const toggleProject = useCallback(
     (projectId: string) => {
@@ -375,8 +383,10 @@ export const Sidebar = memo(function Sidebar({
     [dispatch, confirm],
   );
 
+  const regularProjects = projects.filter((p) => p.id !== '__adhoc_chat__');
+
   return (
-    <aside className={`sidebar ${collapsed ? "sidebar-collapsed" : ""}`}>
+    <aside className={`sidebar ${collapsed ? "sidebar-collapsed" : ""} ${isResuming ? "sidebar-resuming" : ""}`}>
       {/* Toggle group */}
       <div className="toggle-group">
         <button
@@ -436,14 +446,14 @@ export const Sidebar = memo(function Sidebar({
         </div>
 
         <div className="projects-list">
-          {projects.length === 0 && (
+          {regularProjects.length === 0 && (
             <div
               style={{ padding: "16px 20px", color: "#666", fontSize: "12px" }}
             >
               No projects yet. Click the folder icon above to add one.
             </div>
           )}
-          {projects.map((project) => {
+          {regularProjects.map((project) => {
             const isExpanded = expandedProjects.has(project.id);
             const projectSessions = sessions[project.id] ?? [];
 
@@ -574,6 +584,117 @@ export const Sidebar = memo(function Sidebar({
               </div>
             );
           })}
+        </div>
+      </div>
+
+      {/* Chat section */}
+      <div className="projects-section" style={{ marginTop: "16px" }}>
+        <div className="projects-header">
+          <span>Chat</span>
+          <button
+            className="icon-btn"
+            onClick={() => handleNewSession('__adhoc_chat__')}
+            title="New chat"
+          >
+            <PlusIcon size={13} />
+          </button>
+        </div>
+
+        <div className="projects-list">
+          <div className="session-list">
+            {(() => {
+              const defaultSessions = sessions['__adhoc_chat__'] ?? [];
+              if (defaultSessions.length === 0) {
+                return (
+                  <div
+                    style={{ padding: "8px 20px", color: "#666", fontSize: "12px" }}
+                  >
+                    No chats yet. Click the plus icon above to start one.
+                  </div>
+                );
+              }
+
+              const maxInitial = 6;
+              const sessionsFullyExpanded = expandedSessions.has('__adhoc_chat__');
+              const visibleSessions = sessionsFullyExpanded
+                ? defaultSessions
+                : defaultSessions.slice(0, maxInitial);
+              const hiddenCount = defaultSessions.length - maxInitial;
+
+              return (
+                <>
+                  {visibleSessions.map((session) => {
+                    const isSessionActive =
+                      activeView === "chat" &&
+                      activeSessionId === session.id &&
+                      activeProjectId === '__adhoc_chat__';
+                    return (
+                      <div
+                        key={session.id}
+                        className={`session-row ${isSessionActive ? "session-row-active" : ""}`}
+                        style={{ paddingLeft: "16px" }}
+                        onClick={() =>
+                          handleSelectSession(session.id, '__adhoc_chat__')
+                        }
+                      >
+                        <span className="session-row-text">
+                          {session.title || "Untitled"}
+                        </span>
+                        <>
+                          <span className="session-row-time">
+                            {isSessionActive && isProcessing ? (
+                              <LoaderIcon
+                                size={12}
+                                className="session-processing-spinner"
+                                style={{ marginRight: 0 }}
+                              />
+                            ) : (
+                              formatTimeAgo(session.updated_at)
+                            )}
+                          </span>
+                          <span className="session-row-actions">
+                            <SessionContextMenu
+                              sessionId={session.id}
+                              projectId="__adhoc_chat__"
+                              onDelete={handleDeleteSession}
+                            />
+                            <button
+                              className="sidebar-context-trigger session-delete-btn"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteSession(session.id, '__adhoc_chat__');
+                              }}
+                              title="Delete session"
+                            >
+                              <TrashIcon size={12} />
+                            </button>
+                          </span>
+                        </>
+                      </div>
+                    );
+                  })}
+                  {!sessionsFullyExpanded && hiddenCount > 0 && (
+                    <div
+                      className="session-expand-toggle"
+                      style={{ paddingLeft: "16px" }}
+                      onClick={(e) => toggleSessionsExpand('__adhoc_chat__', e)}
+                    >
+                      See all ({hiddenCount})
+                    </div>
+                  )}
+                  {sessionsFullyExpanded && hiddenCount > 0 && (
+                    <div
+                      className="session-expand-toggle"
+                      style={{ paddingLeft: "16px" }}
+                      onClick={(e) => toggleSessionsExpand('__adhoc_chat__', e)}
+                    >
+                      View less
+                    </div>
+                  )}
+                </>
+              );
+            })()}
+          </div>
         </div>
       </div>
 

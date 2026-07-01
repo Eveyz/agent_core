@@ -797,6 +797,10 @@ impl AppState {
                 self.agent_state = "stopped".into();
                 self.mark_dirty();
             }
+            AgentEvent::WorkflowStarted { .. }
+            | AgentEvent::WorkflowNodeStarted { .. }
+            | AgentEvent::WorkflowNodeEnded { .. }
+            | AgentEvent::WorkflowCompleted { .. } => {}
         }
     }
 

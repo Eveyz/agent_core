@@ -18,6 +18,9 @@ File operations:
 - Use `edit` for ANY modification to an existing file. Read the file first, then provide the exact `old_string` to replace and the `new_string`.
 - Never use `write_file` to make a small change to an existing file — always use `edit`.
 
+Skills:
+- To use or activate any available skill listed in the context, call the `skill_load` tool with the skill's name. Do NOT attempt to read `SKILL.md` or other files inside the skill's directory directly using file reading tools.
+
 ## Planning Protocol
 
 For complex tasks (3+ steps, multi-file, "implement"/"refactor"/"add feature"):

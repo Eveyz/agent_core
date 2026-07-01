@@ -85,9 +85,17 @@ line-numbered view). Refuses files larger than 1 MB and detects binary files."
             bail!("'limit' must be >= 1");
         }
 
+        let session_id = args.get("_session_id").and_then(|v| v.as_str());
+        let resolved_path = if let Some(sid) = session_id {
+            crate::paths::redirect_if_artifact(path, sid)
+        } else {
+            std::path::PathBuf::from(path)
+        };
+        let resolved_path_str = resolved_path.to_string_lossy().to_string();
+
         // 1. Size guard before opening.
-        let metadata = std::fs::metadata(path)
-            .with_context(|| format!("failed to stat file: {path}"))?;
+        let metadata = std::fs::metadata(&resolved_path)
+            .with_context(|| format!("failed to stat file: {resolved_path_str}"))?;
         if metadata.len() > MAX_FILE_SIZE_BYTES {
             bail!(
                 "File is too large ({} bytes > {} byte limit). Use `offset` and `limit` to read it in slices.",
@@ -98,8 +106,8 @@ line-numbered view). Refuses files larger than 1 MB and detects binary files."
 
         // 2. Open and stream lines. BufRead::lines() yields io::Error on invalid
         //    UTF-8, so non-UTF-8 (e.g. UTF-16) is rejected here.
-        let file = std::fs::File::open(path)
-            .with_context(|| format!("failed to open file: {path}"))?;
+        let file = std::fs::File::open(&resolved_path)
+            .with_context(|| format!("failed to open file: {resolved_path_str}"))?;
         let mut reader = std::io::BufReader::new(file);
 
         let mut out = String::new();

@@ -287,7 +287,7 @@ impl SkillManager {
         }
 
         let mut lines: Vec<String> = Vec::new();
-        lines.push("Available skills (use skill_load <name> to activate):".to_string());
+        lines.push("Available skills (to use a skill, call the `skill_load` tool with its name to load and activate it. DO NOT try to read the SKILL.md file or files inside the skill directory directly using file tools):".to_string());
 
         for skill in &self.manifests {
             let active_marker = if self.active_skills.contains(&skill.manifest.name) {
