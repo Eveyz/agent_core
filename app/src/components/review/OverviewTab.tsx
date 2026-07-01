@@ -46,6 +46,17 @@ export function OverviewTab() {
   // Extract modified files
   const modifiedFiles = useMemo(() => {
     const files = new Map<string, string>();
+    const getParsedArgs = (rawArgs: any) => {
+      if (typeof rawArgs === 'string') {
+        try {
+          return JSON.parse(rawArgs);
+        } catch {
+          return {};
+        }
+      }
+      return rawArgs || {};
+    };
+
     for (const entry of entries) {
       if (entry.type !== 'turn' || !entry.blocks) continue;
       for (const block of entry.blocks) {
@@ -59,7 +70,7 @@ export function OverviewTab() {
             name === 'edit' ||
             name === 'write_file'
           ) {
-            const args = block.args as any;
+            const args = getParsedArgs(block.args);
             const path = args?.file_path || args?.TargetFile || args?.path;
             if (path && !files.has(path)) {
               files.set(path, basename(path));
@@ -76,6 +87,16 @@ export function OverviewTab() {
     const files = new Map<string, string>();
     const systemDocs = ['PLAN.md', 'plan.md', 'implementation_plan.md', 'walkthrough.md', 'task.md'];
     const mediaExts = ['png', 'jpg', 'jpeg', 'webp', 'gif'];
+    const getParsedArgs = (rawArgs: any) => {
+      if (typeof rawArgs === 'string') {
+        try {
+          return JSON.parse(rawArgs);
+        } catch {
+          return {};
+        }
+      }
+      return rawArgs || {};
+    };
 
     for (const entry of entries) {
       if (entry.type !== 'turn' || !entry.blocks) continue;
@@ -86,7 +107,7 @@ export function OverviewTab() {
           block.result && 
           (block.name === 'write_to_file' || block.name === 'write_file')
         ) {
-          const args = block.args as any;
+          const args = getParsedArgs(block.args);
           const path = args?.TargetFile || args?.file_path || args?.path;
           if (path) {
             const filename = basename(path);

@@ -326,6 +326,16 @@ export function ReviewTab() {
   // Extract modified files from the current session's chat entries
   const modifiedFiles = useMemo(() => {
     const files = new Map<string, { result: string; timestamp: number; args?: any }>();
+    const getParsedArgs = (rawArgs: any) => {
+      if (typeof rawArgs === 'string') {
+        try {
+          return JSON.parse(rawArgs);
+        } catch {
+          return {};
+        }
+      }
+      return rawArgs || {};
+    };
     
     for (const entry of entries) {
       if (entry.type !== 'turn' || !entry.blocks) continue;
@@ -341,7 +351,7 @@ export function ReviewTab() {
             name === 'edit' ||
             name === 'write_file'
           ) {
-            const args = block.args as any;
+            const args = getParsedArgs(block.args);
             const path = args?.file_path || args?.TargetFile || args?.path;
             if (path) {
               files.set(path, { result: block.result, timestamp: entry.endTime || 0, args });

@@ -153,7 +153,18 @@ export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: ChatEnt
     if (!entry.blocks) return [];
     const files = new Map<string, FileChangeItem>();
     
-    const getFileDiffStats = (result?: string, toolName?: string, args?: any) => {
+    const getParsedArgs = (rawArgs: any) => {
+      if (typeof rawArgs === 'string') {
+        try {
+          return JSON.parse(rawArgs);
+        } catch {
+          return {};
+        }
+      }
+      return rawArgs || {};
+    };
+
+    const getFileDiffStats = (result?: string, toolName?: string, rawArgs?: any) => {
       if (!result) return { additions: 0, deletions: 0 };
       
       const summary = parseEditSummary(result);
@@ -173,6 +184,7 @@ export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: ChatEnt
         return { additions, deletions };
       }
 
+      const args = getParsedArgs(rawArgs);
       if (
         (toolName === 'write_to_file' && args?.CodeContent) ||
         (toolName === 'write_file' && args?.content)
@@ -196,10 +208,10 @@ export const AgentTurnUI = memo(function AgentTurnUI({ entry }: { entry: ChatEnt
           name === 'edit' ||
           name === 'write_file'
         ) {
-          const args = b.args as any;
+          const args = getParsedArgs(b.args);
           const path = args?.file_path || args?.TargetFile || args?.path;
           if (path) {
-            const stats = getFileDiffStats(b.result, name, args);
+            const stats = getFileDiffStats(b.result, name, b.args);
             const isNew = (name === 'write_to_file' && !args?.Overwrite) || (name === 'write_file' && !args?.overwrite);
             const existing = files.get(path);
             if (existing) {
