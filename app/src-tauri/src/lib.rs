@@ -1576,6 +1576,29 @@ pub fn run() {
             // Build the RunManager
             let run_manager = RunManager::new(brain);
 
+            // Background warmup: preload the embedding model so the first
+            // real embed() call doesn't stall. Runs on a tokio worker thread,
+            // never blocks setup() or the UI.
+            {
+                let embed_model = run_manager
+                    .brain()
+                    .memory
+                    .as_ref()
+                    .and_then(|mm| mm.lock().recall().embedding_model().cloned());
+                if let Some(model) = embed_model {
+                    tauri::async_runtime::spawn(async move {
+                        eprintln!("[warmup] preloading embedding model...");
+                        match tokio::task::spawn_blocking(move || {
+                            model.embed_single("warmup")
+                        }).await {
+                            Ok(Ok(_)) => eprintln!("[warmup] embedding model ready"),
+                            Ok(Err(e)) => eprintln!("[warmup] failed: {e}"),
+                            Err(e) => eprintln!("[warmup] task panicked: {e}"),
+                        }
+                    });
+                }
+            }
+
             app.manage(AppState {
                 run_manager: Arc::new(AsyncMutex::new(run_manager)),
                 config_path: config_path_str,

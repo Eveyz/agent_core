@@ -3,26 +3,35 @@ use fastembed::{InitOptions, TextEmbedding};
 use parking_lot::Mutex;
 
 pub struct EmbeddingModel {
-    model: Mutex<TextEmbedding>,
+    model_name: String,
+    inner: Mutex<Option<TextEmbedding>>,
 }
 
 impl EmbeddingModel {
     pub fn new(model_name: &str) -> Result<Self> {
-        let model_enum = match model_name {
-            "BAAI/bge-small-en-v1.5" => fastembed::EmbeddingModel::BGESmallENV15,
-            "BAAI/bge-base-en-v1.5" => fastembed::EmbeddingModel::BGEBaseENV15,
-            "sentence-transformers/all-MiniLM-L6-v2" => fastembed::EmbeddingModel::AllMiniLML6V2,
-            _ => fastembed::EmbeddingModel::BGESmallENV15,
-        };
-        let init_options = InitOptions::new(model_enum).with_show_download_progress(true);
-        let model = TextEmbedding::try_new(init_options)?;
         Ok(Self {
-            model: Mutex::new(model),
+            model_name: model_name.to_string(),
+            inner: Mutex::new(None),
         })
     }
 
     pub fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        let mut model = self.model.lock();
+        let mut guard = self.inner.lock();
+        if guard.is_none() {
+            tracing::info!(
+                "loading embedding model: {} (first use — this may take a moment)",
+                self.model_name
+            );
+            let model_enum = match self.model_name.as_str() {
+                "BAAI/bge-small-en-v1.5" => fastembed::EmbeddingModel::BGESmallENV15,
+                "BAAI/bge-base-en-v1.5" => fastembed::EmbeddingModel::BGEBaseENV15,
+                "sentence-transformers/all-MiniLM-L6-v2" => fastembed::EmbeddingModel::AllMiniLML6V2,
+                _ => fastembed::EmbeddingModel::BGESmallENV15,
+            };
+            let init_options = InitOptions::new(model_enum);
+            *guard = Some(TextEmbedding::try_new(init_options)?);
+        }
+        let model = guard.as_mut().unwrap();
         let embeddings = model.embed(texts, None)?;
         Ok(embeddings)
     }

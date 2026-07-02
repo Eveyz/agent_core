@@ -114,7 +114,7 @@ impl Brain {
             let embedding_model = mem_config
                 .map(|m| m.embedding_model.as_str())
                 .unwrap_or("BAAI/bge-small-en-v1.5");
-            tracing::info!("initializing memory (mode={}) with embedding model: {embedding_model}", mode.as_str());
+            tracing::info!("initializing memory (mode={}) with embedding model: {embedding_model} (lazy — loaded on first use)", mode.as_str());
             MemoryManager::new(db_path, embedding_model, block_max_chars, salience_config)
         } else {
             tracing::info!("initializing memory (mode={}) without embedding (keyword search mode)", mode.as_str());
