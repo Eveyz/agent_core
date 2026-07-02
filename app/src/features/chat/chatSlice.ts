@@ -40,6 +40,7 @@ const initialState: ChatState = {
   _thinkBuffers: {},
   _pendingGap: null,
   todo: [],
+  todoBySession: {},
   skillsCache: null,
 };
 
@@ -105,6 +106,10 @@ export const chatSlice = createSlice({
       state.processingBySession[sessionId] = state.isProcessing;
       state.subagentsBySession[sessionId] = state.subagents;
       state.runIdBySession[sessionId] = state.runId;
+      if (!state.todoBySession) {
+        state.todoBySession = {};
+      }
+      state.todoBySession[sessionId] = state.todo;
     },
     restoreOrClearSession: (state, action: PayloadAction<string>) => {
       const sessionId = action.payload;
@@ -115,11 +120,13 @@ export const chatSlice = createSlice({
         state.isProcessing = state.processingBySession[sessionId] ?? false;
         state.subagents = state.subagentsBySession[sessionId] ?? {};
         state.runId = state.runIdBySession[sessionId] ?? null;
+        state.todo = state.todoBySession?.[sessionId] ?? [];
       } else {
         state.entries = [];
         state.isProcessing = false;
         state.subagents = {};
         state.runId = null;
+        state.todo = [];
       }
       state.viewingSubagentPath = [];
       state._resumedFromBackend = false;
@@ -133,6 +140,12 @@ export const chatSlice = createSlice({
       state.isProcessing = true;
       state._resumedFromBackend = false;
       state.todo = [];
+      if (state.activeSessionId) {
+        if (!state.todoBySession) {
+          state.todoBySession = {};
+        }
+        state.todoBySession[state.activeSessionId] = [];
+      }
     },
     runIdSet: (state, action: PayloadAction<string>) => {
       state.runId = action.payload;

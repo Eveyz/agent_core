@@ -88,6 +88,7 @@ export interface ChatState {
   _thinkBuffers: Record<string, string>;
   _pendingGap: { runId: string; fromSeq: number } | null;
   todo: TodoItem[];
+  todoBySession: Record<string, TodoItem[]>;
   skillsCache: {
     skills: SkillManifest[];
     loadedAt: number;

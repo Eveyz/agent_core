@@ -30,6 +30,8 @@ function TodoPanel() {
   const completed = todo.filter((t) => t.status === 'completed').length;
   const pct = Math.round((completed / todo.length) * 100);
 
+  if (completed === todo.length) return null;
+
   return (
     <div className="todo-panel">
       <div 

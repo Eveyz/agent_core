@@ -532,12 +532,14 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
   const originalIsProcessing = state.isProcessing;
   const originalSubagents = state.subagents;
   const originalRunId = state.runId;
+  const originalTodo = state.todo;
 
   if (isBackground) {
     state.entries = state.entriesBySession[targetSessionId] || [];
     state.isProcessing = state.processingBySession[targetSessionId] ?? false;
     state.subagents = state.subagentsBySession[targetSessionId] ?? {};
     state.runId = state.runIdBySession[targetSessionId] ?? null;
+    state.todo = state.todoBySession?.[targetSessionId] || [];
   }
 
   try {
@@ -651,11 +653,16 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
       state.processingBySession[targetSessionId] = state.isProcessing;
       state.subagentsBySession[targetSessionId] = state.subagents;
       state.runIdBySession[targetSessionId] = state.runId;
+      if (!state.todoBySession) {
+        state.todoBySession = {};
+      }
+      state.todoBySession[targetSessionId] = state.todo;
 
       state.entries = originalEntries;
       state.isProcessing = originalIsProcessing;
       state.subagents = originalSubagents;
       state.runId = originalRunId;
+      state.todo = originalTodo;
     }
   }
 
@@ -664,5 +671,9 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
     state.processingBySession[state.activeSessionId] = state.isProcessing;
     state.subagentsBySession[state.activeSessionId] = state.subagents;
     state.runIdBySession[state.activeSessionId] = state.runId;
+    if (!state.todoBySession) {
+      state.todoBySession = {};
+    }
+    state.todoBySession[state.activeSessionId] = state.todo;
   }
 }
