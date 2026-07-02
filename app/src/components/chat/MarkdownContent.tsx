@@ -68,15 +68,6 @@ function escapeHtml(text: string): string {
   return div.innerHTML;
 }
 
-// ── Streaming fast-path threshold ────────────────────────────────────
-// While streaming, re-parsing the full markdown on every token is O(n²).
-// We render plain text while the block is still streaming (cheap, and
-// partial markdown reads fine as text), and only do the expensive
-// parse+sanitize once the stream settles. If the streamed buffer gets
-// very long we fall back to rendering it as markdown anyway so very long
-// live output still looks reasonable.
-const STREAM_PLAINTEXT_LIMIT = 20000;
-
 // Module-level constant: avoid creating a new style object on every render.
 const streamingStyle: React.CSSProperties = {
   whiteSpace: 'pre-wrap',
@@ -96,7 +87,6 @@ const streamingStyle: React.CSSProperties = {
 export const MarkdownContent = memo(function MarkdownContent({
   content,
   className,
-  isStreaming = false,
   plainText = false,
 }: {
   content: string;
@@ -123,13 +113,9 @@ export const MarkdownContent = memo(function MarkdownContent({
       </div>
     );
   }
-
-  const renderAsMarkdown = !isStreaming || content.length > STREAM_PLAINTEXT_LIMIT;
   
   // Parse markdown and extract code blocks for custom rendering
   const segments = useMemo(() => {
-    if (!renderAsMarkdown) return null;
-    
     const segments: Array<{ type: 'text' | 'code'; content: string; language?: string }> = [];
     const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g;
     let lastIndex = 0;
@@ -154,16 +140,29 @@ export const MarkdownContent = memo(function MarkdownContent({
       lastIndex = match.index + match[0].length;
     }
     
-    // Add remaining text
+    // Add remaining text (and check if there's an unclosed code block at the end)
     if (lastIndex < content.length) {
-      const textContent = content.substring(lastIndex);
-      if (textContent.trim()) {
-        segments.push({ type: 'text', content: textContent });
+      const remaining = content.substring(lastIndex);
+      const unclosedMatch = remaining.match(/```(\w*)\n([\s\S]*)$/);
+      if (unclosedMatch) {
+        const textBefore = remaining.substring(0, unclosedMatch.index);
+        if (textBefore.trim()) {
+          segments.push({ type: 'text', content: textBefore });
+        }
+        segments.push({
+          type: 'code',
+          content: unclosedMatch[2],
+          language: unclosedMatch[1] || 'plaintext',
+        });
+      } else {
+        if (remaining.trim()) {
+          segments.push({ type: 'text', content: remaining });
+        }
       }
     }
     
     return segments;
-  }, [renderAsMarkdown, content]);
+  }, [content]);
 
   if (segments) {
     return (
