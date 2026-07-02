@@ -10,7 +10,7 @@ import { processSingleEvent, stopDanglingSubagents } from './eventHandlers';
 // ── Re-export types, selectors, and utils for backward compatibility ─
 export type {
   TodoItem, TurnBlock, SubagentBlock, SubagentEntry, ChatEntry,
-  ChatState, RunState, RunEventPayload, RunEventType,
+  ChatState, RunState, RunEventPayload, RunEventType, SteerMessage,
 } from './types';
 export {
   selectEntryIds, selectEntryById, selectSubagentById,
@@ -41,6 +41,8 @@ const initialState: ChatState = {
   _pendingGap: null,
   todo: [],
   todoBySession: {},
+  steerQueue: [],
+  steerQueueBySession: {},
   skillsCache: null,
 };
 
@@ -110,6 +112,10 @@ export const chatSlice = createSlice({
         state.todoBySession = {};
       }
       state.todoBySession[sessionId] = state.todo;
+      if (!state.steerQueueBySession) {
+        state.steerQueueBySession = {};
+      }
+      state.steerQueueBySession[sessionId] = state.steerQueue;
     },
     restoreOrClearSession: (state, action: PayloadAction<string>) => {
       const sessionId = action.payload;
@@ -121,12 +127,14 @@ export const chatSlice = createSlice({
         state.subagents = state.subagentsBySession[sessionId] ?? {};
         state.runId = state.runIdBySession[sessionId] ?? null;
         state.todo = state.todoBySession?.[sessionId] ?? [];
+        state.steerQueue = state.steerQueueBySession?.[sessionId] ?? [];
       } else {
         state.entries = [];
         state.isProcessing = false;
         state.subagents = {};
         state.runId = null;
         state.todo = [];
+        state.steerQueue = [];
       }
       state.viewingSubagentPath = [];
       state._resumedFromBackend = false;
@@ -237,6 +245,40 @@ export const chatSlice = createSlice({
     },
     clearSkillsCache: (state) => {
       state.skillsCache = null;
+    },
+    steerMessageQueued: (state, action: PayloadAction<{ steerId: string; text: string }>) => {
+      const { steerId, text } = action.payload;
+      state.steerQueue.push({
+        steerId,
+        text,
+        status: 'pending',
+        timestamp: Date.now(),
+      });
+      state.entries.push({
+        id: `steer-${steerId}`,
+        type: 'user',
+        text,
+        isSteer: true,
+        steerId,
+        steerStatus: 'pending',
+      });
+    },
+    steerMessageInjected: (state, action: PayloadAction<string>) => {
+      const steerId = action.payload;
+      const sq = state.steerQueue.find((s) => s.steerId === steerId);
+      if (sq) sq.status = 'injected';
+      for (const entry of state.entries) {
+        if (entry.type === 'user' && entry.isSteer && entry.steerId === steerId) {
+          entry.steerStatus = 'injected';
+        }
+      }
+    },
+    steerMessageCancelled: (state, action: PayloadAction<string>) => {
+      const steerId = action.payload;
+      state.steerQueue = state.steerQueue.filter((s) => s.steerId !== steerId);
+      state.entries = state.entries.filter(
+        (e) => !(e.type === 'user' && e.isSteer && e.steerId === steerId)
+      );
     },
   },
   extraReducers: (builder) => {
@@ -404,5 +446,8 @@ export const {
   clearPendingGap,
   cacheSkills,
   clearSkillsCache,
+  steerMessageQueued,
+  steerMessageInjected,
+  steerMessageCancelled,
 } = chatSlice.actions;
 export default chatSlice.reducer;

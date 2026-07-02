@@ -15,6 +15,7 @@ use crate::context::Context;
 use crate::error_recovery::{RecoveryAction, RecoveryContext, RecoveryEngine};
 use crate::hooks::{HookRegistry, PreToolResult};
 use crate::memory::MemoryManager;
+use crate::runtime::command::SteerEntry;
 use crate::permission::{
     ApprovalChoice, ApprovalScope, PermissionDecision, PermissionPolicy, ToolPermissionPattern,
     WhitelistEntry,
@@ -415,7 +416,7 @@ pub struct Agent {
     hook_registry: HookRegistry,
     state: AgentState,
     tool_execution_mode: ToolExecutionMode,
-    steering_queue: VecDeque<Message>,
+    steering_queue: VecDeque<SteerEntry>,
     follow_up_queue: VecDeque<Message>,
     pub cancel_token: CancellationToken,
     context_processors: Vec<ContextProcessor>,
@@ -732,8 +733,8 @@ impl Agent {
         self.hook_registry.fire_turn_end(turn_index);
 
         // Check for steering messages (injected before next LLM call)
-        if let Some(steer_msg) = self.steering_queue.pop_front() {
-            self.context.add(steer_msg);
+        if let Some(entry) = self.steering_queue.pop_front() {
+            self.context.add(entry.message);
         }
 
         // Check for follow-up messages (only when no more tool calls pending)
@@ -1183,8 +1184,8 @@ impl Agent {
     /// Inject a steering message. This is processed after the current turn
     /// completes, before the next LLM call. Use it to redirect the agent
     /// while tools are still running.
-    pub fn steer(&mut self, message: Message) {
-        self.steering_queue.push_back(message);
+    pub fn steer(&mut self, entry: SteerEntry) {
+        self.steering_queue.push_back(entry);
     }
 
     /// Queue a follow-up message. This is processed after the agent would

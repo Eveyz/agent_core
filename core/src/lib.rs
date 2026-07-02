@@ -67,7 +67,7 @@ pub use project::{Project, ProjectManager};
 pub use reflector::{Digester, Reflector, Suggestion, SuggestionAction, SuggestionKind};
 pub use runtime::{
     ApprovalResolver, Brain, ChildId, Envelope, EventGuard, EventLog, ProcessSupervisor, Run,
-    RunCommand, RunEvent, RunHandle, RunId, RunManager, RunState, SupervisedChild,
+    RunCommand, RunEvent, RunHandle, RunId, RunManager, RunState, SteerEntry, SupervisedChild,
 };
 pub use session::{
     EventLogEntry, Session, SessionCounts, SessionManager, SessionMeta, SubagentResultLike,

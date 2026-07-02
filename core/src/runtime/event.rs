@@ -126,6 +126,30 @@ pub enum RunEvent {
         message: String,
     },
 
+    // ── Steering (human-in-the-loop mid-run injection) ────────────
+    /// A steering message was queued (not yet injected into context).
+    SteerQueued {
+        steer_id: String,
+        message: String,
+        queue_depth: usize,
+    },
+    /// A steering message was injected into the agent's context at a
+    /// turn boundary.
+    SteerInjected {
+        steer_id: String,
+        message: String,
+    },
+    /// A steering message was cancelled (by user or because the run ended).
+    SteerCancelled {
+        steer_id: String,
+        reason: String,
+    },
+    /// A steering message failed to inject (e.g. context limit).
+    SteerFailed {
+        steer_id: String,
+        error: String,
+    },
+
     // ── Subagent ───────────────────────────────────────────────────
     SubagentStarted {
         subagent_id: String,

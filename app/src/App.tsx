@@ -11,6 +11,8 @@ import {
   selectPendingApprovalCount,
   selectActivePendingApproval,
   selectSubagentById,
+  steerMessageQueued,
+  steerMessageCancelled,
 } from './features/chat/chatSlice';
 import { openSettings, fetchConfig } from './features/settings/settingsSlice';
 import {
@@ -152,6 +154,7 @@ function App() {
   // Track pending approvals — scroll to bottom when a new one appears
   const pendingApprovalCount = useSelector(selectPendingApprovalCount);
   const activePendingApproval = useSelector(selectActivePendingApproval);
+  const pendingSteerCount = useSelector((state: RootState) => state.chat.steerQueue.filter((s) => s.status === 'pending').length);
   const viewingSubagentPath = useSelector((state: RootState) => state.chat.viewingSubagentPath, shallowEqual);
 
   const activeSubagentId = viewingSubagentPath.length > 0 ? viewingSubagentPath[viewingSubagentPath.length - 1].id : null;
@@ -196,10 +199,17 @@ function App() {
     invoke('abort_agent', { runId }).catch((e) => console.error('Failed to abort agent:', e));
   }, [dispatch, runId]);
 
-  const handleSteer = useCallback((message: string) => {
+  const handleSteer = useCallback(async (message: string) => {
     if (!runId || !message.trim()) return;
-    invoke('steer_run', { runId, message }).catch((e) => console.error('Failed to steer run:', e));
-  }, [runId]);
+    const steerId = crypto.randomUUID();
+    dispatch(steerMessageQueued({ steerId, text: message.trim() }));
+    try {
+      await invoke('steer_run', { runId, steerId, message: message.trim() });
+    } catch (e) {
+      console.error('Failed to steer run:', e);
+      dispatch(steerMessageCancelled(steerId));
+    }
+  }, [runId, dispatch]);
 
   useEffect(() => {
     dispatch(fetchConfig());
@@ -351,6 +361,7 @@ function App() {
                 currentModel={defaultModel}
                 onAbort={handleAbort}
                 onSteer={handleSteer}
+                pendingSteerCount={pendingSteerCount}
                 disabled={viewingSubagentPath.length > 0 || isResuming || !!activePendingApproval}
                 disabledMessage={
                   isResuming

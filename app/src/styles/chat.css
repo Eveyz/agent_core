@@ -939,3 +939,84 @@
   0%, 100% { opacity: 0.6; }
   50% { opacity: 1; }
 }
+
+/* ── SteerRow (steering message display) ────────────────────────── */
+
+.steer-row {
+  display: flex;
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+  justify-content: flex-end;
+}
+
+.steer-row-content {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  border-left: 3px solid #e8941a;
+  padding-left: 12px;
+  max-width: 600px;
+}
+
+.steer-msg {
+  background: rgba(255, 165, 0, 0.08);
+  border: 1px solid rgba(255, 165, 0, 0.25);
+  color: var(--text-primary);
+  padding: 10px 16px;
+  border-radius: var(--radius-lg);
+  word-wrap: break-word;
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  max-width: 580px;
+}
+
+.steer-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 4px;
+}
+
+.steer-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.steer-badge-pending {
+  color: #e8941a;
+  animation: steer-badge-pulse 2s ease-in-out infinite;
+}
+
+@keyframes steer-badge-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+.steer-badge-injected {
+  color: var(--success, #4caf50);
+}
+
+.steer-cancel-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: var(--radius-xs);
+  transition: color 0.15s, background 0.15s;
+}
+
+.steer-cancel-btn:hover {
+  color: var(--danger, #f44336);
+  background: rgba(244, 67, 54, 0.1);
+}

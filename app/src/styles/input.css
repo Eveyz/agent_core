@@ -320,3 +320,81 @@
 }
 
 
+
+/* ── Steering UI ────────────────────────────────────────────────── */
+
+/* Steer send button — accent-colored with pulse to increase discoverability */
+.steer-send-btn {
+  background: var(--accent) !important;
+  color: var(--bg-main) !important;
+  opacity: 1 !important;
+  animation: steer-send-pulse 2s ease-in-out infinite;
+}
+
+@keyframes steer-send-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 165, 0, 0.3); }
+  50% { box-shadow: 0 0 0 4px rgba(255, 165, 0, 0); }
+}
+
+/* Pending steer count badge */
+.steer-pending-badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 165, 0, 0.15);
+  color: #e8941a;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+
+.steer-pending-badge:hover {
+  background: rgba(255, 165, 0, 0.25);
+}
+
+/* Steer queue preview dropdown */
+.steer-queue-preview {
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  margin-bottom: 6px;
+  min-width: 240px;
+  max-width: 360px;
+  max-height: 200px;
+  overflow-y: auto;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  padding: 6px;
+  z-index: 100;
+}
+
+.steer-queue-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-left: 2px solid #e8941a;
+}
+
+.steer-queue-item-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* Steer-mode input border (orange tint when processing) */
+.chat-input-wrapper.steer-active {
+  border-color: rgba(255, 165, 0, 0.5) !important;
+}

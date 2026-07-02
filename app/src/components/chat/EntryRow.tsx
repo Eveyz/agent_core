@@ -3,6 +3,7 @@ import { useSelector } from 'react-redux';
 import type { RootState } from '../../store';
 import { selectEntryById } from '../../features/chat/chatSlice';
 import { UserRow } from './UserRow';
+import { SteerRow } from './SteerRow';
 import { AgentTurnUI } from './AgentTurn';
 
 interface EntryRowProps {
@@ -24,6 +25,9 @@ export const EntryRow = memo(function EntryRow({
   if (!entry) return null;
 
   if (entry.type === 'user') {
+    if (entry.isSteer) {
+      return <SteerRow entry={entry} />;
+    }
     return <UserRow entry={entry} modelName={defaultModel} onRetry={handleRetry} isProcessing={isProcessing} />;
   } else {
     return (

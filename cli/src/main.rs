@@ -4,7 +4,7 @@ mod tui;
 
 use agent_core::{
     AgentBuilder, AgentEvent, ApprovalChoice, McpClientManager, Message, MessageDelta,
-    PermissionPolicy, Role, SessionManager, SkillManager, SkillManifest, TaskBoard, TaskStatus,
+    PermissionPolicy, Role, SessionManager, SkillManager, SkillManifest, SteerEntry, TaskBoard, TaskStatus,
     TodoItem, TodoList, TodoStatus, ToolExecutionMode, hooks::LoggingHook, tasks, tools,
 };
 use argh::FromArgs;
@@ -891,7 +891,7 @@ async fn main() -> anyhow::Result<()> {
             }
             cmd if cmd.starts_with("/steer ") => {
                 let msg = cmd.strip_prefix("/steer ").unwrap().trim();
-                agent.steer(Message::user(msg));
+                agent.steer(SteerEntry::from_text(msg));
                 println!("Steering message queued. It will be injected after the current turn.");
             }
             cmd if cmd.starts_with("/follow-up ") => {

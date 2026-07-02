@@ -1,3 +1,11 @@
+
+export interface SteerMessage {
+  steerId: string;
+  text: string;
+  status: 'pending' | 'injected';
+  timestamp: number;
+}
+
 export interface TodoItem {
   id: string;
   description: string;
@@ -56,6 +64,12 @@ export interface ChatEntry {
   endTime?: number;
   subagentIds?: string[];
   cacheHitRate?: number;
+  /** True when this user entry is a steering message (mid-run injection). */
+  isSteer?: boolean;
+  /** Steer message id (matches backend steer_id). */
+  steerId?: string;
+  /** Lifecycle status of a steer entry. */
+  steerStatus?: 'pending' | 'injected';
 }
 
 export interface SkillManifest {
@@ -89,6 +103,8 @@ export interface ChatState {
   _pendingGap: { runId: string; fromSeq: number } | null;
   todo: TodoItem[];
   todoBySession: Record<string, TodoItem[]>;
+  steerQueue: SteerMessage[];
+  steerQueueBySession: Record<string, SteerMessage[]>;
   skillsCache: {
     skills: SkillManifest[];
     loadedAt: number;
@@ -113,7 +129,11 @@ export type RunEventType =
   | 'subagent_started' | 'subagent_ended'
   | 'process_spawned' | 'process_killed'
   | 'todo_updated'
-  | 'cache_info';
+  | 'cache_info'
+  | 'steer_queued'
+  | 'steer_injected'
+  | 'steer_cancelled'
+  | 'steer_failed';
 
 export interface RunEventPayload {
   event: RunEventType;
@@ -158,6 +178,9 @@ export interface RunEventPayload {
   hit_tokens?: number;
   miss_tokens?: number;
   hit_rate?: number;
+  // Steering event fields
+  steer_id?: string;
+  queue_depth?: number;
 }
 
 export type RunState = 'created' | 'running' | 'awaiting_approval' | 'awaiting_input' | 'paused' | 'completed' | 'cancelled' | 'failed';

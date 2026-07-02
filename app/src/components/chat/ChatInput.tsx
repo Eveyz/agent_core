@@ -16,6 +16,7 @@ import ImageIcon from 'lucide-react/dist/esm/icons/image.mjs';
 import GitBranchIcon from 'lucide-react/dist/esm/icons/git-branch.mjs';
 import SquareIcon from 'lucide-react/dist/esm/icons/square.mjs';
 import ZapIcon from 'lucide-react/dist/esm/icons/zap.mjs';
+import ClockIcon from 'lucide-react/dist/esm/icons/clock.mjs';
 import TodoPanel from './TodoPanel';
 
 import { 
@@ -39,6 +40,7 @@ export const ChatInput = memo(function ChatInput({
   onSteer,
   disabled,
   disabledMessage,
+  pendingSteerCount = 0,
 }: {
   isProcessing: boolean;
   onSend: (msg: string) => void;
@@ -47,6 +49,7 @@ export const ChatInput = memo(function ChatInput({
   onSteer?: (message: string) => void;
   disabled?: boolean;
   disabledMessage?: string;
+  pendingSteerCount?: number;
 }) {
   const [input, setInput] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -54,11 +57,13 @@ export const ChatInput = memo(function ChatInput({
   const isComposingRef = useRef(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [skillSelectorOpen, setSkillSelectorOpen] = useState(false);
+  const [showSteerQueue, setShowSteerQueue] = useState(false);
 
   const activeProjectId = useSelector((state: RootState) => state.project.activeProjectId);
   const activeSessionId = useSelector((state: RootState) => state.project.activeSessionId);
   const projects = useSelector((state: RootState) => state.project.projects);
   const activeProject = projects.find((p) => p.id === activeProjectId);
+  const steerQueue = useSelector((state: RootState) => state.chat.steerQueue);
 
   const {
     showAutocomplete,
@@ -143,7 +148,16 @@ export const ChatInput = memo(function ChatInput({
 
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        handleSend();
+        if (isProcessing && onSteer) {
+          const trimmed = input.trim();
+          if (trimmed) {
+            onSteer(trimmed);
+            setInput('');
+            closeAutocomplete();
+          }
+        } else {
+          handleSend();
+        }
       }
     },
     [handleAutocompleteKeydown, handleMentionBackspace, handleSend]
@@ -198,7 +212,7 @@ export const ChatInput = memo(function ChatInput({
   return (
     <div className="input-area">
       <TodoPanel />
-      <div className="input-container" style={{ position: 'relative' }}>
+      <div className={`input-container${isProcessing ? ' steer-active' : ''}`} style={{ position: 'relative' }}>
         {showAutocomplete && autocompleteItems.length > 0 && (
           <div className="autocomplete-dropdown" ref={dropdownRef}>
             {autocompleteItems.map((item, idx) => (
@@ -246,7 +260,7 @@ export const ChatInput = memo(function ChatInput({
           onCompositionEnd={onCompositionEnd}
           onScroll={handleScroll}
           autoFocus={!disabled}
-          placeholder={disabled ? (disabledMessage || 'Chat is disabled') : 'Ask the agent...  Type @ for files, / for commands'}
+          placeholder={disabled ? (disabledMessage || 'Chat is disabled') : isProcessing ? 'Type to steer the agent... (⏎ to inject mid-run)' : 'Ask the agent...  Type @ for files, / for commands'}
           rows={1}
           disabled={disabled}
         />
@@ -264,13 +278,31 @@ export const ChatInput = memo(function ChatInput({
           </div>
           <div className="input-actions-right">
             {isProcessing ? (
-              <div style={{ display: 'flex', gap: '4px' }}>
+              <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                {pendingSteerCount > 0 && (
+                  <div
+                    className="steer-pending-badge"
+                    onClick={() => setShowSteerQueue((s) => !s)}
+                    title={`${pendingSteerCount} steering message(s) queued`}
+                  >
+                    <ClockIcon size={11} />
+                    <span>{pendingSteerCount} queued</span>
+                  </div>
+                )}
+                {showSteerQueue && pendingSteerCount > 0 && (
+                  <div className="steer-queue-preview">
+                    {steerQueue.filter((s) => s.status === 'pending').map((s) => (
+                      <div key={s.steerId} className="steer-queue-item">
+                        <span className="steer-queue-item-text">{s.text}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
                 {onSteer && input.trim() && (
                   <button
-                    className="send-btn"
-                    onClick={() => { onSteer(input); setInput(''); }}
+                    className="send-btn steer-send-btn"
+                    onClick={() => { onSteer(input.trim()); setInput(''); }}
                     title="Steer — inject this message mid-run"
-                    style={{ opacity: 0.7 }}
                   >
                     <SendIcon size={14} />
                   </button>

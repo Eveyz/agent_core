@@ -40,7 +40,7 @@ use crate::mode::AgentMode;
 use crate::permission::PermissionPolicy;
 use crate::runtime::approval::ApprovalResolver;
 use crate::runtime::brain::Brain;
-use crate::runtime::command::RunCommand;
+use crate::runtime::command::{RunCommand, SteerEntry};
 use crate::runtime::event::{Envelope, RunEvent, RunId};
 use crate::runtime::guard::EventGuard;
 use crate::runtime::state::RunState;
@@ -103,7 +103,7 @@ pub struct Run {
     join_set: JoinSet<()>,
 
     // ── Queues for mid-run injection ──────────────────────────────
-    steering_queue: VecDeque<Message>,
+    steering_queue: VecDeque<SteerEntry>,
 
     // ── Pending approvals (per-Run, not global) ───────────────────
     approval_resolver: ApprovalResolver,
@@ -454,8 +454,34 @@ impl Run {
                         self.emit(RunEvent::RunPaused);
                     }
                 }
-                RunCommand::Steer { message } => {
-                    self.steering_queue.push_back(Message::user(&message));
+                RunCommand::Steer { steer_id, message } => {
+                    let entry = SteerEntry {
+                        id: steer_id.clone(),
+                        message: Message::user(&message),
+                        raw_text: message.clone(),
+                        timestamp: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64,
+                    };
+                    self.steering_queue.push_back(entry);
+                    let depth = self.steering_queue.len();
+                    self.emit(RunEvent::SteerQueued {
+                        steer_id,
+                        message,
+                        queue_depth: depth,
+                    });
+                }
+                RunCommand::CancelSteer { steer_id } => {
+                    let before = self.steering_queue.len();
+                    self.steering_queue.retain(|e| e.id != steer_id);
+                    if self.steering_queue.len() < before {
+                        self.emit(RunEvent::SteerCancelled {
+                            steer_id,
+                            reason: "Cancelled by user".to_string(),
+                        });
+                    }
+                    // If not found, it was already injected — silent no-op.
                 }
                 RunCommand::Approve { prompt_id, choice } => {
                     self.resolve_approval(&prompt_id, choice);
@@ -482,8 +508,33 @@ impl Run {
                     self.cancel.cancel();
                     return Err(RunError::Cancelled);
                 }
-                Some(RunCommand::Steer { message }) => {
-                    self.steering_queue.push_back(Message::user(&message));
+                Some(RunCommand::Steer { steer_id, message }) => {
+                    let entry = SteerEntry {
+                        id: steer_id.clone(),
+                        message: Message::user(&message),
+                        raw_text: message.clone(),
+                        timestamp: std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis() as u64,
+                    };
+                    self.steering_queue.push_back(entry);
+                    let depth = self.steering_queue.len();
+                    self.emit(RunEvent::SteerQueued {
+                        steer_id,
+                        message,
+                        queue_depth: depth,
+                    });
+                }
+                Some(RunCommand::CancelSteer { steer_id }) => {
+                    let before = self.steering_queue.len();
+                    self.steering_queue.retain(|e| e.id != steer_id);
+                    if self.steering_queue.len() < before {
+                        self.emit(RunEvent::SteerCancelled {
+                            steer_id,
+                            reason: "Cancelled by user".to_string(),
+                        });
+                    }
                 }
                 Some(RunCommand::Approve { prompt_id, choice }) => {
                     self.resolve_approval(&prompt_id, choice);
@@ -635,9 +686,14 @@ impl Run {
                 }
             }
 
-            // Process steering messages
-            while let Some(steer_msg) = self.steering_queue.pop_front() {
-                self.context.add(steer_msg);
+            // Process steering messages — inject one per turn boundary
+            // to avoid overwhelming the LLM with multiple instructions at once.
+            if let Some(entry) = self.steering_queue.pop_front() {
+                self.emit(RunEvent::SteerInjected {
+                    steer_id: entry.id.clone(),
+                    message: entry.raw_text.clone(),
+                });
+                self.context.add(entry.message);
                 // Continue the loop with the steered message
                 return Ok(TurnOutcome::Continue);
             }
@@ -770,9 +826,15 @@ impl Run {
         self.emit(RunEvent::TurnEnded { index: turn_index });
         self.hook_registry.fire_turn_end(turn_index);
 
-        // Process steering messages (injected before next LLM call)
-        while let Some(steer_msg) = self.steering_queue.pop_front() {
-            self.context.add(steer_msg);
+        // Process steering messages (injected before next LLM call).
+        // Inject one per turn boundary — remaining messages will be
+        // processed on subsequent turn boundaries.
+        if let Some(entry) = self.steering_queue.pop_front() {
+            self.emit(RunEvent::SteerInjected {
+                steer_id: entry.id.clone(),
+                message: entry.raw_text.clone(),
+            });
+            self.context.add(entry.message);
         }
 
         if turn_index == self.max_iterations - 1 {
@@ -1367,8 +1429,14 @@ Never mention your memory management process to the user unless explicitly asked
         // 4. Drop all pending approvals (resolvers get a dropped error)
         self.approval_resolver.clear();
 
-        // 5. Clear queues
-        self.steering_queue.clear();
+        // 5. Cancel all remaining steering messages (notify frontend)
+        let cancelled: Vec<SteerEntry> = self.steering_queue.drain(..).collect();
+        for entry in cancelled {
+            self.emit(RunEvent::SteerCancelled {
+                steer_id: entry.id,
+                reason: "Run cancelled".to_string(),
+            });
+        }
     }
 
     /// Final cleanup (called on all exit paths, idempotent).
@@ -1384,6 +1452,17 @@ Never mention your memory management process to the user unless explicitly asked
 
         // Drop pending approvals
         self.approval_resolver.clear();
+
+        // Cancel any remaining steering messages (normal completion path
+        // where steer messages were queued but the run hit max iterations
+        // or otherwise stopped before injecting them).
+        let cancelled: Vec<SteerEntry> = self.steering_queue.drain(..).collect();
+        for entry in cancelled {
+            self.emit(RunEvent::SteerCancelled {
+                steer_id: entry.id,
+                reason: "Run ended".to_string(),
+            });
+        }
     }
 }
 

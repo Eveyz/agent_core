@@ -184,11 +184,36 @@ async fn resume_run(state: State<'_, AppState>, run_id: String) -> Result<(), St
 }
 
 /// Inject a steering message into a running Run.
+///
+/// `steer_id` is a frontend-supplied unique id used to track the steer
+/// message across its lifecycle (queued → injected / cancelled).
 #[tauri::command]
-async fn steer_run(state: State<'_, AppState>, run_id: String, message: String) -> Result<(), String> {
+async fn steer_run(
+    state: State<'_, AppState>,
+    run_id: String,
+    steer_id: String,
+    message: String,
+) -> Result<(), String> {
     let manager = state.run_manager.lock().await;
     manager
-        .command(&run_id, RunCommand::Steer { message })
+        .command(&run_id, RunCommand::Steer { steer_id, message })
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Cancel a pending steering message by its id.
+///
+/// If the message has already been injected (no longer in the queue) this
+/// is a silent no-op on the backend.
+#[tauri::command]
+async fn cancel_steer(
+    state: State<'_, AppState>,
+    run_id: String,
+    steer_id: String,
+) -> Result<(), String> {
+    let manager = state.run_manager.lock().await;
+    manager
+        .command(&run_id, RunCommand::CancelSteer { steer_id })
         .await
         .map_err(|e| e.to_string())
 }
@@ -1566,7 +1591,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             send_message, approve_tool, abort_agent, replay_since,
-            pause_run, resume_run, steer_run, get_run_state,
+            pause_run, resume_run, steer_run, cancel_steer, get_run_state,
             list_directory, search_files,
             get_config, save_config, switch_model, set_mode, get_mode,
             create_session, delete_session, rename_session,

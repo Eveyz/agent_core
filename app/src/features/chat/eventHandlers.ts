@@ -533,6 +533,7 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
   const originalSubagents = state.subagents;
   const originalRunId = state.runId;
   const originalTodo = state.todo;
+  const originalSteerQueue = state.steerQueue;
 
   if (isBackground) {
     state.entries = state.entriesBySession[targetSessionId] || [];
@@ -540,6 +541,7 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
     state.subagents = state.subagentsBySession[targetSessionId] ?? {};
     state.runId = state.runIdBySession[targetSessionId] ?? null;
     state.todo = state.todoBySession?.[targetSessionId] || [];
+    state.steerQueue = state.steerQueueBySession?.[targetSessionId] || [];
   }
 
   try {
@@ -644,6 +646,42 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
       case 'todo_updated':
         state.todo = (ev.items as TodoItem[]) ?? [];
         break;
+      case 'steer_queued': {
+        const steerId = ev.steer_id ?? '';
+        const msg = typeof ev.message === 'string' ? ev.message : '';
+        // Only add to steerQueue if not already present (dedup — the frontend
+        // may have already added it optimistically via steerMessageQueued).
+        if (!state.steerQueue.some((s) => s.steerId === steerId)) {
+          state.steerQueue.push({
+            steerId,
+            text: msg,
+            status: 'pending',
+            timestamp: Date.now(),
+          });
+        }
+        break;
+      }
+      case 'steer_injected': {
+        const steerId = ev.steer_id ?? '';
+        const sq = state.steerQueue.find((s) => s.steerId === steerId);
+        if (sq) sq.status = 'injected';
+        for (const entry of state.entries) {
+          if (entry.type === 'user' && entry.isSteer && entry.steerId === steerId) {
+            entry.steerStatus = 'injected';
+          }
+        }
+        break;
+      }
+      case 'steer_cancelled':
+      case 'steer_failed': {
+        const steerId = ev.steer_id ?? '';
+        state.steerQueue = state.steerQueue.filter((s) => s.steerId !== steerId);
+        // Remove the steer entry from chat history (it was never injected)
+        state.entries = state.entries.filter(
+          (e) => !(e.type === 'user' && e.isSteer && e.steerId === steerId)
+        );
+        break;
+      }
       default:
         break;
     }
@@ -657,12 +695,17 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
         state.todoBySession = {};
       }
       state.todoBySession[targetSessionId] = state.todo;
+      if (!state.steerQueueBySession) {
+        state.steerQueueBySession = {};
+      }
+      state.steerQueueBySession[targetSessionId] = state.steerQueue;
 
       state.entries = originalEntries;
       state.isProcessing = originalIsProcessing;
       state.subagents = originalSubagents;
       state.runId = originalRunId;
       state.todo = originalTodo;
+      state.steerQueue = originalSteerQueue;
     }
   }
 
@@ -675,5 +718,9 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
       state.todoBySession = {};
     }
     state.todoBySession[state.activeSessionId] = state.todo;
+    if (!state.steerQueueBySession) {
+      state.steerQueueBySession = {};
+    }
+    state.steerQueueBySession[state.activeSessionId] = state.steerQueue;
   }
 }
