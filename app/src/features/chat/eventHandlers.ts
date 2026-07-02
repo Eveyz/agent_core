@@ -187,6 +187,13 @@ export function handleTurnStart(state: ChatState, turnIndex: number, turnId?: st
       if (!last.turnIds.includes(turnId)) last.turnIds.push(turnId);
     }
   } else {
+    // Close any previous open turns since we are starting a new turn block
+    for (const entry of state.entries) {
+      if (entry.type === 'turn' && !entry.endTime) {
+        entry.endTime = Date.now();
+        stopDanglingSubagents(state, entry);
+      }
+    }
     state.entries.push({
       id: turnId ? `turn-${turnId}` : `turn-${turnIndex}-${Date.now()}`,
       type: 'turn',
@@ -668,6 +675,13 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
         for (const entry of state.entries) {
           if (entry.type === 'user' && entry.isSteer && entry.steerId === steerId) {
             entry.steerStatus = 'injected';
+          }
+        }
+        // Close any previous open turns since steer message is now injected and a new turn is starting
+        for (const entry of state.entries) {
+          if (entry.type === 'turn' && !entry.endTime) {
+            entry.endTime = Date.now();
+            stopDanglingSubagents(state, entry);
           }
         }
         break;

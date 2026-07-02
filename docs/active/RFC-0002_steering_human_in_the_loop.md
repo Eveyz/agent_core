@@ -239,6 +239,13 @@ case 'steer_injected': {
       entry.steerStatus = 'injected';
     }
   }
+  // 核心修复：当引导消息被 injected 并准备开始新 turn 时，自动关闭所有之前处于 active 状态的 turns
+  for (const entry of state.entries) {
+    if (entry.type === 'turn' && !entry.endTime) {
+      entry.endTime = Date.now();
+      stopDanglingSubagents(state, entry);
+    }
+  }
   break;
 }
 case 'steer_cancelled':

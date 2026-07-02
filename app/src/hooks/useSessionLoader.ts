@@ -5,6 +5,7 @@ import {
   resumeSession,
   setActiveSession,
 } from '../features/project/projectSlice';
+import { clearChat, restoreOrClearSession } from '../features/chat/chatSlice';
 
 interface UseSessionLoaderProps {
   projectsLoaded: boolean;
@@ -22,8 +23,15 @@ export function useSessionLoader({
   const dispatch = useAppDispatch();
 
   useEffect(() => {
-    if (!projectsLoaded || !activeProjectId || !activeSessionId) return;
+    if (!projectsLoaded || !activeProjectId) return;
+
+    if (!activeSessionId) {
+      dispatch(clearChat());
+      return;
+    }
+
     dispatch(fetchProjectSessions(activeProjectId));
+    dispatch(restoreOrClearSession(activeSessionId));
     dispatch(resumeSession(activeSessionId)).then((result) => {
       if (!resumeSession.fulfilled.match(result)) {
         dispatch(setActiveSession(null));

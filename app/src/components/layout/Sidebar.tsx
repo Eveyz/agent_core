@@ -12,11 +12,9 @@ import {
   setActiveSession,
   createSession,
   deleteSession,
-  resumeSession,
 } from "../../features/project/projectSlice";
 import {
   clearChat,
-  restoreOrClearSession,
 } from "../../features/chat/chatSlice";
 import { useAppDispatch } from "../../hooks/useAppDispatch";
 import { useSaveSession } from "../../hooks/useSaveSession";
@@ -361,8 +359,6 @@ export const Sidebar = memo(function Sidebar({
       }
       dispatch(setActiveProject(projectId));
       dispatch(setActiveSession(sessionId));
-      dispatch(restoreOrClearSession(sessionId));
-      dispatch(resumeSession(sessionId));
     },
     [dispatch, activeSessionId, saveAndCacheCurrent],
   );

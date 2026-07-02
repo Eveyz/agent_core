@@ -1,6 +1,6 @@
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
 import { invoke } from '@tauri-apps/api/core';
-import { resumeSession } from '../project/projectSlice';
+import { resumeSession, deleteSession } from '../project/projectSlice';
 
 import type {
   TurnBlock, SubagentEntry, ChatState, RunState, EventLogEntry,
@@ -421,6 +421,19 @@ export const chatSlice = createSlice({
       }
 
       state._resumedFromBackend = true;
+    });
+    builder.addCase(deleteSession.fulfilled, (state, action) => {
+      const { sessionId } = action.payload;
+      delete state.entriesBySession[sessionId];
+      delete state.processingBySession[sessionId];
+      delete state.subagentsBySession[sessionId];
+      delete state.runIdBySession[sessionId];
+      if (state.todoBySession) {
+        delete state.todoBySession[sessionId];
+      }
+      if (state.steerQueueBySession) {
+        delete state.steerQueueBySession[sessionId];
+      }
     });
   },
 });
