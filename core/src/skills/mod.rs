@@ -11,19 +11,16 @@ pub type SkillLoader = SkillManager;
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-/// Resolve the home directory, handling both Unix (HOME) and Windows (USERPROFILE).
+/// Resolve the home directory using standard cross-platform dirs library (matches ~/.agverse and User profile on Windows).
 fn home_dir() -> PathBuf {
-    std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
 /// Recursively walk a directory tree and collect directories whose
 /// immediate children contain SKILL.md files. These become search dirs
 /// for the skill scanner.
 ///
-/// This handles both layouts found under WorkBuddy plugins:
+/// This handles both layouts found under Agverse plugins:
 ///   plugin/skills/skill-name/SKILL.md   → adds `plugin/skills/`
 ///   external_plugins/skill-name/SKILL.md → adds `external_plugins/`
 fn collect_skills_dirs(root: &Path, dirs: &mut Vec<PathBuf>) {
@@ -107,20 +104,20 @@ impl SkillManager {
             home.join(".agent").join("skills"),
             home.join(".agents").join("skills"),
             home.join(".claude").join("skills"),
-            // WorkBuddy
-            home.join(".workbuddy").join("skills"),
+            // agverse
+            crate::paths::get_skills_dir(),
         ];
 
-        // Collect all skills/ directories under WorkBuddy plugins
-        let plugins_root = home.join(".workbuddy").join("plugins");
+        // Collect all skills/ directories under agverse plugins
+        let plugins_root = crate::paths::get_agverse_dir().join("plugins");
         if plugins_root.exists() {
             collect_skills_dirs(&plugins_root, &mut dirs);
         }
 
         // Built-in skills shipped with the app (env var or auto-detect)
-        if let Ok(builtin) = std::env::var("WORKBUDDY_BUILTIN_SKILLS") {
+        if let Ok(builtin) = std::env::var("AGVERSE_BUILTIN_SKILLS") {
             dirs.push(PathBuf::from(builtin));
-        } else if let Ok(app_data) = std::env::var("WORKBUDDY_APP_RESOURCES") {
+        } else if let Ok(app_data) = std::env::var("AGVERSE_APP_RESOURCES") {
             dirs.push(PathBuf::from(app_data).join("builtin-skills"));
         }
 

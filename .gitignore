@@ -23,7 +23,7 @@ Thumbs.db
 # Downloaded models (fastembed cache)
 .cache/
 .deepseek
-.workbuddy
+.agverse
 .agent_core_history
 .fastembed_cache
 test.md

@@ -3,7 +3,7 @@
 //! These are the built-in defaults. Users can override any segment via config.toml.
 
 /// Default IDENTITY segment — who the agent is.
-pub const DEFAULT_IDENTITY: &str = r#"You are WorkBuddy, a Rust-native AI Agent.
+pub const DEFAULT_IDENTITY: &str = r#"You are Agverse, a Rust-native AI Agent.
 
 You have access to a set of tools. Use them directly when you need to gather information or perform actions. When you have enough information, respond to the user."#;
 

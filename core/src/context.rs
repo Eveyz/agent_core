@@ -6,7 +6,7 @@
 //! System Prompt (single message, assembled from 7 segments)
 //!
 //! ┌─ Segment 1: IDENTITY ────────────────── stable, never refeshes
-//! │  "You are WorkBuddy, a Rust-native AI Agent"
+//! │  "You are Agverse, a Rust-native AI Agent"
 //! │  Budget: 200 tokens
 //! ├─ Segment 2: PRINCIPLES ──────────────── stable, refresh on mode change
 //! │  Permission mode, code conventions, security boundaries, output format

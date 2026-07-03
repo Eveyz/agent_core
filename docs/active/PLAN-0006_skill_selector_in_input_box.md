@@ -27,7 +27,7 @@ Add a skills icon button to the right of the "+" button in the chat input box. C
 
 The project already has a full skill infrastructure:
 
-- **Rust backend** (`core/src/skills/`): `SkillManager` discovers and parses SKILL.md files from standard directories (`~/.workbuddy/skills/`, project-local dirs, built-in dirs). Each skill has a `SkillManifest` with name, description, version, triggers, tags, etc.
+- **Rust backend** (`core/src/skills/`): `SkillManager` discovers and parses SKILL.md files from standard directories (`~/.agverse/skills/`, project-local dirs, built-in dirs). Each skill has a `SkillManifest` with name, description, version, triggers, tags, etc.
 - **Tauri command** (`app/src-tauri/src/lib.rs:666`): `get_skills()` already exists — but creates a new `SkillManager` and re-scans filesystem on every call. **No caching.**
 - **Frontend** (`app/src/components/settings/SkillsTab.tsx`): Displays skills in Settings modal. Fetches via `invoke('get_skills')` on every mount. **No caching.**
 - **Chat input** (`app/src/components/chat/ChatInput.tsx`): Has `.input-actions-left` with a placeholder Plus button, and `.input-actions-right` with ModelSelector and send/stop buttons.
@@ -36,7 +36,7 @@ The project already has a full skill infrastructure:
 
 ### Why Now
 
-The user frequently installs/manages skills (from WorkBuddy marketplace, manual installs, etc.) but there is no quick way to browse or invoke skills from the chat input. Currently the only way to see installed skills is to open Settings → Skills tab. Adding a toolbar button + dropdown gives instant access.
+The user frequently installs/manages skills (from Agverse marketplace, manual installs, etc.) but there is no quick way to browse or invoke skills from the chat input. Currently the only way to see installed skills is to open Settings → Skills tab. Adding a toolbar button + dropdown gives instant access.
 
 ### Cache Problem
 

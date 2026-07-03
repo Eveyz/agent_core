@@ -83,7 +83,7 @@
 ### P2-3. dead code 与命名残留
 
 `cargo build` 实锤 8 个 warning：`pending_approvals_override` 字段、`tasks::detect_cycle`
-未使用（DAG 调度接入后会被使用）。`.gitignore` 里 `.deepseek`/`.workbuddy`/`.agent_core_history`
+未使用（DAG 调度接入后会被使用）。`.gitignore` 里 `.deepseek`/`.agverse`/`.agent_core_history`
 命名残留。本次清理。
 
 ---
