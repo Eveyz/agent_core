@@ -8,8 +8,8 @@ title: "Slash Commands: /btw (Ephemeral Side-Channel), /learn (Persistent Memory
 status: Draft
 author: agent_core
 created: 2026-07-02
-updated: 2026-07-02
-reviewers: []
+updated: 2026-07-03
+reviewers: [code-review-pass-1]
 related: [ADR-0001, PLAN-0001, PLAN-0002]
 supersedes: ~
 superseded_by: ~
@@ -35,12 +35,12 @@ tags: [commands, memory, agent, ui, input]
 |------|------|-----------|
 | 斜杠命令 autocomplete | `useAutocomplete.ts` 中静态 `COMMANDS` 数组，4 条目 | 直接扩展 |
 | 消息发送 | `invoke('send_message', { message, sessionId })` → 创建 Run | `/goal` 可复用；`/btw` 需新通道；`/learn` 需新通道 |
-| 上下文注入 | `ContextEngine` 管理对话历史，`steer_run` 可中途注入消息 | `/btw` 参考但需隔离 |
-| 持久记忆 | `MemoryManager`（Core/Recall/Archival 三层），`core_memory` block 可读写 | `/learn` 直接复用 |
+| 上下文注入 | `ContextEngine`（7 段语义上下文，**per-Run 独立**）管理对话历史；`steer_run` 经 `RunCommand::Steer` 中途注入 | `/btw` 只读快照需经 RunManager 取活跃 Run 的 context |
+| 持久记忆 | `MemoryManager`（Core/Recall/Archival 三层）；`CoreMemory` 基于 **SQLite**，`MemoryBlock { id, label, content, max_chars, updated_at }`，方法 `append/create/replace/get` | `/learn` 经 `memory.lock().core_mut()` 复用 |
 | 反思学习 | `Reflector`（离线）、`DiffPreferenceEngine`（diff 观察） | `/learn` 可复用反思的提炼逻辑 |
-| Todo 追踪 | `RunEvent::TodoUpdated` + 前端 `state.todo` + `TodoPanel` | `/goal` 复用 TodoPanel |
-| 事件系统 | `RunEvent` enum + broadcast channel + JSONL 持久化 | 需新增 2 个事件类型 |
-| LLM client | `Brain` 持有 `client_factory`，可低成本创建独立实例 | `/btw` 并行所需 |
+| Todo 追踪 | `RunEvent::TodoUpdated` + `TodoItemPayload { id, description, status }`；`TodoList` 为 Brain 共享 `Arc<Mutex<TodoList>>` | `/goal` 复用 TodoPanel，注意跨 Run 共享 |
+| 事件系统 | `RunEvent` enum + broadcast channel + JSONL 持久化；前端统一监听 `agent-event` 单通道 | 新增 2 个 RunEvent 变体；`/btw`、`/learn` 走独立 `btw-event`/`learn-event` 通道（不持久化、无 seq） |
+| LLM client | `Brain::build_client()` 基于 `current_model_config()` 构建 `OpenAIClient`（含 fallback 链）；**无 `client_factory`** | `/btw`/`/learn` 新增 `build_client_for(purpose)` 按用途选模型 |
 
 ## Detailed Design
 
@@ -76,9 +76,9 @@ tags: [commands, memory, agent, ui, input]
        ⚡ 不检查 isProcessing — 主 run 可同时执行
   ↓
 后端: 读取当前 session 的 context_engine 快照（只读，不取锁）
-后端: 通过 brain.client_factory.create() 创建独立 LLM client 实例
-后端: 构造单次 LLM 请求（system: "基于当前项目上下文简短回答", messages: [context_snapshot, user_question]）
-后端: 流式返回 → emit("btw-event", { btw_id, type: "delta", text })
+后端: 通过 brain.build_client_for("btw") 创建独立 LLM client（轻量模型）
+后端: 构造单次请求（system + context_snapshot + user_question），client.chat_completion_stream(&msgs, &[]) 流式调用
+后端: 流式返回 → app_handle.emit("btw-event", { btw_id, type: "delta", text })（独立通道）
 后端: 完成 → emit("btw-event", { btw_id, type: "done" })
   ↓
 前端: 流式更新临时气泡（agent 侧），完成后气泡可关闭
@@ -91,11 +91,11 @@ tags: [commands, memory, agent, ui, input]
 
 `/btw` 的核心价值在于"主 run 在工作时随时可问"。实现要点：
 
-1. **独立 LLM client 实例**：`btw_query` 通过 `brain.client_factory.create()` 创建全新的 client，不与主 run 的 client 共享连接状态。
-2. **只读 context 快照**：读取 `context_engine` 的当前消息列表的不可变引用（`Arc<Vec<Message>>` 或 clone），不获取写锁。主 run 可以继续往 context 写入新消息，`/btw` 用的是快照时的版本。
-3. **独立事件通道**：`/btw` 的流式 delta 通过 `app_handle.emit("btw-event", ...)` 直接发送，不走 Run 的 broadcast channel。前端通过独立的事件监听器接收。
+1. **独立 LLM client 实例**：`btw_query` 通过 `brain.build_client_for("btw")` 创建全新的 `OpenAIClient`（基于 `config.get_model(btw_model)`），不与主 run 的 client 共享连接状态。
+2. **只读 context 快照（关键路径重构）**：Brain **不持有 context**——每个 Run 自带 `ContextEngine`。快照必须经 `RunManager` → 查找 session 的活跃 `RunHandle` → 读取其共享 context。当前 `RunHandle` 未暴露 context，需新增机制：在 `RunHandle` 增加 `Arc<RwLock<Vec<Message>>>`（由 Run 在 turn 边界刷新），`context_snapshot()` 读取其 clone（不持写锁）。主 run 可继续写 context，`/btw` 用快照版本。
+3. **独立事件通道**：`/btw` 的流式 delta 通过 `app_handle.emit("btw-event", ...)` 直接发送，**不走** Run 的 broadcast channel，因此**不进 JSONL event log、无 seq 追踪**。前端需新增第二个 `listen("btw-event")`（现有 `useAgentEventListener` 仅监听 `agent-event`）。
 4. **无工具权限**：`/btw` 请求不注册任何 tool，LLM 只能纯文本回答，不会触发文件操作或命令执行，避免与主 run 产生资源竞争。
-5. **Prompt cache 复用**：由于 context 快照与主 run 的 prefix 重叠，LLM provider 的 prompt cache 会自动命中，`/btw` 只需为新增的 question 和 answer 支付 token。
+5. **Prompt cache 复用（需验证）**：若 `/btw` 的 system prompt 前缀与主 run 稳定前缀完全一致，provider 的 prompt cache 会命中。但 `/btw` 的 system prompt 文案不同（"基于当前项目上下文简短回答"），cache 命中率可能不及预期；首版不依赖此优化。
 
 ```
 时间线示例:
@@ -137,7 +137,7 @@ interface ChatState {
 
 **事件监听**：在 `useAgentEventListener` hook 中新增 `"btw-event"` 监听器，dispatch 对应 reducer。
 
-**UI 渲染**: 在 `ChatArea` 中，`btwEntries` 渲染为特殊样式的气泡（区别于主对话），带有 "BTW" 标签和关闭按钮。不与主 `entries` 混合。即使 `isProcessing === true`，`/btw` 的输入和渲染也不受影响。
+**UI 渲染**: 在 `ChatArea` 中，`btwEntries` 渲染为特殊样式的气泡（区别于主对话），带有 "BTW" 标签和关闭按钮。不与主 `entries` 混合。即使 `isProcessing === true`，`/btw` 的输入和渲染也不受影响。`btwEntries` 需 per-session 隔离（`btwEntriesBySession`，类比 `entriesBySession`）。
 
 #### 1.4 后端设计
 
@@ -151,53 +151,63 @@ async fn btw_query(
     session_id: String,
     question: String,
 ) -> Result<String, String> {
-    let brain = state.brain.clone();
+    // AppState 不直接持有 brain —— 经 RunManager 访问；克隆 Arc<Brain> 后释放锁。
+    let run_manager = state.run_manager.clone();
+    let brain = run_manager.lock().await.brain().clone(); // Arc<Brain>（Brain: Clone）
     let btw_id = uuid::Uuid::new_v4().to_string();
 
     tokio::spawn(async move {
-        // 1. 获取 context 只读快照（clone 当前消息列表，不持锁）
-        let snapshot = brain.get_context_snapshot(&session_id).await;
+        // 1. context 只读快照 —— Brain 不持有 context，context 属于 Run。
+        //    经 RunManager 查找 session 的活跃 RunHandle，读取其共享快照（clone，不持锁）。
+        //    需新增 RunManager::context_snapshot_for_session() 与 RunHandle::context_snapshot()
+        //    （后者读取 Run 在 turn 边界刷新的 Arc<RwLock<Vec<Message>>>）。
+        let snapshot = run_manager
+            .lock().await
+            .context_snapshot_for_session(&session_id)
+            .unwrap_or_default(); // 无活跃 run 时退化为空上下文
 
-        // 2. 创建独立 LLM client（不复用主 run 的 client）
-        let client = brain.client_factory.create();
+        // 2. 独立 client —— build_client_for("btw") 用配置的轻量模型构建（不复用主 run 的 client）。
+        let client = match brain.build_client_for("btw") {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = app_handle.emit("btw-event", BtwEvent {
+                    btw_id: btw_id.clone(), event_type: "error", text: e.to_string(),
+                });
+                return;
+            }
+        };
 
-        // 3. 构造单次请求（无工具）
+        // 3. 构造单次请求（无工具 —— 传空 tools 切表）。
         let system_prompt = format!(
             "You are a helpful assistant. Answer concisely based on the project context.\n\
              Do not use tools. Keep your answer brief and focused.\n\n\
              --- Project Context ---\n{}",
-            snapshot
+            render_snapshot(&snapshot)
         );
-        let messages = vec![
-            Message::system(system_prompt),
-            Message::user(question),
-        ];
+        let messages = vec![Message::system(system_prompt), Message::user(question)];
 
-        // 4. 流式调用
-        match client.stream(&messages, &brain.btw_model, None).await {
+        // 4. 流式调用 —— chat_completion_stream(&[Message], &[ToolDefinition]) 返回 StreamEvent 流。
+        match client.chat_completion_stream(&messages, &[]).await {
             Ok(mut stream) => {
-                while let Some(chunk) = stream.next().await {
-                    let _ = app_handle.emit("btw-event", BtwEvent {
-                        btw_id: btw_id.clone(),
-                        event_type: "delta",
-                        text: chunk,
-                    });
+                use futures::StreamExt;
+                while let Some(item) = stream.next().await {
+                    if let Ok(StreamEvent::TextDelta(text)) = item {
+                        let _ = app_handle.emit("btw-event", BtwEvent {
+                            btw_id: btw_id.clone(), event_type: "delta", text,
+                        });
+                    }
                 }
             }
             Err(e) => {
                 let _ = app_handle.emit("btw-event", BtwEvent {
-                    btw_id: btw_id.clone(),
-                    event_type: "error",
-                    text: e.to_string(),
+                    btw_id: btw_id.clone(), event_type: "error", text: e.to_string(),
                 });
                 return;
             }
         }
 
         let _ = app_handle.emit("btw-event", BtwEvent {
-            btw_id: btw_id.clone(),
-            event_type: "done",
-            text: String::new(),
+            btw_id: btw_id.clone(), event_type: "done", text: String::new(),
         });
     });
 
@@ -208,23 +218,44 @@ async fn btw_query(
 **关键约束**:
 - 不调用 `context.add()` — 问答不进入主上下文
 - 不调用 `session_manager.save()` — 不持久化到 session
-- 不写入 JSONL event log
-- 不注册 tool — LLM 无法执行任何工具
+- 不写入 JSONL event log（独立通道，无 seq 追踪）
+- 不注册 tool — `chat_completion_stream(&msgs, &[])` 传空 tools，LLM 无法执行工具
 - 创建独立 client — 不与主 run 共享连接
-- `brain.btw_model` — 轻量模型配置（见 §1.5）
+- context 快照经 `RunManager::context_snapshot_for_session()` 获取（见 §1.2）；轻量模型经 `build_client_for("btw")`（见 §1.5）
 
 #### 1.5 BTW 模型配置
 
-在 `config.toml` 中新增:
+复用现有 provider/model 架构（`[providers.X.models.Y]` + `model_id`），**不**引入裸 `[btw]` section。在 `Config` 新增两个可选模型名（缺省回退到 `default_model`）：
 
 ```toml
-[btw]
-# model = "gpt-4o-mini"        # 轻量模型，成本低、响应快
-# max_tokens = 1000             # 限制回答长度
-# temperature = 0.3             # 低温度，回答更确定
+# config.toml —— 引用一个已定义的轻量模型（provider/model 命名）
+btw_model   = "openai/gpt-4o-mini"
+learn_model = "openai/gpt-4o-mini"
 ```
 
-默认使用 `gpt-4o-mini`（或当前 provider 的等价轻量模型）。`/btw` 的提问通常是概念性/解释性的，不需要最强模型的推理能力。
+```rust
+// config.rs
+pub struct Config {
+    pub default_model: String,
+    pub btw_model: Option<String>,   // /btw 用；缺省回退 default_model
+    pub learn_model: Option<String>, // /learn 用；缺省回退 default_model
+    // ...
+}
+
+// brain.rs —— 按用途构建 client（btw/learn 不需要 fallback 链）
+pub fn build_client_for(&self, purpose: &str) -> Result<OpenAIClient> {
+    let name = match purpose {
+        "btw"   => self.config.btw_model.as_deref().unwrap_or(self.current_model_name()),
+        "learn" => self.config.learn_model.as_deref().unwrap_or(self.current_model_name()),
+        _ => self.current_model_name(),
+    };
+    let cfg = self.config.get_model(name)
+        .with_context(|| format!("model '{name}' not found"))?.clone();
+    Ok(OpenAIClient::new(cfg))
+}
+```
+
+`/btw`、`/learn` 的提问/提炼通常是概念性或结构化任务，轻量模型即可，成本低、响应快。
 
 #### 1.6 前端命令解析
 
@@ -283,9 +314,9 @@ const handleSend = useCallback(() => {
        ⚡ 不检查 isProcessing — 可与主 run 并行
   ↓
 后端: 通过轻量模型提炼 content → 结构化记忆条目
-       (model: gpt-4o-mini, system: "Extract a durable rule. Output JSON.")
+       (model: learn_model，经 build_client_for("learn")；system: "Extract a durable rule. Output JSON.")
   ↓
-后端: 写入 core_memory (追加到 ~/.agverse/agverse.md 的 memory block)
+后端: 写入 core_memory（SQLite，经 memory.lock().core_mut().create/append，自动持久化）
 后端: emit("learn-event", { type: "saved", memory: { title, rule } })
   ↓
 前端: 显示 "✓ Learned: {title}" 确认气泡
@@ -303,50 +334,55 @@ async fn learn_memory(
     session_id: Option<String>,
     content: String,
 ) -> Result<(), String> {
-    let brain = state.brain.clone();
+    let run_manager = state.run_manager.clone();
+    let brain = run_manager.lock().await.brain().clone();
+    let _ = session_id; // 当前不依赖 session（core_memory 跨 session 生效）
 
     tokio::spawn(async move {
-        // 1. 使用轻量模型提炼
-        let client = brain.client_factory.create();
-        let extraction = match client.complete(LEARN_SYSTEM_PROMPT, &content, &brain.learn_model).await {
-            Ok(resp) => resp,
+        // 1. 轻量模型提炼 —— build_client_for("learn")，chat_completion(&[Message], &[])。
+        let client = match brain.build_client_for("learn") {
+            Ok(c) => c,
             Err(e) => {
                 let _ = app_handle.emit("learn-event", LearnEvent {
-                    event_type: "error",
-                    error: e.to_string(),
+                    event_type: "error", error: e.to_string(),
+                });
+                return;
+            }
+        };
+        let msgs = vec![Message::system(LEARN_SYSTEM_PROMPT), Message::user(content.clone())];
+        let extraction = match client.chat_completion(&msgs, &[]).await {
+            Ok((text, _)) => text,
+            Err(e) => {
+                let _ = app_handle.emit("learn-event", LearnEvent {
+                    event_type: "error", error: e.to_string(),
                 });
                 return;
             }
         };
 
-        let memory_entry: MemoryEntry = match serde_json::from_str(&extraction) {
-            Ok(entry) => entry,
-            Err(_) => {
-                // JSON 解析失败，降级为原始内容
-                MemoryEntry {
-                    title: content.chars().take(60).collect(),
-                    rule: content,
-                    category: "knowledge",
-                    tags: vec![],
-                }
-            }
+        // MemoryEntry 不含 category/tags —— 实际 MemoryBlock 只有 {id,label,content,max_chars,updated_at}。
+        let entry: MemoryEntry = serde_json::from_str(&extraction).unwrap_or(MemoryEntry {
+            title: content.chars().take(60).collect(),
+            rule: content,
+        });
+
+        // 2. 写入 core_memory（SQLite，自动持久化，无需 save_to_file）。
+        //    经 brain.memory（Option<Arc<Mutex<MemoryManager>>>）-> core_mut()。
+        //    create(id, label, content) 新建 block；或 append 到已有 "knowledge" block。
+        let saved = if let Some(ref mem) = brain.memory {
+            let mut mgr = mem.lock(); // parking_lot::Mutex
+            let block_id = format!("learn_{}", uuid::Uuid::new_v4().simple());
+            mgr.core_mut().create(&block_id, &entry.title, &entry.rule).is_ok()
+        } else {
+            false
         };
 
-        // 2. 写入 core_memory
-        let mut core = brain.memory.core_memory.write();
-        core.add_block(MemoryBlock {
-            label: memory_entry.title,
-            content: memory_entry.rule,
-            category: memory_entry.category,
-            tags: memory_entry.tags,
-        });
-        core.save_to_file();  // 持久化到 ~/.agverse/agverse.md
-
-        // 3. 通知前端
+        // 3. 通知前端。
         let _ = app_handle.emit("learn-event", LearnEvent {
-            event_type: "saved",
-            title: memory_entry.title,
-            rule: memory_entry.rule,
+            event_type: if saved { "saved" } else { "error" },
+            title: entry.title,
+            rule: entry.rule,
+            error: if saved { None } else { Some("memory disabled or write failed".into()) },
         });
     });
 
@@ -355,6 +391,7 @@ async fn learn_memory(
 ```
 
 **LLM 提炼 Prompt**:
+
 ```
 You are a memory extraction assistant. The user wants to save a learning.
 Extract a durable, generalizable rule from their input.
@@ -362,22 +399,17 @@ Extract a durable, generalizable rule from their input.
 Output JSON only (no markdown, no code fences):
 {
   "title": "short title (max 60 chars)",
-  "rule": "the actionable rule, written as an instruction",
-  "category": "preference | bug_avoidance | environment | convention | knowledge",
-  "tags": ["relevant", "tags"]
+  "rule": "the actionable rule, written as an instruction"
 }
+
+（`category`/`tags` 需扩展 `MemoryBlock` 结构方可支持，列为后续工作；首版仅提炼 title + rule。）
 
 User input: {content}
 ```
 
 **Learn 模型配置**:
 
-```toml
-[learn]
-# model = "gpt-4o-mini"        # 轻量模型，提炼任务简单且频繁
-# max_tokens = 500
-# temperature = 0.1             # 极低温度，结构化输出更稳定
-```
+复用 §1.5 的 `learn_model` 配置项（`Config.learn_model`，缺省回退 `default_model`），经 `brain.build_client_for("learn")` 构建 client。不另设 `[learn]` section。
 
 #### 2.3 前端设计
 
@@ -405,11 +437,11 @@ learnEntries: LearnEntry[];
 
 #### 2.4 跨 Session 生效
 
-`core_memory` 已在 `Brain::new()` 中加载，每次 `create_run_with_workdir` 都会注入到 system prompt。因此 `/learn` 写入的条目在下一次 `send_message` 时自动生效，无需额外处理。
+`core_memory` 的 block 在 `refresh_context_segments`（每轮）经 `memory_manager.core().to_context_string()` 注入 ACTIVE MEMORY 段（segment 5，`PerTurn` 刷新）。`/learn` 写入的新 block 在下一次 turn 刷新时自动注入 system prompt；且 SQLite 持久化，跨 session 生效，无需额外处理。
 
 #### 2.5 去重
 
-不在 `/learn` 时做即时去重。已有 `MemoryConsolidator`（每 20 turns 运行）会异步进行记忆合并和去重。用户可以放心多次 `/learn`，冗余条目会被 Consolidator 清理。
+不在 `/learn` 时做即时去重。已有 `MemoryConsolidator`（每 20 turns 运行）会异步进行记忆合并和去重。用户可以放心多次 `/learn`，冗余条目会被 Consolidator 清理（`MemoryConsolidator` 见 `memory/consolidation.rs`，由 Run 每 20 turns 触发，见 `run.rs`）。
 
 ---
 
@@ -426,8 +458,8 @@ learnEntries: LearnEntry[];
 后端: send_message → create_run → run.run()
 后端: run.run() 检测到 /goal 前缀 → 解析出 goal
 后端: 1. 将 goal 存入 run.goal (新字段)
-       2. emit GoalSet 事件
-       3. 将 goal 注入 system prompt (高优先级区域)
+       2. self.emit(RunEvent::GoalSet)（方法名是 emit）
+       3. 将 goal 注入 per-turn 刷新的 context 段（避免被 compaction 压缩）
        4. 触发 LLM 任务拆解 → 生成 todo list
        5. emit TodoUpdated 事件
   ↓
@@ -451,7 +483,7 @@ pub struct Run {
 }
 ```
 
-**Goal 注入** (`run.rs` `run()` method):
+**Goal 注入**（`run.rs` `run()` method）——注入到 per-turn 刷新段，**不**用一次性 system note（会被 compaction 压缩）：
 
 ```rust
 // 在添加 user message 之前，解析 /goal 前缀
@@ -459,7 +491,8 @@ if message.starts_with("/goal ") {
     let g = message.strip_prefix("/goal ").unwrap().trim().to_string();
     self.goal = Some(g.clone());
 
-    // 注入 goal 到 context（高优先级 system 消息）
+    // 注入到 per-turn 刷新的 context 段（复用 EXECUTION PLAN 段 segment 7，PerTurn；
+    // 或新增 Context::set_goal()）。每轮重新拼入，避免被 compaction 压缩丢失。
     let goal_prompt = format!(
         "## PRIMARY GOAL (pinned)\n\
         {}\n\n\
@@ -468,52 +501,59 @@ if message.starts_with("/goal ") {
         If the conversation drifts, remind the user of this goal.",
         g
     );
-    self.context.add_system_note(&goal_prompt);
+    self.context.set_goal(&goal_prompt); // 新增 per-turn setter（见下）
 
-    // 发出 GoalSet 事件
-    self.emit_event(RunEvent::GoalSet { goal: g.clone() });
+    self.emit(RunEvent::GoalSet { goal: g.clone() }); // 方法名是 emit（非 emit_event）
 
-    // 触发任务拆解
     let todos = self.decompose_goal(&g).await?;
-    self.emit_event(RunEvent::TodoUpdated { items: todos });
+    self.emit(RunEvent::TodoUpdated { items: todos });
 }
 ```
 
-**目标拆解** (`run.rs`):
+**Context 段刷新**（`context.rs` / `run.rs` `refresh_context_segments`）：新增薄 setter，goal 文本每轮重新拼入 EXECUTION PLAN 段：
+
+```rust
+// context.rs
+pub fn set_goal(&mut self, text: &str) { self.goal_text = Some(text.to_string()); }
+// refresh_context_segments 中：execution_plan = goal_text(if any) + todo list
+```
+
+**目标拆解**（`run.rs`）——复用 Run 的 `self.client`，`chat_completion(&[Message], &[])`：
 
 ```rust
 async fn decompose_goal(&self, goal: &str) -> Result<Vec<TodoItemPayload>, RunError> {
-    let prompt = format!(
-        "Break down this goal into concrete, actionable subtasks (3-8 items).\n\
-        Output JSON array: [{{\"description\": \"...\", \"status\": \"pending\"}}]\n\n\
-        Goal: {goal}"
-    );
-    let response = self.client.complete(GOAL_DECOMPOSE_SYSTEM, &prompt).await?;
+    let msgs = vec![
+        Message::system(GOAL_DECOMPOSE_SYSTEM),
+        Message::user(format!(
+            "Break down this goal into concrete, actionable subtasks (3-8 items).\n\
+            Output JSON array: [{{\"description\": \"...\", \"status\": \"pending\"}}]\n\n\
+            Goal: {goal}"
+        )),
+    ];
+    let (response, _) = self.client.chat_completion(&msgs, &[]).await?;
     let items: Vec<TodoItemPayload> = serde_json::from_str(&response)?;
+    // 写入共享 TodoList（brain.todo_list: Arc<Mutex<TodoList>>）并返回 payload
     Ok(items)
 }
 ```
 
-**每轮自省** (`run.rs` `run_turn()` method, 在 LLM 回复后):
+**每轮自省**（`run_loop` 中 LLM 回复后）——偏离提醒同样经 per-turn 段注入，而非一次性 note：
 
 ```rust
-// 检查 goal 进度
 if let Some(ref goal) = self.goal {
     if !self.goal_completed {
-        let progress = self.assess_goal_progress(goal).await?;
-
+        let progress = self.assess_goal_progress(goal).await?; // 内部用 chat_completion
         if progress.all_completed {
             self.goal_completed = true;
-            self.emit_event(RunEvent::GoalCompleted { goal: goal.clone() });
-        } else if progress.drifted {
-            // 在回复后追加提醒
-            self.context.add_system_note(
-                &format!("Reminder: The primary goal is still active: {}", goal)
-            );
+            self.emit(RunEvent::GoalCompleted { goal: goal.clone() });
         }
+        // 偏离提醒：由 refresh_context_segments 把 goal 重新注入 EXECUTION PLAN 段，
+        // 而非 self.context.add(Message::system(...))（一次性 note 易被压缩）。
     }
 }
 ```
+
+**Todo 作用域注意**：`TodoList` 是 Brain 共享的 `Arc<Mutex<TodoList>>`（跨 Run）。`/goal` 拆解的 todo 写入共享列表并 emit `TodoUpdated`。首版接受共享语义（与现有 todo 工具一致）；若需 per-Run 隔离，需将 todo 下沉到 Run（见决策 11）。
 
 #### 3.3 前端设计
 
@@ -538,10 +578,13 @@ case 'goal_completed':
 ```
 
 **新 RunEvent** (`event.rs`):
+
 ```rust
 GoalSet { goal: String },
 GoalCompleted { goal: String },
 ```
+
+**前端类型同步**（`types.ts` / `eventHandlers.ts`）：`RunEventType` 追加 `'goal_set' | 'goal_completed'`；`RunEventPayload` 追加 `goal?: string`；`processSingleEvent` 增加 `case 'goal_set'` / `'goal_completed'`。`goal` / `goalCompleted` 需 per-session 隔离（`goalBySession`，类比 `todoBySession`）。
 
 **UI 渲染**:
 - **目标横幅**：在 `AppHeader` 下方渲染一个紧凑的目标横幅，显示当前 goal 文本和 todo 完成进度（`x/y completed`）。目标完成后横幅变为绿色完成态。
@@ -565,7 +608,7 @@ const COMMANDS: AutocompleteItem[] = [
 ];
 ```
 
-为 `AutocompleteItem` 新增可选 `description` 字段，在 dropdown 中显示命令说明。
+为 `AutocompleteItem`（`useAutocomplete.ts`）新增可选 `description` 字段，并在 `ChatInput.tsx` 的 dropdown 渲染中显示命令说明。
 
 #### 4.2 输入框命令高亮
 
@@ -578,10 +621,12 @@ const COMMANDS: AutocompleteItem[] = [
 | 事件 | 传输方式 | 持久化 | 写入主上下文 | 用途 |
 |------|----------|--------|-------------|------|
 | `btw-event` (delta/done/error) | `app_handle.emit` 独立通道 | 否 | 否 | `/btw` 流式回答（与主 run 并行） |
-| `learn-event` (saved/error) | `app_handle.emit` 独立通道 | 否（但记忆本身持久化到文件） | 否 | `/learn` 完成通知 |
+| `learn-event` (saved/error) | `app_handle.emit` 独立通道 | 否（记忆本身持久化到 SQLite core_memory） | 否 | `/learn` 完成通知 |
 | `GoalSet` | Run broadcast | 是 (JSONL) | 是（goal 注入 system） | `/goal` 目标设定 |
 | `GoalCompleted` | Run broadcast | 是 (JSONL) | 否 | `/goal` 目标完成 |
 | `TodoUpdated` | Run broadcast | 是 (JSONL) | 否 | `/goal` 任务进度更新（复用现有事件） |
+
+> 独立通道（`btw-event`/`learn-event`）不进 JSONL、无 seq；前端需新增第二个 `listen()`，现有 `useAgentEventListener` 仅监听 `agent-event`。
 
 ---
 
@@ -595,6 +640,11 @@ const COMMANDS: AutocompleteItem[] = [
 | 4 | `/goal` 跨 Session 持久化 | **不持久化** | 目标仅存在于当前 run 生命周期内，新 session 重新 `/goal` |
 | 5 | `/learn` 去重 | **交给 MemoryConsolidator** | 已有异步合并机制（每 20 turns），无需即时去重 |
 | 6 | 三命令是否需要 tool approval | **不需要** | `/btw` 无工具权限，`/learn` 仅写 memory 文件，`/goal` 仅注入 system prompt |
+| 7 | `/btw` context 快照获取路径 | **RunManager → RunHandle 共享快照** | Brain 不持有 context；新增 `RunManager::context_snapshot_for_session()` + `RunHandle::context_snapshot()`（`Arc<RwLock<Vec<Message>>>`，Run 在 turn 边界刷新） |
+| 8 | `/btw`/`/learn` 模型配置 | **复用 provider/model 架构** | 新增 `Config.btw_model`/`learn_model`（模型名，缺省回退 `default_model`）+ `Brain::build_client_for(purpose)`；不引入裸 `[btw]`/`[learn]` section |
+| 9 | `/goal` 注入方式 | **per-turn 刷新段** | 一次性 system note（`add`）会被 compaction 压缩；goal 经 `set_goal()` 每轮重新拼入 EXECUTION PLAN 段 |
+| 10 | `/learn` 写入 API | **CoreMemory::create/append** | `MemoryBlock { id,label,content,max_chars,updated_at }` 无 `category`/`tags`；SQLite 自动持久化，无 `save_to_file`；`category`/`tags` 列为后续扩展 |
+| 11 | `/goal` todo 作用域 | **首版共享 TodoList** | `TodoList` 为 Brain 共享 `Arc<Mutex<TodoList>>`；首版与现有 todo 工具一致，接受跨 Run 共享；per-Run 隔离为后续工作 |
 
 ---
 
@@ -604,50 +654,69 @@ const COMMANDS: AutocompleteItem[] = [
 
 | 命令 | 参数 | 返回 | 可在 isProcessing 时调用 | 说明 |
 |------|------|------|:---:|------|
-| `btw_query` | `{ sessionId, question }` | `btw_id: String` | ✅ | 发起旁路问答（独立 client，并行） |
-| `learn_memory` | `{ sessionId?, content }` | `()` | ✅ | 提炼并保存记忆（轻量模型） |
+| `btw_query` | `{ sessionId, question }` | `btw_id: String` | ✅ | 旁路问答：`run_manager.brain()` 取 `Arc<Brain>` → `build_client_for("btw")` 建 client → `context_snapshot_for_session()` 取快照 → `chat_completion_stream` 流式 → `btw-event` 通道回传 |
+| `learn_memory` | `{ sessionId?, content }` | `()` | ✅ | 提炼记忆：`build_client_for("learn")` + `chat_completion` → `brain.memory.lock().core_mut().create/append` 写入 SQLite |
+
+> `AppState` 不直接持有 `brain`；经 `state.run_manager.lock().await.brain()` 访问（返回 `&Arc<Brain>`，可 clone）。
+
+#### 新增 RunManager / RunHandle / Brain / Context / Config（Non-breaking）
+
+```rust
+// manager.rs —— 查找 session 的活跃 Run 并取 context 快照
+impl RunManager {
+    pub async fn context_snapshot_for_session(&self, session_id: &str) -> Option<Vec<Message>>;
+}
+impl RunHandle {
+    // 共享 context 快照（Arc<RwLock<Vec<Message>>>，由 Run 在 turn 边界刷新）
+    pub fn context_snapshot(&self) -> Vec<Message>;
+}
+
+// brain.rs —— 按用途构建 client（btw/learn 用配置的轻量模型）
+impl Brain {
+    pub fn build_client_for(&self, purpose: &str) -> Result<OpenAIClient>;
+}
+
+// config.rs —— 可选轻量模型名（缺省回退 default_model）
+pub struct Config {
+    pub btw_model: Option<String>,
+    pub learn_model: Option<String>,
+}
+
+// context.rs —— per-turn 刷新的 goal 段（避免被 compaction 压缩）
+impl Context {
+    pub fn set_goal(&mut self, text: &str);
+}
+```
 
 #### 新增 RunEvent（Non-breaking）
 
 ```rust
-// event.rs 新增
+// event.rs 新增（serde tag=snake_case → goal_set / goal_completed）
 GoalSet { goal: String },
 GoalCompleted { goal: String },
 ```
 
 #### 现有 `send_message` 无变更
 
-`/goal` 命令复用现有 `send_message` 通道，后端在 `run.run()` 中解析前缀。不修改 `send_message` 签名。
+`/goal` 复用现有 `send_message` 通道，后端在 `Run::run()` 中解析 `/goal` 前缀。不修改 `send_message` 签名。
 
-#### 新增配置（Non-breaking）
+#### 前端 Redux 新增（均需 per-session 隔离）
 
-```toml
-[btw]
-model = "gpt-4o-mini"
-max_tokens = 1000
-temperature = 0.3
-
-[learn]
-model = "gpt-4o-mini"
-max_tokens = 500
-temperature = 0.1
-```
-
-#### 前端 Redux 新增
-
-- `ChatState.btwEntries: BtwEntry[]`
-- `ChatState.learnEntries: LearnEntry[]`
-- `ChatState.goal: string | null`
-- `ChatState.goalCompleted: boolean`
+- `ChatState.btwEntries: BtwEntry[]` + `btwEntriesBySession`
+- `ChatState.learnEntries: LearnEntry[]` + `learnEntriesBySession`
+- `ChatState.goal: string | null` + `goalBySession`；`ChatState.goalCompleted: boolean` + `goalCompletedBySession`
+- `RunEventType` 追加 `'goal_set' | 'goal_completed'`；`RunEventPayload` 追加 `goal?: string`
+- 新增第二个 `listen("btw-event")` / `listen("learn-event")`（现有 `useAgentEventListener` 仅监听 `agent-event`）
+- `AutocompleteItem`（`useAutocomplete.ts`）新增可选 `description` 字段
 
 ### Backwards Compatibility
 
 - 现有 `/subagents`、`/clear`、`/help` 行为不变
 - 现有 `send_message` 签名不变
 - 新增的事件类型是 enum 变体追加，不影响旧前端解析（`default` 分支忽略未知事件）
-- `core_memory` 写入是追加操作，不破坏现有 block
+- `core_memory` 写入经 `create`/`append`（新增独立 block），不破坏现有 block
 - 前端新 Redux 字段有默认值，旧 session resume 不受影响
-- 新增 `config.toml` section 有合理默认值，缺失时 fallback 到 `gpt-4o-mini`
+- `btw_model`/`learn_model` 为可选配置项，缺失时回退到 `default_model`（不引入裸 `[btw]`/`[learn]` section）
 
 ## Timeline
 
@@ -666,7 +735,8 @@ temperature = 0.1
 |------|--------|--------|
 | 2026-07-02 | agent_core | Created as Draft |
 | 2026-07-02 | agent_core | 决策定型：6 个 Open Questions 全部 resolved，更新 /btw 为并行设计 |
+| 2026-07-03 | agent_core | 代码审查修订（v2）：对齐实际 API——/btw 经 RunManager 取 context 快照 + `build_client_for` + `chat_completion_stream`；/learn 经 `core_mut().create/append` 写 SQLite（无 category/tags/save_to_file）；/goal 注入 per-turn 段（非 `add_system_note`）；模型配置改用 `btw_model`/`learn_model`；修正 `emit`/`AppState` 访问路径 |
 
 ---
 *Generated by AI Agent (agent_core)*
-*Model: glm-latest | Timestamp: 2026-07-02T00:00:00+08:00*
+*Model: glm-latest | Timestamp: 2026-07-03T00:00:00+08:00*
