@@ -134,6 +134,163 @@ async fn send_message(
     Ok(run_id)
 }
 
+// ── /btw & /learn: side-channel slash commands ─────────────────────
+
+#[derive(Clone, serde::Serialize)]
+struct BtwEvent {
+    btw_id: String,
+    event_type: &'static str,
+    text: String,
+}
+
+#[derive(serde::Serialize)]
+struct LearnResult {
+    title: String,
+    rule: String,
+}
+
+#[derive(serde::Deserialize)]
+struct LearnEntry {
+    title: String,
+    rule: String,
+}
+
+const LEARN_SYSTEM_PROMPT: &str = "You are a memory extraction assistant. The user wants to save a learning. Extract a durable, generalizable rule from their input. Output JSON only (no markdown, no code fences): {\"title\": \"short title (max 60 chars)\", \"rule\": \"the actionable rule, written as an instruction\"}";
+
+/// Render a read-only context snapshot as a compact transcript for `/btw`.
+fn render_context_snapshot(messages: &[agent_core::Message]) -> String {
+    let start = messages.len().saturating_sub(20);
+    let mut out = String::new();
+    for m in &messages[start..] {
+        if let Some(content) = &m.content {
+            let role = match m.role {
+                agent_core::Role::System => "system",
+                agent_core::Role::User => "user",
+                agent_core::Role::Assistant => "assistant",
+                agent_core::Role::Tool => "tool",
+            };
+            out.push_str(&format!("[{role}]: {content}\n"));
+        }
+    }
+    out
+}
+
+/// `/btw` — ephemeral side-channel Q&A. Runs in parallel with the main Run;
+/// reads a best-effort context snapshot but never writes to the main context,
+/// session, or event log. Streams deltas over the independent `btw-event` channel.
+#[tauri::command]
+async fn btw_query(
+    state: State<'_, AppState>,
+    app_handle: AppHandle,
+    session_id: String,
+    question: String,
+) -> Result<String, String> {
+    let run_manager = state.run_manager.clone();
+    let brain = run_manager.lock().await.brain().clone();
+    let btw_id = uuid::Uuid::new_v4().to_string();
+    let return_id = btw_id.clone();
+
+    tokio::spawn(async move {
+        let snapshot = run_manager
+            .lock()
+            .await
+            .context_snapshot_for_session(&session_id)
+            .await
+            .unwrap_or_default();
+
+        let client = match brain.build_client_for("btw") {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = app_handle.emit(
+                    "btw-event",
+                    BtwEvent { btw_id: btw_id.clone(), event_type: "error", text: e.to_string() },
+                );
+                return;
+            }
+        };
+
+        let system_prompt = format!(
+            "You are a helpful assistant. Answer concisely based on the project context.\n\
+             Do not use tools. Keep your answer brief and focused.\n\n\
+             --- Project Context ---\n{}",
+            render_context_snapshot(&snapshot)
+        );
+        let messages = vec![
+            agent_core::Message::system(&system_prompt),
+            agent_core::Message::user(&question),
+        ];
+
+        match client.chat_completion_stream(&messages, &[]).await {
+            Ok(stream) => {
+                use futures::StreamExt;
+                tokio::pin!(stream);
+                while let Some(item) = stream.next().await {
+                    if let Ok(agent_core::StreamEvent::TextDelta(text)) = item {
+                        let _ = app_handle.emit(
+                            "btw-event",
+                            BtwEvent { btw_id: btw_id.clone(), event_type: "delta", text },
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                let _ = app_handle.emit(
+                    "btw-event",
+                    BtwEvent { btw_id: btw_id.clone(), event_type: "error", text: e.to_string() },
+                );
+                return;
+            }
+        }
+
+        let _ = app_handle.emit(
+            "btw-event",
+            BtwEvent { btw_id: btw_id.clone(), event_type: "done", text: String::new() },
+        );
+    });
+
+    Ok(return_id)
+}
+
+/// `/learn` — extract a durable rule from user input via a lightweight model
+/// and persist it to core memory (SQLite). Returns the extracted
+/// `{ title, rule }` so the frontend can update its entry by id.
+#[tauri::command]
+async fn learn_memory(
+    state: State<'_, AppState>,
+    session_id: Option<String>,
+    content: String,
+) -> Result<LearnResult, String> {
+    let _ = session_id;
+    let brain = state.run_manager.lock().await.brain().clone();
+
+    let client = brain.build_client_for("learn").map_err(|e| e.to_string())?;
+    let messages = vec![
+        agent_core::Message::system(LEARN_SYSTEM_PROMPT),
+        agent_core::Message::user(&content),
+    ];
+    let (extraction, _) = client
+        .chat_completion(&messages, &[])
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let entry: LearnEntry = serde_json::from_str(&extraction).unwrap_or(LearnEntry {
+        title: content.chars().take(60).collect(),
+        rule: content.clone(),
+    });
+
+    if let Some(ref mem) = brain.memory {
+        let mut mgr = mem.lock();
+        let block_id = format!("learn_{}", uuid::Uuid::new_v4());
+        mgr.core_mut()
+            .create(&block_id, &entry.title, &entry.rule)
+            .map_err(|e| e.to_string())?;
+    } else {
+        return Err("memory is disabled (stateless mode)".to_string());
+    }
+
+    Ok(LearnResult { title: entry.title, rule: entry.rule })
+}
+
 /// Replay events from a Run's persisted log that the frontend missed (resync).
 /// Returns envelopes with seq > from_seq, serialized as JSON strings.
 #[tauri::command]
@@ -1530,6 +1687,8 @@ pub fn run() {
                     permissions: Default::default(),
                     mcp: Default::default(),
                     reflector_enabled: false,
+                    btw_model: None,
+                    learn_model: None,
                 };
                 default_config.rebuild_models();
                 let _ = default_config.save(&config_path_str);
@@ -1614,6 +1773,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             send_message, approve_tool, abort_agent, replay_since,
+            btw_query, learn_memory,
             pause_run, resume_run, steer_run, cancel_steer, get_run_state,
             list_directory, search_files,
             get_config, save_config, switch_model, set_mode, get_mode,

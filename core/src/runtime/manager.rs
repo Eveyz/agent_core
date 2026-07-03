@@ -33,6 +33,7 @@ use crate::runtime::event_log::EventLog;
 use crate::runtime::run::{Run, default_runs_dir};
 use crate::runtime::state::RunState;
 use crate::worktree::WorktreeManager;
+use crate::types::Message;
 
 /// Capacity for the event broadcast channel per Run.
 const EVENT_CHANNEL_CAPACITY: usize = 1024;
@@ -59,6 +60,8 @@ pub struct RunHandle {
     /// hot-path checks in collect_stream() and ToolOrchestrator respond
     /// without waiting for the next poll_commands() turn boundary.
     pub cancel_token: CancellationToken,
+    /// Shared context snapshot (refreshed by the Run at turn boundaries).
+    context_snapshot: Arc<RwLock<Vec<Message>>>,
 }
 
 impl RunHandle {
@@ -82,6 +85,13 @@ impl RunHandle {
     /// Whether the Run has finished (terminal state).
     pub fn is_done(&self) -> bool {
         self.state().is_terminal()
+    }
+
+    /// Best-effort read-only snapshot of the Run's current context messages.
+    /// Refreshed at turn boundaries; may be slightly stale during a turn.
+    /// Used by side-channel `/btw` queries that must not touch the main Run.
+    pub fn context_snapshot(&self) -> Vec<Message> {
+        self.context_snapshot.read().clone()
     }
 
     /// Wait for the Run's task to complete.
@@ -117,6 +127,19 @@ impl RunManager {
     /// Access the shared Brain (for model switching, config queries, etc.)
     pub fn brain(&self) -> &Arc<Brain> {
         &self.brain
+    }
+
+    /// Look up the active (non-terminal) Run for a session and return a
+    /// best-effort read-only snapshot of its context messages. Used by
+    /// side-channel `/btw` queries that must not touch the main Run.
+    pub async fn context_snapshot_for_session(&self, session_id: &str) -> Option<Vec<Message>> {
+        let runs = self.runs.lock().await;
+        for handle in runs.values() {
+            if handle.session_id.as_deref() == Some(session_id) && !handle.is_done() {
+                return Some(handle.context_snapshot());
+            }
+        }
+        None
     }
 
     /// The current agent mode. New Runs inherit this mode.
@@ -175,6 +198,9 @@ impl RunManager {
         // Get the current mode from the brain
         let mode = self.brain.mode();
 
+        // Shared context snapshot for side-channel `/btw` queries.
+        let context_snapshot = Arc::new(RwLock::new(Vec::<Message>::new()));
+
         // Create the Run
         let run = Run::new(
             run_id.clone(),
@@ -187,6 +213,7 @@ impl RunManager {
             working_dir,
             history,
             mode,
+            context_snapshot.clone(),
         )?;
         // Clone the approval resolver before spawning so we can store
         // it in the RunHandle for direct (non-command-channel) resolution.
@@ -372,6 +399,7 @@ impl RunManager {
             state: shared_state,
             approval_resolver,
             cancel_token,
+            context_snapshot,
         };
 
         self.runs.lock().await.insert(run_id.clone(), handle);

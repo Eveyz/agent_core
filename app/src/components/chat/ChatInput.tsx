@@ -38,6 +38,8 @@ export const ChatInput = memo(function ChatInput({
   onAbort,
   currentModel,
   onSteer,
+  onBtwQuery,
+  onLearn,
   disabled,
   disabledMessage,
   pendingSteerCount = 0,
@@ -47,6 +49,8 @@ export const ChatInput = memo(function ChatInput({
   onAbort: () => void;
   currentModel: string;
   onSteer?: (message: string) => void;
+  onBtwQuery?: (question: string) => void;
+  onLearn?: (content: string) => void;
   disabled?: boolean;
   disabledMessage?: string;
   pendingSteerCount?: number;
@@ -98,11 +102,25 @@ export const ChatInput = memo(function ChatInput({
 
   const handleSend = useCallback(() => {
     const trimmed = input.trim();
-    if (!trimmed || isProcessing) return;
+    if (!trimmed) return;
+
+    // /btw and /learn bypass the isProcessing gate (side-channel, parallel with the main run)
+    if (trimmed.startsWith('/btw ')) {
+      const question = trimmed.slice(5).trim();
+      if (question) { setInput(''); onBtwQuery?.(question); closeAutocomplete(); }
+      return;
+    }
+    if (trimmed.startsWith('/learn ')) {
+      const content = trimmed.slice(7).trim();
+      if (content) { setInput(''); onLearn?.(content); closeAutocomplete(); }
+      return;
+    }
+
+    if (isProcessing) return;
     setInput('');
     onSend(trimmed);
     closeAutocomplete();
-  }, [input, isProcessing, onSend, closeAutocomplete]);
+  }, [input, isProcessing, onSend, onBtwQuery, onLearn, closeAutocomplete]);
 
   const handleAbort = useCallback(() => {
     onAbort();
@@ -240,6 +258,9 @@ export const ChatInput = memo(function ChatInput({
                 {item.icon === 'command' && <TerminalSquareIcon size={14} color="var(--accent)" />}
                 {item.icon === 'skill' && <ZapIcon size={14} color="var(--violet-500)" />}
                 <span className="autocomplete-label">{item.label}</span>
+                {item.description && (
+                  <span style={{ marginLeft: 8, fontSize: 11, opacity: 0.6 }}>{item.description}</span>
+                )}
               </div>
             ))}
           </div>

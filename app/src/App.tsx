@@ -13,6 +13,10 @@ import {
   selectSubagentById,
   steerMessageQueued,
   steerMessageCancelled,
+  btwAsked,
+  learnRequested,
+  learnSaved,
+  learnError,
 } from './features/chat/chatSlice';
 import { openSettings, fetchConfig } from './features/settings/settingsSlice';
 import {
@@ -211,6 +215,27 @@ function App() {
     }
   }, [runId, dispatch]);
 
+  const handleBtwQuery = useCallback(async (question: string) => {
+    if (!activeSessionId) return;
+    try {
+      const id = await invoke<string>('btw_query', { sessionId: activeSessionId, question });
+      dispatch(btwAsked({ id, question }));
+    } catch (e) {
+      console.error('btw_query failed:', e);
+    }
+  }, [activeSessionId, dispatch]);
+
+  const handleLearn = useCallback(async (content: string) => {
+    const id = crypto.randomUUID();
+    dispatch(learnRequested({ id, input: content }));
+    try {
+      const result = await invoke<{ title: string; rule: string }>('learn_memory', { sessionId: activeSessionId, content });
+      dispatch(learnSaved({ id, title: result.title, rule: result.rule }));
+    } catch (e) {
+      dispatch(learnError({ id, error: String(e) }));
+    }
+  }, [activeSessionId, dispatch]);
+
   useEffect(() => {
     dispatch(fetchConfig());
     dispatch(fetchProjects());
@@ -361,6 +386,8 @@ function App() {
                 currentModel={defaultModel}
                 onAbort={handleAbort}
                 onSteer={handleSteer}
+                onBtwQuery={handleBtwQuery}
+                onLearn={handleLearn}
                 pendingSteerCount={pendingSteerCount}
                 disabled={viewingSubagentPath.length > 0 || isResuming || !!activePendingApproval}
                 disabledMessage={

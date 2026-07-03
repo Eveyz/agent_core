@@ -105,6 +105,51 @@ impl Default for ModelConfig {
     }
 }
 
+impl ModelConfig {
+    pub fn auto_detect_max_context_tokens(&mut self) {
+        let model_lower = self.model_id.to_lowercase();
+        if self.max_context_tokens == 128000 {
+            if model_lower.contains("deepseek") {
+                self.max_context_tokens = 64000;
+            } else if model_lower.contains("claude") {
+                self.max_context_tokens = 200000;
+            } else if model_lower.contains("gemini") {
+                if model_lower.contains("flash") {
+                    self.max_context_tokens = 1000000;
+                } else if model_lower.contains("pro") {
+                    self.max_context_tokens = 2000000;
+                } else {
+                    self.max_context_tokens = 1000000;
+                }
+            } else if model_lower.contains("o1") || model_lower.contains("o3") {
+                self.max_context_tokens = 200000;
+            } else if model_lower.contains("llama-3") || model_lower.contains("llama3") {
+                if model_lower.contains("llama-3-") || model_lower.contains("llama-3.1") || model_lower.contains("llama3.1") {
+                    self.max_context_tokens = 128000;
+                } else {
+                    self.max_context_tokens = 8192;
+                }
+            } else if model_lower.contains("llama-2") || model_lower.contains("llama2") {
+                self.max_context_tokens = 4096;
+            } else if model_lower.contains("gpt-4") {
+                if model_lower.contains("gpt-4-32k") {
+                    self.max_context_tokens = 32768;
+                } else if model_lower.contains("gpt-4o") || model_lower.contains("gpt-4-turbo") || model_lower.contains("gpt-4-1106") || model_lower.contains("gpt-4-0125") {
+                    self.max_context_tokens = 128000;
+                } else {
+                    self.max_context_tokens = 8192;
+                }
+            } else if model_lower.contains("gpt-3.5") {
+                if model_lower.contains("16k") {
+                    self.max_context_tokens = 16384;
+                } else {
+                    self.max_context_tokens = 4096;
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeOverrides {
     pub temperature: Option<f64>,
@@ -286,6 +331,14 @@ pub struct Config {
     /// Enable offline reflection (analyzes Run event logs after completion).
     #[serde(default)]
     pub reflector_enabled: bool,
+    /// Lightweight model name for `/btw` side-channel queries (provider/model).
+    /// Falls back to `default_model` when unset.
+    #[serde(default)]
+    pub btw_model: Option<String>,
+    /// Lightweight model name for `/learn` memory extraction (provider/model).
+    /// Falls back to `default_model` when unset.
+    #[serde(default)]
+    pub learn_model: Option<String>,
 }
 
 impl Config {
@@ -361,25 +414,24 @@ impl Config {
         );
 
         let mut models = HashMap::new();
-        models.insert(
-            "default/default".to_string(),
-            ModelConfig {
-                name: "default".to_string(),
-                base_url,
-                api_key: api_key.clone(),
-                model_id,
-                max_context_tokens: 128000,
-                temperature: None,
-                max_tokens: None,
-                react_enabled: true,
-                system_prompt: None,
-                max_iterations: 50,
-                request_timeout_secs: 1800,
-                fallback_model: None,
-                reasoning_effort: None,
-                thinking_enabled: false,
-            },
-        );
+        let mut model_config = ModelConfig {
+            name: "default".to_string(),
+            base_url,
+            api_key: api_key.clone(),
+            model_id,
+            max_context_tokens: 128000,
+            temperature: None,
+            max_tokens: None,
+            react_enabled: true,
+            system_prompt: None,
+            max_iterations: 50,
+            request_timeout_secs: 1800,
+            fallback_model: None,
+            reasoning_effort: None,
+            thinking_enabled: false,
+        };
+        model_config.auto_detect_max_context_tokens();
+        models.insert("default/default".to_string(), model_config);
 
         Ok(Self {
             default_model: "default/default".to_string(),
@@ -390,6 +442,8 @@ impl Config {
             permissions: crate::permission::PermissionConfig::default(),
             mcp: crate::mcp::McpConfig::default(),
             reflector_enabled: false,
+            btw_model: None,
+            learn_model: None,
         })
     }
 
@@ -408,28 +462,27 @@ impl Config {
         for (provider_key, provider) in &self.providers {
             for (model_key, entry) in &provider.models {
                 let full_key = format!("{}/{}", provider_key, model_key);
-                self.models.insert(
-                    full_key,
-                    ModelConfig {
-                        name: provider.name.clone(),
-                        base_url: provider.base_url.clone(),
-                        api_key: provider.api_key.clone(),
-                        model_id: entry.model_id.clone(),
-                        max_context_tokens: entry.max_context_tokens.unwrap_or(provider.max_context_tokens),
-                        temperature: entry.temperature.or(provider.temperature),
-                        max_tokens: entry.max_tokens.or(provider.max_tokens),
-                        react_enabled: provider.react_enabled,
-                        system_prompt: entry
-                            .system_prompt
-                            .clone()
-                            .or_else(|| provider.system_prompt.clone()),
-                        max_iterations: provider.max_iterations,
-                        request_timeout_secs: provider.request_timeout_secs,
-                        fallback_model: None,
-                        reasoning_effort: entry.reasoning_effort.clone(),
-                        thinking_enabled: entry.thinking_enabled,
-                    },
-                );
+                let mut model_config = ModelConfig {
+                    name: provider.name.clone(),
+                    base_url: provider.base_url.clone(),
+                    api_key: provider.api_key.clone(),
+                    model_id: entry.model_id.clone(),
+                    max_context_tokens: entry.max_context_tokens.unwrap_or(provider.max_context_tokens),
+                    temperature: entry.temperature.or(provider.temperature),
+                    max_tokens: entry.max_tokens.or(provider.max_tokens),
+                    react_enabled: provider.react_enabled,
+                    system_prompt: entry
+                        .system_prompt
+                        .clone()
+                        .or_else(|| provider.system_prompt.clone()),
+                    max_iterations: provider.max_iterations,
+                    request_timeout_secs: provider.request_timeout_secs,
+                    fallback_model: None,
+                    reasoning_effort: entry.reasoning_effort.clone(),
+                    thinking_enabled: entry.thinking_enabled,
+                };
+                model_config.auto_detect_max_context_tokens();
+                self.models.insert(full_key, model_config);
             }
         }
     }
@@ -483,7 +536,7 @@ impl Config {
     }
 
     /// Add or replace a model configuration at runtime.
-    pub fn add_model(&mut self, full_key: String, model: ModelConfig) {
+    pub fn add_model(&mut self, full_key: String, mut model: ModelConfig) {
         let sep_pos = full_key.rfind('/').unwrap_or(0);
         let provider_key = if sep_pos > 0 {
             &full_key[..sep_pos]
@@ -495,6 +548,8 @@ impl Config {
         } else {
             &full_key
         };
+
+        model.auto_detect_max_context_tokens();
 
         let provider = self
             .providers
@@ -592,6 +647,39 @@ gpt = { model_id = "gpt-4o-mini" }
         assert_eq!(model.base_url, "https://api.openai.com/v1");
         assert_eq!(model.api_key, "sk-test");
         assert_eq!(model.model_id, "gpt-4o-mini");
+    }
+
+    #[test]
+    fn test_auto_detect_max_context_tokens() {
+        let path = write_temp_config(
+            r#"
+default_model = "deepseek/chat"
+
+[providers.deepseek]
+name = "DeepSeek"
+base_url = "https://api.deepseek.com/v1"
+api_key = "sk-test"
+
+[providers.deepseek.models]
+chat = { model_id = "deepseek-chat" }
+claude = { model_id = "claude-3-5-sonnet" }
+gemini = { model_id = "gemini-1.5-flash" }
+llama = { model_id = "llama3-8b" }
+"#,
+        );
+        let config = Config::load(path.to_str().unwrap()).unwrap();
+        
+        let ds = config.get_model("deepseek/chat").unwrap();
+        assert_eq!(ds.max_context_tokens, 64000);
+
+        let claude = config.get_model("deepseek/claude").unwrap();
+        assert_eq!(claude.max_context_tokens, 200000);
+
+        let gemini = config.get_model("deepseek/gemini").unwrap();
+        assert_eq!(gemini.max_context_tokens, 1000000);
+
+        let llama = config.get_model("deepseek/llama").unwrap();
+        assert_eq!(llama.max_context_tokens, 8192);
     }
 
     #[test]

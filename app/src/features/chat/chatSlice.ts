@@ -44,6 +44,10 @@ const initialState: ChatState = {
   steerQueue: [],
   steerQueueBySession: {},
   skillsCache: null,
+  btwEntries: [],
+  learnEntries: [],
+  goal: null,
+  goalCompleted: false,
 };
 
 // ── Resync thunk ─────────────────────────────────────────────────────
@@ -138,6 +142,10 @@ export const chatSlice = createSlice({
       }
       state.viewingSubagentPath = [];
       state._resumedFromBackend = false;
+      state.btwEntries = [];
+      state.learnEntries = [];
+      state.goal = null;
+      state.goalCompleted = false;
     },
     userMessageSent: (state, action: PayloadAction<string>) => {
       state.entries.push({
@@ -196,6 +204,10 @@ export const chatSlice = createSlice({
       state.subagents = {};
       state.viewingSubagentPath = [];
       state.isProcessing = false;
+      state.btwEntries = [];
+      state.learnEntries = [];
+      state.goal = null;
+      state.goalCompleted = false;
     },
     agentAborted: (state) => {
       state.isProcessing = false;
@@ -279,6 +291,34 @@ export const chatSlice = createSlice({
       state.entries = state.entries.filter(
         (e) => !(e.type === 'user' && e.isSteer && e.steerId === steerId)
       );
+    },
+    // ── /btw side-channel ──────────────────────────────────────────
+    btwAsked: (state, action: PayloadAction<{ id: string; question: string }>) => {
+      state.btwEntries.push({ ...action.payload, answer: '', isStreaming: true, startTime: Date.now() });
+    },
+    btwDelta: (state, action: PayloadAction<{ id: string; text: string }>) => {
+      const e = state.btwEntries.find((x) => x.id === action.payload.id);
+      if (e) e.answer += action.payload.text;
+    },
+    btwDone: (state, action: PayloadAction<{ id: string }>) => {
+      const e = state.btwEntries.find((x) => x.id === action.payload.id);
+      if (e) { e.isStreaming = false; e.endTime = Date.now(); }
+    },
+    btwError: (state, action: PayloadAction<{ id: string; text: string }>) => {
+      const e = state.btwEntries.find((x) => x.id === action.payload.id);
+      if (e) { e.isStreaming = false; if (!e.answer) e.answer = `⚠ ${action.payload.text}`; e.endTime = Date.now(); }
+    },
+    // ── /learn memory ──────────────────────────────────────────────
+    learnRequested: (state, action: PayloadAction<{ id: string; input: string }>) => {
+      state.learnEntries.push({ ...action.payload, status: 'pending', timestamp: Date.now() });
+    },
+    learnSaved: (state, action: PayloadAction<{ id: string; title: string; rule: string }>) => {
+      const e = state.learnEntries.find((x) => x.id === action.payload.id);
+      if (e) { e.status = 'saved'; e.title = action.payload.title; e.rule = action.payload.rule; }
+    },
+    learnError: (state, action: PayloadAction<{ id: string; error: string }>) => {
+      const e = state.learnEntries.find((x) => x.id === action.payload.id);
+      if (e) { e.status = 'error'; e.error = action.payload.error; }
     },
   },
   extraReducers: (builder) => {
@@ -462,5 +502,12 @@ export const {
   steerMessageQueued,
   steerMessageInjected,
   steerMessageCancelled,
+  btwAsked,
+  btwDelta,
+  btwDone,
+  btwError,
+  learnRequested,
+  learnSaved,
+  learnError,
 } = chatSlice.actions;
 export default chatSlice.reducer;

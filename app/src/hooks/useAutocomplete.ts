@@ -11,6 +11,7 @@ export interface AutocompleteItem {
   label: string;
   value: string;
   icon: IconType;
+  description?: string;
 }
 
 function getFileIcon(filename: string): IconType {
@@ -49,10 +50,12 @@ function getFileIcon(filename: string): IconType {
 }
 
 const COMMANDS: AutocompleteItem[] = [
-  { label: 'subagents', value: '/subagents ', icon: 'command' },
-  { label: 'btw', value: '/btw ', icon: 'command' },
-  { label: 'clear', value: '/clear', icon: 'command' },
-  { label: 'help', value: '/help', icon: 'command' },
+  { label: 'btw',    value: '/btw ',    icon: 'command', description: 'Ask a side question without polluting context' },
+  { label: 'learn',  value: '/learn ',  icon: 'command', description: 'Save a learning to persistent memory' },
+  { label: 'goal',   value: '/goal ',   icon: 'command', description: 'Set a pinned goal with task decomposition' },
+  { label: 'subagents', value: '/subagents ', icon: 'command', description: 'Enable subagent mode' },
+  { label: 'clear',  value: '/clear',   icon: 'command', description: 'Clear the conversation' },
+  { label: 'help',   value: '/help',    icon: 'command', description: 'Show available commands' },
 ];
 
 export function useAutocomplete(

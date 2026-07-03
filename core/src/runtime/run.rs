@@ -19,7 +19,7 @@
 
 use anyhow::{Result, bail};
 use futures::StreamExt;
-use parking_lot::{Mutex, MutexGuard};
+use parking_lot::{Mutex, MutexGuard, RwLock};
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -41,12 +41,23 @@ use crate::permission::PermissionPolicy;
 use crate::runtime::approval::ApprovalResolver;
 use crate::runtime::brain::Brain;
 use crate::runtime::command::{RunCommand, SteerEntry};
-use crate::runtime::event::{Envelope, RunEvent, RunId};
+use crate::runtime::event::{Envelope, RunEvent, RunId, TodoItemPayload};
 use crate::runtime::guard::EventGuard;
 use crate::runtime::state::RunState;
 use crate::runtime::supervisor::ProcessSupervisor;
 use crate::tools::ToolRegistry;
 use crate::types::{CacheUsage, Message, MessageDelta, Role, StreamEvent, ToolCall, ToolExecutionMode};
+
+/// System prompt for `/goal` task decomposition.
+const GOAL_DECOMPOSE_SYSTEM: &str = "You decompose a goal into subtasks. Output ONLY a JSON array of objects, each with a single \"description\" string field. No markdown, no commentary. Produce 3-8 items.";
+
+/// Extract the first JSON array `[...]` from a model response that may
+/// include markdown fences or surrounding prose.
+fn extract_json_array(s: &str) -> String {
+    let start = match s.find('[') { Some(i) => i, None => return s.to_string() };
+    let end = match s.rfind(']') { Some(i) => i + 1, None => return s.to_string() };
+    if end > start { s[start..end].to_string() } else { s.to_string() }
+}
 
 /// Result of running a single turn.
 enum TurnOutcome {
@@ -120,8 +131,17 @@ pub struct Run {
     /// Immutable after construction — mode changes take effect on the next Run.
     mode: AgentMode,
 
+    /// Pinned goal set via `/goal` (injected into the per-turn execution_plan segment).
+    goal: Option<String>,
+    /// Whether the pinned goal has been marked completed.
+    goal_completed: bool,
+
     /// Last stable prefix fingerprint — used to detect drift across turns.
     last_prefix_fingerprint: String,
+
+    /// Shared, read-only context snapshot for side-channel `/btw` queries.
+    /// Refreshed at turn boundaries; read via `RunHandle::context_snapshot()`.
+    context_snapshot: Arc<RwLock<Vec<Message>>>,
 }
 
 impl Run {
@@ -137,6 +157,7 @@ impl Run {
         working_dir: Option<String>,
         history: Vec<crate::types::Message>,
         mode: AgentMode,
+        context_snapshot: Arc<RwLock<Vec<Message>>>,
     ) -> Result<Self> {
         let client = brain.build_client()?;
         let permission_policy = brain.build_permission_policy();
@@ -232,6 +253,9 @@ impl Run {
             mode,
             max_iterations,
             last_prefix_fingerprint,
+            context_snapshot,
+            goal: None,
+            goal_completed: false,
         })
     }
 
@@ -251,6 +275,11 @@ impl Run {
 
     pub fn context_messages(&self) -> Vec<Message> {
         self.context.messages()
+    }
+
+    /// Refresh the shared context snapshot (read by side-channel `/btw` queries).
+    fn refresh_context_snapshot(&self) {
+        *self.context_snapshot.write() = self.context.messages();
     }
 
     pub fn context_mut(&mut self) -> &mut Context {
@@ -328,8 +357,14 @@ impl Run {
         self.emit(RunEvent::RunStarted);
         self.transition(RunState::Running);
 
-        // Add user message to context
-        self.context.add(Message::user(user_input));
+        // Add user message to context (strip /goal prefix; pin as goal when present)
+        let goal = user_input
+            .strip_prefix("/goal ")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let display_input = goal.clone().unwrap_or_else(|| user_input.to_string());
+        self.context.add(Message::user(&display_input));
+        self.refresh_context_snapshot();
 
         // Store in memory if enabled
         if let Some(ref mem) = self.brain.memory {
@@ -361,6 +396,17 @@ impl Run {
                     let clean_name = skill_name.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-');
                     mgr.activate(clean_name);
                 }
+            }
+        }
+
+        // /goal: pin goal + decompose into todos
+        if let Some(ref g) = goal {
+            self.goal = Some(g.clone());
+            self.emit(RunEvent::GoalSet { goal: g.clone() });
+            match self.decompose_goal(g).await {
+                Ok(items) => self.emit(RunEvent::TodoUpdated { items }),
+                Err(RunError::Failed(msg)) => tracing::warn!("goal decomposition failed: {msg}"),
+                Err(RunError::Cancelled) => tracing::warn!("goal decomposition cancelled"),
             }
         }
 
@@ -423,6 +469,7 @@ impl Run {
             let turn_id = uuid::Uuid::new_v4().to_string();
             self.current_turn_id = Some(turn_id.clone());
             self.emit(RunEvent::TurnStarted { index: turn_index });
+            self.refresh_context_snapshot();
             self.hook_registry.fire_turn_start(turn_index);
 
             match self.run_turn(turn_index).await {
@@ -432,6 +479,25 @@ impl Run {
                 Err(RunError::Cancelled) => return Err(RunError::Cancelled),
                 Err(RunError::Failed(e)) => return Err(RunError::Failed(e)),
             }
+            // /goal: emit GoalCompleted once all todos are done
+            if let Some(ref goal) = self.goal {
+                if !self.goal_completed {
+                    let all_done = {
+                        let list = self.brain.todo_list.lock();
+                        !list.items.is_empty()
+                            && list
+                                .items
+                                .iter()
+                                .all(|i| i.status == crate::todo::TodoStatus::Completed)
+                    };
+                    if all_done {
+                        let goal_text = goal.clone();
+                        self.goal_completed = true;
+                        self.emit(RunEvent::GoalCompleted { goal: goal_text });
+                    }
+                }
+            }
+
             // Turn ended — clear the active turn id.
             self.current_turn_id = None;
         }
@@ -1122,6 +1188,46 @@ impl Run {
             .collect()
     }
 
+    /// Decompose a pinned goal into todo items via a lightweight LLM call.
+    async fn decompose_goal(&self, goal: &str) -> Result<Vec<TodoItemPayload>, RunError> {
+        let msgs = vec![
+            Message::system(GOAL_DECOMPOSE_SYSTEM),
+            Message::user(&format!(
+                "Break down this goal into 3-8 concrete, actionable subtasks.\n\
+                 Output a JSON array of objects with a single \"description\" field.\n\
+                 Example: [{{\"description\":\"...\"}}]\n\nGoal: {goal}"
+            )),
+        ];
+        let (resp, _) = self
+            .client
+            .chat_completion(&msgs, &[])
+            .await
+            .map_err(|e| RunError::Failed(format!("goal decompose model call failed: {e}")))?;
+        let json = extract_json_array(&resp);
+        let arr: Vec<Value> = serde_json::from_str(&json)
+            .map_err(|e| RunError::Failed(format!("goal decompose parse failed: {e}")))?;
+        let descs: Vec<String> = arr
+            .iter()
+            .filter_map(|v| v.get("description").and_then(|d| d.as_str()).map(|s| s.to_string()))
+            .collect();
+        if descs.is_empty() {
+            return Err(RunError::Failed("goal decomposition produced no tasks".to_string()));
+        }
+        {
+            let mut list = self.brain.todo_list.lock();
+            list.replace_all(descs.clone());
+        }
+        Ok(descs
+            .into_iter()
+            .enumerate()
+            .map(|(i, d)| TodoItemPayload {
+                id: (i + 1).to_string(),
+                description: d,
+                status: "pending".to_string(),
+            })
+            .collect())
+    }
+
     fn refresh_context_segments(&mut self) {
         // Segment 3: ENVIRONMENT — use working_dir if set
         let cwd = self.working_dir.clone().or_else(|| {
@@ -1261,8 +1367,25 @@ impl Run {
             }
         }
 
-        // Segment 7: EXECUTION PLAN — inject current todo list
-        let plan_str = self.brain.todo_list.lock().to_context_string();
+        // Segment 7: EXECUTION PLAN — inject pinned goal (if any) + current todo list
+        let todo_str = self.brain.todo_list.lock().to_context_string();
+        let plan_str = if let Some(ref g) = self.goal {
+            if self.goal_completed {
+                todo_str
+            } else {
+                let mut s = format!(
+                    "## PRIMARY GOAL (pinned)\n{g}\n\nYou MUST keep this goal in mind. \
+                     Break it into subtasks, track progress, and drive toward completion. \
+                     If the conversation drifts, remind the user of this goal.\n\n"
+                );
+                if !todo_str.is_empty() {
+                    s.push_str(&todo_str);
+                }
+                s
+            }
+        } else {
+            todo_str
+        };
         if !plan_str.is_empty() {
             self.context.set_execution_plan(&plan_str);
         }

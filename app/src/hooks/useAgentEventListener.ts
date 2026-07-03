@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { useAppDispatch } from './useAppDispatch';
-import { agentEventsBatch } from '../features/chat/chatSlice';
+import { agentEventsBatch, btwDelta, btwDone, btwError } from '../features/chat/chatSlice';
 
 /**
  * Subscribe to the backend `agent-event` stream and dispatch events into the
@@ -20,6 +20,7 @@ export function useAgentEventListener(): void {
   useEffect(() => {
     let isMounted = true;
     let unlistenFn: (() => void) | undefined;
+    let btwUnlisten: (() => void) | undefined;
     let buffer: Array<string | Record<string, unknown>> = [];
     let rafId: number | null = null;
 
@@ -48,6 +49,21 @@ export function useAgentEventListener(): void {
       } else {
         unlistenFn = fn;
       }
+
+      // /btw side-channel stream (independent channel — not persisted, no seq)
+      const btwFn = await listen<{ btw_id: string; event_type: string; text: string }>('btw-event', (event) => {
+        if (!isMounted) return;
+        const e = event.payload;
+        if (!e) return;
+        if (e.event_type === 'delta') dispatch(btwDelta({ id: e.btw_id, text: e.text }));
+        else if (e.event_type === 'done') dispatch(btwDone({ id: e.btw_id }));
+        else if (e.event_type === 'error') dispatch(btwError({ id: e.btw_id, text: e.text }));
+      });
+      if (!isMounted) {
+        btwFn();
+      } else {
+        btwUnlisten = btwFn;
+      }
     };
 
     setupListener();
@@ -61,6 +77,7 @@ export function useAgentEventListener(): void {
         buffer = [];
       }
       if (unlistenFn) unlistenFn();
+      if (btwUnlisten) btwUnlisten();
     };
   }, [dispatch]);
 }

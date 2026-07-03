@@ -777,8 +777,19 @@ impl ContextEngine {
         if self.messages.len() <= keep_recent {
             return 0;
         }
-        let drop_count = self.messages.len() - keep_recent;
-        self.messages.drain(..drop_count);
+        let max_split_idx = self.messages.len() - keep_recent;
+        let mut drop_count = 0;
+
+        for i in (0..=max_split_idx).rev() {
+            if self.messages[i].role == crate::types::Role::User {
+                drop_count = i;
+                break;
+            }
+        }
+
+        if drop_count > 0 {
+            self.messages.drain(..drop_count);
+        }
         drop_count
     }
 
@@ -1283,6 +1294,61 @@ mod tests {
         let dropped = engine.chunked_drop(10);
         assert_eq!(dropped, 0);
         assert_eq!(engine.len(), 5);
+    }
+
+    #[test]
+    fn test_chunked_drop_avoids_orphaned_tools() {
+        let mut engine = ContextEngine::new("test", 128000);
+        
+        // Turn 1: User message
+        engine.add(Message::user("Hello"));
+        // Turn 1: Assistant makes tool calls
+        let mut assistant_msg = Message::assistant("let me write a file");
+        assistant_msg.tool_calls = Some(vec![crate::types::ToolCall {
+            id: "call_1".to_string(),
+            call_type: "function".to_string(),
+            function: crate::types::FunctionCall {
+                name: "write_file".to_string(),
+                arguments: "{}".to_string(),
+            },
+        }]);
+        engine.add(assistant_msg);
+        
+        // Turn 1: Tool response
+        let tool_msg = Message {
+            role: Role::Tool,
+            content: Some("success".to_string()),
+            tool_calls: None,
+            tool_call_id: Some("call_1".to_string()),
+            name: Some("write_file".to_string()),
+        };
+        engine.add(tool_msg);
+        
+        // Turn 2: User message
+        engine.add(Message::user("Next step"));
+        // Turn 2: Assistant final response
+        engine.add(Message::assistant("Done"));
+        
+        // Context contains 5 messages in raw history:
+        // [0] User ("Hello")
+        // [1] Assistant (tool calls)
+        // [2] Tool (call_1 response)
+        // [3] User ("Next step")
+        // [4] Assistant ("Done")
+        
+        // If we want to keep 3 messages (which would normally split at index 2, keeping [2, 3, 4], i.e., Tool, User, Assistant),
+        // we should instead find the User message at/before index 2, which is index 0.
+        // So it should drop 0 messages to avoid leaving Tool message at the start.
+        let dropped = engine.chunked_drop(3);
+        assert_eq!(dropped, 0);
+        assert_eq!(engine.len(), 5);
+        
+        // If we want to keep 2 messages (which would split at index 3, which is User "Next step"),
+        // index 3 is a User message, so it is safe to split. It should drop first 3 messages.
+        let dropped_more = engine.chunked_drop(2);
+        assert_eq!(dropped_more, 3);
+        assert_eq!(engine.len(), 2);
+        assert_eq!(engine.messages[0].content.as_deref().unwrap(), "Next step");
     }
 
     #[test]

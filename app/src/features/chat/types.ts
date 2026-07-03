@@ -81,6 +81,25 @@ export interface SkillManifest {
   [key: string]: unknown;
 }
 
+export interface BtwEntry {
+  id: string;
+  question: string;
+  answer: string;
+  isStreaming: boolean;
+  startTime: number;
+  endTime?: number;
+}
+
+export interface LearnEntry {
+  id: string;
+  input: string;
+  status: 'pending' | 'saved' | 'error';
+  title?: string;
+  rule?: string;
+  error?: string;
+  timestamp: number;
+}
+
 export interface ChatState {
   entries: ChatEntry[];
   isProcessing: boolean;
@@ -109,6 +128,12 @@ export interface ChatState {
     skills: SkillManifest[];
     loadedAt: number;
   } | null;
+  // /btw & /learn side-channel bubbles (ephemeral, current session)
+  btwEntries: BtwEntry[];
+  learnEntries: LearnEntry[];
+  // /goal pinned goal (per-active-session, driven by goal_set/goal_completed events)
+  goal: string | null;
+  goalCompleted: boolean;
 }
 
 export interface DeltaPayload {
@@ -133,7 +158,9 @@ export type RunEventType =
   | 'steer_queued'
   | 'steer_injected'
   | 'steer_cancelled'
-  | 'steer_failed';
+  | 'steer_failed'
+  | 'goal_set'
+  | 'goal_completed';
 
 export interface RunEventPayload {
   event: RunEventType;
@@ -181,6 +208,7 @@ export interface RunEventPayload {
   // Steering event fields
   steer_id?: string;
   queue_depth?: number;
+  goal?: string;
 }
 
 export type RunState = 'created' | 'running' | 'awaiting_approval' | 'awaiting_input' | 'paused' | 'completed' | 'cancelled' | 'failed';

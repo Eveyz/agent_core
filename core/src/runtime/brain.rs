@@ -335,6 +335,34 @@ impl Brain {
         Ok(client)
     }
 
+    /// Build an `OpenAIClient` for a specific purpose (`"btw"` / `"learn"`).
+    ///
+    /// Uses the purpose-specific lightweight model when configured
+    /// (`Config.btw_model` / `Config.learn_model`), falling back to the
+    /// current active model. Unlike [`build_client`], this does NOT build a
+    /// fallback chain — side-channel queries are single-shot and cheap.
+    pub fn build_client_for(&self, purpose: &str) -> Result<OpenAIClient> {
+        let name = match purpose {
+            "btw" => self
+                .config
+                .btw_model
+                .as_deref()
+                .unwrap_or(self.current_model_name()),
+            "learn" => self
+                .config
+                .learn_model
+                .as_deref()
+                .unwrap_or(self.current_model_name()),
+            _ => self.current_model_name(),
+        };
+        let model_config = self
+            .config
+            .get_model(name)
+            .with_context(|| format!("model '{name}' not found in config"))?
+            .clone();
+        Ok(OpenAIClient::new(model_config))
+    }
+
     /// Build a fresh ToolRegistry for a Run, filtered by mode.
     ///
     /// Each Run gets its own registry so MCP tools, memory tools, and

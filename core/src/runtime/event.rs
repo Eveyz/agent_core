@@ -177,6 +177,16 @@ pub enum RunEvent {
         items: Vec<TodoItemPayload>,
     },
 
+    // ── Goal ─────────────────────────────────────────────────────────
+    /// A pinned goal was set via `/goal` (drives task decomposition + per-turn self-check).
+    GoalSet {
+        goal: String,
+    },
+    /// The pinned goal has been completed.
+    GoalCompleted {
+        goal: String,
+    },
+
     // ── Cache telemetry ────────────────────────────────────────────
     /// Per-turn cache hit/miss statistics from the model API response.
     CacheInfo {

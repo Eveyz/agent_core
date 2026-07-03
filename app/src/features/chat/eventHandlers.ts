@@ -653,6 +653,17 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
       case 'todo_updated':
         state.todo = (ev.items as TodoItem[]) ?? [];
         break;
+      case 'goal_set':
+        if (!isBackground) {
+          state.goal = ev.goal ?? null;
+          state.goalCompleted = false;
+        }
+        break;
+      case 'goal_completed':
+        if (!isBackground) {
+          state.goalCompleted = true;
+        }
+        break;
       case 'steer_queued': {
         const steerId = ev.steer_id ?? '';
         const msg = typeof ev.message === 'string' ? ev.message : '';
