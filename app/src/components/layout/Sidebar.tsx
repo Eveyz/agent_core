@@ -230,6 +230,8 @@ export const Sidebar = memo(function Sidebar({
   );
   const [creatingSession, setCreatingSession] = useState(false);
   const [isCronModalOpen, setIsCronModalOpen] = useState(false);
+  const [projectsCollapsed, setProjectsCollapsed] = useState(false);
+  const [chatCollapsed, setChatCollapsed] = useState(false);
   const { confirm, prompt, dialogElement } = useConfirmDialog();
 
   const toggleSessionsExpand = useCallback(
@@ -428,20 +430,32 @@ export const Sidebar = memo(function Sidebar({
         </div>
       </div>
 
-      {/* Projects list */}
-      <div className="projects-section">
-        <div className="projects-header">
-          <span>Projects</span>
+      <div className="sidebar-scrollable">
+        {/* Projects list */}
+        <div className={`projects-section ${projectsCollapsed ? "section-collapsed" : ""}`}>
+        <div className="projects-header" onClick={() => setProjectsCollapsed(!projectsCollapsed)}>
+          <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            {projectsCollapsed ? (
+              <ChevronRightIcon size={12} style={{ opacity: 0.7 }} />
+            ) : (
+              <ChevronDownIcon size={12} style={{ opacity: 0.7 }} />
+            )}
+            Projects
+          </span>
           <button
             className="icon-btn"
-            onClick={handleOpenFolder}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleOpenFolder();
+            }}
             title="Import project"
           >
             <PlusIcon size={13} />
           </button>
         </div>
 
-        <div className="projects-list">
+        {!projectsCollapsed && (
+          <div className="projects-list">
           {regularProjects.length === 0 && (
             <div
               style={{ padding: "16px 20px", color: "var(--text-tertiary)", fontSize: "12px" }}
@@ -580,23 +594,35 @@ export const Sidebar = memo(function Sidebar({
               </div>
             );
           })}
-        </div>
+          </div>
+        )}
       </div>
 
       {/* Chat section */}
-      <div className="projects-section" style={{ marginTop: "16px" }}>
-        <div className="projects-header">
-          <span>Chat</span>
+      <div className={`projects-section ${chatCollapsed ? "section-collapsed" : ""}`} style={{ marginTop: "12px" }}>
+        <div className="projects-header" onClick={() => setChatCollapsed(!chatCollapsed)}>
+          <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            {chatCollapsed ? (
+              <ChevronRightIcon size={12} style={{ opacity: 0.7 }} />
+            ) : (
+              <ChevronDownIcon size={12} style={{ opacity: 0.7 }} />
+            )}
+            Chat
+          </span>
           <button
             className="icon-btn"
-            onClick={() => handleNewSession('__adhoc_chat__')}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleNewSession('__adhoc_chat__');
+            }}
             title="New chat"
           >
             <PlusIcon size={13} />
           </button>
         </div>
 
-        <div className="projects-list">
+        {!chatCollapsed && (
+          <div className="projects-list">
           <div className="session-list">
             {(() => {
               const defaultSessions = sessions['__adhoc_chat__'] ?? [];
@@ -690,11 +716,13 @@ export const Sidebar = memo(function Sidebar({
                 </>
               );
             })()}
+            </div>
           </div>
-        </div>
+        )}
       </div>
+    </div>
 
-      {/* Bottom */}
+    {/* Bottom */}
       <div className="sidebar-bottom">
         <div className="nav-item">
           <SmartphoneIcon size={14} /> Connect phone

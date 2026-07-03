@@ -39,6 +39,8 @@
   min-height: 0;
   position: relative;
   overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .sidebar-collapsed {
@@ -183,11 +185,18 @@
 
 /* ── Projects & Sessions (Cursor-style) ─────────────────────────── */
 
+.sidebar-scrollable {
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .projects-section {
   display: flex;
   flex-direction: column;
-  flex: 1;
-  min-height: 0;
+  flex: none;
 }
 
 .projects-section .projects-header {
@@ -201,11 +210,15 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.projects-section .projects-header:hover {
+  color: var(--text-main);
 }
 
 .projects-list {
-  overflow-y: auto;
-  flex: 1;
   padding-bottom: 8px;
 }
 
