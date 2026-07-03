@@ -171,7 +171,7 @@ impl SkillManager {
                     if seen_names.insert(manifest.name.clone()) {
                         self.manifests.push(LoadedSkill {
                             manifest,
-                            source_dir: dir.clone(),
+                            source_dir: path.clone(),
                         });
                     }
                 }
@@ -260,8 +260,11 @@ impl SkillManager {
             if self.active_skills.contains(&skill.manifest.name) {
                 if let Ok(content) = self.load_content(&skill.manifest) {
                     parts.push(format!(
-                        "## Skill: {} (v{})\n{}\n",
-                        skill.manifest.name, skill.manifest.version, content,
+                        "## Skill: {} (v{})\nSkill directory: {}\n{}\n",
+                        skill.manifest.name,
+                        skill.manifest.version,
+                        skill.source_dir.display(),
+                        content,
                     ));
                 }
             }
@@ -307,6 +310,14 @@ impl SkillManager {
 
     // ── Lookup ──────────────────────────────────────────────────────
 
+    /// Get the directory containing a skill's files (SKILL.md, scripts/, etc.).
+    pub fn source_dir_of(&self, name: &str) -> Option<&Path> {
+        self.manifests
+            .iter()
+            .find(|s| s.manifest.name == name)
+            .map(|s| s.source_dir.as_path())
+    }
+
     pub fn list(&self) -> Vec<&SkillManifest> {
         self.manifests.iter().map(|s| &s.manifest).collect()
     }
@@ -343,11 +354,15 @@ impl SkillManager {
     // ── Backward compat ─────────────────────────────────────────────
 
     pub fn load_skill_context(&self, name: &str) -> Result<Option<String>> {
-        if let Some(manifest) = self.find_by_name(name) {
-            let content = self.load_content(manifest)?;
+        if let Some(skill) = self.manifests.iter().find(|s| s.manifest.name == name) {
+            let content = self.load_content(&skill.manifest)?;
             Ok(Some(format!(
-                "== Skill: {} (v{}) ==\n{}\n== End Skill: {} ==\n",
-                manifest.name, manifest.version, content, manifest.name
+                "== Skill: {} (v{}) ==\nSkill directory: {}\n{}\n== End Skill: {} ==\n",
+                skill.manifest.name,
+                skill.manifest.version,
+                skill.source_dir.display(),
+                content,
+                skill.manifest.name
             )))
         } else {
             Ok(None)
@@ -626,6 +641,9 @@ Skill body for {}"#,
         assert!(ctx.contains("my-skill"));
         assert!(ctx.contains("This is the skill body"));
         assert!(ctx.contains("ACTIVE"));
+        assert!(ctx.contains("Skill directory:"));
+        // Must expose the skill's own dir, not the search dir.
+        assert!(ctx.contains(&dir.join("my-skill").display().to_string()));
 
         let _ = fs::remove_dir_all(&dir);
     }

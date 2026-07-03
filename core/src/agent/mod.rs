@@ -515,11 +515,15 @@ impl Agent {
                 let mut result = Vec::new();
                 for skill in &matched {
                     if let Ok(content) = mgr.load_content(skill) {
+                        let dir = mgr
+                            .source_dir_of(&skill.name)
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_default();
                         result.push((
                             skill.name.clone(),
                             format!(
-                                "== Skill: {} (v{}) ==\n{}\n== End Skill: {} ==\n",
-                                skill.name, skill.version, content, skill.name
+                                "== Skill: {} (v{}) ==\nSkill directory: {}\n{}\n== End Skill: {} ==\n",
+                                skill.name, skill.version, dir, content, skill.name
                             ),
                         ));
                     }
