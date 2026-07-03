@@ -115,13 +115,15 @@ const ToolBlockUI = memo(function ToolBlockUI({
   approvalStatus?: 'approved' | 'denied';
 }) {
   const isExpandable = name !== 'write_file' && name !== 'write_to_file';
-  const [collapsed, setCollapsed] = useState(isExpandable ? !active : true);
+  const [collapsed, setCollapsed] = useState(true);
   const [prevActive, setPrevActive] = useState(active);
   const [copied, setCopied] = useState(false);
 
   if (active !== prevActive) {
     setPrevActive(active);
-    setCollapsed(isExpandable ? !active : true);
+    if (!active && is_error) {
+      setCollapsed(false);
+    }
   }
 
   const handleCopy = async (e: React.MouseEvent) => {
