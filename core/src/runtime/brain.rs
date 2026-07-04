@@ -54,6 +54,9 @@ pub struct Brain {
     /// Mode changes take effect on the next Run — existing Runs are unaffected.
     /// Wrapped in Arc<StdMutex<>> to satisfy Clone (required by #[derive(Clone)]).
     current_mode: Arc<StdMutex<AgentMode>>,
+    /// Shared hook registry. When set, Runs use this instead of building fresh.
+    /// This allows the Agent wrapper to register hooks that fire during Run execution.
+    pub hook_registry: Arc<Mutex<HookRegistry>>,
 }
 
 impl Brain {
@@ -75,6 +78,7 @@ impl Brain {
             reflector,
             current_model_name,
             current_mode: Arc::new(StdMutex::new(AgentMode::default())),
+            hook_registry: Arc::new(Mutex::new(HookRegistry::new())),
         })
     }
 
@@ -443,9 +447,10 @@ impl Brain {
         )
     }
 
-    /// Build a default HookRegistry (empty — Runs add their own hooks).
-    pub fn build_hooks(&self) -> HookRegistry {
-        HookRegistry::new()
+    /// Build a default HookRegistry. If the shared hook_registry is set,
+    /// returns a clone of the Arc (so mutations propagate to all Runs).
+    pub fn build_hooks(&self) -> Arc<Mutex<HookRegistry>> {
+        self.hook_registry.clone()
     }
 
     /// The permission config (for subagent construction).

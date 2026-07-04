@@ -1,10 +1,7 @@
-use anyhow::{Result, bail};
-use futures::StreamExt;
+use anyhow::Result;
 use parking_lot::Mutex;
-use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use tokio_util::sync::CancellationToken;
 
 pub mod executor;
@@ -12,22 +9,20 @@ mod scheduler;
 use crate::client::OpenAIClient;
 use crate::config::{Config, ModelConfig};
 use crate::context::Context;
-use crate::error_recovery::{RecoveryAction, RecoveryContext, RecoveryEngine};
-use crate::hooks::{HookRegistry, PreToolResult};
+use crate::error_recovery::{RecoveryContext, RecoveryEngine};
+use crate::hooks::HookRegistry;
 use crate::memory::MemoryManager;
-use crate::runtime::command::SteerEntry;
-use crate::permission::{
-    ApprovalChoice, ApprovalScope, PermissionDecision, PermissionPolicy, ToolPermissionPattern,
-    WhitelistEntry,
-};
+use crate::runtime::brain::Brain;
+use crate::runtime::command::{RunCommand, SteerEntry};
+use crate::runtime::manager::RunManager;
+use crate::permission::PermissionPolicy;
 use crate::todo::TodoList;
 use crate::prompt::{self, PromptBuilder};
 use crate::skills::SkillManager;
-use crate::tools::{ToolRegistry, ToolUpdateFn};
+use crate::tools::ToolRegistry;
 use crate::trace::TraceCollector;
 use crate::types::{
-    AgentEvent, AgentState, Message, MessageDelta, StreamEvent, ToolCall, ToolExecutionMode,
-    ToolResultRecord,
+    AgentEvent, AgentState, Message, ToolExecutionMode,
 };
 
 /// Callback type for transform_context: receives messages, returns transformed messages.
@@ -209,7 +204,7 @@ impl AgentBuilder {
         self
     }
 
-    pub fn build(self) -> Result<Agent> {
+    pub fn build(mut self) -> Result<Agent> {
         let default_model_name = self.config.default_model.clone();
         let model_config = self.config.default_model()?.clone();
 
@@ -371,6 +366,21 @@ impl AgentBuilder {
             None => None,
         };
 
+        // Build the backing runtime (Brain + RunManager) for run delegation.
+        let mut brain = Brain::from_config(self.config.clone())?;
+
+        // If AgentBuilder has hooks, share them with the Brain's hook_registry
+        // so they fire during Run execution (e.g. BeforeModel hooks).
+        let hook_registry = if let Some(agent_hooks) = self.hook_registry.take() {
+            let shared = Arc::new(parking_lot::Mutex::new(agent_hooks));
+            brain.hook_registry = shared.clone();
+            shared
+        } else {
+            brain.hook_registry.clone()
+        };
+
+        let run_manager = RunManager::new(brain);
+
         Ok(Agent {
             id,
             name,
@@ -382,7 +392,7 @@ impl AgentBuilder {
             memory,
             todo_list,
             permission_policy,
-            hook_registry: self.hook_registry.unwrap_or_default(),
+            hook_registry,
             state: AgentState::Idle,
             tool_execution_mode: self.tool_execution_mode,
             steering_queue: VecDeque::new(),
@@ -398,6 +408,7 @@ impl AgentBuilder {
             current_session_id: None,
             trace,
             consolidate_counter: 0,
+            run_manager: Some(run_manager),
         })
     }
 }
@@ -413,7 +424,7 @@ pub struct Agent {
     memory: Option<Arc<Mutex<MemoryManager>>>,
     todo_list: Arc<Mutex<TodoList>>,
     permission_policy: PermissionPolicy,
-    hook_registry: HookRegistry,
+    hook_registry: Arc<parking_lot::Mutex<HookRegistry>>,
     state: AgentState,
     tool_execution_mode: ToolExecutionMode,
     steering_queue: VecDeque<SteerEntry>,
@@ -431,64 +442,28 @@ pub struct Agent {
     trace: Option<Arc<Mutex<TraceCollector>>>,
     /// Incrementing turn counter used to gate periodic tasks (e.g. consolidation).
     consolidate_counter: u64,
-}
-
-/// Result of a single recovery attempt within `model_turn`.
-enum RecoveryOutcome {
-    Retry,
-    GiveUp,
-}
-
-/// Named stages of a single turn. Used for structured logging and as the
-/// spine for future per-stage hooks. Introduced in Phase E so the control
-/// flow is explicit without rewriting the loop as an external pipeline.
-#[derive(Debug, Clone, Copy)]
-enum Stage {
-    Refresh,
-    Compact,
-    Model,
-    Dispatch,
-    Execute,
-    Observe,
-}
-
-impl Stage {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Stage::Refresh => "refresh",
-            Stage::Compact => "compact",
-            Stage::Model => "model",
-            Stage::Dispatch => "dispatch",
-            Stage::Execute => "execute",
-            Stage::Observe => "observe",
-        }
-    }
-}
-
-/// Outcome of a single turn, returned by [`Agent::run_turn`].
-enum TurnOutcome {
-    /// The agent produced a final answer; the run is complete.
-    Final(String),
-    /// The turn completed and the loop should continue.
-    Continue,
-    /// The run must stop with this user-facing message.
-    Stop(String),
+    /// Backing runtime engine. Created at build time; used by run_with_events.
+    run_manager: Option<RunManager>,
 }
 
 impl Agent {
+    /// Run the agent on the given input synchronously (no event callbacks).
     pub async fn run(&mut self, input: &str) -> Result<String> {
         self.run_with_events(input, |_| {}).await
     }
 
+    /// Run the agent, streaming events via the provided callback.
+    ///
+    /// This delegates to the RunManager/Run runtime, translating
+    /// [`crate::runtime::event::RunEvent`]s back into [`AgentEvent`]s
+    /// via the existing [`RunEvent::to_agent_event`] bridge.
     #[tracing::instrument(skip_all, fields(input = %input))]
     pub async fn run_with_events(
         &mut self,
         input: &str,
         on_event: impl Fn(AgentEvent) + Send + Sync,
     ) -> Result<String> {
-        // Compose the user's event callback with the trace side-channel so
-        // tracing is transparent to callers. Recording is best-effort and
-        // never propagates errors into the run.
+        // Compose the user's event callback with the trace side-channel.
         let trace = self.trace.clone();
         let traced = move |ev: AgentEvent| {
             if let Some(ref tc) = trace {
@@ -498,16 +473,13 @@ impl Agent {
             on_event(ev);
         };
 
-        self.context.add(Message::user(input));
+        let run_manager = self.run_manager.as_mut()
+            .expect("RunManager not initialized");
 
-        if let Some(ref mem) = self.memory
-            && let m = mem.lock()
-        {
-            let _ = m.store_conversation("user", input);
-        }
+        // Snapshot current context as history for the Run.
+        let history = self.context.messages();
 
         // ── Skill auto-trigger ──────────────────────────────────────────
-        // Check user message against skill triggers, auto-load matching skills
         if let Some(ref mgr) = self.skill_manager {
             let matched: Vec<(String, String)> = {
                 let mgr = mgr.lock();
@@ -531,28 +503,91 @@ impl Agent {
                 result
             };
 
-            // Inject into context
             for (_, text) in &matched {
                 self.context.set_loaded_skills(text);
             }
 
-            // Activate matched skills
             let mut mgr = mgr.lock();
             for (name, _) in &matched {
                 mgr.activate(name);
             }
         }
 
+        // Create a Run via the RunManager.
+        let run_id = run_manager.create_run(
+            input,
+            self.current_session_id.clone(),
+            history,
+        ).await?;
+
+        let mut event_rx = run_manager.subscribe(&run_id).await?;
+
+        // Send Start command to begin execution.
+        run_manager.command(&run_id, RunCommand::Start).await?;
+
+        // Remove the handle after the run to allow join.
+        let handle = {
+            let mut runs = run_manager.runs_mut().await;
+            runs.remove(&run_id)
+        };
+
         traced(AgentEvent::AgentStart);
-        self.hook_registry.fire_session_start(&self.id);
+        self.hook_registry.lock().fire_session_start(&self.id);
         self.state = AgentState::Streaming;
 
-        let result = self.run_loop(&traced).await;
+        // ── Event translation loop ─────────────────────────────────────
+        let mut final_text = String::new();
+        'event_loop: loop {
+            match event_rx.recv().await {
+                Ok(envelope) => {
+                    if let Some(agent_ev) = envelope.event.to_agent_event() {
+                        match &agent_ev {
+                            AgentEvent::AgentEnd { messages } => {
+                                // Sync conversation messages back into Agent's ContextEngine.
+                                // Skip system messages — Agent's segments provide the system prompt.
+                                self.context.clear();
+                                for msg in messages {
+                                    match msg.role {
+                                        crate::types::Role::User
+                                        | crate::types::Role::Assistant
+                                        | crate::types::Role::Tool => {
+                                            self.context.add(msg.clone());
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                // Extract final text from last assistant message.
+                                final_text = messages.iter()
+                                    .rev()
+                                    .find(|m| matches!(m.role, crate::types::Role::Assistant))
+                                    .and_then(|m| m.content.clone())
+                                    .unwrap_or_default();
+                                traced(agent_ev);
+                                break 'event_loop;
+                            }
+                            AgentEvent::Aborted { reason } => {
+                                self.state = AgentState::Aborted;
+                                final_text = reason.clone();
+                                traced(agent_ev);
+                                break 'event_loop;
+                            }
+                            _ => traced(agent_ev),
+                        }
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break 'event_loop,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(lagged = n, "agent event subscriber lagged");
+                    continue;
+                }
+            }
+        }
 
-        // The cancel token is owned by the caller (Tauri/CLI), which creates a
-        // fresh one before each run. Core must NOT recreate it here — doing so
-        // would replace the token the caller holds, making every abort cancel a
-        // stale instance while the running loop watches a different one.
+        // Wait for the Run task to fully complete (log flush, reflection, etc.).
+        if let Some(handle) = handle {
+            let _ = handle.join().await;
+        }
+
         let was_aborted = self.cancel_token.is_cancelled();
         if was_aborted {
             self.state = AgentState::Aborted;
@@ -564,607 +599,22 @@ impl Agent {
         }
         self.steering_queue.clear();
         self.follow_up_queue.clear();
-        self.hook_registry.fire_session_end(&self.id);
+        self.hook_registry.lock().fire_session_end(&self.id);
         traced(AgentEvent::AgentEnd {
             messages: self.context.messages(),
         });
 
-        result
+        Ok(final_text)
     }
 
-    #[tracing::instrument(skip_all)]
-    async fn run_loop(&mut self, on_event: &(impl Fn(AgentEvent) + Send + Sync)) -> Result<String> {
-        let max_iterations = self.client.model.max_iterations;
-
-        for turn_index in 0..max_iterations {
-            tracing::info!(turn = turn_index, "Starting turn {}", turn_index);
-            if self.cancel_token.is_cancelled() {
-                self.state = AgentState::Aborted;
-                return Ok("Agent aborted by user during tool execution.".to_string());
-            }
-            on_event(AgentEvent::TurnStart { turn_index });
-            self.hook_registry.fire_turn_start(turn_index);
-
-            match self.run_turn(turn_index, max_iterations, on_event).await {
-                TurnOutcome::Final(text) => return Ok(text),
-                TurnOutcome::Continue => {}
-                TurnOutcome::Stop(msg) => return Ok(msg),
-            }
-        }
-
-        bail!("unexpected end of agent loop")
-    }
-
-    /// Execute one turn of the ReAct loop, segmented into named stages:
-    /// `Refresh → Compact → Model → Dispatch → Execute → Observe`.
-    ///
-    /// Control flow is identical to the pre-Phase-E inline implementation;
-    /// the staging is structural (named stages + logging) only, with no
-    /// external processor abstraction.
-    async fn run_turn(
-        &mut self,
-        turn_index: usize,
-        max_iterations: usize,
-        on_event: &(impl Fn(AgentEvent) + Send + Sync),
-    ) -> TurnOutcome {
-        // ── Stage: Refresh ───────────────────────────────────────────
-        tracing::debug!(turn = turn_index, stage = Stage::Refresh.as_str());
-        self.refresh_context_segments();
-
-        // ── Stage: Compact ───────────────────────────────────────────
-        // On-demand compact optimized for DeepSeek prefix caching.
-        // Uses chunked_drop (zero-cost, cache-friendly) as primary
-        // strategy, with LLM summarization as fallback.
-        tracing::debug!(turn = turn_index, stage = Stage::Compact.as_str());
-        self.maybe_compact().await;
-
-        // ── Stage: Model ─────────────────────────────────────────────
-        // Invoke the model with loop-level recovery (Phase A). This
-        // centralizes HTTP-stream errors and applies context compaction /
-        // token escalation / retry instead of abandoning the turn on the
-        // first failure.
-        tracing::debug!(turn = turn_index, stage = Stage::Model.as_str());
-        let (text, tool_calls, message_id) = match self.model_turn(on_event).await {
-            Ok(r) => r,
-            Err(e) => {
-                if self.cancel_token.is_cancelled() {
-                    return TurnOutcome::Stop("Agent aborted by user.".to_string());
-                }
-                on_event(AgentEvent::Error(e.clone()));
-                return TurnOutcome::Stop(format!(
-                    "I encountered an error communicating with the model: {e}. Please try again."
-                ));
-            }
-        };
-
-        // ── Stage: Dispatch ──────────────────────────────────────────
-        tracing::debug!(turn = turn_index, stage = Stage::Dispatch.as_str());
-        if tool_calls.is_empty() {
-            // No tool calls — this is the final answer.
-            let assistant_msg = Message::assistant(&text);
-            self.context.add(assistant_msg.clone());
-            on_event(AgentEvent::MessageEnd {
-                message_id: message_id.clone(),
-                message: assistant_msg.clone(),
-            });
-            on_event(AgentEvent::TurnEnd {
-                turn_index,
-                assistant_message: assistant_msg,
-                tool_results: vec![],
-            });
-            self.hook_registry.fire_turn_end(turn_index);
-
-            if let Some(mem) = self.memory.clone() {
-                mem.lock().store_conversation("assistant", &text);
-                self.maybe_consolidate();
-            }
-
-            // Check for follow-up messages
-            if let Some(follow_up) = self.follow_up_queue.pop_front() {
-                self.context.add(follow_up);
-                return TurnOutcome::Continue;
-            }
-
-            return TurnOutcome::Final(text);
-        }
-
-        // Add assistant message with tool calls
-        let assistant_msg = if !text.is_empty() {
-            let msg = Message::assistant_with_tools(&text, tool_calls.clone());
-            self.context.add(msg.clone());
-            msg
-        } else {
-            let msg = Message::assistant_with_tools("", tool_calls.clone());
-            self.context.add(msg.clone());
-            msg
-        };
-
-        on_event(AgentEvent::MessageEnd {
-            message_id: message_id.clone(),
-            message: assistant_msg.clone(),
-        });
-
-        // ── Stage: Execute ───────────────────────────────────────────
-        tracing::debug!(turn = turn_index, stage = Stage::Execute.as_str());
-        self.state = AgentState::ExecutingTools;
-        let tool_results = {
-            let mut orchestrator = executor::ToolOrchestrator {
-                registry: &self.registry,
-                permission_policy: &mut self.permission_policy,
-                hook_registry: &mut self.hook_registry,
-                tool_execution_mode: self.tool_execution_mode,
-                cancel_token: self.cancel_token.clone(),
-                approval_resolver: None,
-                session_id: self.current_session_id.clone(),
-            };
-            orchestrator
-                .execute_tools(&tool_calls, &|ev, _call_id: &str| on_event(ev))
-                .await
-        };
-        self.state = AgentState::Streaming;
-
-        // ── Stage: Observe ───────────────────────────────────────────
-        tracing::debug!(turn = turn_index, stage = Stage::Observe.as_str());
-        let mut result_records = Vec::new();
-        for (call, result) in tool_calls.iter().zip(&tool_results) {
-            let is_error = result.starts_with("Error")
-                || result.starts_with("Permission denied")
-                || result.starts_with("Hook vetoed");
-
-            result_records.push(ToolResultRecord {
-                tool_call_id: call.id.clone(),
-                tool_name: call.function.name.clone(),
-                result: result.clone(),
-                is_error,
-            });
-
-            on_event(AgentEvent::ToolExecutionEnd {
-                tool_call_id: call.id.clone(),
-                tool_name: call.function.name.clone(),
-                result: result.clone(),
-                is_error,
-            });
-
-            self.context
-                .add(Message::tool(call.id.clone(), result.clone(), Some(call.function.name.clone())));
-        }
-
-        on_event(AgentEvent::TurnEnd {
-            turn_index,
-            assistant_message: assistant_msg,
-            tool_results: result_records,
-        });
-        self.hook_registry.fire_turn_end(turn_index);
-
-        // Check for steering messages (injected before next LLM call)
-        if let Some(entry) = self.steering_queue.pop_front() {
-            self.context.add(entry.message);
-        }
-
-        // Check for follow-up messages (only when no more tool calls pending)
-        if let Some(follow_up) = self.follow_up_queue.pop_front() {
-            self.context.add(follow_up);
-        }
-
-        if turn_index == max_iterations - 1 {
-            let summary = build_iteration_limit_summary(&self.context, max_iterations);
-            on_event(AgentEvent::Error(summary.clone()));
-            return TurnOutcome::Stop(summary);
-        }
-
-        TurnOutcome::Continue
-    }
-
-    /// Build the outgoing message list for this turn: refresh-independent
-    /// snapshot of context messages with optional `transform_context` applied.
+    /// Build the outgoing message list. Used by tests to verify context
+    /// processors chain correctly (the Run applies processors internally).
     fn build_messages(&self) -> Vec<Message> {
         let mut messages = self.context.messages();
         for processor in &self.context_processors {
             messages = (processor.transform)(messages);
         }
         messages
-    }
-
-    /// Serialize messages to JSON values for the `BeforeModel` hook snapshot.
-    /// Only the role + a truncated content preview is kept to bound cost.
-    fn snapshot_messages_for_hook(&self, messages: &[Message]) -> Vec<Value> {
-        messages
-            .iter()
-            .map(|m| {
-                let content = m.content.as_deref().unwrap_or("");
-                let preview = if content.len() > 500 {
-                    let end = content.floor_char_boundary(500);
-                    format!("{}...", &content[..end])
-                } else {
-                    content.to_string()
-                };
-                serde_json::json!({ "role": format!("{:?}", m.role), "preview": preview })
-            })
-            .collect()
-    }
-
-    /// Invoke the model for one turn with loop-level recovery.
-    ///
-    /// This wraps `chat_completion_stream` + `collect_stream` and consults the
-    /// [`RecoveryEngine`] on failure. Unlike the HTTP-layer retry/fallback in
-    /// [`crate::client::OpenAIClient`], this handles *whole-turn* recovery:
-    /// context-too-long (compact then retry), token truncation (escalate
-    /// `max_tokens` then retry), and a bounded number of generic retries.
-    async fn model_turn(
-        &mut self,
-        on_event: &(impl Fn(AgentEvent) + Send + Sync),
-    ) -> Result<(String, Vec<ToolCall>, String), String> {
-        const MAX_RECOVERY_ATTEMPTS: u32 = 3;
-
-        for _attempt in 0..MAX_RECOVERY_ATTEMPTS {
-            if self.cancel_token.is_cancelled() {
-                return Err("aborted".to_string());
-            }
-
-            let messages = self.build_messages();
-            let tools = self.registry.tool_definitions();
-
-            // BeforeModel hook: allows SkipModel short-circuit (testing/cache).
-            let snapshot = self.snapshot_messages_for_hook(&messages);
-            if let Some(preset) = self.hook_registry.fire_before_model(&snapshot) {
-                self.recovery_ctx.record_success();
-                self.hook_registry.fire_after_model(&preset, 0);
-                return Ok((preset, Vec::new(), uuid::Uuid::new_v4().to_string()));
-            }
-
-            let message_id = uuid::Uuid::new_v4().to_string();
-            on_event(AgentEvent::MessageStart {
-                message_id: message_id.clone(),
-                message: crate::types::Message::assistant(""),
-            });
-
-            // Acquire the stream. On error we propagate an owned String so the
-            // immutable borrow of `self.client` ends before we call the
-            // `&mut self` recovery path below.
-            let stream = self
-                .client
-                .chat_completion_stream(&messages, &tools)
-                .await
-                .map_err(|e| format!("LLM request failed: {e}"))?;
-
-            // Collect the stream within a scope that only borrows `self`
-            // immutably (cancel token). The result is owned, so the borrow is
-            // released by the time we reach the recovery path.
-            let collected: Result<(String, Vec<ToolCall>, String), String> = {
-                let cancel = self.cancel_token.clone();
-                let res = self
-                    .collect_stream(stream, message_id.clone(), on_event)
-                    .await;
-                match res {
-                    Ok(r) => Ok(r),
-                    Err(e) => {
-                        if cancel.is_cancelled() {
-                            return Err("aborted".to_string());
-                        }
-                        Err(format!("Stream error: {e}"))
-                    }
-                }
-            };
-
-            match collected {
-                Ok((text, tool_calls, message_id)) => {
-                    self.recovery_ctx.record_success();
-                    self.hook_registry.fire_after_model(&text, tool_calls.len());
-                    return Ok((text, tool_calls, message_id));
-                }
-                Err(msg) => {
-                    self.recovery_ctx.record_error(&msg);
-                    match self.try_recover(&msg, on_event).await {
-                        RecoveryOutcome::Retry => continue,
-                        RecoveryOutcome::GiveUp => return Err(msg),
-                    }
-                }
-            }
-        }
-
-        Err("exhausted recovery attempts".to_string())
-    }
-
-    /// Apply one recovery action based on the current [`RecoveryContext`].
-    /// Returns whether the turn should be retried or given up.
-    async fn try_recover(
-        &mut self,
-        error: &str,
-        on_event: &(impl Fn(AgentEvent) + Send + Sync),
-    ) -> RecoveryOutcome {
-        let action = self.recovery.determine_strategy(&self.recovery_ctx);
-        match action {
-            RecoveryAction::CompactContext { target_ratio } => {
-                on_event(AgentEvent::Error(format!(
-                    "context too long; compacting to {:.0}% before retry",
-                    target_ratio * 100.0
-                )));
-                self.force_compact(target_ratio).await;
-                RecoveryOutcome::Retry
-            }
-            RecoveryAction::EscalateTokens { new_max_tokens } => {
-                on_event(AgentEvent::Error(format!(
-                    "escalating max_tokens to {new_max_tokens}"
-                )));
-                self.client.set_max_tokens(new_max_tokens);
-                RecoveryOutcome::Retry
-            }
-            RecoveryAction::Retry { delay_ms } => {
-                on_event(AgentEvent::Error(format!(
-                    "retrying model call after {delay_ms}ms"
-                )));
-                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                RecoveryOutcome::Retry
-            }
-            RecoveryAction::SwitchModel { model } => {
-                if self.config.get_model(&model).is_some() && self.switch_model(&model).is_ok() {
-                    on_event(AgentEvent::Error(format!(
-                        "switched to fallback model: {model}"
-                    )));
-                    RecoveryOutcome::Retry
-                } else {
-                    on_event(AgentEvent::Error(format!(
-                        "recovery requested fallback model '{model}' which is unavailable; giving up: {error}"
-                    )));
-                    RecoveryOutcome::GiveUp
-                }
-            }
-            RecoveryAction::Fail => {
-                on_event(AgentEvent::Error(format!("unrecoverable: {error}")));
-                RecoveryOutcome::GiveUp
-            }
-        }
-    }
-
-    /// Force an LLM compaction of the oldest turns regardless of current token
-    /// count. `target_ratio` is the desired remaining fraction of context after
-    /// compaction (e.g. 0.8 means summarize the oldest 20%).
-    async fn force_compact(&mut self, target_ratio: f64) {
-        let remove_fraction = (1.0 - target_ratio).clamp(0.1, 0.6);
-        let num_turns = (self.context.len().max(4) as f64 * remove_fraction) as usize;
-        let request = match self.context.prepare_summary(num_turns) {
-            Some(r) => r,
-            None => return,
-        };
-        let messages = vec![Message::system(&request.prompt)];
-        let (result_text, _) = match self.client.chat_completion(&messages, &[]).await {
-            Ok(r) => r,
-            Err(_) => return,
-        };
-        let summary: crate::compressor::TurnSummary = match serde_json::from_str(&result_text) {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        self.context
-            .apply_summary(request.split_index, &summary, num_turns);
-    }
-
-    async fn collect_stream(
-        &self,
-        stream: impl futures::Stream<Item = Result<StreamEvent>>,
-        message_id: String,
-        on_event: &(impl Fn(AgentEvent) + Send + Sync),
-    ) -> Result<(String, Vec<ToolCall>, String)> {
-        use crate::client::streaming::ToolCallAccumulator;
-
-        let mut text_buffer = String::new();
-        let mut accumulator = ToolCallAccumulator::new();
-        let mut has_tool_calls = false;
-        let cancel = self.cancel_token.clone();
-
-        tokio::pin!(stream);
-        loop {
-            tokio::select! {
-                // Active cancellation: wake immediately when the token fires,
-                // even if the model stream is stalled (network block, server
-                // holding the connection open with no tokens). The old
-                // reactive check only ran after `stream.next()` returned a new
-                // event, so a stalled stream could never be interrupted.
-                _ = cancel.cancelled() => {
-                    return Err(anyhow::anyhow!("aborted"));
-                }
-                next = stream.next() => {
-                    let event = match next {
-                        None => break,
-                        Some(e) => e?,
-                    };
-                    match event {
-                        StreamEvent::ThinkingDelta(delta) => {
-                            if !delta.is_empty() {
-                                on_event(AgentEvent::MessageUpdate {
-                                    message_id: message_id.clone(),
-                                    delta: MessageDelta::Thinking(delta),
-                                });
-                            }
-                        }
-                        StreamEvent::TextDelta(delta) => {
-                            if !delta.is_empty() {
-                                text_buffer.push_str(&delta);
-                                on_event(AgentEvent::MessageUpdate {
-                                    message_id: message_id.clone(),
-                                    delta: MessageDelta::Text(delta),
-                                });
-                            }
-                        }
-                        StreamEvent::ToolCallDelta { .. } => {
-                            has_tool_calls = true;
-                            accumulator.push(event);
-                        }
-                        StreamEvent::Done => break,
-                        StreamEvent::CompleteWithUsage { .. } => break,
-                    }
-                }
-            }
-        }
-
-        let tool_calls = if has_tool_calls {
-            accumulator.into_tool_calls()
-        } else {
-            vec![]
-        };
-
-        Ok((text_buffer, tool_calls, message_id))
-    }
-
-    /// Refresh per-turn context segments: environment, tool catalog,
-    /// active memory, and execution plan.
-    fn refresh_context_segments(&mut self) {
-        // Segment 3: ENVIRONMENT
-        let cwd = std::env::current_dir()
-            .ok()
-            .and_then(|p| p.to_str().map(|s| s.to_string()));
-        let env_str = Context::build_environment_string(cwd.as_deref(), None, None);
-        self.context.set_environment(&env_str);
-
-        // Segment 4: TOOL CATALOG
-        let tool_defs = self.registry.tool_definitions();
-        let danger_map = build_danger_map(&tool_defs, &self.permission_policy);
-        let tool_catalog = Context::build_tool_catalog_string(&tool_defs, &danger_map);
-        self.context.set_tool_catalog(&tool_catalog);
-
-        // Segment 5: ACTIVE MEMORY — agverse.md is the sole core memory.
-        // Recall is tool-only (conversation_search), not auto-injected.
-        {
-            let mode = self.config.memory.as_ref()
-                .map(|m| crate::config::MemoryMode::from_str(&m.mode))
-                .unwrap_or_default();
-            let mode_prompt = crate::prompt::memory_mode_prompt(&mode);
-            let mut mem_str = mode_prompt.to_string();
-
-            if mode != crate::config::MemoryMode::Stateless {
-                let global_path = crate::paths::get_global_agverse_md_path();
-                if let Ok(content) = std::fs::read_to_string(&global_path) {
-                    if !mem_str.is_empty() {
-                        mem_str.push_str("\n\n");
-                    }
-                    mem_str.push_str(&format!("Project Instructions:\n## Global Project\n{content}"));
-                }
-            }
-
-            self.context.set_active_memory(&mem_str);
-        }
-
-        // Segment 7: EXECUTION PLAN — inject current todo list
-        let plan_str = self.todo_list.lock().to_context_string();
-        if !plan_str.is_empty() {
-            self.context.set_execution_plan(&plan_str);
-        }
-    }
-
-    /// Compact strategy.
-    ///
-    /// Two-tier approach optimized for DeepSeek prefix caching:
-    /// 1. Chunked drop (preferred) — batch-drop oldest 50% of turns.
-    /// 2. LLM summarize (fallback) — when chunked_drop isn't sufficient.
-    async fn maybe_compact(&mut self) {
-        const COMPACT_THRESHOLD: f64 = 0.80;
-        const CHUNK_KEEP_RECENT: usize = 20;
-
-        let current = self.context.current_token_count();
-        let threshold =
-            (self.client.model.max_context_tokens as f64 * COMPACT_THRESHOLD) as usize;
-
-        if current < threshold {
-            return;
-        }
-
-        // Tier 1: Chunked drop — zero-cost, cache-friendly bulk removal.
-        let keep = (self.context.len() / 2).max(4).min(CHUNK_KEEP_RECENT);
-        if self.context.chunked_drop(keep) > 0 {
-            tracing::info!(
-                compact = "chunked_drop",
-                tokens_before = current,
-                tokens_after = self.context.current_token_count(),
-                "Chunked drop compact applied"
-            );
-            if self.context.current_token_count() < threshold {
-                return;
-            }
-        }
-
-        // Also run trim_to_fit for snip/dedup/chunk compression.
-        let _result = self.context.trim_to_fit();
-
-        if self.context.current_token_count() < threshold {
-            return;
-        }
-
-        // Tier 2: LLM summarize — expensive, handles pathological cases.
-        let num_turns = self.context.len().max(4) * 2 / 5;
-        let request = match self.context.prepare_summary(num_turns) {
-            Some(r) => r,
-            None => return,
-        };
-
-        let messages = vec![Message::system(&request.prompt)];
-        let (result_text, _) = match self.client.chat_completion(&messages, &[]).await {
-            Ok(r) => r,
-            Err(_) => {
-                self.context.micro_compact(self.context.len().max(4) / 3);
-                return;
-            }
-        };
-
-        let summary: crate::compressor::TurnSummary = match serde_json::from_str(&result_text) {
-            Ok(s) => {
-                tracing::info!(
-                    compact = "llm_summary",
-                    turns_summarized = num_turns,
-                    "LLM compact applied"
-                );
-                s
-            }
-            Err(_) => {
-                self.context.micro_compact(self.context.len().max(4) / 3);
-                return;
-            }
-        };
-
-        self.context
-            .apply_summary(request.split_index, &summary, num_turns);
-    }
-
-    fn maybe_consolidate(&mut self) {
-        const CONSOLIDATE_INTERVAL: u64 = 20;
-
-        self.consolidate_counter += 1;
-        if self.consolidate_counter % CONSOLIDATE_INTERVAL != 0 {
-            return;
-        }
-
-        if let Some(ref mem) = self.memory {
-            let should_consolidate = !mem.lock().session_id().is_empty();
-
-            if should_consolidate {
-                let memory = mem.clone();
-                tokio::spawn(async move {
-                    let consolidator = {
-                        let guard = memory.lock();
-                        guard.consolidator_clone()
-                    }; // lock released — heavy CPU work runs lock-free
-                    // Run O(n²) dedup on tokio's blocking thread pool
-                    // so it doesn't tie up an async worker for seconds.
-                    let result = tokio::task::spawn_blocking(move || {
-                        consolidator.consolidate()
-                    })
-                    .await
-                    .unwrap_or_else(|e| {
-                        Err(anyhow::anyhow!("consolidation panicked: {e}"))
-                    });
-                    match result {
-                        Ok(report) => {
-                            if report.deduped_recall > 0 || report.deduped_archival > 0 {
-                                eprintln!(
-                                    "[memory] consolidated: {} recall, {} archival records removed",
-                                    report.deduped_recall, report.deduped_archival
-                                );
-                            }
-                        }
-                        Err(e) => eprintln!("[memory] consolidation error: {e}"),
-                    }
-                });
-            }
-        }
     }
 
     // ── Public control methods ──────────────────────────────────────
@@ -1369,12 +819,12 @@ impl Agent {
         &mut self.permission_policy
     }
 
-    pub fn hook_registry(&self) -> &HookRegistry {
-        &self.hook_registry
+    pub fn hook_registry(&self) -> parking_lot::MutexGuard<'_, HookRegistry> {
+        self.hook_registry.lock()
     }
 
-    pub fn hook_registry_mut(&mut self) -> &mut HookRegistry {
-        &mut self.hook_registry
+    pub fn hook_registry_mut(&mut self) -> parking_lot::MutexGuard<'_, HookRegistry> {
+        self.hook_registry.lock()
     }
 
     pub fn current_model_config(&self) -> &crate::config::ModelConfig {
@@ -1404,89 +854,6 @@ fn build_danger_map(
         map.insert(tool.function.name.clone(), danger);
     }
     map
-}
-
-fn build_iteration_limit_summary(
-    context: &crate::context::Context,
-    max_iterations: usize,
-) -> String {
-    let messages = context.messages();
-
-    let user_request = messages
-        .iter()
-        .rfind(|m| m.role == crate::types::Role::User)
-        .map(|m| m.content.as_deref().unwrap_or(""))
-        .unwrap_or("your request");
-
-    let mut tool_counts: HashMap<&str, usize> = HashMap::new();
-    let mut tool_errors: Vec<&str> = Vec::new();
-    let mut total_tool_calls = 0;
-
-    for msg in &messages {
-        if msg.role == crate::types::Role::Assistant
-            && let Some(ref calls) = msg.tool_calls
-        {
-            for call in calls {
-                *tool_counts.entry(&call.function.name).or_insert(0) += 1;
-                total_tool_calls += 1;
-            }
-        }
-        if msg.role == crate::types::Role::Tool
-            && let Some(ref content) = msg.content
-        {
-            let trimmed = content.trim();
-            if (trimmed.starts_with("Error") || trimmed.starts_with("Failed to fetch"))
-                && let Some(ref name) = msg.name
-            {
-                tool_errors.push(name);
-            }
-        }
-    }
-
-    let tool_summary: Vec<String> = tool_counts
-        .iter()
-        .map(|(name, count)| format!("  - {name}: {count} time(s)"))
-        .collect();
-
-    let mut msg = format!(
-        "I've reached the maximum number of steps ({max_iterations}) while working on: \"{user_request}\"\n\n",
-    );
-
-    if !tool_summary.is_empty() {
-        msg.push_str(&format!(
-            "Here is a summary of the tools used:\n{}\n\n",
-            tool_summary.join("\n")
-        ));
-    }
-
-    let webfetch_count = tool_counts.get("webfetch").copied().unwrap_or(0);
-    let webfetch_errors = tool_errors.iter().filter(|&&n| n == "webfetch").count();
-
-    if total_tool_calls == 0 {
-        msg.push_str("I wasn't able to take any action. This may indicate an issue with tool availability or model configuration.");
-    } else if webfetch_count > 0 && webfetch_errors as f64 >= webfetch_count as f64 * 0.5 {
-        msg.push_str(&format!(
-            "Web fetching was attempted {webfetch_count} time(s) but encountered {webfetch_errors} errors. \
-             Many websites block automated access or return errors when fetched programmatically. \
-             To get better results:\n\
-             - Provide the information you're looking for directly rather than URLs to fetch\n\
-             - Use a search-based approach or specify known accessible URLs\n\
-             - If you have a specific webpage in mind, paste its relevant content instead of asking me to fetch it\n\
-             - Consider using an API or RSS feed endpoint instead of a regular webpage"
-        ));
-    } else if tool_errors.len() as f64 >= total_tool_calls as f64 * 0.5 {
-        msg.push_str(&format!(
-            "{total_tool_calls} total tool call(s) were made with high failure rate. \
-             Please provide more specific guidance or simplify the task so I can complete it within the step limit."
-        ));
-    } else {
-        msg.push_str(&format!(
-            "The task may be more complex than can be completed in {max_iterations} steps. \
-             Please try breaking it down into smaller sub-tasks, or provide more specific instructions."
-        ));
-    }
-
-    msg
 }
 
 #[cfg(test)]

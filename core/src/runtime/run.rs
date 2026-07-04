@@ -92,7 +92,7 @@ pub struct Run {
     client: OpenAIClient,
     registry: ToolRegistry,
     permission_policy: PermissionPolicy,
-    hook_registry: HookRegistry,
+    hook_registry: Arc<parking_lot::Mutex<HookRegistry>>,
     recovery: RecoveryEngine,
     recovery_ctx: RecoveryContext,
     context_processors: Vec<ContextProcessor>,
@@ -413,6 +413,9 @@ impl Run {
         // Run the loop
         let result = self.run_loop().await;
 
+        // Refresh snapshot so callers (Agent wrapper) get final context.
+        self.refresh_context_snapshot();
+
         match result {
             Ok(text) => {
                 // Auto-session-summary: write a brief memory file
@@ -470,7 +473,7 @@ impl Run {
             self.current_turn_id = Some(turn_id.clone());
             self.emit(RunEvent::TurnStarted { index: turn_index });
             self.refresh_context_snapshot();
-            self.hook_registry.fire_turn_start(turn_index);
+            self.hook_registry.lock().fire_turn_start(turn_index);
 
             match self.run_turn(turn_index).await {
                 Ok(TurnOutcome::Final(text)) => return Ok(text),
@@ -700,7 +703,7 @@ impl Run {
                 message: assistant_msg.clone(),
             });
             self.emit(RunEvent::TurnEnded { index: turn_index });
-            self.hook_registry.fire_turn_end(turn_index);
+            self.hook_registry.lock().fire_turn_end(turn_index);
 
             // Store in memory
             if let Some(ref mem) = self.brain.memory {
@@ -823,7 +826,7 @@ impl Run {
             let mut orchestrator = ToolOrchestrator {
                 registry: &self.registry,
                 permission_policy: &mut self.permission_policy,
-                hook_registry: &mut self.hook_registry,
+                hook_registry: self.hook_registry.clone(),
                 tool_execution_mode: self.tool_execution_mode,
                 cancel_token: self.cancel.clone(),
                 approval_resolver: Some(approval_resolver),
@@ -890,7 +893,7 @@ impl Run {
         }
 
         self.emit(RunEvent::TurnEnded { index: turn_index });
-        self.hook_registry.fire_turn_end(turn_index);
+        self.hook_registry.lock().fire_turn_end(turn_index);
 
         // Process steering messages (injected before next LLM call).
         // Inject one per turn boundary — remaining messages will be
@@ -932,9 +935,9 @@ impl Run {
 
             // BeforeModel hook: SkipModel short-circuit
             let snapshot = self.snapshot_messages_for_hook(&messages);
-            if let Some(preset) = self.hook_registry.fire_before_model(&snapshot) {
+            if let Some(preset) = self.hook_registry.lock().fire_before_model(&snapshot) {
                 self.recovery_ctx.record_success();
-                self.hook_registry.fire_after_model(&preset, 0);
+                self.hook_registry.lock().fire_after_model(&preset, 0);
                 return Ok((preset, Vec::new(), uuid::Uuid::new_v4().to_string(), CacheUsage::default()));
             }
 
@@ -962,7 +965,7 @@ impl Run {
             match collected {
                 Ok((text, tool_calls, message_id, cache_usage)) => {
                     self.recovery_ctx.record_success();
-                    self.hook_registry.fire_after_model(&text, tool_calls.len());
+                    self.hook_registry.lock().fire_after_model(&text, tool_calls.len());
 
                     return Ok((text, tool_calls, message_id, cache_usage));
                 }

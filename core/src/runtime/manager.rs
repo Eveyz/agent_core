@@ -129,6 +129,11 @@ impl RunManager {
         &self.brain
     }
 
+    /// Mutable access to the runs map (used by Agent wrapper to remove handles).
+    pub async fn runs_mut(&self) -> tokio::sync::MutexGuard<'_, HashMap<RunId, RunHandle>> {
+        self.runs.lock().await
+    }
+
     /// Look up the active (non-terminal) Run for a session and return a
     /// best-effort read-only snapshot of its context messages. Used by
     /// side-channel `/btw` queries that must not touch the main Run.

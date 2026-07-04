@@ -1,4 +1,5 @@
 use anyhow::Result;
+use parking_lot;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -95,7 +96,7 @@ pub struct Subagent {
     context: Context,
     registry: ToolRegistry,
     permission_policy: crate::permission::PermissionPolicy,
-    hook_registry: crate::hooks::HookRegistry,
+    hook_registry: Arc<parking_lot::Mutex<crate::hooks::HookRegistry>>,
     /// Per-agent memory store (PLAN-0009). When set, memories are injected
     /// before execution and persisted after.
     memory_store: Option<Arc<AgentMemoryStore>>,
@@ -130,7 +131,7 @@ impl Subagent {
             context,
             registry,
             permission_policy,
-            hook_registry: crate::hooks::HookRegistry::new(),
+            hook_registry: Arc::new(parking_lot::Mutex::new(crate::hooks::HookRegistry::new())),
             memory_store: None,
             agent_id: None,
             session_id: None,
@@ -287,7 +288,7 @@ impl Subagent {
                 let mut orchestrator = crate::agent::executor::ToolOrchestrator {
                     registry: &self.registry,
                     permission_policy: &mut self.permission_policy,
-                    hook_registry: &mut self.hook_registry,
+                    hook_registry: self.hook_registry.clone(),
                     tool_execution_mode: crate::types::ToolExecutionMode::Sequential,
                     cancel_token: tokio_util::sync::CancellationToken::new(),
                     approval_resolver: None,

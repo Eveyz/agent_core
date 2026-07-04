@@ -98,7 +98,7 @@ impl ToolRegistry {
         registry.register(Box::new(grep::GrepTool));
         registry.register(Box::new(glob::GlobTool));
         registry.register(Box::new(bash::BashTool::new()));
-        registry.register(Box::new(webfetch::WebFetchTool));
+        registry.register(Box::new(webfetch::WebFetchTool::new()));
         if let Some(tool) = tavily_search::TavilySearchTool::from_env() {
             registry.register(Box::new(tool));
         }
@@ -275,7 +275,7 @@ pub fn build_tool_by_name(name: &str) -> Option<Box<dyn Tool>> {
         "grep" => Some(Box::new(grep::GrepTool)),
         "glob" => Some(Box::new(glob::GlobTool)),
         "bash" => Some(Box::new(bash::BashTool::new())),
-        "webfetch" => Some(Box::new(webfetch::WebFetchTool)),
+        "webfetch" => Some(Box::new(webfetch::WebFetchTool::new())),
         "tavily_search" => {
             tavily_search::TavilySearchTool::from_env().map(|t| Box::new(t) as Box<dyn Tool>)
         }

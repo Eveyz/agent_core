@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 pub struct ToolOrchestrator<'a> {
     pub registry: &'a ToolRegistry,
     pub permission_policy: &'a mut PermissionPolicy,
-    pub hook_registry: &'a mut HookRegistry,
+    pub hook_registry: Arc<Mutex<HookRegistry>>,
     pub tool_execution_mode: ToolExecutionMode,
     pub cancel_token: CancellationToken,
     /// Per-Run approval resolver. If `None`, falls back to the global map
@@ -240,6 +240,7 @@ impl<'a> ToolOrchestrator<'a> {
             // Pre-tool hook
             match self
                 .hook_registry
+                .lock()
                 .fire_pre_tool_use(&call.function.name, &args)
             {
                 PreToolResult::Veto(reason) => {
@@ -349,6 +350,7 @@ impl<'a> ToolOrchestrator<'a> {
             if !is_error {
                 let final_output =
                     self.hook_registry
+                        .lock()
                         .fire_post_tool_use(&call.function.name, args, &output);
                 results[*i] = final_output;
             }

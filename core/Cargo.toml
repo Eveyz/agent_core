@@ -7,7 +7,7 @@ edition = "2024"
 dirs = "5"
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
-reqwest = { version = "0.12", features = ["stream", "json", "gzip", "brotli"] }
+reqwest = { version = "0.12", features = ["stream", "json", "gzip", "brotli", "cookies"] }
 readability = "0.3"
 htmd = "0.1"
 url = "2"
