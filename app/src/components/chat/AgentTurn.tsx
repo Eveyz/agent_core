@@ -271,7 +271,7 @@ export const AgentTurnUI = memo(function AgentTurnUI({
         return (
           <React.Fragment key={item.type === 'iteration' ? item.data.id : `block-${idx}`}>
             {item.type === 'assistant' ? (
-              (!collapsed || lastIterIdx === -1 || idx > lastIterIdx) && (
+              (lastIterIdx === -1 || idx > lastIterIdx) && (
                 <MarkdownContent
                   content={item.data.text}
                   className="assistant-msg"

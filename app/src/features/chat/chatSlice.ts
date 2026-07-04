@@ -425,12 +425,14 @@ export const chatSlice = createSlice({
           let startTime: number | undefined = undefined;
           let endTime: number | undefined = undefined;
           let cacheHitRate: number | undefined = undefined;
+          let turnIds: string[] | undefined = undefined;
           for (const ev of turnEvents) {
             if (ev.event_type === 'turn_meta' && ev.payload) {
               const meta = ev.payload as Record<string, unknown>;
               startTime = meta.startTime as number | undefined;
               endTime = meta.endTime as number | undefined;
               cacheHitRate = meta.cacheHitRate as number | undefined;
+              turnIds = meta.turnIds as string[] | undefined;
               break;
             }
           }
@@ -456,6 +458,7 @@ export const chatSlice = createSlice({
             startTime,
             endTime,
             cacheHitRate,
+            turnIds,
           });
         }
       }

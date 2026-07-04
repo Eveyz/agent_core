@@ -73,7 +73,7 @@ export const UserRow = memo(function UserRow({ entry, modelName, onRetry, isProc
   return (
     <div className="message-row user-row">
       <div style={flexColumnEnd}>
-        <div className="user-msg">{entry.text}</div>
+        <div className="user-msg">{entry.text?.trimEnd()}</div>
         <div style={flexRowMeta}>
           <span>{modelName || '—'}</span>
           <span style={cursorPointer} onClick={handleCopy}>

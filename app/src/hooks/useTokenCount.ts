@@ -52,9 +52,36 @@ export function useTokenCount(): number {
   return displayCount;
 }
 
+function estimateModelCalls(blocks: any[]): number {
+  if (!blocks || blocks.length === 0) return 1;
+  let calls = 1;
+  let lastWasTool = false;
+  for (const b of blocks) {
+    if (b.type === 'tool') {
+      lastWasTool = true;
+    } else if (b.type === 'assistant' || b.type === 'thinking' || b.type === 'error') {
+      if (lastWasTool) {
+        calls++;
+        lastWasTool = false;
+      }
+    }
+  }
+  return calls;
+}
+
 const selectTurnCount = createSelector(
   [selectEntries],
-  (entries) => entries.filter((e) => e.type === 'turn').length
+  (entries) => {
+    return entries.reduce((sum, e) => {
+      if (e.type === 'turn') {
+        if (e.turnIds && e.turnIds.length > 0) {
+          return sum + e.turnIds.length;
+        }
+        return sum + estimateModelCalls(e.blocks || []);
+      }
+      return sum;
+    }, 0);
+  }
 );
 
 export function useTurnCount(): number {

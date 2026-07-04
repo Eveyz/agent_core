@@ -94,6 +94,8 @@ export const MarkdownContent = memo(function MarkdownContent({
   isStreaming?: boolean;
   plainText?: boolean;
 }) {
+  const trimmedContent = useMemo(() => content.trimEnd(), [content]);
+
   const handleClick = (e: React.MouseEvent) => {
     const target = e.target as HTMLElement;
     const a = target.closest('a');
@@ -109,7 +111,7 @@ export const MarkdownContent = memo(function MarkdownContent({
   if (plainText) {
     return (
       <div className={className} style={streamingStyle} onClick={handleClick}>
-        {content}
+        {trimmedContent}
       </div>
     );
   }
@@ -121,10 +123,10 @@ export const MarkdownContent = memo(function MarkdownContent({
     let lastIndex = 0;
     let match;
     
-    while ((match = codeBlockRegex.exec(content)) !== null) {
+    while ((match = codeBlockRegex.exec(trimmedContent)) !== null) {
       // Add text before code block
       if (match.index > lastIndex) {
-        const textContent = content.substring(lastIndex, match.index);
+        const textContent = trimmedContent.substring(lastIndex, match.index);
         if (textContent.trim()) {
           segments.push({ type: 'text', content: textContent });
         }
@@ -141,8 +143,8 @@ export const MarkdownContent = memo(function MarkdownContent({
     }
     
     // Add remaining text (and check if there's an unclosed code block at the end)
-    if (lastIndex < content.length) {
-      const remaining = content.substring(lastIndex);
+    if (lastIndex < trimmedContent.length) {
+      const remaining = trimmedContent.substring(lastIndex);
       const unclosedMatch = remaining.match(/```(\w*)\n([\s\S]*)$/);
       if (unclosedMatch) {
         const textBefore = remaining.substring(0, unclosedMatch.index);
@@ -162,7 +164,7 @@ export const MarkdownContent = memo(function MarkdownContent({
     }
     
     return segments;
-  }, [content]);
+  }, [trimmedContent]);
 
   if (segments) {
     return (
@@ -188,7 +190,7 @@ export const MarkdownContent = memo(function MarkdownContent({
   // Streaming fast path: cheap plain-text render, no parse.
   return (
     <div className={className} style={streamingStyle} onClick={handleClick}>
-      {content}
+      {trimmedContent}
     </div>
   );
 });
