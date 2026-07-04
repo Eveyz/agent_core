@@ -134,6 +134,16 @@ export interface ChatState {
   // /goal pinned goal (per-active-session, driven by goal_set/goal_completed events)
   goal: string | null;
   goalCompleted: boolean;
+  // Cumulative cache metrics from CacheSummary events
+  cacheMetrics: CacheMetrics | null;
+}
+
+export interface CacheMetrics {
+  total_turns: number;
+  total_hit_tokens: number;
+  total_miss_tokens: number;
+  turns_with_hits: number;
+  cumulative_hit_rate: number;
 }
 
 export interface DeltaPayload {
@@ -154,7 +164,7 @@ export type RunEventType =
   | 'subagent_started' | 'subagent_ended'
   | 'process_spawned' | 'process_killed'
   | 'todo_updated'
-  | 'cache_info'
+  | 'cache_info' | 'cache_summary'
   | 'steer_queued'
   | 'steer_injected'
   | 'steer_cancelled'
@@ -209,6 +219,12 @@ export interface RunEventPayload {
   steer_id?: string;
   queue_depth?: number;
   goal?: string;
+  // CacheSummary fields
+  total_turns?: number;
+  total_hit_tokens?: number;
+  total_miss_tokens?: number;
+  turns_with_hits?: number;
+  cumulative_hit_rate?: number;
 }
 
 export type RunState = 'created' | 'running' | 'awaiting_approval' | 'awaiting_input' | 'paused' | 'completed' | 'cancelled' | 'failed';

@@ -48,6 +48,7 @@ const initialState: ChatState = {
   learnEntries: [],
   goal: null,
   goalCompleted: false,
+  cacheMetrics: null,
 };
 
 // ── Resync thunk ─────────────────────────────────────────────────────

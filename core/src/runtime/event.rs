@@ -189,10 +189,23 @@ pub enum RunEvent {
 
     // ── Cache telemetry ────────────────────────────────────────────
     /// Per-turn cache hit/miss statistics from the model API response.
+    /// hit_rate sentinels:
+    ///   -1.0 → stable prefix drifted (expected cache miss, not a real rate)
+    ///   -2.0 → cache likely expired from idle timeout (expected cache miss)
     CacheInfo {
         hit_tokens: u64,
         miss_tokens: u64,
         hit_rate: f64,
+    },
+
+    /// Cumulative cache metrics emitted at Run completion.
+    /// Aggregates per-turn CacheInfo across the entire Run lifecycle.
+    CacheSummary {
+        total_turns: u64,
+        total_hit_tokens: u64,
+        total_miss_tokens: u64,
+        turns_with_hits: u64,
+        cumulative_hit_rate: f64,
     },
 
     // ── Mode changes ───────────────────────────────────────────────
@@ -211,6 +224,41 @@ pub struct TodoItemPayload {
     pub id: String,
     pub description: String,
     pub status: String,
+}
+
+/// Cumulative cache hit/miss statistics aggregated across all turns of a Run.
+/// Updated after each model call; emitted as `CacheSummary` at Run completion.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CacheMetrics {
+    pub total_turns: u64,
+    pub total_hit_tokens: u64,
+    pub total_miss_tokens: u64,
+    pub turns_with_hits: u64,
+    /// Cumulative token-level hit rate: total_hit / (total_hit + total_miss).
+    /// Returns 0.0 if no tokens have been tracked.
+    pub cumulative_hit_rate: f64,
+}
+
+impl CacheMetrics {
+    /// Feed a single turn's CacheUsage into the cumulative metrics.
+    pub fn record(&mut self, hit_tokens: u64, miss_tokens: u64) {
+        self.total_turns += 1;
+        self.total_hit_tokens += hit_tokens;
+        self.total_miss_tokens += miss_tokens;
+        if hit_tokens > 0 {
+            self.turns_with_hits += 1;
+        }
+        let total = self.total_hit_tokens + self.total_miss_tokens;
+        self.cumulative_hit_rate = if total > 0 {
+            self.total_hit_tokens as f64 / total as f64
+        } else {
+            0.0
+        };
+    }
+
+    pub fn has_data(&self) -> bool {
+        self.total_turns > 0
+    }
 }
 
 /// A stamped envelope wrapping a [`RunEvent`] with identity + ordering.

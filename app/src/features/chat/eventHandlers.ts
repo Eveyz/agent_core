@@ -6,6 +6,7 @@ import type {
   RunEventPayload,
   RunState,
   TodoItem,
+  CacheMetrics,
 } from './types';
 import {
   closeStreamingBlock,
@@ -217,12 +218,28 @@ export function handleCacheInfo(state: ChatState, hitRate: number): void {
     }
   }
   if (turn && turn.type === 'turn') {
-    if (hitRate === -1.0) {
+    // Any negative hit_rate is a sentinel (not a real rate):
+    //   -1.0 → prefix drifted   -2.0 → cache expired from idle
+    // Clear the display so the frontend doesn't show garbage.
+    if (hitRate < 0) {
       turn.cacheHitRate = undefined;
     } else {
       turn.cacheHitRate = hitRate;
     }
   }
+}
+
+export function handleCacheSummary(
+  state: ChatState,
+  metrics: { total_turns: number; total_hit_tokens: number; total_miss_tokens: number; turns_with_hits: number; cumulative_hit_rate: number }
+): void {
+  state.cacheMetrics = {
+    total_turns: metrics.total_turns,
+    total_hit_tokens: metrics.total_hit_tokens,
+    total_miss_tokens: metrics.total_miss_tokens,
+    turns_with_hits: metrics.turns_with_hits,
+    cumulative_hit_rate: metrics.cumulative_hit_rate,
+  };
 }
 
 export function handleMessageStart(state: ChatState, messageId: string | undefined): void {
@@ -605,6 +622,15 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
         break;
       case 'cache_info':
         handleCacheInfo(state, ev.hit_rate ?? -1.0);
+        break;
+      case 'cache_summary':
+        handleCacheSummary(state, {
+          total_turns: ev.total_turns ?? 0,
+          total_hit_tokens: ev.total_hit_tokens ?? 0,
+          total_miss_tokens: ev.total_miss_tokens ?? 0,
+          turns_with_hits: ev.turns_with_hits ?? 0,
+          cumulative_hit_rate: ev.cumulative_hit_rate ?? 0,
+        });
         break;
       case 'turn_ended':
         handleTurnEnded(state);

@@ -24,6 +24,7 @@ use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -41,7 +42,7 @@ use crate::permission::PermissionPolicy;
 use crate::runtime::approval::ApprovalResolver;
 use crate::runtime::brain::Brain;
 use crate::runtime::command::{RunCommand, SteerEntry};
-use crate::runtime::event::{Envelope, RunEvent, RunId, TodoItemPayload};
+use crate::runtime::event::{CacheMetrics, Envelope, RunEvent, RunId, TodoItemPayload};
 use crate::runtime::guard::EventGuard;
 use crate::runtime::state::RunState;
 use crate::runtime::supervisor::ProcessSupervisor;
@@ -50,6 +51,11 @@ use crate::types::{CacheUsage, Message, MessageDelta, Role, StreamEvent, ToolCal
 
 /// System prompt for `/goal` task decomposition.
 const GOAL_DECOMPOSE_SYSTEM: &str = "You decompose a goal into subtasks. Output ONLY a JSON array of objects, each with a single \"description\" string field. No markdown, no commentary. Produce 3-8 items.";
+
+/// Threshold for detecting cache expiry due to idle time.
+/// DeepSeek's prefix cache has an undocumented ~5–10 minute idle timeout.
+/// We warn at 4 minutes to give headroom before the actual expiry.
+const CACHE_IDLE_WARN_SECS: u64 = 240;
 
 /// Extract the first JSON array `[...]` from a model response that may
 /// include markdown fences or surrounding prose.
@@ -138,6 +144,14 @@ pub struct Run {
 
     /// Last stable prefix fingerprint — used to detect drift across turns.
     last_prefix_fingerprint: String,
+
+    /// Cumulative cache hit/miss metrics across all turns of this Run.
+    cache_metrics: CacheMetrics,
+    /// Timestamp when the most recent turn ended.
+    /// Used by idle detection: if > CACHE_IDLE_WARN_SECS has elapsed
+    /// since this timestamp, we emit a cache-expiry warning before the
+    /// next model call (DeepSeek prefix cache times out ~5–10 min).
+    last_turn_end_time: Option<Instant>,
 
     /// Shared, read-only context snapshot for side-channel `/btw` queries.
     /// Refreshed at turn boundaries; read via `RunHandle::context_snapshot()`.
@@ -253,6 +267,8 @@ impl Run {
             mode,
             max_iterations,
             last_prefix_fingerprint,
+            cache_metrics: CacheMetrics::default(),
+            last_turn_end_time: None,
             context_snapshot,
             goal: None,
             goal_completed: false,
@@ -421,6 +437,17 @@ impl Run {
                 // Auto-session-summary: write a brief memory file
                 self.write_session_memory(&text);
 
+                // Emit cumulative cache metrics before final completion event.
+                if self.cache_metrics.has_data() {
+                    self.emit(RunEvent::CacheSummary {
+                        total_turns: self.cache_metrics.total_turns,
+                        total_hit_tokens: self.cache_metrics.total_hit_tokens,
+                        total_miss_tokens: self.cache_metrics.total_miss_tokens,
+                        turns_with_hits: self.cache_metrics.turns_with_hits,
+                        cumulative_hit_rate: self.cache_metrics.cumulative_hit_rate,
+                    });
+                }
+
                 self.transition(RunState::Completed);
                 self.emit(RunEvent::RunCompleted { final_text: text });
             }
@@ -501,7 +528,8 @@ impl Run {
                 }
             }
 
-            // Turn ended — clear the active turn id.
+            // Turn ended — clear the active turn id and record timestamp.
+            self.last_turn_end_time = Some(Instant::now());
             self.current_turn_id = None;
         }
 
@@ -653,6 +681,26 @@ impl Run {
     // ── Turn execution ────────────────────────────────────────────
 
     async fn run_turn(&mut self, turn_index: usize) -> Result<TurnOutcome, RunError> {
+        // Stage: Idle detection — warn if the cache likely expired between turns.
+        // DeepSeek's prefix cache has an undocumented ~5–10 minute idle timeout.
+        // If the user paused for > CACHE_IDLE_WARN_SECS, the next API call will
+        // likely be a cache miss. We emit a sentinel so the frontend can adjust
+        // its display expectations.
+        if let Some(last_end) = self.last_turn_end_time {
+            let idle_secs = last_end.elapsed().as_secs();
+            if idle_secs >= CACHE_IDLE_WARN_SECS {
+                tracing::info!(
+                    idle_secs,
+                    "Cache likely expired from idle time — next model call may be cache-miss"
+                );
+                self.emit(RunEvent::CacheInfo {
+                    hit_tokens: 0,
+                    miss_tokens: 0,
+                    hit_rate: -2.0, // -2 signals "cache likely expired from idle"
+                });
+            }
+        }
+
         // Stage: Refresh
         self.refresh_context_segments();
 
@@ -684,8 +732,9 @@ impl Run {
             }
         };
 
-        // Emit cache telemetry
+        // Emit cache telemetry and update cumulative metrics
         if cache_usage.total() > 0 {
+            self.cache_metrics.record(cache_usage.hit_tokens, cache_usage.miss_tokens);
             self.emit(RunEvent::CacheInfo {
                 hit_tokens: cache_usage.hit_tokens,
                 miss_tokens: cache_usage.miss_tokens,

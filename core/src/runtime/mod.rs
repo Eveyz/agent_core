@@ -44,7 +44,7 @@ pub mod supervisor;
 pub use approval::ApprovalResolver;
 pub use brain::Brain;
 pub use command::{RunCommand, SteerEntry};
-pub use event::{ChildId, Envelope, RunEvent, RunId};
+pub use event::{CacheMetrics, ChildId, Envelope, RunEvent, RunId};
 pub use event_log::EventLog;
 pub use guard::EventGuard;
 pub use manager::{RunHandle, RunManager};
