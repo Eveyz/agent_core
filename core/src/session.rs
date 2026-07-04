@@ -1107,6 +1107,7 @@ mod tests {
             role_name: "test_role".to_string(),
             subagent_id: "sub-1".to_string(),
             output: "Found 3 files matching pattern".to_string(),
+            last_text: "Found 3 files matching pattern".to_string(),
             iterations_used: 2,
             success: true,
         };

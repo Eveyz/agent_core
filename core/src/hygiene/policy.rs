@@ -26,7 +26,7 @@ pub enum TruncationKind {
 const INSTRUCTION_TOOLS: &[&str] = &["skill_load"];
 
 /// Tools whose results the model explicitly requested; bounded by L1 already.
-const ACTIVE_READ_TOOLS: &[&str] = &["read_file"];
+const ACTIVE_READ_TOOLS: &[&str] = &["read_file", "subagent", "subagents"];
 
 // ── Budgets (PLAN-0008) ──────────────────────────────────────────────
 
@@ -39,6 +39,11 @@ pub const INCIDENTAL_TAIL_LINES: usize = 20;
 /// Char cap for actively-read tool results — higher than incidental because the
 /// model asked for this content and it must stay contiguous (no head/tail split).
 pub const ACTIVE_READ_MAX_CHARS: usize = 24_000;
+
+/// Char cap for subagent/subagents results — larger than standard active-read
+/// because subagents can return aggregated multi-tool results (code, data,
+/// research) and the main agent explicitly spawned them for this data.
+pub const SUBAGENT_RESULT_MAX_CHARS: usize = 64_000;
 
 /// Keywords marking "signal" lines worth preserving from the middle.
 const SIGNAL_KEYWORDS: &[&str] = &["error", "exit code", "warning", "failed", "denied"];
@@ -62,10 +67,16 @@ pub fn truncate_content(name: Option<&str>, content: &str) -> Option<String> {
     match classify(name) {
         TruncationKind::Instruction => None,
         TruncationKind::ActivelyRead => {
-            if content.len() <= ACTIVE_READ_MAX_CHARS {
+            // Subagent results can be substantially larger than a single read_file
+            // call — they aggregate findings from multiple tool invocations.
+            let cap = match name {
+                Some("subagent") | Some("subagents") => SUBAGENT_RESULT_MAX_CHARS,
+                _ => ACTIVE_READ_MAX_CHARS,
+            };
+            if content.len() <= cap {
                 return None;
             }
-            Some(truncate_char_cap(content, ACTIVE_READ_MAX_CHARS))
+            Some(truncate_char_cap(content, cap))
         }
         TruncationKind::Incidental => {
             if content.len() <= INCIDENTAL_MAX_CHARS {

@@ -321,6 +321,7 @@ pub fn build_subagent_config(def: &AgentDef) -> SubagentConfig {
             Some(def.memory_enabled)
         },
         temperature: None,
+        result_strategy: crate::subagent::ResultStrategy::Auto,
     }
 }
 

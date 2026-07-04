@@ -1,12 +1,13 @@
 use crate::config::ModelConfig;
 use crate::permission::PermissionConfig;
 use crate::session::SessionManager;
-use crate::subagent::{Subagent, SubagentConfig};
+use crate::subagent::{ResultStrategy, Subagent, SubagentConfig};
 use crate::tools::{Tool, ToolRegistry, ToolUpdateFn};
-use crate::types::EventSender;
+use crate::types::{EventSender, Message, Role};
 use anyhow::Result;
 use parking_lot::Mutex;
 use serde_json::Value;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
 pub fn register_subagent_tools(
@@ -98,6 +99,11 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
                 "max_iterations": {
                     "type": "integer",
                     "description": "Max iterations (default: inherited from parent agent)"
+                },
+                "result_strategy": {
+                    "type": "string",
+                    "enum": ["auto", "full", "summary"],
+                    "description": "How to format the result. 'full': return complete final output (best for code/data). 'summary': inject summarisation instructions and return only final text. 'auto' (default): return all text + tool summary."
                 }
             },
             "required": ["id", "task"]
@@ -114,6 +120,7 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
         _on_update: Option<ToolUpdateFn>,
         event_sender: Option<EventSender>,
     ) -> Result<String> {
+        let strategy = parse_result_strategy(&args);
         let (result, _messages) = spawn_single(
             &args,
             &self.model_config,
@@ -121,6 +128,7 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
             event_sender,
             &self.permission_config,
             self.parent_max_iterations,
+            strategy,
         )
         .await?;
 
@@ -130,7 +138,7 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
             let _ = mgr.save_subagent("subagent", &result);
         }
 
-        Ok(result.summary())
+        Ok(result.format_output(strategy))
     }
 }
 
@@ -193,7 +201,12 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                                 "items": {"type": "string"},
                                 "description": "Tool names"
                             },
-                            "max_iterations": {"type": "integer", "description": "Max iterations"}
+                            "max_iterations": {"type": "integer", "description": "Max iterations"},
+                            "result_strategy": {
+                                "type": "string",
+                                "enum": ["auto", "full", "summary"],
+                                "description": "How to format the result. 'full': return complete final output. 'summary': summarised. 'auto' (default): all text + tool summary."
+                            }
                         },
                         "required": ["id", "task"]
                     }
@@ -223,7 +236,7 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
 
         // Emit SubagentStart events immediately so TUI shows all boxes
         // before any subagent actually begins work.
-        let mut task_infos: Vec<(String, String, Vec<String>, usize)> = Vec::new();
+        let mut task_infos: Vec<(String, String, Vec<String>, usize, ResultStrategy)> = Vec::new();
         for task_spec in tasks {
             let id = task_spec["id"].as_str().unwrap_or("unknown").to_string();
             let task = task_spec["task"].as_str().unwrap_or("").to_string();
@@ -239,8 +252,9 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                 .as_u64()
                 .map(|v| v as usize)
                 .unwrap_or(self.parent_max_iterations);
+            let strategy = parse_result_strategy(task_spec);
 
-            task_infos.push((id, task, tools, max_iterations));
+            task_infos.push((id, task, tools, max_iterations, strategy));
         }
 
         // Spawn all subagents concurrently on a JoinSet so they can be
@@ -249,7 +263,7 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
         // tasks (process leak).
         let mut join_set = tokio::task::JoinSet::new();
         let parent_max_iterations = self.parent_max_iterations;
-        for (id, task, tools, max_iterations) in task_infos {
+        for (id, task, tools, max_iterations, strategy) in task_infos {
             let model_config = self.model_config.clone();
             let permission_config = self.permission_config.clone();
             let available_tools = if tools.is_empty() {
@@ -276,6 +290,7 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                     sub_sender,
                     &permission_config,
                     parent_max_iterations,
+                    strategy,
                 )
                 .await;
 
@@ -286,7 +301,7 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                     }
                 }
 
-                (id, result)
+                (id, result, strategy)
             });
         }
 
@@ -305,7 +320,7 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
 
         for (idx, result) in results.iter().enumerate() {
             match result {
-                Ok((id, Ok((sub_result, _msgs)))) => {
+                Ok((id, Ok((sub_result, _msgs)), strategy)) => {
                     output.push_str(&format!(
                         "[{}] {} — {}\n{}\n\n",
                         idx + 1,
@@ -315,10 +330,10 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                         } else {
                             "incomplete"
                         },
-                        sub_result.summary()
+                        sub_result.format_output(*strategy)
                     ));
                 }
-                Ok((id, Err(e))) => {
+                Ok((id, Err(e), _)) => {
                     output.push_str(&format!("[{}] {} — ERROR: {}\n\n", idx + 1, id, e));
                 }
                 Err(e) => {
@@ -332,6 +347,185 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
     }
 }
 
+// ── Tool summary builders ────────────────────────────────────────────
+
+/// Max chars per single tool result in the summary (before truncation).
+/// Kept per-result only; total summary is capped downstream by the hygiene
+/// layer's Incidental 16K-char budget, so we don't need a separate global cap.
+const TOOL_SUMMARY_PER_RESULT_MAX: usize = 2000;
+
+/// Build a compact summary of what tools the subagent called and what they found.
+/// Walks the subagent's message history, pairing each assistant tool_call with
+/// its corresponding tool result, and summarises by tool type.
+fn build_tool_summary(messages: &[Message]) -> String {
+    // Single pass: collect (tool_name, args_snippet, result_content) tuples.
+    // We match Tool messages back to the most recent pending assistant call.
+    let mut pending_calls: VecDeque<(String, String)> = VecDeque::new(); // (name, args_snippet)
+    let mut entries: Vec<(String, String, String)> = Vec::new(); // (name, args, result)
+
+    for msg in messages {
+        match msg.role {
+            Role::Assistant => {
+                if let Some(ref calls) = msg.tool_calls {
+                    for tc in calls {
+                        let args_snippet = truncate_str(&tc.function.arguments, 200);
+                        pending_calls.push_back((tc.function.name.clone(), args_snippet));
+                    }
+                }
+            }
+            Role::Tool => {
+                let tool_name = msg.name.as_deref().unwrap_or("?").to_string();
+                let content = msg.content.as_deref().unwrap_or("");
+                if !content.is_empty() {
+                    let (call_name, call_args) = pending_calls.pop_front().unwrap_or_else(|| {
+                        (tool_name.clone(), String::new())
+                    });
+                    let result_summary = summarise_tool_content(&call_name, content);
+                    entries.push((call_name, call_args, result_summary));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if entries.is_empty() {
+        return String::new();
+    }
+
+    let mut summary = String::new();
+    for (idx, (name, args, result)) in entries.iter().enumerate() {
+        summary.push_str(&format!(
+            "[{}] {} {}\n  → {}\n",
+            idx + 1,
+            name,
+            args,
+            result
+        ));
+    }
+    summary
+}
+
+/// Summarise a single tool result by type.
+fn summarise_tool_content(tool_name: &str, content: &str) -> String {
+    match tool_name {
+        "grep" => summarise_grep(content),
+        "glob" => summarise_glob(content),
+        "read_file" | "read" => summarise_read_file(content),
+        "bash" => summarise_bash(content),
+        "webfetch" | "web_fetch" => summarise_webfetch(content),
+        "edit" | "write_file" => summarise_edit(content),
+        "ls" | "list_files" => summarise_ls(content),
+        "search_content" => summarise_grep(content), // same format
+        "search_file" => summarise_glob(content),
+        _ => summarise_generic(content),
+    }
+}
+
+fn summarise_grep(content: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let file_set: HashSet<&str> = lines
+        .iter()
+        .filter_map(|l| l.split(':').next())
+        .collect();
+    let total_lines = lines.len();
+    let sample: Vec<&str> = lines.iter().take(8).copied().collect();
+    let sample_str = truncate_str(&sample.join(" | "), 800);
+    format!(
+        "found {} matches in {} file(s). samples: {}",
+        total_lines, file_set.len(), sample_str
+    )
+}
+
+fn summarise_glob(content: &str) -> String {
+    let files: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
+    let count = files.len();
+    let first: Vec<&str> = files.iter().take(8).copied().collect();
+    let mut s = format!("found {} file(s).", count);
+    if !first.is_empty() {
+        s.push_str(" files: ");
+        s.push_str(&first.join(", "));
+        if count > first.len() {
+            s.push_str(&format!(", ... and {} more", count - first.len()));
+        }
+    }
+    truncate_str(&s, TOOL_SUMMARY_PER_RESULT_MAX).to_string()
+}
+
+fn summarise_read_file(content: &str) -> String {
+    let lines = content.lines().count();
+    let chars = content.len();
+    // Keep a meaningful prefix so the main agent can see actual code content.
+    let snippet = truncate_str(content, 1500);
+    format!(
+        "[{} lines, {} chars] {}",
+        lines, chars, snippet
+    )
+}
+
+fn summarise_bash(content: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let total = lines.len();
+    let first: Vec<&str> = lines.iter().take(10).copied().collect();
+    let s = format!(
+        "[{} lines] {}",
+        total,
+        first.join("\n  ")
+    );
+    truncate_str(&s, TOOL_SUMMARY_PER_RESULT_MAX).to_string()
+}
+
+fn summarise_webfetch(content: &str) -> String {
+    let chars = content.len();
+    let snippet = truncate_str(content, 500).to_string();
+    format!("[{} chars] {}", chars, snippet)
+}
+
+fn summarise_edit(content: &str) -> String {
+    if content.is_empty() {
+        return "(no output)".to_string();
+    }
+    truncate_str(content, 500).to_string()
+}
+
+fn summarise_ls(content: &str) -> String {
+    let entries: Vec<&str> = content.lines().filter(|l| !l.is_empty()).collect();
+    let count = entries.len();
+    let first: Vec<&str> = entries.iter().take(10).copied().collect();
+    let mut s = format!("{} entries. ", count);
+    if !first.is_empty() {
+        s.push_str(&first.join(", "));
+        if count > first.len() {
+            s.push_str(&format!(", ... and {} more", count - first.len()));
+        }
+    }
+    truncate_str(&s, TOOL_SUMMARY_PER_RESULT_MAX).to_string()
+}
+
+fn summarise_generic(content: &str) -> String {
+    let chars = content.len();
+    let snippet = truncate_str(content, 500).to_string();
+    format!("[{} chars] {}", chars, snippet)
+}
+
+/// Truncate a string to at most `max_len` chars, appending "..." if cut.
+fn truncate_str(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        return s.to_string();
+    }
+    let end = floor_char_boundary(s, max_len - 3);
+    format!("{}...", &s[..end])
+}
+
+fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
+    if idx >= s.len() {
+        return s.len();
+    }
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
+}
+
 // ── Shared spawn logic ───────────────────────────────────────────────
 
 /// Result from spawning a single subagent.
@@ -339,21 +533,25 @@ struct SpawnResult {
     success: bool,
     iterations_used: usize,
     output: String,
+    /// Text from only the final assistant turn.
+    last_text: String,
     tool_count: usize,
+    tool_summary: String,
 }
 
 impl crate::session::SubagentResultLike for SpawnResult {
     fn summary_for_session(&self) -> String {
         format!(
-            "[Subagent] iterations={} success={} tools={}\n{}",
-            self.iterations_used, self.success, self.tool_count, self.output
+            "[Subagent] iterations={} success={} tools={}\n{}\n\n{}",
+            self.iterations_used, self.success, self.tool_count, self.output, self.tool_summary
         )
     }
 }
 
 impl SpawnResult {
+    /// Legacy summary format (all text + tool summary). Used by Auto strategy.
     fn summary(&self) -> String {
-        format!(
+        let mut s = format!(
             "[Sub-agent] ({} iterations, {} tools, {})\n\n{}",
             self.iterations_used,
             self.tool_count,
@@ -363,7 +561,107 @@ impl SpawnResult {
                 "incomplete"
             },
             self.output
-        )
+        );
+        if !self.tool_summary.is_empty() {
+            s.push_str("\n\n--- Tool Execution Summary ---\n");
+            s.push_str(&self.tool_summary);
+        }
+        s
+    }
+
+    /// Format the subagent output according to the chosen ResultStrategy.
+    fn format_output(&self, strategy: ResultStrategy) -> String {
+        match strategy {
+            ResultStrategy::Full => {
+                // Full: return last-turn text + tool_summary so the main agent
+                // sees both the subagent's final analysis AND the raw tool data.
+                let content = if self.last_text.is_empty() {
+                    &self.output
+                } else {
+                    &self.last_text
+                };
+                let mut s = format!(
+                    "[Sub-agent] ({} iterations, {} tools, {})\n\n{}",
+                    self.iterations_used,
+                    self.tool_count,
+                    if self.success { "success" } else { "incomplete" },
+                    content
+                );
+                if !self.tool_summary.is_empty() {
+                    s.push_str("\n\n--- Tool Execution Summary ---\n");
+                    s.push_str(&self.tool_summary);
+                }
+                s
+            }
+            ResultStrategy::Summary => {
+                // Summary: return only the last-turn text (the system prompt
+                // already instructed the subagent to summarise).
+                let content = if self.last_text.is_empty() {
+                    &self.output
+                } else {
+                    &self.last_text
+                };
+                format!(
+                    "[Sub-agent] ({} iterations, {} tools, {})\n\n{}",
+                    self.iterations_used,
+                    self.tool_count,
+                    if self.success { "success" } else { "incomplete" },
+                    content
+                )
+            }
+            ResultStrategy::Auto => self.summary(),
+        }
+    }
+}
+
+/// Walk up from `start` until we find a `Cargo.toml`, then return that
+/// directory as the workspace root. Falls back to `start` if no Cargo.toml is
+/// found in the ancestor chain.
+fn find_workspace_root(start: &std::path::Path) -> std::path::PathBuf {
+    let mut current = if start.is_absolute() {
+        start.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join(start)
+    };
+    loop {
+        if current.join("Cargo.toml").exists() {
+            return current;
+        }
+        if !current.pop() {
+            // Reached filesystem root without finding Cargo.toml — fall back.
+            return start.to_path_buf();
+        }
+    }
+}
+
+/// Scope guard: sets process CWD to `target` on construction, restores the
+/// original CWD on drop (including panic). This lets subagent tools resolve
+/// relative paths against the workspace root.
+struct CwdGuard(Option<std::path::PathBuf>);
+
+impl Drop for CwdGuard {
+    fn drop(&mut self) {
+        if let Some(ref orig) = self.0 {
+            let _ = std::env::set_current_dir(orig);
+        }
+    }
+}
+
+fn set_cwd_guard(target: &std::path::Path) -> anyhow::Result<CwdGuard> {
+    let original = std::env::current_dir()
+        .ok();
+    std::env::set_current_dir(target)?;
+    Ok(CwdGuard(original))
+}
+
+/// Parse the result_strategy field from tool args, defaulting to Auto.
+fn parse_result_strategy(args: &Value) -> ResultStrategy {
+    match args["result_strategy"].as_str() {
+        Some("full") => ResultStrategy::Full,
+        Some("summary") => ResultStrategy::Summary,
+        _ => ResultStrategy::Auto,
     }
 }
 
@@ -374,6 +672,7 @@ async fn spawn_single(
     event_sender: Option<EventSender>,
     permission_config: &PermissionConfig,
     parent_max_iterations: usize,
+    result_strategy: ResultStrategy,
 ) -> Result<(SpawnResult, Vec<crate::types::Message>)> {
     let id = args["id"]
         .as_str()
@@ -392,6 +691,13 @@ Do NOT attempt to read or process image files.";
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_else(|_| ".".to_string());
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+    // Find the workspace / project root by walking up from CWD until we
+    // find a Cargo.toml. This is the directory subagent tools should use
+    // as their effective working directory so relative paths resolve
+    // correctly — the process CWD (e.g. app/) may be nested inside the
+    // workspace and miss sibling crates.
+    let workspace_root = find_workspace_root(&cwd);
 
     // 1. Global Agent Persona
     let global_agent = std::path::Path::new(&home).join(format!(".agverse/agents/{}.md", id));
@@ -415,6 +721,14 @@ Do NOT attempt to read or process image files.";
     } else {
         format!("{}\n\n=== Subagent Persona ===\n{}", base_prompt, persona_content)
     };
+
+    // Inject the workspace root into the subagent's context so it knows
+    // where the project lives and can resolve paths relative to the root.
+    // We walk up from the process CWD to find the Cargo.toml workspace root
+    // because the process CWD is often a nested directory (e.g. app/) while
+    // sibling crates (core/, cli/) live at the workspace level.
+    let ws_root = workspace_root.to_string_lossy().to_string();
+    let system_prompt = format!("{system_prompt}\n\nWorking Directory: {ws_root}");
 
     let max_iterations = args["max_iterations"].as_u64().unwrap_or(parent_max_iterations as u64) as usize;
 
@@ -474,6 +788,7 @@ Do NOT attempt to read or process image files.";
         tools: final_tool_names,
         max_iterations,
         max_context_tokens: 32000,
+        result_strategy,
         ..SubagentConfig::default()
     };
 
@@ -487,17 +802,36 @@ Do NOT attempt to read or process image files.";
         permission_config.clone(),
     );
     subagent.session_id = session_id;
+
+    // Temporarily change the process CWD to the workspace root so all
+    // subagent tools (glob, grep, read_file, bash) resolve relative paths
+    // against the correct project directory. We restore on drop (including
+    // panic) to avoid leaking the CWD change.
+    let _cwd_guard = match set_cwd_guard(&workspace_root) {
+        Ok(g) => Some(g),
+        Err(e) => {
+            tracing::warn!("Failed to set subagent CWD to {workspace_root:?}: {e}");
+            None
+        }
+    };
+
     let result = subagent.run_with_sender(task, event_sender).await?;
+    // _cwd_guard is dropped here, restoring the original CWD
 
     // Collect subagent messages for session saving
     let messages = subagent.into_messages();
+
+    // Build tool execution summary from the subagent's message history
+    let tool_summary = build_tool_summary(&messages);
 
     Ok((
         SpawnResult {
             success: result.success,
             iterations_used: result.iterations_used,
             output: result.output,
+            last_text: result.last_text.clone(),
             tool_count,
+            tool_summary,
         },
         messages,
     ))

@@ -12,6 +12,24 @@ use crate::runtime::EventGuard;
 use crate::tools::ToolRegistry;
 use crate::types::{AgentEvent, EventSender, Message, MessageDelta, StreamEvent, ToolCall};
 
+/// How the subagent's result should be formatted before returning to the parent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResultStrategy {
+    /// Preserve current behaviour: all_text + tool_summary (backward-compat).
+    Auto,
+    /// Return complete last-turn text without truncation. Best for code / data.
+    Full,
+    /// Inject summarisation instruction; return only the last-turn text.
+    Summary,
+}
+
+impl Default for ResultStrategy {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubagentConfig {
     pub system_prompt: String,
@@ -35,6 +53,9 @@ pub struct SubagentConfig {
     /// Per-agent temperature override.
     #[serde(default)]
     pub temperature: Option<f64>,
+    /// Result formatting strategy for the parent agent.
+    #[serde(default)]
+    pub result_strategy: ResultStrategy,
 }
 
 impl Default for SubagentConfig {
@@ -49,6 +70,7 @@ impl Default for SubagentConfig {
             permission_mode: None,
             memory_enabled: None,
             temperature: None,
+            result_strategy: ResultStrategy::Auto,
         }
     }
 }
@@ -57,7 +79,10 @@ impl Default for SubagentConfig {
 pub struct SubagentResult {
     pub subagent_id: String,
     pub role_name: String,
+    /// Full accumulated text from all iterations.
     pub output: String,
+    /// Text from only the final assistant turn (no intermediate reasoning).
+    pub last_text: String,
     pub iterations_used: usize,
     pub success: bool,
 }
@@ -143,6 +168,32 @@ impl Subagent {
     ) -> Result<SubagentResult> {
         // PLAN-0009: inject relevant memories before the task is added.
         self.inject_memory(task);
+
+        // Inject strategy-specific instructions as a system message before the task.
+        // This ensures the subagent understands how its output will be consumed.
+        match self.config.result_strategy {
+            ResultStrategy::Summary => {
+                self.context.add(Message::system(
+                    "CRITICAL: In your final response (when you have no more tool calls to make), \
+                    provide ONLY a concise summary of your key findings and conclusions. \
+                    Do NOT repeat raw data, tool outputs, or intermediate reasoning. \
+                    Filter out noise, ads, boilerplate, and irrelevant content. \
+                    Only return actionable key findings."
+                ));
+            }
+            ResultStrategy::Full => {
+                self.context.add(Message::system(
+                    "CRITICAL: Output ALL findings and data verbatim in your final response. \
+                    Do NOT summarize, paraphrase, or omit anything. \
+                    Your complete response will be forwarded directly to the main agent \
+                    as the authoritative result. Include every detail from the tools you executed."
+                ));
+            }
+            ResultStrategy::Auto => {
+                // Default behaviour — no extra instruction.
+            }
+        }
+
         self.context.add(Message::user(task));
 
         // Emit SubagentStart
@@ -220,6 +271,7 @@ impl Subagent {
                     subagent_id: self.id.clone(),
                     role_name: self.role_name.clone(),
                     output: all_text,
+                    last_text: last_text.clone(),
                     iterations_used: iteration + 1,
                     success: true,
                 });
@@ -355,6 +407,7 @@ impl Subagent {
                 tool_call_count,
                 truncated_output,
             ),
+            last_text: last_text.clone(),
             iterations_used: self.config.max_iterations,
             success: false,
         })
