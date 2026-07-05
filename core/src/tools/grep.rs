@@ -57,7 +57,8 @@ impl Tool for GrepTool {
             include,
             &mut results,
             max_results,
-        )?;
+        )
+        .await?;
 
         if results.is_empty() {
             return Ok("No matches found.".to_string());
@@ -67,7 +68,7 @@ impl Tool for GrepTool {
     }
 }
 
-fn search_path(
+async fn search_path(
     path: &std::path::Path,
     regex: &regex::Regex,
     include: Option<&str>,
@@ -80,8 +81,8 @@ fn search_path(
 
     if path.is_file() {
         if let Some(ext_filter) = include {
-            let pattern =
-                glob::Pattern::new(ext_filter).unwrap_or(glob::Pattern::new("*").unwrap());
+            let pattern = glob::Pattern::new(ext_filter)
+                .with_context(|| format!("invalid include pattern: {ext_filter}"))?;
             if let Some(file_name) = path.file_name().and_then(|n| n.to_str())
                 && !pattern.matches(file_name)
             {
@@ -89,7 +90,7 @@ fn search_path(
             }
         }
 
-        if let Ok(content) = std::fs::read_to_string(path) {
+        if let Ok(content) = tokio::fs::read_to_string(path).await {
             for (line_num, line) in content.lines().enumerate() {
                 if results.len() >= max {
                     break;
@@ -122,8 +123,12 @@ fn search_path(
                 continue;
             }
 
+            if file_type.is_symlink() {
+                continue;
+            }
+
             if file_type.is_dir() || file_type.is_file() {
-                search_path(&entry.path(), regex, include, results, max)?;
+                Box::pin(search_path(&entry.path(), regex, include, results, max)).await?;
             }
         }
     }

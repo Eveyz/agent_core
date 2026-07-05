@@ -212,7 +212,7 @@ impl Hook for LoggingHook {
     fn handle(&self, event: &HookEvent) -> Option<HookAction> {
         match event {
             HookEvent::PreToolUse { tool_name, input } => {
-                eprintln!("[hook] pre_tool_use: {} input={}", tool_name, input);
+                tracing::debug!(%tool_name, %input, "pre_tool_use");
             }
             HookEvent::PostToolUse {
                 tool_name, output, ..
@@ -223,32 +223,28 @@ impl Hook for LoggingHook {
                 } else {
                     output.clone()
                 };
-                eprintln!("[hook] post_tool_use: {} output={}", tool_name, preview);
+                tracing::debug!(tool_name, %preview, "post_tool_use");
             }
             HookEvent::SessionStart { session_id } => {
-                eprintln!("[hook] session_start: {}", session_id);
+                tracing::info!(session_id, "session_start");
             }
             HookEvent::SessionEnd { session_id } => {
-                eprintln!("[hook] session_end: {}", session_id);
+                tracing::info!(session_id, "session_end");
             }
             HookEvent::TurnStart { turn_index } => {
-                eprintln!("[hook] turn_start: {}", turn_index);
+                tracing::debug!(turn_index, "turn_start");
             }
             HookEvent::TurnEnd { turn_index } => {
-                eprintln!("[hook] turn_end: {}", turn_index);
+                tracing::debug!(turn_index, "turn_end");
             }
             HookEvent::BeforeModel { messages } => {
-                eprintln!("[hook] before_model: {} messages", messages.len());
+                tracing::debug!(message_count = messages.len(), "before_model");
             }
             HookEvent::AfterModel {
                 text,
                 tool_call_count,
             } => {
-                eprintln!(
-                    "[hook] after_model: {} tool_calls, {} chars",
-                    tool_call_count,
-                    text.len()
-                );
+                tracing::debug!(tool_call_count, chars = text.len(), "after_model");
             }
         }
         None

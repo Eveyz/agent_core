@@ -648,7 +648,7 @@ impl Run {
         // Try the per-Run resolver first (used when ToolOrchestrator has
         // approval_resolver set, which is the new default path).
         if self.approval_resolver.resolve(prompt_id, choice.clone()) {
-            eprintln!("[resolve_approval] resolved via per-Run resolver pid={}", prompt_id);
+            tracing::debug!(prompt_id, "approval resolved via per-Run resolver");
             self.emit(RunEvent::ApprovalResolved {
                 prompt_id: prompt_id.to_string(),
                 choice,
@@ -662,7 +662,7 @@ impl Run {
             let pending_arc = crate::permission::global_pending_approvals();
             let mut pending = pending_arc.lock();
             if let Some(tx) = pending.remove(prompt_id) {
-                eprintln!("[resolve_approval] resolved via global map pid={}", prompt_id);
+                tracing::debug!(prompt_id, "approval resolved via global map");
                 let _ = tx.send(choice.clone());
                 self.emit(RunEvent::ApprovalResolved {
                     prompt_id: prompt_id.to_string(),
@@ -671,7 +671,7 @@ impl Run {
                 return;
             }
         }
-        eprintln!("[resolve_approval] NOT found pid={}", prompt_id);
+        tracing::debug!(prompt_id, "approval prompt not found");
     }
 
     fn resolve_input(&mut self, _prompt_id: &str, _answer: &str) {

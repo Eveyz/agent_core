@@ -46,7 +46,8 @@ impl Tool for EditTool {
         };
         let resolved_path_str = resolved_path.to_string_lossy().to_string();
 
-        let old_content = std::fs::read_to_string(&resolved_path)
+        let old_content = tokio::fs::read_to_string(&resolved_path)
+            .await
             .map_err(|e| anyhow::anyhow!("failed to read '{}': {}", resolved_path_str, e))?;
 
         let count = old_content.matches(old_string).count();
@@ -62,7 +63,12 @@ impl Tool for EditTool {
         }
 
         let new_content = old_content.replacen(old_string, new_string, 1);
-        std::fs::write(&resolved_path, &new_content)?;
+
+        // Atomic write: write to a temp file first, then rename into place.
+        // This prevents file corruption if the write is interrupted mid-flight.
+        let tmp_path = resolved_path.with_extension("tmp.edit");
+        tokio::fs::write(&tmp_path, &new_content).await?;
+        tokio::fs::rename(&tmp_path, &resolved_path).await?;
 
         // Compute the line range of the edited region (1-based) in the
         // *original* file, so the UI can show "Edited lines L12–L18".

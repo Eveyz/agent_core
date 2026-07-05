@@ -2,7 +2,21 @@ use anyhow::Result;
 use parking_lot;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
+
+/// RAII guard that restores the process CWD on drop.
+/// Used by subagents to scope their working directory to the
+/// duration of run_with_sender, avoiding cross-subagent CWD races.
+struct SubagentCwdGuard(Option<PathBuf>);
+
+impl Drop for SubagentCwdGuard {
+    fn drop(&mut self) {
+        if let Some(ref orig) = self.0 {
+            let _ = std::env::set_current_dir(orig);
+        }
+    }
+}
 
 use crate::agent_registry::memory::AgentMemoryStore;
 
@@ -57,6 +71,11 @@ pub struct SubagentConfig {
     /// Result formatting strategy for the parent agent.
     #[serde(default)]
     pub result_strategy: ResultStrategy,
+    /// Working directory for this subagent. When set, tools use this instead
+    /// of the process CWD for relative path resolution. This avoids the race
+    /// condition when multiple subagents run concurrently on the same thread pool.
+    #[serde(default)]
+    pub working_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for SubagentConfig {
@@ -72,6 +91,7 @@ impl Default for SubagentConfig {
             memory_enabled: None,
             temperature: None,
             result_strategy: ResultStrategy::Auto,
+            working_dir: None,
         }
     }
 }
@@ -167,6 +187,24 @@ impl Subagent {
         task: &str,
         event_sender: Option<EventSender>,
     ) -> Result<SubagentResult> {
+        // Set the subagent's working directory. Each subagent manages its own
+        // CWD scope — the CWD is set at the start of run_with_sender and
+        // restored on exit (including panic) via SubagentCwdGuard drop.
+        // This avoids the process-global CWD race when multiple subagents
+        // run concurrently via SubagentSpawnAllTool.
+        let _cwd_guard = if let Some(ref working_dir) = self.config.working_dir {
+            let orig = std::env::current_dir().ok();
+            if let Err(e) = std::env::set_current_dir(working_dir) {
+                tracing::warn!(dir = %working_dir.display(), error = %e,
+                    "subagent failed to set working directory");
+                SubagentCwdGuard(None)
+            } else {
+                SubagentCwdGuard(orig)
+            }
+        } else {
+            SubagentCwdGuard(None)
+        };
+
         // PLAN-0009: inject relevant memories before the task is added.
         self.inject_memory(task);
 

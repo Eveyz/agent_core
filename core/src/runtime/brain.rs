@@ -13,7 +13,7 @@
 
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 
 use crate::client::OpenAIClient;
 use crate::config::{Config, ModelConfig};
@@ -52,8 +52,8 @@ pub struct Brain {
     current_model_name: String,
     /// The current agent mode (Ask / Plan / Build).
     /// Mode changes take effect on the next Run — existing Runs are unaffected.
-    /// Wrapped in Arc<StdMutex<>> to satisfy Clone (required by #[derive(Clone)]).
-    current_mode: Arc<StdMutex<AgentMode>>,
+    /// Wrapped in Arc<Mutex<>> to satisfy Clone (required by #[derive(Clone)]).
+    current_mode: Arc<Mutex<AgentMode>>,
     /// Shared hook registry. When set, Runs use this instead of building fresh.
     /// This allows the Agent wrapper to register hooks that fire during Run execution.
     pub hook_registry: Arc<Mutex<HookRegistry>>,
@@ -77,7 +77,7 @@ impl Brain {
             todo_list: Arc::new(Mutex::new(TodoList::new())),
             reflector,
             current_model_name,
-            current_mode: Arc::new(StdMutex::new(AgentMode::default())),
+            current_mode: Arc::new(Mutex::new(AgentMode::default())),
             hook_registry: Arc::new(Mutex::new(HookRegistry::new())),
         })
     }
@@ -289,13 +289,13 @@ impl Brain {
 
     /// The current agent mode. New Runs inherit this mode.
     pub fn mode(&self) -> AgentMode {
-        *self.current_mode.lock().unwrap()
+        *self.current_mode.lock()
     }
 
     /// Set the agent mode. Takes effect on the NEXT Run — existing Runs
     /// keep their mode.
     pub fn set_mode(&self, mode: AgentMode) {
-        *self.current_mode.lock().unwrap() = mode;
+        *self.current_mode.lock() = mode;
     }
 
     /// Build an OpenAIClient for the current model (with fallback chain).

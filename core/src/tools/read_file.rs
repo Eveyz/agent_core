@@ -18,16 +18,7 @@ const MAX_LINES_DEFAULT: usize = 300;
 /// hygiene::policy so the tool-layer cap and the hygiene cap agree.
 const MAX_OUTPUT_CHARS: usize = 24_000;
 
-/// Largest index `<= idx` on a UTF-8 char boundary.
-fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
-    if idx >= s.len() {
-        return s.len();
-    }
-    while idx > 0 && !s.is_char_boundary(idx) {
-        idx -= 1;
-    }
-    idx
-}
+use crate::util::floor_char_boundary;
 
 pub struct ReadFileTool;
 
@@ -93,8 +84,9 @@ line-numbered view). Refuses files larger than 1 MB and detects binary files."
         };
         let resolved_path_str = resolved_path.to_string_lossy().to_string();
 
-        // 1. Size guard before opening.
-        let metadata = std::fs::metadata(&resolved_path)
+        // 1. Size guard before opening — use tokio::fs for async I/O.
+        let metadata = tokio::fs::metadata(&resolved_path)
+            .await
             .with_context(|| format!("failed to stat file: {resolved_path_str}"))?;
         if metadata.len() > MAX_FILE_SIZE_BYTES {
             bail!(
@@ -104,11 +96,16 @@ line-numbered view). Refuses files larger than 1 MB and detects binary files."
             );
         }
 
-        // 2. Open and stream lines. BufRead::lines() yields io::Error on invalid
-        //    UTF-8, so non-UTF-8 (e.g. UTF-16) is rejected here.
-        let file = std::fs::File::open(&resolved_path)
-            .with_context(|| format!("failed to open file: {resolved_path_str}"))?;
-        let mut reader = std::io::BufReader::new(file);
+        // 2. Read entire file via tokio::fs to avoid blocking the async runtime.
+        let resolved_path_str_clone = resolved_path_str.clone();
+        let content = tokio::fs::read_to_string(&resolved_path)
+            .await
+            .with_context(|| format!("failed to read file: {resolved_path_str_clone}"))?;
+
+        // Binary probe: reject on NUL bytes.
+        if content.as_bytes().contains(&0u8) {
+            bail!("File appears to be binary (contains NUL bytes). read_file only handles text files.");
+        }
 
         let mut out = String::new();
         let mut line_num: usize = 0;
@@ -116,31 +113,8 @@ line-numbered view). Refuses files larger than 1 MB and detects binary files."
         let mut last_emitted: usize = 0;
         let mut hit_char_cap = false;
 
-        // Binary probe: read the first chunk and reject on NUL bytes. `lines()`
-        // then also validates UTF-8 per line.
-        {
-            use std::io::Read;
-            let mut probe = [0u8; 8192];
-            let n = reader.read(&mut probe).unwrap_or(0);
-            if probe[..n].contains(&0u8) {
-                bail!("File appears to be binary (contains NUL bytes). read_file only handles text files.");
-            }
-            // Rewind so lines() sees the whole file.
-            use std::io::Seek;
-            reader
-                .seek(std::io::SeekFrom::Start(0))
-                .with_context(|| format!("failed to seek: {path}"))?;
-        }
-
-        use std::io::BufRead;
-        loop {
-            let mut line = String::new();
-            let bytes = reader
-                .read_line(&mut line)
-                .with_context(|| format!("failed to read line {line_num} of {path} (possibly non-UTF-8 content)"))?;
-            if bytes == 0 {
-                break; // EOF
-            }
+        // Process lines from the already-read content
+        for line in content.lines() {
             line_num += 1;
 
             if line_num < offset {

@@ -39,45 +39,51 @@ impl Tool for GlobTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String> {
-        let pattern = args["pattern"].as_str().context("missing 'pattern'")?;
-        let base_path = args["path"].as_str().unwrap_or(".");
+        let pattern = args["pattern"].as_str().context("missing 'pattern'")?.to_string();
+        let base_path = args["path"].as_str().unwrap_or(".").to_string();
         let max_results = args["max_results"].as_u64().unwrap_or(100) as usize;
 
-        let base = Path::new(base_path);
-        
-        let full_pattern_str = if Path::new(pattern).is_absolute() {
-            pattern.to_string()
-        } else {
-            base.join(pattern).to_string_lossy().to_string()
-        };
+        // glob::glob is synchronous and blocking — run it on a blocking thread.
+        let results = tokio::task::spawn_blocking(move || -> Result<Vec<String>> {
+            let base = Path::new(&base_path);
 
-        let mut results: Vec<String> = Vec::new();
+            let full_pattern_str = if Path::new(&pattern).is_absolute() {
+                pattern
+            } else {
+                base.join(&pattern).to_string_lossy().to_string()
+            };
 
-        let paths = match glob::glob(&full_pattern_str) {
-            Ok(paths) => paths,
-            Err(e) => anyhow::bail!("invalid glob pattern: {e}"),
-        };
+            let mut results: Vec<String> = Vec::new();
 
-        for entry in paths {
-            if results.len() >= max_results {
-                break;
-            }
-            match entry {
-                Ok(path) => {
-                    let display_path = if let Ok(rel) = path.strip_prefix(base) {
-                        rel.display().to_string()
-                    } else if let Ok(rel) = path.strip_prefix(std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))) {
-                        rel.display().to_string()
-                    } else {
-                        path.display().to_string()
-                    };
-                    results.push(display_path);
+            let paths = match glob::glob(&full_pattern_str) {
+                Ok(paths) => paths,
+                Err(e) => anyhow::bail!("invalid glob pattern: {e}"),
+            };
+
+            for entry in paths {
+                if results.len() >= max_results {
+                    break;
                 }
-                Err(_) => {
-                    continue;
+                match entry {
+                    Ok(path) => {
+                        let display_path = if let Ok(rel) = path.strip_prefix(&base) {
+                            rel.display().to_string()
+                        } else if let Ok(rel) = path.strip_prefix(std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))) {
+                            rel.display().to_string()
+                        } else {
+                            path.display().to_string()
+                        };
+                        results.push(display_path);
+                    }
+                    Err(_) => {
+                        continue;
+                    }
                 }
             }
-        }
+
+            Ok(results)
+        })
+        .await??;
 
         if results.is_empty() {
             return Ok("No matching files found.".to_string());

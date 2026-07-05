@@ -167,15 +167,26 @@ impl BashTool {
                     let reader = tokio::io::BufReader::new(stdout);
                     use tokio::io::AsyncBufReadExt;
                     let mut lines = reader.lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        on_update(&line);
-                        result.push_str(&line);
-                        result.push('\n');
+                    loop {
+                        match lines.next_line().await {
+                            Ok(Some(line)) => {
+                                on_update(&line);
+                                result.push_str(&line);
+                                result.push('\n');
+                            }
+                            Ok(None) => break,
+                            Err(e) => {
+                                tracing::warn!(error = %e, "stdout read error in supervised bash");
+                                break;
+                            }
+                        }
                     }
                 } else {
                     use tokio::io::AsyncReadExt;
                     let mut buf = Vec::new();
-                    let _ = stdout.read_to_end(&mut buf).await;
+                    if let Err(e) = stdout.read_to_end(&mut buf).await {
+                        tracing::warn!(error = %e, "stdout read error in supervised bash");
+                    }
                     result = String::from_utf8_lossy(&buf).to_string();
                 }
             }
@@ -187,7 +198,9 @@ impl BashTool {
             if let Some(mut stderr) = stderr_handle {
                 use tokio::io::AsyncReadExt;
                 let mut buf = Vec::new();
-                let _ = stderr.read_to_end(&mut buf).await;
+                if let Err(e) = stderr.read_to_end(&mut buf).await {
+                    tracing::warn!(error = %e, "stderr read error in supervised bash");
+                }
                 result = String::from_utf8_lossy(&buf).to_string();
             }
             result
@@ -218,7 +231,9 @@ impl BashTool {
         // Remove the child from the supervisor (it's done)
         {
             let mut supervisor = sup.lock();
-            let _ = supervisor.kill(&child_id);
+            if let Err(e) = supervisor.kill(&child_id) {
+                tracing::warn!(error = %e, "failed to kill child process during cleanup");
+            }
         }
 
         let mut result = stdout_str;
@@ -260,15 +275,26 @@ impl BashTool {
                     let reader = tokio::io::BufReader::new(stdout);
                     use tokio::io::AsyncBufReadExt;
                     let mut lines = reader.lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        on_update(&line);
-                        result.push_str(&line);
-                        result.push('\n');
+                    loop {
+                        match lines.next_line().await {
+                            Ok(Some(line)) => {
+                                on_update(&line);
+                                result.push_str(&line);
+                                result.push('\n');
+                            }
+                            Ok(None) => break,
+                            Err(e) => {
+                                tracing::warn!(error = %e, "stdout read error in legacy bash");
+                                break;
+                            }
+                        }
                     }
                 } else {
                     use tokio::io::AsyncReadExt;
                     let mut buf = Vec::new();
-                    let _ = stdout.read_to_end(&mut buf).await;
+                    if let Err(e) = stdout.read_to_end(&mut buf).await {
+                        tracing::warn!(error = %e, "stdout read error in legacy bash");
+                    }
                     result = String::from_utf8_lossy(&buf).to_string();
                 }
             }
@@ -280,7 +306,9 @@ impl BashTool {
             if let Some(mut stderr) = stderr_handle {
                 use tokio::io::AsyncReadExt;
                 let mut buf = Vec::new();
-                let _ = stderr.read_to_end(&mut buf).await;
+                if let Err(e) = stderr.read_to_end(&mut buf).await {
+                    tracing::warn!(error = %e, "stderr read error in legacy bash");
+                }
                 result = String::from_utf8_lossy(&buf).to_string();
             }
             result

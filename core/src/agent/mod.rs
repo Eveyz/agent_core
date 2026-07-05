@@ -828,7 +828,9 @@ impl Agent {
     }
 
     pub fn current_model_config(&self) -> &crate::config::ModelConfig {
-        self.config.get_model(&self.current_model_name).unwrap()
+        self.config
+            .get_model(&self.current_model_name)
+            .expect("current model not found in config (was it removed at runtime?)")
     }
 
     pub fn config(&self) -> &Config {

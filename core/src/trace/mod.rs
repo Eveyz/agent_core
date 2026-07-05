@@ -61,7 +61,7 @@ impl TraceCollector {
         let line = self.format_line(ts, payload, event);
 
         if let Err(e) = self.write_line(&line) {
-            eprintln!("[trace] failed to write event: {e}");
+            tracing::warn!(error = %e, "failed to write trace event");
         }
     }
 
@@ -70,7 +70,7 @@ impl TraceCollector {
     /// responsible for producing valid JSON.
     pub fn record_raw(&mut self, line: &str) {
         if let Err(e) = self.write_line(line) {
-            eprintln!("[trace] failed to write raw line: {e}");
+            tracing::warn!(error = %e, "failed to write raw trace line");
         }
     }
 
@@ -153,15 +153,7 @@ fn event_tag(event: &AgentEvent) -> &'static str {
 }
 
 fn expand_tilde(path: &str) -> String {
-    let home = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE"));
-    if path == "~" {
-        if let Ok(home) = home {
-            return home;
-        }
-    } else if let (Ok(home), Some(rest)) = (home, path.strip_prefix("~/")) {
-        return format!("{home}/{rest}");
-    }
-    path.to_string()
+    crate::util::expand_tilde(path)
 }
 
 #[cfg(test)]

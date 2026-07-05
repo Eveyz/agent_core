@@ -737,17 +737,7 @@ impl PermissionPolicy {
 
 /// Expand `~` in a path to the user's home directory.
 fn expand_tilde(path: &str) -> String {
-    if path.starts_with('~') {
-        if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
-            if path == "~" {
-                return home;
-            }
-            if path.starts_with("~/") {
-                return format!("{}/{}", home, &path[2..]);
-            }
-        }
-    }
-    path.to_string()
+    crate::util::expand_tilde(path)
 }
 
 /// Canonicalize a path for sandbox comparison.
@@ -872,7 +862,7 @@ fn is_destructive_tokens(prog: &str, args: &[&str]) -> bool {
 /// shell quoting/`$()` substitution, but it closes the common bypasses
 /// (`rm\t-rf`, `rm${IFS}-rf`, `doas`, `chmod 0777`, `install -m 777`, …).
 pub fn is_readonly_command(cmd: &str, sandbox_paths: &[std::path::PathBuf]) -> bool {
-    let lower = cmd.trim().to_lowercase();
+    let lower = normalize_command(cmd).to_lowercase();
     
     // Any shell metacharacters indicate potentially complex/unsafe commands.
     // E.g. >, >>, <, |, &, ;, $(, `
@@ -907,7 +897,12 @@ pub fn is_readonly_command(cmd: &str, sandbox_paths: &[std::path::PathBuf]) -> b
                     continue;
                 }
 
-                if arg.contains("..") || arg.starts_with('~') {
+                if arg.contains("/../")
+                    || *arg == ".."
+                    || arg.starts_with("../")
+                    || arg.ends_with("/..")
+                    || arg.starts_with('~')
+                {
                     return false;
                 }
                 

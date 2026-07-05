@@ -56,13 +56,13 @@ impl AuditLog {
         let line = match serde_json::to_string(&entry) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("[audit] failed to serialize entry: {e}");
+                tracing::error!(error = %e, "failed to serialize audit entry");
                 return;
             }
         };
 
         if let Err(e) = self.append_line(&line) {
-            eprintln!("[audit] failed to write entry: {e}");
+            tracing::error!(error = %e, "failed to write audit entry");
         }
 
         // Trim if over limit
@@ -148,22 +148,13 @@ fn truncate(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         s.to_string()
     } else {
-        format!("{}...<truncated>", &s[..max_len])
+        let safe_end = crate::util::floor_char_boundary(s, max_len);
+        format!("{}...<truncated>", &s[..safe_end])
     }
 }
 
 fn expand_tilde(path: &str) -> String {
-    if path.starts_with('~') {
-        if let Ok(home) = std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
-            if path == "~" {
-                return home;
-            }
-            if path.starts_with("~/") {
-                return format!("{}/{}", home, &path[2..]);
-            }
-        }
-    }
-    path.to_string()
+    crate::util::expand_tilde(path)
 }
 
 #[cfg(test)]

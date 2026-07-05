@@ -37,7 +37,7 @@ impl WhitelistManager {
         let valid: Vec<_> = entries.into_iter().filter(|e| e.is_valid()).collect();
         let expired = total - valid.len();
         if expired > 0 {
-            eprintln!("[permission] pruned {} expired whitelist entries", expired);
+            tracing::warn!(expired_count = expired, "pruned expired whitelist entries");
         }
         self.entries.extend(valid);
     }
@@ -52,58 +52,75 @@ impl WhitelistManager {
         self.entries.push(entry);
     }
 
-    /// Query whitelist for a matching entry. Returns `(entry_index, &entry)` if found.
+    /// Query whitelist for a matching entry. Returns `Some(entry)` (cloned) if found.
     /// The entry is "touched" (last_used, use_count updated).
+    /// Once-scoped entries are consumed (removed) after the first match.
     pub fn query(
         &mut self,
         tool_name: &str,
         command: Option<&str>,
         path: Option<&str>,
         host: Option<&str>,
-    ) -> Option<&WhitelistEntry> {
+    ) -> Option<WhitelistEntry> {
         // Purge expired first
         self.purge_expired();
 
-        for entry in &mut self.entries {
+        // Find matching entry index
+        let match_idx = self.entries.iter().position(|entry| {
             if !entry.pattern.matches_tool(tool_name) {
-                continue;
+                return false;
             }
             if let Some(cmd) = command {
                 if !entry.pattern.matches_command(cmd) {
-                    continue;
+                    return false;
                 }
             }
             if let Some(p) = path {
                 if !entry.pattern.matches_path(p) {
-                    continue;
+                    return false;
                 }
             }
             if let Some(h) = host {
                 if !entry.pattern.matches_host(h) {
-                    continue;
+                    return false;
                 }
             }
-            // Match found — touch and return
-            entry.touch();
-            return Some(entry);
+            true
+        });
+
+        if let Some(idx) = match_idx {
+            // Touch the entry
+            self.entries[idx].touch();
+
+            // Once entries are consumed after one match
+            let is_once = matches!(self.entries[idx].scope, ApprovalScope::Once);
+
+            if is_once {
+                let entry = self.entries.remove(idx);
+                Some(entry)
+            } else {
+                Some(self.entries[idx].clone())
+            }
+        } else {
+            None
         }
-        None
     }
 
-    /// Remove once-scoped entries after they've been consumed.
+    /// Remove expired entries (timed-out Duration scopes).
+    /// Once-scoped entries are NOT removed here — they are consumed in
+    /// [`query`] after the first successful match.
     fn purge_expired(&mut self) {
         self.entries.retain(|e| {
-            // Keep session/persistent entries
-            if matches!(e.scope, ApprovalScope::Session | ApprovalScope::Persistent) {
+            // Keep session/persistent/task entries
+            if matches!(
+                e.scope,
+                ApprovalScope::Session | ApprovalScope::Persistent | ApprovalScope::Task(_)
+            ) {
                 return true;
             }
-            // Keep task-scoped entries
-            if matches!(e.scope, ApprovalScope::Task(_)) {
-                return true;
-            }
-            // Remove once-scoped entries (they're consumed after first match)
+            // Keep Once entries — they are consumed on match, not by expiry.
             if matches!(e.scope, ApprovalScope::Once) {
-                return false; // remove
+                return true;
             }
             // Timed entries: check expiry
             e.is_valid()

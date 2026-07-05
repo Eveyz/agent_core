@@ -152,7 +152,7 @@ impl ApprovalScope {
     /// Return true if this scope is still valid (not expired).
     pub fn is_valid(&self, approved_at: &DateTime<Utc>, now: &DateTime<Utc>) -> bool {
         match self {
-            Self::Once => false,
+            Self::Once => true,
             Self::Session => true,
             Self::Duration(d_str) => {
                 let secs = parse_duration_str(d_str);
@@ -257,13 +257,16 @@ impl ToolPermissionPattern {
     }
 
     /// Match a command string (for bash) against allowed commands.
+    /// Uses word-boundary matching: "ls" matches "ls -la" but not "lsxyz".
     pub fn matches_command(&self, command: &str) -> bool {
         match &self.commands {
             Some(allowed) => {
                 let cmd = command.trim();
-                allowed
-                    .iter()
-                    .any(|prefix| cmd.starts_with(prefix.as_str()))
+                allowed.iter().any(|prefix| {
+                    cmd == prefix.as_str()
+                        || cmd.starts_with(&format!("{} ", prefix))
+                        || cmd.starts_with(&format!("{}\t", prefix))
+                })
             }
             None => true, // no command restriction
         }
@@ -470,11 +473,18 @@ pub fn glob_match(pattern: &str, text: &str) -> bool {
     if !pattern.contains('*') && !pattern.contains('?') {
         return pattern == text;
     }
-    // Simple glob-to-regex
-    let regex_pattern = pattern
-        .replace('.', "\\.")
-        .replace('*', ".*")
-        .replace('?', ".");
+    // Simple glob-to-regex with proper escaping of all regex meta-characters.
+    let regex_pattern: String = pattern
+        .chars()
+        .map(|c| match c {
+            '*' => ".*".to_string(),
+            '?' => ".".to_string(),
+            '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '\\' | '|' => {
+                format!("\\{c}")
+            }
+            _ => c.to_string(),
+        })
+        .collect::<String>();
     regex::Regex::new(&format!("^{}$", regex_pattern))
         .map(|re| re.is_match(text))
         .unwrap_or(false)

@@ -29,6 +29,7 @@ pub mod todo;
 pub mod tools;
 pub mod trace;
 pub mod types;
+pub mod util;
 pub mod worktree;
 
 // Legacy agent types — still used by the CLI. New code should use the

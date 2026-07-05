@@ -52,12 +52,14 @@ impl Tool for WriteFileTool {
 
         if let Some(parent) = resolved_path.parent() {
             if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)
+                tokio::fs::create_dir_all(parent)
+                    .await
                     .with_context(|| format!("failed to create parent dirs for: {resolved_path_str}"))?;
             }
         }
 
-        std::fs::write(&resolved_path, content)
+        tokio::fs::write(&resolved_path, content)
+            .await
             .with_context(|| format!("failed to write file: {resolved_path_str}"))?;
 
         Ok(format!(

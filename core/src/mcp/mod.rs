@@ -184,12 +184,12 @@ impl McpClientManager {
             match Self::connect_one(&config).await {
                 Ok(conn) => {
                     let tool_count = conn.tools.len();
+                    tracing::info!(server = %name, tool_count, "MCP server connected");
                     self.connections.insert(name.clone(), conn);
-                    eprintln!("[MCP] Server '{}' connected: {} tools", name, tool_count);
                 }
                 Err(e) => {
                     let msg = format!("{}", e);
-                    eprintln!("[MCP] Server '{}' failed to connect: {}", name, msg);
+                    tracing::warn!(server = %name, error = %msg, "MCP server connection failed");
                     errors.entry(name).or_insert_with(Vec::new).push(msg);
                 }
             }
@@ -320,7 +320,7 @@ impl McpClientManager {
     /// Shut down all connections.
     pub async fn shutdown_all(&mut self) -> Result<()> {
         for (name, conn) in self.connections.drain() {
-            eprintln!("[MCP] Shutting down server '{}'", name);
+            tracing::info!(server = %name, "shutting down MCP server");
             transport_shutdown(conn.transport).await?;
         }
         Ok(())

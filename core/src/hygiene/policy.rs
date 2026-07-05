@@ -139,16 +139,7 @@ fn truncate_head_tail(content: &str) -> String {
     )
 }
 
-/// Largest index `<= idx` that falls on a UTF-8 char boundary.
-fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
-    if idx >= s.len() {
-        return s.len();
-    }
-    while idx > 0 && !s.is_char_boundary(idx) {
-        idx -= 1;
-    }
-    idx
-}
+use crate::util::floor_char_boundary;
 
 #[cfg(test)]
 mod tests {

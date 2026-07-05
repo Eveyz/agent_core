@@ -68,15 +68,11 @@ impl<'a> ToolOrchestrator<'a> {
                 host,
             );
 
-            eprintln!(
-                "[executor] tool={} decision={:?} approval_resolver={}",
-                call.function.name,
-                match &decision {
-                    PermissionDecision::Allow => "Allow",
-                    PermissionDecision::Ask(_, _) => "Ask",
-                    PermissionDecision::Deny(_) => "Deny",
-                },
-                self.approval_resolver.is_some()
+            tracing::debug!(
+                tool = %call.function.name,
+                decision = ?decision,
+                has_resolver = self.approval_resolver.is_some(),
+                "tool permission check"
             );
 
             match decision {
@@ -88,9 +84,11 @@ impl<'a> ToolOrchestrator<'a> {
                     // Create oneshot channel for approval
                     let (tx, rx) = tokio::sync::oneshot::channel();
                     let using_resolver = self.approval_resolver.is_some();
-                    eprintln!(
-                        "[executor] Ask pid={} tool={} resolver={}",
-                        prompt.prompt_id, prompt.tool_name, using_resolver
+                    tracing::debug!(
+                        pid = %prompt.prompt_id,
+                        tool = %prompt.tool_name,
+                        has_resolver = using_resolver,
+                        "approval required"
                     );
                     if let Some(ref resolver) = self.approval_resolver {
                         resolver.insert(prompt.prompt_id.clone(), tx);
@@ -121,10 +119,10 @@ impl<'a> ToolOrchestrator<'a> {
                         _ = self.cancel_token.cancelled() => Err(()),
                     };
 
-                    eprintln!(
-                        "[executor] approval_outcome tool={} resolved={}",
-                        call.function.name,
-                        outcome.is_ok()
+                    tracing::debug!(
+                        tool = %call.function.name,
+                        resolved = outcome.is_ok(),
+                        "approval outcome"
                     );
 
                     match outcome {
@@ -248,9 +246,10 @@ impl<'a> ToolOrchestrator<'a> {
                     continue;
                 }
                 PreToolResult::Proceed(modified_args) => {
-                    eprintln!(
-                        "[executor] ToolExecutionStart tool={} call_id={}",
-                        call.function.name, call.id
+                    tracing::debug!(
+                        tool = %call.function.name,
+                        call_id = %call.id,
+                        "tool execution start"
                     );
                     on_event(
                         AgentEvent::ToolExecutionStart {

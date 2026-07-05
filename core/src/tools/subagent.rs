@@ -516,15 +516,7 @@ fn truncate_str(s: &str, max_len: usize) -> String {
     format!("{}...", &s[..end])
 }
 
-fn floor_char_boundary(s: &str, mut idx: usize) -> usize {
-    if idx >= s.len() {
-        return s.len();
-    }
-    while idx > 0 && !s.is_char_boundary(idx) {
-        idx -= 1;
-    }
-    idx
-}
+use crate::util::floor_char_boundary;
 
 // ── Shared spawn logic ───────────────────────────────────────────────
 
@@ -636,26 +628,6 @@ fn find_workspace_root(start: &std::path::Path) -> std::path::PathBuf {
     }
 }
 
-/// Scope guard: sets process CWD to `target` on construction, restores the
-/// original CWD on drop (including panic). This lets subagent tools resolve
-/// relative paths against the workspace root.
-struct CwdGuard(Option<std::path::PathBuf>);
-
-impl Drop for CwdGuard {
-    fn drop(&mut self) {
-        if let Some(ref orig) = self.0 {
-            let _ = std::env::set_current_dir(orig);
-        }
-    }
-}
-
-fn set_cwd_guard(target: &std::path::Path) -> anyhow::Result<CwdGuard> {
-    let original = std::env::current_dir()
-        .ok();
-    std::env::set_current_dir(target)?;
-    Ok(CwdGuard(original))
-}
-
 /// Parse the result_strategy field from tool args, defaulting to Auto.
 fn parse_result_strategy(args: &Value) -> ResultStrategy {
     match args["result_strategy"].as_str() {
@@ -701,13 +673,13 @@ Do NOT attempt to read or process image files.";
 
     // 1. Global Agent Persona
     let global_agent = std::path::Path::new(&home).join(format!(".agverse/agents/{}.md", id));
-    if let Ok(c) = std::fs::read_to_string(&global_agent) {
+    if let Ok(c) = tokio::fs::read_to_string(&global_agent).await {
         persona_content.push_str(&format!("Global Persona ({id}):\n{c}\n\n"));
     }
 
     // 2. Local/Project Agent Persona
     let local_agent = cwd.join(format!(".agverse/agents/{}.md", id));
-    if let Ok(c) = std::fs::read_to_string(&local_agent) {
+    if let Ok(c) = tokio::fs::read_to_string(&local_agent).await {
         persona_content.push_str(&format!("Project Persona ({id}):\n{c}\n\n"));
     }
 
@@ -789,6 +761,7 @@ Do NOT attempt to read or process image files.";
         max_iterations,
         max_context_tokens: 32000,
         result_strategy,
+        working_dir: Some(workspace_root.clone()),
         ..SubagentConfig::default()
     };
 
@@ -803,20 +776,7 @@ Do NOT attempt to read or process image files.";
     );
     subagent.session_id = session_id;
 
-    // Temporarily change the process CWD to the workspace root so all
-    // subagent tools (glob, grep, read_file, bash) resolve relative paths
-    // against the correct project directory. We restore on drop (including
-    // panic) to avoid leaking the CWD change.
-    let _cwd_guard = match set_cwd_guard(&workspace_root) {
-        Ok(g) => Some(g),
-        Err(e) => {
-            tracing::warn!("Failed to set subagent CWD to {workspace_root:?}: {e}");
-            None
-        }
-    };
-
     let result = subagent.run_with_sender(task, event_sender).await?;
-    // _cwd_guard is dropped here, restoring the original CWD
 
     // Collect subagent messages for session saving
     let messages = subagent.into_messages();

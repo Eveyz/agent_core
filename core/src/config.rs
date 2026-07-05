@@ -603,7 +603,7 @@ pub fn resolve_env_value(raw: &str) -> String {
     if raw.starts_with("${") && raw.ends_with('}') {
         let var_name = &raw[2..raw.len() - 1];
         std::env::var(var_name).unwrap_or_else(|_| {
-            eprintln!("warning: env var {var_name} not found, using raw value");
+            tracing::warn!(var_name, "env var not found, using raw value");
             raw.to_string()
         })
     } else {
