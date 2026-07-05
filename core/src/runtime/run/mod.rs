@@ -174,6 +174,9 @@ pub struct Run {
     /// Stores (fingerprint, rendered_catalog_string).
     tool_catalog_cache: Option<(String, String)>,
 
+    /// Names of script tools currently registered (for diff on deactivation).
+    registered_script_tools: Vec<String>,
+
     /// Shared, read-only context snapshot for side-channel `/btw` queries.
     /// Refreshed at turn boundaries; read via `RunHandle::context_snapshot()`.
     context_snapshot: Arc<RwLock<Vec<Message>>>,
@@ -292,6 +295,7 @@ impl Run {
             cache_metrics: CacheMetrics::default(),
             last_turn_end_time: None,
             tool_catalog_cache: None,
+            registered_script_tools: Vec::new(),
             context_snapshot,
             goal: None,
             goal_completed: false,

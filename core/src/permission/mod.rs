@@ -656,6 +656,12 @@ impl PermissionPolicy {
             }
         }
 
+        // Skill script tools (skill.<skill_name>.<script_name>) — treat as
+        // System-level danger since they execute arbitrary commands, same as bash.
+        if tool_name.starts_with("skill.") {
+            return DangerLevel::System;
+        }
+
         // Fallback heuristics
         match tool_name {
             "webfetch" | "tavily_search" => DangerLevel::Network,

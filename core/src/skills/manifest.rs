@@ -1,6 +1,37 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::path::PathBuf;
+
+/// A runnable script provided by a skill.
+///
+/// Declared in the skill's SKILL.md frontmatter under `scripts:`.
+/// Each script becomes a registered tool named `skill.<skill_name>.<script_name>`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScriptEntry {
+    /// Short name — forms part of the tool name: `skill.<skill>.<name>`.
+    pub name: String,
+
+    /// LLM-facing description of what this script does.
+    pub description: String,
+
+    /// Path to the script relative to the skill directory (e.g. `scripts/deploy.sh`).
+    /// Must be inside the skill directory — validated at load time.
+    pub file: String,
+
+    /// Per-script timeout in seconds (default: 60, capped at 600).
+    #[serde(default = "default_script_timeout")]
+    pub timeout_secs: u64,
+
+    /// JSON Schema for the parameters this script accepts.
+    /// Converted to CLI flags (`--key value`, `--flag`) at execution time.
+    #[serde(default)]
+    pub schema: Value,
+}
+
+fn default_script_timeout() -> u64 {
+    60
+}
 
 /// Full skill manifest — parsed from SKILL.md frontmatter.
 ///
@@ -16,6 +47,12 @@ use std::path::PathBuf;
 /// requires: []
 /// provides_tools: []
 /// priority: 10
+/// scripts:
+///   - name: deploy
+///     description: "Deploy the app"
+///     file: scripts/deploy.sh
+///     timeout_secs: 120
+///     schema: '{"type": "object", "properties": {"env": {"type": "string"}}}'
 /// ---
 /// # Skill content here...
 /// ```
@@ -56,6 +93,11 @@ pub struct SkillManifest {
     /// Path to the skill's content file (body after frontmatter).
     #[serde(default)]
     pub content_path: PathBuf,
+
+    /// Runnable scripts provided by this skill.
+    /// Each becomes a tool named `skill.<skill_name>.<script_name>`.
+    #[serde(default)]
+    pub scripts: Vec<ScriptEntry>,
 }
 
 fn default_version() -> String {
@@ -165,6 +207,7 @@ fn parse_yaml_frontmatter(content: &str) -> Result<SkillManifest> {
     let mut provides_tools = Vec::new();
     let mut priority: u32 = 0;
     let mut content_path = PathBuf::new();
+    let mut scripts: Vec<ScriptEntry> = Vec::new();
 
     // Track which list we're currently parsing
     enum ListMode {
@@ -174,6 +217,8 @@ fn parse_yaml_frontmatter(content: &str) -> Result<SkillManifest> {
         ReadWhen,
         Requires,
         ProvidesTools,
+        /// Parsing `scripts:` section — accumulating fields for one ScriptEntry.
+        Scripts { current: ScriptEntry },
     }
     let mut list_mode = ListMode::None;
 
@@ -183,10 +228,63 @@ fn parse_yaml_frontmatter(content: &str) -> Result<SkillManifest> {
             continue;
         }
 
-        // List items
+        // ── Scripts section: nested key-value entries ──────────────────────
+        // Unlike simple string lists, each script entry has sub-fields.
+        // `- name: foo` starts a new entry; indented lines populate fields.
+        if matches!(list_mode, ListMode::Scripts { .. }) {
+            // Start of a new script entry: flush previous, begin next.
+            if line.starts_with("- name:") {
+                if let ListMode::Scripts { current } =
+                    std::mem::replace(&mut list_mode, ListMode::None)
+                {
+                    if !current.name.is_empty() {
+                        scripts.push(current);
+                    }
+                }
+                let script_name = line
+                    .strip_prefix("- name:")
+                    .unwrap()
+                    .trim()
+                    .trim_matches('"')
+                    .to_string();
+                list_mode = ListMode::Scripts {
+                    current: ScriptEntry {
+                        name: script_name,
+                        description: String::new(),
+                        file: String::new(),
+                        timeout_secs: default_script_timeout(),
+                        schema: Value::Object(serde_json::Map::new()),
+                    },
+                };
+                continue;
+            }
+
+            // Sub-field of the current script entry.
+            if let ListMode::Scripts { ref mut current } = list_mode {
+                if let Some(val) = line.strip_prefix("description:") {
+                    current.description = val.trim().trim_matches('"').to_string();
+                } else if let Some(val) = line.strip_prefix("file:") {
+                    current.file = val.trim().trim_matches('"').to_string();
+                } else if let Some(val) = line.strip_prefix("timeout_secs:") {
+                    current.timeout_secs = val.trim().parse().unwrap_or(default_script_timeout());
+                } else if let Some(val) = line.strip_prefix("schema:") {
+                    let schema_str = val.trim();
+                    // Support both quoted JSON string and inline YAML-as-JSON.
+                    let json_str = schema_str.trim_matches('"').trim_matches('\'');
+                    if let Ok(v) = serde_json::from_str(json_str) {
+                        current.schema = v;
+                    } else {
+                        // Fallback: wrap as a simple JSON string for manual fix.
+                        current.schema = Value::String(json_str.to_string());
+                    }
+                }
+            }
+            continue;
+        }
+
+        // ── Simple list items ──────────────────────────────────────────────
         if line.starts_with("- ") {
             let val = line.strip_prefix("- ").unwrap().trim();
-            // Strip quotes if present
             let val = val.trim_matches('"').trim_matches('\'');
             match list_mode {
                 ListMode::Triggers => triggers.push(val.to_string()),
@@ -195,14 +293,35 @@ fn parse_yaml_frontmatter(content: &str) -> Result<SkillManifest> {
                 ListMode::Requires => requires.push(val.to_string()),
                 ListMode::ProvidesTools => provides_tools.push(val.to_string()),
                 ListMode::None => {} // standalone list item, ignore
+                ListMode::Scripts { .. } => unreachable!(),
             }
             continue;
         }
 
         // Detect list mode changes
+        if line.starts_with("scripts:") {
+            // Check inline list — if "scripts: []" just skip to next field.
+            if let Some(inline) = line.strip_prefix("scripts:") {
+                let trimmed = inline.trim();
+                if trimmed == "[]" {
+                    list_mode = ListMode::None;
+                    continue;
+                }
+            }
+            list_mode = ListMode::Scripts {
+                current: ScriptEntry {
+                    name: String::new(),
+                    description: String::new(),
+                    file: String::new(),
+                    timeout_secs: default_script_timeout(),
+                    schema: Value::Object(serde_json::Map::new()),
+                },
+            };
+            continue;
+        }
+
         if line.starts_with("triggers:") {
             list_mode = ListMode::Triggers;
-            // Check inline list: "triggers: [a, b, c]"
             if let Some(inline) = line.strip_prefix("triggers:") {
                 if let Some(arr) = parse_inline_list(inline.trim()) {
                     triggers = arr;
@@ -269,6 +388,13 @@ fn parse_yaml_frontmatter(content: &str) -> Result<SkillManifest> {
         }
     }
 
+    // Flush final script entry if one was being accumulated.
+    if let ListMode::Scripts { current } = list_mode {
+        if !current.name.is_empty() {
+            scripts.push(current);
+        }
+    }
+
     Ok(SkillManifest {
         name,
         description,
@@ -280,6 +406,7 @@ fn parse_yaml_frontmatter(content: &str) -> Result<SkillManifest> {
         provides_tools,
         priority,
         content_path,
+        scripts,
     })
 }
 
@@ -388,6 +515,7 @@ content"#;
             provides_tools: vec![],
             priority: 0,
             content_path: PathBuf::new(),
+            scripts: vec![],
         };
 
         assert!(manifest.matches_trigger("帮我创建一个 git branch"));
@@ -409,10 +537,73 @@ content"#;
             provides_tools: vec![],
             priority: 0,
             content_path: PathBuf::new(),
+            scripts: vec![],
         };
 
         // Name match should still work even without triggers
         assert!(manifest.matches_trigger("use docker-deploy skill"));
         assert!(!manifest.matches_trigger("write some code"));
+    }
+
+    #[test]
+    fn test_parse_scripts_section() {
+        let content = r#"---
+name: deploy-skill
+description: A skill with scripts
+scripts:
+  - name: deploy
+    description: "Deploy the app"
+    file: scripts/deploy.sh
+    timeout_secs: 120
+    schema: '{"type": "object", "properties": {"env": {"type": "string", "enum": ["staging", "production"]}, "dry_run": {"type": "boolean"}}, "required": ["env"]}'
+  - name: health_check
+    description: "Run health check"
+    file: scripts/check.py
+    timeout_secs: 30
+    schema: '{"type": "object", "properties": {}}'
+---
+Some content"#;
+
+        let dir = PathBuf::from("/tmp/test_skill_scripts");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("SKILL.md"), content).unwrap();
+
+        let manifest = SkillManifest::from_file(&dir.join("SKILL.md")).unwrap();
+        assert_eq!(manifest.name, "deploy-skill");
+        assert_eq!(manifest.scripts.len(), 2);
+
+        let deploy = &manifest.scripts[0];
+        assert_eq!(deploy.name, "deploy");
+        assert_eq!(deploy.description, "Deploy the app");
+        assert_eq!(deploy.file, "scripts/deploy.sh");
+        assert_eq!(deploy.timeout_secs, 120);
+        assert!(deploy.schema.get("properties").is_some());
+
+        let hc = &manifest.scripts[1];
+        assert_eq!(hc.name, "health_check");
+        assert_eq!(hc.timeout_secs, 30);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_scripts_empty_list() {
+        let content = r#"---
+name: no-scripts
+description: No scripts
+scripts: []
+---
+content"#;
+
+        let dir = PathBuf::from("/tmp/test_skill_no_scripts");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("SKILL.md"), content).unwrap();
+
+        let manifest = SkillManifest::from_file(&dir.join("SKILL.md")).unwrap();
+        assert!(manifest.scripts.is_empty());
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

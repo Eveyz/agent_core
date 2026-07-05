@@ -6,6 +6,7 @@ pub mod glob;
 pub mod grep;
 pub mod read_file;
 pub mod recall_memory;
+pub mod script;
 pub mod skill;
 pub mod subagent;
 pub mod tavily_search;

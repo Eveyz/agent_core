@@ -80,6 +80,11 @@ impl Run {
     }
 
     pub(super) fn refresh_context_segments(&mut self) {
+        // ── Sync skill script tools to the Run's ToolRegistry ──────
+        // Must run BEFORE tool catalog segment so new tools appear in the
+        // catalog on the same turn they are registered.
+        self.sync_skill_scripts();
+
         // Segment 3: ENVIRONMENT — use working_dir if set
         let cwd = self.working_dir.clone().or_else(|| {
             std::env::current_dir()
@@ -245,6 +250,66 @@ impl Run {
         };
         if !plan_str.is_empty() {
             self.context.set_execution_plan(&plan_str);
+        }
+    }
+
+    /// Register / unregister `skill.<name>.<script>` tools so they match the
+    /// currently active skills. Called once per turn from refresh_context_segments.
+    fn sync_skill_scripts(&mut self) {
+        use crate::skills::SkillManager;
+        use crate::tools::script::SkillScriptTool;
+
+        let sm = match self.brain.skill_manager.as_ref() {
+            Some(sm) => sm,
+            None => return,
+        };
+
+        let mgr = sm.lock();
+        let active_scripts = mgr.get_active_scripts();
+
+        // Build the set of tool names we *should* have registered.
+        let expected: std::collections::HashSet<String> = active_scripts
+            .iter()
+            .map(|(skill_name, script)| {
+                format!("skill.{}.{}", skill_name, script.name)
+            })
+            .collect();
+
+        let current: std::collections::HashSet<String> =
+            self.registered_script_tools.iter().cloned().collect();
+
+        // Register missing tools.
+        let mut changed = false;
+        for (skill_name, script) in &active_scripts {
+            let tool_name = format!("skill.{}.{}", skill_name, script.name);
+            if !current.contains(&tool_name) {
+                if let Some(source_dir) = mgr.source_dir_of(skill_name) {
+                    let tool = SkillScriptTool::new(skill_name, script, source_dir.to_path_buf())
+                        .with_supervisor(self.supervisor.clone());
+                    self.registry.register(Box::new(tool));
+                    self.registered_script_tools.push(tool_name);
+                    changed = true;
+                }
+            }
+        }
+
+        // Unregister tools whose skills were deactivated.
+        let to_remove: Vec<String> = current
+            .difference(&expected)
+            .cloned()
+            .collect();
+
+        if !to_remove.is_empty() {
+            let names: Vec<&str> = to_remove.iter().map(|s| s.as_str()).collect();
+            self.registry.remove_all(&names);
+            self.registered_script_tools
+                .retain(|n| expected.contains(n));
+            changed = true;
+        }
+
+        // Invalidate tool catalog cache so next turn rebuilds with new tools.
+        if changed {
+            self.tool_catalog_cache = None;
         }
     }
 }

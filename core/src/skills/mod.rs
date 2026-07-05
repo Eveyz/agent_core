@@ -1,8 +1,9 @@
 pub mod manifest;
 
-pub use manifest::SkillManifest;
+pub use manifest::{ScriptEntry, SkillManifest};
 
 use anyhow::Result;
+use serde_json;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -271,11 +272,19 @@ impl SkillManager {
             return String::new();
         }
 
-        format!(
+        let mut result = format!(
             "The following skills are ACTIVE and loaded into your context. \
              Use their knowledge to guide your responses:\n\n{}",
             parts.join("\n")
-        )
+        );
+
+        // Append script catalog for all active skills.
+        let active_scripts = self.get_active_scripts();
+        if !active_scripts.is_empty() {
+            result.push_str(&Self::scripts_context(&active_scripts));
+        }
+
+        result
     }
 
     /// Build a concise skill catalog for the system prompt.
@@ -313,6 +322,118 @@ impl SkillManager {
             .iter()
             .find(|s| s.manifest.name == name)
             .map(|s| s.source_dir.as_path())
+    }
+
+    // ── Scripts ─────────────────────────────────────────────────────
+
+    /// Discover all scripts for a skill, combining manifest-declared entries
+    /// with auto-discovered files in the `scripts/` directory.
+    ///
+    /// Manifest entries take priority — if a script with the same name appears
+    /// in both, the manifest wins. Auto-discovery only fills in scripts not
+    /// already declared.
+    pub fn discover_scripts(&self, name: &str) -> Vec<ScriptEntry> {
+        let mut scripts: Vec<ScriptEntry> = Vec::new();
+        let mut seen = HashSet::new();
+
+        // 1. Manifest-declared scripts (highest priority)
+        if let Some(skill) = self.manifests.iter().find(|s| s.manifest.name == name) {
+            for entry in &skill.manifest.scripts {
+                if !seen.insert(entry.name.clone()) {
+                    continue;
+                }
+                scripts.push(entry.clone());
+            }
+        }
+
+        // 2. Auto-discover scripts in <skill_dir>/scripts/
+        if let Some(source_dir) = self.source_dir_of(name) {
+            let scripts_dir = source_dir.join("scripts");
+            if scripts_dir.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(&scripts_dir) {
+                    let script_extensions: &[&str] =
+                        &["sh", "bash", "py", "js", "rb", "ts", "go", "rs"];
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if !path.is_file() {
+                            continue;
+                        }
+                        let script_name = path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("unknown");
+                        // Sanitize: replace dots/hyphens with underscores for tool name.
+                        let safe_name = script_name.replace(['.', '-'], "_");
+                        if seen.contains(&safe_name) {
+                            continue;
+                        }
+                        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                        if !script_extensions.contains(&ext) {
+                            continue;
+                        }
+                        seen.insert(safe_name.clone());
+                        scripts.push(ScriptEntry {
+                            name: safe_name.clone(),
+                            description: format!(
+                                "Run `{}` script from the '{name}' skill",
+                                path.file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or(script_name)
+                            ),
+                            file: path
+                                .strip_prefix(source_dir)
+                                .ok()
+                                .and_then(|p| p.to_str().map(|s| s.to_string()))
+                                .unwrap_or_else(|| {
+                                    format!("scripts/{}", path.file_name()
+                                        .and_then(|n| n.to_str())
+                                        .unwrap_or(script_name))
+                                }),
+                            timeout_secs: 60,
+                            schema: serde_json::Value::Object(serde_json::Map::new()),
+                        });
+                    }
+                }
+            }
+        }
+
+        scripts
+    }
+
+    /// Get script entries for a specific skill (manifest + auto-discovered).
+    pub fn get_scripts(&self, name: &str) -> Vec<ScriptEntry> {
+        self.discover_scripts(name)
+    }
+
+    /// Get all active skill scripts as (skill_name, ScriptEntry) pairs.
+    pub fn get_active_scripts(&self) -> Vec<(String, ScriptEntry)> {
+        let mut result = Vec::new();
+        for name in &self.active_skills {
+            for script in self.discover_scripts(name) {
+                result.push((name.clone(), script));
+            }
+        }
+        result
+    }
+
+    /// Format a single script entry as a catalog line for the context prompt.
+    pub fn script_line(skill_name: &str, script: &ScriptEntry) -> String {
+        format!(
+            "- **skill.{}.{}**: {} [timeout: {}s]",
+            skill_name, script.name, script.description, script.timeout_secs
+        )
+    }
+
+    /// Format a list of scripts for injection into the context prompt.
+    pub fn scripts_context(scripts: &[(String, ScriptEntry)]) -> String {
+        if scripts.is_empty() {
+            return String::new();
+        }
+        let mut lines = vec!["\n### Active Scripts\n".to_string()];
+        for (skill_name, script) in scripts {
+            lines.push(Self::script_line(skill_name, script));
+        }
+        lines.join("\n")
     }
 
     pub fn list(&self) -> Vec<&SkillManifest> {
@@ -353,14 +474,26 @@ impl SkillManager {
     pub fn load_skill_context(&self, name: &str) -> Result<Option<String>> {
         if let Some(skill) = self.manifests.iter().find(|s| s.manifest.name == name) {
             let content = self.load_content(&skill.manifest)?;
-            Ok(Some(format!(
+            let mut result = format!(
                 "== Skill: {} (v{}) ==\nSkill directory: {}\n{}\n== End Skill: {} ==\n",
                 skill.manifest.name,
                 skill.manifest.version,
                 skill.source_dir.display(),
                 content,
                 skill.manifest.name
-            )))
+            );
+            // Append available scripts.
+            let scripts = self.discover_scripts(&skill.manifest.name);
+            if !scripts.is_empty() {
+                result.push_str("\n### Available Scripts\n");
+                for script in &scripts {
+                    result.push_str(&format!(
+                        "- skill.{}.{}: {} (scripts/{})\n",
+                        skill.manifest.name, script.name, script.description, script.file
+                    ));
+                }
+            }
+            Ok(Some(result))
         } else {
             Ok(None)
         }
