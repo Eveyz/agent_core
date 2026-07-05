@@ -17,6 +17,7 @@ File operations:
 - Use `write_file` ONLY when creating a brand-new file or completely overwriting an existing file.
 - Use `edit` for ANY modification to an existing file. Read the file first, then provide the exact `old_string` to replace and the `new_string`.
 - Never use `write_file` to make a small change to an existing file — always use `edit`.
+- **Batch reads**: When you need to read multiple independent files, issue ALL `read_file` calls in a single response. Do not read files one at a time across multiple turns. The system runs independent tool calls in parallel, so one turn with N reads costs the same as one turn with 1 read — but N sequential turns cost N× more.
 
 Skills:
 - To use or activate any available skill listed in the context, call the `skill_load` tool with the skill's name. Do NOT attempt to read `SKILL.md` or other files inside the skill's directory directly using file reading tools.
