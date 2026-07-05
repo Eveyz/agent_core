@@ -32,6 +32,11 @@ pub struct MemoryManager {
     session_id: String,
     bm25: Option<BM25Index>,
     hnsw: Option<HNSWIndex>,
+    /// Max index entries before oldest entries are evicted (default: 10000).
+    /// None means unbounded. This applies to BM25 and HNSW fallback.
+    max_index_entries: Option<usize>,
+    /// FIFO queue of inserted record IDs for eviction.
+    insertion_order: std::cell::RefCell<std::collections::VecDeque<String>>,
 }
 
 impl MemoryManager {
@@ -77,6 +82,8 @@ impl MemoryManager {
             session_id,
             bm25,
             hnsw,
+            max_index_entries: Some(10_000),
+            insertion_order: std::cell::RefCell::new(std::collections::VecDeque::new()),
         })
     }
 
@@ -121,6 +128,8 @@ impl MemoryManager {
             session_id,
             bm25,
             hnsw,
+            max_index_entries: Some(10_000),
+            insertion_order: std::cell::RefCell::new(std::collections::VecDeque::new()),
         })
     }
 
@@ -160,6 +169,34 @@ impl MemoryManager {
         self.hnsw = Some(hnsw);
     }
 
+    /// Set the maximum number of index entries before oldest entries are evicted.
+    /// None = unbounded (not recommended for long-running agents).
+    pub fn set_max_index_entries(&mut self, max: Option<usize>) {
+        self.max_index_entries = max;
+    }
+
+    /// Evict oldest entries from indexes when exceeding the limit.
+    fn enforce_index_limit(&self) {
+        let max = match self.max_index_entries {
+            Some(m) => m,
+            None => return,
+        };
+
+        let mut order = self.insertion_order.borrow_mut();
+        while order.len() > max {
+            if let Some(old_id) = order.pop_front() {
+                // Evict from BM25
+                if let Some(ref bm25) = self.bm25 {
+                    let _ = bm25.delete(&old_id);
+                }
+                // Evict from HNSW fallback
+                if let Some(ref hnsw) = self.hnsw {
+                    hnsw.remove_fallback(&old_id);
+                }
+            }
+        }
+    }
+
     pub fn store_conversation(&self, role: &str, content: &str) -> Result<String> {
         // Use auto-rating (None = let the scorer decide)
         let id = self.recall.store(&self.session_id, role, content, None)?;
@@ -181,6 +218,11 @@ impl MemoryManager {
                 hnsw.add_fallback(id.clone(), normalized);
             }
         }
+
+        // Track insertion order for eviction
+        self.insertion_order.borrow_mut().push_back(id.clone());
+        // Evict oldest if over limit
+        self.enforce_index_limit();
 
         Ok(id)
     }

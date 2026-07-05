@@ -30,8 +30,32 @@ impl Run {
                 self.emit(RunEvent::Error {
                     message: format!("switching to fallback model: {model}"),
                 });
-                // Model switching at runtime is complex — for now, just give up
-                RecoveryOutcome::GiveUp
+                // Look up the new model config from the Brain's shared Config
+                // and rebuild the client directly (no &mut self on Arc<Brain> needed).
+                match self.brain.config.get_model(&model) {
+                    Some(model_config) => {
+                        let new_client = crate::client::OpenAIClient::new(model_config.clone());
+                        let max_tokens = new_client.model.max_context_tokens;
+                        self.client = new_client;
+                        self.recovery_ctx =
+                            crate::error_recovery::RecoveryContext::new(
+                                &model,
+                                max_tokens,
+                            );
+                        tracing::info!(
+                            model = %model,
+                            "switched model mid-run, continuing"
+                        );
+                        RecoveryOutcome::Retry
+                    }
+                    None => {
+                        tracing::error!(
+                            model = %model,
+                            "fallback model not found in config"
+                        );
+                        RecoveryOutcome::GiveUp
+                    }
+                }
             }
             RecoveryAction::Fail => RecoveryOutcome::GiveUp,
         }

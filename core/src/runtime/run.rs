@@ -148,10 +148,11 @@ pub struct Run {
     /// Cumulative cache hit/miss metrics across all turns of this Run.
     cache_metrics: CacheMetrics,
     /// Timestamp when the most recent turn ended.
-    /// Used by idle detection: if > CACHE_IDLE_WARN_SECS has elapsed
-    /// since this timestamp, we emit a cache-expiry warning before the
-    /// next model call (DeepSeek prefix cache times out ~5–10 min).
     last_turn_end_time: Option<Instant>,
+
+    /// Cached tool catalog to avoid rebuilding every turn.
+    /// Stores (fingerprint, rendered_catalog_string).
+    tool_catalog_cache: Option<(String, String)>,
 
     /// Shared, read-only context snapshot for side-channel `/btw` queries.
     /// Refreshed at turn boundaries; read via `RunHandle::context_snapshot()`.
@@ -269,6 +270,7 @@ impl Run {
             last_prefix_fingerprint,
             cache_metrics: CacheMetrics::default(),
             last_turn_end_time: None,
+            tool_catalog_cache: None,
             context_snapshot,
             goal: None,
             goal_completed: false,

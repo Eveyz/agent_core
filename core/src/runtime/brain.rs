@@ -423,8 +423,16 @@ impl Brain {
     }
 
     /// The recovery engine (stateless strategy, shared).
+    /// Wires up the current model's fallback_model so that SwitchModel
+    /// recovery can use it when the primary model fails repeatedly.
     pub fn build_recovery(&self) -> RecoveryEngine {
-        RecoveryEngine::default()
+        let mut engine = RecoveryEngine::default();
+        if let Ok(mc) = self.current_model_config() {
+            if let Some(ref fb) = mc.fallback_model {
+                engine = engine.with_fallback_model(fb);
+            }
+        }
+        engine
     }
 
     /// The identity text for the system prompt.

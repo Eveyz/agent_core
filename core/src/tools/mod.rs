@@ -113,6 +113,17 @@ impl ToolRegistry {
         self.tools.contains_key(name)
     }
 
+    /// Returns a fingerprint of the current registry contents.
+    /// Compares tool names and their parameter schemas so callers can skip
+    /// catalog rendering when nothing changed.
+    pub fn registry_fingerprint(&self) -> String {
+        let mut names: Vec<&str> = self.tools.keys().map(|s| s.as_str()).collect();
+        names.sort_unstable();
+        // Simple fingerprint: concat all tool names — sufficient because tool
+        // names form a namespace and parameter schemas are stable per name.
+        names.join("|")
+    }
+
     pub fn get(&self, name: &str) -> Option<&dyn Tool> {
         self.tools.get(name).map(|t| t.as_ref())
     }

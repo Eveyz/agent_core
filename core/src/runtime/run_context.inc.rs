@@ -79,11 +79,17 @@ impl Run {
         let env_str = Context::build_environment_string(cwd.as_deref(), None, None);
         self.context.set_environment(&env_str);
 
-        // Segment 4: TOOL CATALOG
-        let tool_defs = self.registry.tool_definitions();
-        let danger_map = build_danger_map(&tool_defs, &self.permission_policy);
-        let tool_catalog = Context::build_tool_catalog_string(&tool_defs, &danger_map);
-        self.context.set_tool_catalog(&tool_catalog);
+        // Segment 4: TOOL CATALOG — use cached render when available.
+        // The cache is populated in run_loop() and only invalidated when tools
+        // or permissions change. This avoids rebuilding the string every turn.
+        if let Some((_, ref cached)) = self.tool_catalog_cache {
+            self.context.set_tool_catalog(cached);
+        } else {
+            let tool_defs = self.registry.tool_definitions();
+            let danger_map = build_danger_map(&tool_defs, &self.permission_policy);
+            let tool_catalog = Context::build_tool_catalog_string(&tool_defs, &danger_map);
+            self.context.set_tool_catalog(&tool_catalog);
+        }
 
         // Segment 5: ACTIVE MEMORY — project instructions + core memory + recall search
         {

@@ -24,6 +24,12 @@ pub struct EventLog {
     entries: Vec<Envelope>,
     /// Whether writes are enabled (false if the file couldn't be opened).
     writable: bool,
+    /// Maximum file size in bytes before rotation (default: 100 MB).
+    max_file_size: u64,
+    /// Maximum number of rotated backup files to keep (default: 5).
+    max_files: usize,
+    /// Approximate bytes written since last rotation check.
+    bytes_written: u64,
 }
 
 impl EventLog {
@@ -41,7 +47,55 @@ impl EventLog {
             path,
             entries: Vec::new(),
             writable,
+            max_file_size: 100 * 1024 * 1024, // 100 MB
+            max_files: 5,
+            bytes_written: 0,
         }
+    }
+
+    /// Configure rotation limits for this log.
+    pub fn with_rotation(mut self, max_file_size: u64, max_files: usize) -> Self {
+        self.max_file_size = max_file_size;
+        self.max_files = max_files;
+        self
+    }
+
+    /// Rotate log files when the current file exceeds the size limit.
+    /// Renames: .jsonl → .jsonl.1, .1 → .2, ..., oldest is removed.
+    fn rotate_if_needed(&mut self) {
+        // Only rotate if the file actually exists and we can check its size.
+        if !self.writable {
+            return;
+        }
+        if let Ok(metadata) = std::fs::metadata(&self.path) {
+            if metadata.len() < self.max_file_size {
+                return;
+            }
+        } else {
+            return; // file doesn't exist yet — nothing to rotate
+        }
+
+        tracing::info!(
+            path = %self.path.display(),
+            size = self.bytes_written,
+            "rotating event log"
+        );
+
+        // Shift rotated files: .jsonl.N-1 → .jsonl.N
+        for i in (1..self.max_files).rev() {
+            let from = self.path.with_extension(format!("jsonl.{i}"));
+            let to = self.path.with_extension(format!("jsonl.{}", i + 1));
+            if from.exists() {
+                let _ = std::fs::rename(&from, &to);
+            }
+        }
+
+        // Rename current file: .jsonl → .jsonl.1
+        let backup = self.path.with_extension("jsonl.1");
+        let _ = std::fs::rename(&self.path, &backup);
+
+        // Reset write tracking — a new empty file will be created on next append.
+        self.bytes_written = 0;
     }
 
     /// Append an envelope to the log (best-effort persistence).
@@ -51,6 +105,9 @@ impl EventLog {
         if !self.writable {
             return;
         }
+
+        // Rotate if the file has grown too large
+        self.rotate_if_needed();
 
         // Serialize and append to file
         match serde_json::to_string(&env) {
@@ -62,6 +119,7 @@ impl EventLog {
                     .open(&self.path)
                 {
                     let _ = writeln!(file, "{line}");
+                    self.bytes_written += line.len() as u64 + 1; // +1 for newline
                 }
             }
             Err(e) => {

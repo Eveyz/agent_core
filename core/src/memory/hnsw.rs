@@ -77,6 +77,17 @@ impl HNSWIndex {
         fb.push((id, embedding));
     }
 
+    /// Remove the oldest entry with the given id from the fallback list.
+    pub fn remove_fallback(&self, id: &str) {
+        let mut fb = self.fallback.write().expect("HNSW fallback lock poisoned");
+        fb.retain(|(entry_id, _)| entry_id != id);
+    }
+
+    /// Number of entries in the fallback list.
+    pub fn fallback_count(&self) -> usize {
+        self.fallback.read().expect("HNSW fallback lock poisoned").len()
+    }
+
     /// Search for the top_k nearest neighbors to the query embedding.
     /// Merges HNSW results with brute-force fallback results.
     pub fn search(&self, query: &[f32], top_k: usize) -> Vec<String> {

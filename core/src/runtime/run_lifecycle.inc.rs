@@ -129,12 +129,20 @@ impl Run {
             // (e.g. user changes permission level mid-conversation).
             self.permission_policy.update_from_config(&self.brain.config.permissions);
 
-            // Re-render and update the tool catalog in context so the LLM knows about the new permissions.
-            // set_tool_catalog will implicitly ignore the update if the string hasn't actually changed.
-            let tool_defs = self.registry.tool_definitions();
-            let danger_map = build_danger_map(&tool_defs, &self.permission_policy);
-            let updated_catalog = Context::build_tool_catalog_string(&tool_defs, &danger_map);
-            self.context.set_tool_catalog(&updated_catalog);
+            // Re-render and update the tool catalog in context.
+            // Cache the rendered string using the registry fingerprint to avoid
+            // rebuilding every turn — only rebuild when tools or permissions change.
+            let fp = self.registry.registry_fingerprint();
+            let perm_mode = format!("{:?}", self.permission_policy.mode());
+            let cache_key = format!("{perm_mode}|{fp}");
+            let needs_rebuild = self.tool_catalog_cache.as_ref().map_or(true, |(k, _)| k != &cache_key);
+            if needs_rebuild {
+                let tool_defs = self.registry.tool_definitions();
+                let danger_map = build_danger_map(&tool_defs, &self.permission_policy);
+                let updated_catalog = Context::build_tool_catalog_string(&tool_defs, &danger_map);
+                self.context.set_tool_catalog(&updated_catalog);
+                self.tool_catalog_cache = Some((cache_key, updated_catalog));
+            }
 
             // ── Poll commands (non-blocking) ───────────────────────
             self.poll_commands()?;
