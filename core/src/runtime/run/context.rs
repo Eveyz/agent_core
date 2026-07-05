@@ -1,8 +1,18 @@
-impl Run {
+//! Context management — message construction, snapshots, goal decomposition,
+//! and per-turn context segment refresh.
 
+use serde_json::Value;
+
+use crate::context::ContextEngine as Context;
+use crate::runtime::event::TodoItemPayload;
+use crate::types::Message;
+
+use super::{Run, RunError, GOAL_DECOMPOSE_SYSTEM};
+
+impl Run {
     // ── Context management ────────────────────────────────────────
 
-    fn build_messages(&self) -> Vec<Message> {
+    pub(super) fn build_messages(&self) -> Vec<Message> {
         let mut messages = self.context.messages();
         for processor in &self.context_processors {
             messages = (processor.transform)(messages);
@@ -10,7 +20,7 @@ impl Run {
         messages
     }
 
-    fn snapshot_messages_for_hook(&self, messages: &[Message]) -> Vec<Value> {
+    pub(super) fn snapshot_messages_for_hook(&self, messages: &[Message]) -> Vec<Value> {
         messages
             .iter()
             .map(|m| {
@@ -30,7 +40,7 @@ impl Run {
     }
 
     /// Decompose a pinned goal into todo items via a lightweight LLM call.
-    async fn decompose_goal(&self, goal: &str) -> Result<Vec<TodoItemPayload>, RunError> {
+    pub(super) async fn decompose_goal(&self, goal: &str) -> Result<Vec<TodoItemPayload>, RunError> {
         let msgs = vec![
             Message::system(GOAL_DECOMPOSE_SYSTEM),
             Message::user(&format!(
@@ -44,7 +54,7 @@ impl Run {
             .chat_completion(&msgs, &[])
             .await
             .map_err(|e| RunError::Failed(format!("goal decompose model call failed: {e}")))?;
-        let json = extract_json_array(&resp);
+        let json = super::extract_json_array(&resp);
         let arr: Vec<Value> = serde_json::from_str(&json)
             .map_err(|e| RunError::Failed(format!("goal decompose parse failed: {e}")))?;
         let descs: Vec<String> = arr
@@ -69,7 +79,7 @@ impl Run {
             .collect())
     }
 
-    fn refresh_context_segments(&mut self) {
+    pub(super) fn refresh_context_segments(&mut self) {
         // Segment 3: ENVIRONMENT — use working_dir if set
         let cwd = self.working_dir.clone().or_else(|| {
             std::env::current_dir()
@@ -86,7 +96,7 @@ impl Run {
             self.context.set_tool_catalog(cached);
         } else {
             let tool_defs = self.registry.tool_definitions();
-            let danger_map = build_danger_map(&tool_defs, &self.permission_policy);
+            let danger_map = super::build_danger_map(&tool_defs, &self.permission_policy);
             let tool_catalog = Context::build_tool_catalog_string(&tool_defs, &danger_map);
             self.context.set_tool_catalog(&tool_catalog);
         }
@@ -237,5 +247,4 @@ impl Run {
             self.context.set_execution_plan(&plan_str);
         }
     }
-
 }

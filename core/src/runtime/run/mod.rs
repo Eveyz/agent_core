@@ -16,11 +16,26 @@
 //! 1. Normal completion → explicit transition to terminal state
 //! 2. Cancel → `cancel_and_cleanup` kills processes + aborts tasks
 //! 3. Drop (RAII) → supervisor + join_set + cancel all fire automatically
+//!
+//! ## Module structure
+//!
+//! This module is split into focused submodules, each responsible for a
+//! distinct concern within the Run's lifecycle:
+//!
+//! - [`lifecycle`] — main entry point, turn loop, command polling, pause/resume
+//! - [`turn`] — individual turn execution, model calls, stream collection
+//! - [`compact`] — context compaction (chunked drop + LLM summarization)
+//! - [`recovery`] — error recovery strategies (retry, compact, model switch)
+//! - [`context`] — message building, context segment refresh, goal decomposition
+//! - [`helpers`] — session memory, cleanup, teardown
 
-use anyhow::{Result, bail};
-use futures::StreamExt;
-use parking_lot::{Mutex, MutexGuard, RwLock};
-use serde_json::Value;
+mod compact;
+mod context;
+mod helpers;
+mod lifecycle;
+mod recovery;
+mod turn;
+
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -29,25 +44,24 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
+use parking_lot::{Mutex, RwLock};
+
 use crate::agent::ContextProcessor;
-use crate::agent::executor::ToolOrchestrator;
 use crate::client::OpenAIClient;
-use crate::client::streaming::{TokenAccumulator, ToolCallAccumulator};
 use crate::config::ModelConfig;
 use crate::context::ContextEngine as Context;
-use crate::error_recovery::{RecoveryAction, RecoveryContext, RecoveryEngine};
+use crate::error_recovery::{RecoveryEngine, RecoveryContext};
 use crate::hooks::HookRegistry;
 use crate::mode::AgentMode;
 use crate::permission::PermissionPolicy;
 use crate::runtime::approval::ApprovalResolver;
 use crate::runtime::brain::Brain;
 use crate::runtime::command::{RunCommand, SteerEntry};
-use crate::runtime::event::{CacheMetrics, Envelope, RunEvent, RunId, TodoItemPayload};
-use crate::runtime::guard::EventGuard;
+use crate::runtime::event::{CacheMetrics, Envelope, RunEvent, RunId};
 use crate::runtime::state::RunState;
 use crate::runtime::supervisor::ProcessSupervisor;
 use crate::tools::ToolRegistry;
-use crate::types::{CacheUsage, Message, MessageDelta, Role, StreamEvent, ToolCall, ToolExecutionMode};
+use crate::types::{Message, Role, ToolExecutionMode};
 
 /// System prompt for `/goal` task decomposition.
 const GOAL_DECOMPOSE_SYSTEM: &str = "You decompose a goal into subtasks. Output ONLY a JSON array of objects, each with a single \"description\" string field. No markdown, no commentary. Produce 3-8 items.";
@@ -78,7 +92,11 @@ enum RecoveryOutcome {
     GiveUp,
 }
 
-// ApprovalResolver is now in runtime/approval.rs — Run holds a clone.
+/// Error type for the run loop.
+pub enum RunError {
+    Cancelled,
+    Failed(String),
+}
 
 /// A Run is the independent execution space for a single user request.
 ///
@@ -173,7 +191,7 @@ impl Run {
         history: Vec<crate::types::Message>,
         mode: AgentMode,
         context_snapshot: Arc<RwLock<Vec<Message>>>,
-    ) -> Result<Self> {
+    ) -> anyhow::Result<Self> {
         let client = brain.build_client()?;
         let permission_policy = brain.build_permission_policy();
         let recovery = brain.build_recovery();
@@ -296,7 +314,7 @@ impl Run {
     }
 
     /// Refresh the shared context snapshot (read by side-channel `/btw` queries).
-    fn refresh_context_snapshot(&self) {
+    pub(crate) fn refresh_context_snapshot(&self) {
         *self.context_snapshot.write() = self.context.messages();
     }
 
@@ -346,16 +364,7 @@ impl Run {
             event,
         }
     }
-
 }
-
-include!("run_lifecycle.inc.rs");
-include!("run_turn.inc.rs");
-include!("run_compact.inc.rs");
-include!("run_recovery.inc.rs");
-include!("run_context.inc.rs");
-include!("run_compact2.inc.rs");
-include!("run_helpers.inc.rs");
 
 impl Drop for Run {
     fn drop(&mut self) {
@@ -369,18 +378,12 @@ impl Drop for Run {
     }
 }
 
-/// Error type for the run loop.
-enum RunError {
-    Cancelled,
-    Failed(String),
-}
-
 /// Default directory for Run event logs.
 pub(crate) fn default_runs_dir() -> String {
     crate::paths::get_runs_dir().to_string_lossy().into_owned()
 }
 
-// ── Helper functions (copied from agent/mod.rs for now) ───────────
+// ── Helper functions ─────────────────────────────────────────────
 
 fn build_danger_map(
     tools: &[crate::types::ToolDefinition],

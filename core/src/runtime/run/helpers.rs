@@ -1,7 +1,17 @@
+//! Run helpers — session memory, cleanup, and teardown.
+
+use parking_lot::MutexGuard;
+
+use crate::runtime::command::SteerEntry;
+use crate::runtime::event::RunEvent;
+use crate::runtime::supervisor::ProcessSupervisor;
+
+use super::Run;
+
 impl Run {
-    fn write_session_memory(&self, _final_text: &str) {
+    pub(super) fn write_session_memory(&self, _final_text: &str) {
         let global_path = crate::paths::get_global_agverse_md_path();
-        
+
         // If the file already exists, we do nothing. We let the Agent intelligently manage it via tools.
         if global_path.exists() {
             return;
@@ -55,7 +65,7 @@ Never mention your memory management process to the user unless explicitly asked
     // ── Cleanup ──────────────────────────────────────────────────
 
     /// Cancel-path cleanup: kill all processes, abort all tasks.
-    async fn cancel_and_cleanup(&mut self) {
+    pub(super) async fn cancel_and_cleanup(&mut self) {
         // 1. Trigger cancellation (propagates to model stream + tool exec)
         self.cancel.cancel();
 
@@ -83,7 +93,7 @@ Never mention your memory management process to the user unless explicitly asked
     }
 
     /// Final cleanup (called on all exit paths, idempotent).
-    fn cleanup_on_exit(&mut self) {
+    pub(super) fn cleanup_on_exit(&mut self) {
         // Kill any remaining processes (idempotent if already killed)
         {
             let mut sup: MutexGuard<'_, ProcessSupervisor> = self.supervisor.lock();

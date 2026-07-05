@@ -1,3 +1,16 @@
+//! Run lifecycle — main entry point, turn loop, command polling,
+//! pause/resume, and approval resolution.
+
+use std::time::Instant;
+
+use crate::context::ContextEngine as Context;
+use crate::runtime::command::{RunCommand, SteerEntry};
+use crate::runtime::event::RunEvent;
+use crate::runtime::state::RunState;
+use crate::types::Message;
+
+use super::{Run, RunError, TurnOutcome};
+
 impl Run {
     // ── The main entry point ──────────────────────────────────────
 
@@ -122,10 +135,10 @@ impl Run {
         self.cleanup_on_exit();
     }
 
-    async fn run_loop(&mut self) -> Result<String, RunError> {
+    pub(super) async fn run_loop(&mut self) -> Result<String, RunError> {
         for turn_index in 0..self.max_iterations {
             // ── Hot-reload configs ─────────────────────────────────
-            // Ensure the active run dynamically picks up config changes 
+            // Ensure the active run dynamically picks up config changes
             // (e.g. user changes permission level mid-conversation).
             self.permission_policy.update_from_config(&self.brain.config.permissions);
 
@@ -138,7 +151,7 @@ impl Run {
             let needs_rebuild = self.tool_catalog_cache.as_ref().map_or(true, |(k, _)| k != &cache_key);
             if needs_rebuild {
                 let tool_defs = self.registry.tool_definitions();
-                let danger_map = build_danger_map(&tool_defs, &self.permission_policy);
+                let danger_map = super::build_danger_map(&tool_defs, &self.permission_policy);
                 let updated_catalog = Context::build_tool_catalog_string(&tool_defs, &danger_map);
                 self.context.set_tool_catalog(&updated_catalog);
                 self.tool_catalog_cache = Some((cache_key, updated_catalog));
@@ -195,12 +208,12 @@ impl Run {
             self.current_turn_id = None;
         }
 
-        let summary = build_iteration_limit_summary(&self.context, self.max_iterations);
+        let summary = super::build_iteration_limit_summary(&self.context, self.max_iterations);
         Err(RunError::Failed(summary))
     }
 
     /// Non-blocking poll of the command channel.
-    fn poll_commands(&mut self) -> Result<(), RunError> {
+    pub(super) fn poll_commands(&mut self) -> Result<(), RunError> {
         while let Ok(cmd) = self.cmd_rx.try_recv() {
             match cmd {
                 RunCommand::Cancel => {
@@ -255,7 +268,7 @@ impl Run {
     }
 
     /// Block until Resume or Cancel is received.
-    async fn wait_for_resume(&mut self) -> Result<(), RunError> {
+    pub(super) async fn wait_for_resume(&mut self) -> Result<(), RunError> {
         loop {
             match self.cmd_rx.recv().await {
                 Some(RunCommand::Resume) => {
@@ -306,7 +319,7 @@ impl Run {
         }
     }
 
-    fn resolve_approval(&mut self, prompt_id: &str, choice: crate::permission::ApprovalChoice) {
+    pub(super) fn resolve_approval(&mut self, prompt_id: &str, choice: crate::permission::ApprovalChoice) {
         // Try the per-Run resolver first (used when ToolOrchestrator has
         // approval_resolver set, which is the new default path).
         if self.approval_resolver.resolve(prompt_id, choice.clone()) {
@@ -336,10 +349,7 @@ impl Run {
         tracing::debug!(prompt_id, "approval prompt not found");
     }
 
-    fn resolve_input(&mut self, _prompt_id: &str, _answer: &str) {
+    pub(super) fn resolve_input(&mut self, _prompt_id: &str, _answer: &str) {
         // TODO: implement input request mechanism (future phase)
     }
-
-    // ── Turn execution ────────────────────────────────────────────
-
 }

@@ -1,5 +1,20 @@
+//! Turn execution — model interaction, streaming collection, and turn dispatch.
+
+use anyhow::Result;
+use futures::StreamExt;
+use std::sync::atomic::Ordering;
+use tokio::sync::broadcast;
+
+use crate::agent::executor::ToolOrchestrator;
+use crate::client::streaming::{TokenAccumulator, ToolCallAccumulator};
+use crate::runtime::event::{Envelope, RunEvent, TodoItemPayload};
+use crate::runtime::guard::EventGuard;
+use crate::types::{CacheUsage, Message, MessageDelta, StreamEvent, ToolCall};
+
+use super::{RecoveryOutcome, Run, RunError, TurnOutcome, CACHE_IDLE_WARN_SECS};
+
 impl Run {
-    async fn run_turn(&mut self, turn_index: usize) -> Result<TurnOutcome, RunError> {
+    pub(super) async fn run_turn(&mut self, turn_index: usize) -> Result<TurnOutcome, RunError> {
         // Stage: Idle detection — warn if the cache likely expired between turns.
         // DeepSeek's prefix cache has an undocumented ~5–10 minute idle timeout.
         // If the user paused for > CACHE_IDLE_WARN_SECS, the next API call will
@@ -245,13 +260,13 @@ impl Run {
             .iter()
             .any(|c| matches!(c.function.name.as_str(), "todo_write" | "todo_update"));
         if todo_changed {
-            let items: Vec<crate::runtime::event::TodoItemPayload> = self
+            let items: Vec<TodoItemPayload> = self
                 .brain
                 .todo_list
                 .lock()
                 .items
                 .iter()
-                .map(|item| crate::runtime::event::TodoItemPayload {
+                .map(|item| TodoItemPayload {
                     id: item.id.clone(),
                     description: item.description.clone(),
                     status: item.status.to_string(),
@@ -275,7 +290,7 @@ impl Run {
         }
 
         if turn_index == self.max_iterations - 1 {
-            let summary = build_iteration_limit_summary(&self.context, self.max_iterations);
+            let summary = super::build_iteration_limit_summary(&self.context, self.max_iterations);
             self.emit(RunEvent::Error {
                 message: summary.clone(),
             });
@@ -287,7 +302,7 @@ impl Run {
 
     // ── Model interaction ────────────────────────────────────────
 
-    async fn model_turn(&mut self) -> Result<(String, Vec<ToolCall>, String, CacheUsage), String> {
+    pub(super) async fn model_turn(&mut self) -> Result<(String, Vec<ToolCall>, String, CacheUsage), String> {
         const MAX_RECOVERY_ATTEMPTS: u32 = 3;
 
         for _attempt in 0..MAX_RECOVERY_ATTEMPTS {
@@ -350,7 +365,7 @@ impl Run {
         Err("exhausted recovery attempts".to_string())
     }
 
-    async fn collect_stream(
+    pub(super) async fn collect_stream(
         &self,
         stream: impl futures::Stream<Item = Result<StreamEvent>>,
         event_tx: &broadcast::Sender<Envelope>,
@@ -368,7 +383,7 @@ impl Run {
         tokio::pin!(stream);
         while let Some(event) = stream.next().await {
             if self.cancel.is_cancelled() {
-                bail!("aborted");
+                anyhow::bail!("aborted");
             }
             let event = event?;
             match event {
@@ -456,5 +471,4 @@ impl Run {
 
         Ok((text_buffer, tool_calls, message_id, cache_usage))
     }
-
 }

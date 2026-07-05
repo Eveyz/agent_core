@@ -1,5 +1,12 @@
+//! Error recovery — retry, compact, escalate, or switch models.
+
+use crate::error_recovery::{RecoveryAction, RecoveryContext};
+use crate::runtime::event::RunEvent;
+
+use super::{RecoveryOutcome, Run};
+
 impl Run {
-    async fn try_recover(&mut self, error: &str) -> RecoveryOutcome {
+    pub(super) async fn try_recover(&mut self, _error: &str) -> RecoveryOutcome {
         let action = self.recovery.determine_strategy(&self.recovery_ctx);
         match action {
             RecoveryAction::CompactContext { target_ratio } => {
@@ -38,10 +45,7 @@ impl Run {
                         let max_tokens = new_client.model.max_context_tokens;
                         self.client = new_client;
                         self.recovery_ctx =
-                            crate::error_recovery::RecoveryContext::new(
-                                &model,
-                                max_tokens,
-                            );
+                            RecoveryContext::new(&model, max_tokens);
                         tracing::info!(
                             model = %model,
                             "switched model mid-run, continuing"

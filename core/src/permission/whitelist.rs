@@ -148,91 +148,79 @@ impl WhitelistManager {
             .collect()
     }
 
-    /// Persist persistent entries to config.toml.
-    /// This re-reads the config file, updates the [permissions.whitelist] section,
-    /// and writes back while preserving the rest of the file.
+    /// Persist persistent entries to config.toml using toml_edit to safely
+    /// update the [[permissions.whitelist]] section while preserving comments
+    /// and formatting in the rest of the file.
     pub fn persist_to_config(&self) -> Result<()> {
+        use toml_edit::{DocumentMut, Item, Table, value};
+
         let config_path = match &self.config_path {
             Some(p) => p.clone(),
-            None => return Ok(()), // no persistence configured
+            None => return Ok(()),
         };
 
         let content = std::fs::read_to_string(&config_path)?;
+        let mut doc = content.parse::<DocumentMut>()
+            .map_err(|e| anyhow::anyhow!("failed to parse config TOML: {e}"))?;
+
+        // Collect persistent entries
         let persistent: Vec<_> = self
             .entries
             .iter()
             .filter(|e| matches!(e.scope, ApprovalScope::Persistent) && e.is_valid())
             .collect();
 
-        // Build TOML array for whitelist entries
-        let mut new_whitelist_section = String::new();
-        new_whitelist_section.push_str("[[permissions.whitelist]]\n");
+        // Build new whitelist array-of-tables
+        let mut whitelist_arr = toml_edit::ArrayOfTables::new();
         for entry in &persistent {
-            new_whitelist_section.push_str(&format!(
-                "tool_pattern = \"{}\"\n",
-                entry.pattern.tool_pattern
-            ));
+            let mut tbl = Table::new();
+            tbl.insert("tool_pattern", value(&entry.pattern.tool_pattern));
+            tbl.insert("scope", value("Persistent"));
             if let Some(ref cmds) = entry.pattern.commands {
-                new_whitelist_section.push_str("commands = [");
-                new_whitelist_section.push_str(
-                    &cmds
-                        .iter()
-                        .map(|c| format!("\"{}\"", c))
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                );
-                new_whitelist_section.push_str("]\n");
+                let mut arr = toml_edit::Array::new();
+                for cmd in cmds {
+                    arr.push(cmd.as_str());
+                }
+                tbl.insert("commands", Item::Value(arr.into()));
             }
             if let Some(ref paths) = entry.pattern.paths {
-                new_whitelist_section.push_str("paths = [");
-                new_whitelist_section.push_str(
-                    &paths
-                        .iter()
-                        .map(|p| format!("\"{}\"", p))
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                );
-                new_whitelist_section.push_str("]\n");
-            }
-            new_whitelist_section.push('\n');
-        }
-
-        // Simple approach: strip old [[permissions.whitelist]] blocks, append new ones
-        let mut new_content = String::new();
-        let mut in_whitelist = false;
-        for line in content.lines() {
-            if line.trim().starts_with("[[permissions.whitelist]]") {
-                in_whitelist = true;
-                continue;
-            }
-            if in_whitelist {
-                // Skip until next section header or empty line + non-whitelist content
-                if line.trim().is_empty() {
-                    in_whitelist = false;
-                    new_content.push_str(line);
-                    new_content.push('\n');
-                    continue;
+                let mut arr = toml_edit::Array::new();
+                for path in paths {
+                    arr.push(path.as_str());
                 }
-                if line.starts_with('[') {
-                    in_whitelist = false;
-                    new_content.push_str(line);
-                    new_content.push('\n');
-                    continue;
-                }
-                // Skip whitelist field lines
-                continue;
+                tbl.insert("paths", Item::Value(arr.into()));
             }
-            new_content.push_str(line);
-            new_content.push('\n');
+            if let Some(ref hosts) = entry.pattern.hosts {
+                let mut arr = toml_edit::Array::new();
+                for host in hosts {
+                    arr.push(host.as_str());
+                }
+                tbl.insert("hosts", Item::Value(arr.into()));
+            }
+            if let Some(ref max_danger) = entry.pattern.max_danger {
+                tbl.insert("max_danger", value(format!("{max_danger:?}")));
+            }
+            whitelist_arr.push(tbl);
         }
 
-        // Append new whitelist entries
-        if !persistent.is_empty() {
-            new_content.push('\n');
-            new_content.push_str(&new_whitelist_section);
+        // Get or create permissions table, replacing old whitelist entries
+        use toml_edit::Entry;
+        match doc.entry("permissions") {
+            Entry::Occupied(mut o) => {
+                let perm_table = o.get_mut().as_table_mut()
+                    .ok_or_else(|| anyhow::anyhow!("config.toml: [permissions] is not a table"))?;
+                perm_table.insert("whitelist", Item::ArrayOfTables(whitelist_arr));
+            }
+            Entry::Vacant(v) => {
+                let mut perm_table = Table::new();
+                if !persistent.is_empty() {
+                    perm_table.insert("whitelist", Item::ArrayOfTables(whitelist_arr));
+                }
+                v.insert(Item::Table(perm_table));
+            }
         }
 
-        std::fs::write(&config_path, new_content)?;
+        std::fs::write(&config_path, doc.to_string())?;
         Ok(())
     }
 
