@@ -184,11 +184,11 @@ async fn run_reflection(
 
     // Write to agverse.md (Core Memory)
     let agverse_path = crate::paths::get_global_agverse_md_path();
-    match std::fs::read_to_string(&agverse_path) {
+    match tokio::fs::read_to_string(&agverse_path).await {
         Ok(content) => {
             let updated = append_facts_to_sections(&content, &facts);
             if updated != content {
-                if let Err(e) = std::fs::write(&agverse_path, &updated) {
+                if let Err(e) = tokio::fs::write(&agverse_path, &updated).await {
                     tracing::warn!("reflection: failed to update agverse.md: {e}");
                 } else {
                     tracing::info!("reflection: updated agverse.md with {} facts", facts.len());

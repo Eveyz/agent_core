@@ -28,7 +28,12 @@ const INSTRUCTION_TOOLS: &[&str] = &["skill_load"];
 /// Tools whose results the model explicitly requested; bounded by L1 already.
 const ACTIVE_READ_TOOLS: &[&str] = &["read_file", "subagent", "subagents"];
 
-// ── Budgets (PLAN-0008) ──────────────────────────────────────────────
+// ── Budgets (PLAN-0008, updated 2026-07) ────────────────────────────
+//
+// With subagent messages now persisted to disk files (~/.agverse/subagents/)
+// and only a summary going into the parent context, the caps below serve as
+// a safety net rather than a primary constraint.  Still kept conservative
+// enough that a single tool result never dominates the model's context window.
 
 /// Char budget for incidental tool results before head/tail truncation kicks in
 /// (≈4K tokens, ~3% of a 128K context). Old value was 4000 — too small for any
@@ -38,12 +43,13 @@ pub const INCIDENTAL_HEAD_LINES: usize = 40;
 pub const INCIDENTAL_TAIL_LINES: usize = 20;
 /// Char cap for actively-read tool results — higher than incidental because the
 /// model asked for this content and it must stay contiguous (no head/tail split).
-pub const ACTIVE_READ_MAX_CHARS: usize = 24_000;
+pub const ACTIVE_READ_MAX_CHARS: usize = 128_000;
 
-/// Char cap for subagent/subagents results — larger than standard active-read
-/// because subagents can return aggregated multi-tool results (code, data,
-/// research) and the main agent explicitly spawned them for this data.
-pub const SUBAGENT_RESULT_MAX_CHARS: usize = 64_000;
+/// Char cap for subagent/subagents results.  Since subagent messages are now
+/// persisted to disk and the parent context only carries a summary + file path,
+/// this cap is a safety net — subagent results should normally stay well below
+/// it after the 2026-07 refactor.
+pub const SUBAGENT_RESULT_MAX_CHARS: usize = 256_000;
 
 /// Keywords marking "signal" lines worth preserving from the middle.
 const SIGNAL_KEYWORDS: &[&str] = &["error", "exit code", "warning", "failed", "denied"];

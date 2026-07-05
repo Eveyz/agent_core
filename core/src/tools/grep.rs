@@ -106,15 +106,15 @@ async fn search_path(
             }
         }
     } else if path.is_dir() {
-        let entries = std::fs::read_dir(path)
+        let mut entries = tokio::fs::read_dir(path)
+            .await
             .with_context(|| format!("failed to read dir: {}", path.display()))?;
 
-        for entry in entries {
+        while let Some(entry) = entries.next_entry().await? {
             if results.len() >= max {
                 break;
             }
-            let entry = entry?;
-            let file_type = entry.file_type()?;
+            let file_type = entry.file_type().await?;
 
             let name = entry.file_name();
             let name_str = name.to_string_lossy();

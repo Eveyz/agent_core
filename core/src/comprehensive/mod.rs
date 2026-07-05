@@ -310,7 +310,7 @@ impl ComprehensiveAgent {
     ) -> Result<ReflectionReport> {
         let reflector = self.reflector.as_ref().context("reflector not enabled")?;
 
-        let records = Reflector::load_trace(trace_path)?;
+        let records = Reflector::load_trace(trace_path).await?;
         let events: Vec<_> = records.iter().filter_map(|r| r.to_digest_event()).collect();
         let mut suggestions = reflector.analyze(&events);
 
@@ -325,7 +325,7 @@ impl ComprehensiveAgent {
 
         let mut report = ReflectionReport::default();
         for sug in &suggestions {
-            match reflector.apply(sug)? {
+            match reflector.apply(sug).await? {
                 SuggestionAction::Applied => report.applied.push(sug.clone()),
                 SuggestionAction::NeedsApproval(diff) => {
                     report.needs_approval.push((sug.clone(), diff));

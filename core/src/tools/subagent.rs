@@ -121,7 +121,9 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
         event_sender: Option<EventSender>,
     ) -> Result<String> {
         let strategy = parse_result_strategy(&args);
-        let (result, _messages) = spawn_single(
+        let id = args["id"].as_str().unwrap_or("unknown").to_string();
+
+        let (result, messages) = spawn_single(
             &args,
             &self.model_config,
             &self.available_tools,
@@ -132,13 +134,19 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
         )
         .await?;
 
+        // Persist full subagent conversation to disk so the parent context
+        // stays small (cache-friendly) while preserving the complete history.
+        let file_ref = persist_subagent_messages(&id, &messages)
+            .map(|p| format!("\n\n---\n⚠️ Full subagent messages persisted to: {}", p.display()))
+            .unwrap_or_default();
+
         // Save subagent session if session manager is available
         if let Some(ref mgr) = self.session_mgr {
             let mgr = mgr.lock();
-            let _ = mgr.save_subagent("subagent", &result);
+            let _ = mgr.save_subagent_with_messages("subagent", &messages);
         }
 
-        Ok(result.format_output(strategy))
+        Ok(format!("{}{}", result.format_output(strategy), file_ref))
     }
 }
 
@@ -294,14 +302,21 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                 )
                 .await;
 
+                // Persist messages to file (cache-friendly: parent context stays small).
+                let file_ref = match &result {
+                    Ok((_, messages)) => persist_subagent_messages(&id, messages)
+                        .map(|p| p.display().to_string()),
+                    Err(_) => None,
+                };
+
                 if let Some(ref mgr) = mgr_clone {
                     let mgr = mgr.lock();
-                    if let Ok((ref sub_result, _)) = result {
-                        let _ = mgr.save_subagent(&id, sub_result);
+                    if let Ok((_, ref messages)) = result {
+                        let _ = mgr.save_subagent_with_messages(&id, messages);
                     }
                 }
 
-                (id, result, strategy)
+                (id, result, strategy, file_ref)
             });
         }
 
@@ -320,9 +335,9 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
 
         for (idx, result) in results.iter().enumerate() {
             match result {
-                Ok((id, Ok((sub_result, _msgs)), strategy)) => {
-                    output.push_str(&format!(
-                        "[{}] {} — {}\n{}\n\n",
+                Ok((id, Ok((sub_result, _msgs)), strategy, file_ref)) => {
+                    let mut entry = format!(
+                        "[{}] {} — {}\n{}\n",
                         idx + 1,
                         id,
                         if sub_result.success {
@@ -331,9 +346,16 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                             "incomplete"
                         },
                         sub_result.format_output(*strategy)
-                    ));
+                    );
+                    if let Some(path) = file_ref {
+                        entry.push_str(&format!(
+                            "⚠️ Full messages persisted to: {path}\n"
+                        ));
+                    }
+                    entry.push('\n');
+                    output.push_str(&entry);
                 }
-                Ok((id, Err(e), _)) => {
+                Ok((id, Err(e), _, _)) => {
                     output.push_str(&format!("[{}] {} — ERROR: {}\n\n", idx + 1, id, e));
                 }
                 Err(e) => {
@@ -517,6 +539,40 @@ fn truncate_str(s: &str, max_len: usize) -> String {
 }
 
 use crate::util::floor_char_boundary;
+
+// ── Subagent message persistence ─────────────────────────────────────
+
+/// Write the full subagent conversation (`messages`) to
+/// `~/.agverse/subagents/{agent_id}_{ts}.messages.json`.
+/// Returns the absolute path on success so it can be included in the
+/// parent-agent tool result as a pointer.  The parent context stays small
+/// (cache-friendly), while the full history is preserved on disk.
+fn persist_subagent_messages(agent_id: &str, messages: &[Message]) -> Option<std::path::PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    let dir = std::path::PathBuf::from(&home)
+        .join(".agverse")
+        .join("subagents");
+    std::fs::create_dir_all(&dir).ok()?;
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let filename = format!("{}_{}.messages.json", agent_id, ts);
+    let path = dir.join(&filename);
+
+    let json = serde_json::to_string_pretty(messages).ok()?;
+    std::fs::write(&path, json).ok()?;
+
+    tracing::info!(
+        agent_id = %agent_id,
+        path = %path.display(),
+        msg_count = messages.len(),
+        "Persisted subagent messages"
+    );
+
+    Some(path)
+}
 
 // ── Shared spawn logic ───────────────────────────────────────────────
 
@@ -759,7 +815,9 @@ Do NOT attempt to read or process image files.";
         system_prompt,
         tools: final_tool_names,
         max_iterations,
-        max_context_tokens: 32000,
+        // Inherit parent model's context window so subagents can run long tasks.
+        // Previously hard-coded at 32000 tokens — far below modern 1M+ models.
+        max_context_tokens: model_config.max_context_tokens,
         result_strategy,
         working_dir: Some(workspace_root.clone()),
         ..SubagentConfig::default()

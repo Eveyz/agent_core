@@ -66,8 +66,9 @@ impl Reflector {
     }
 
     /// Read a trace JSONL file and replay it as an ordered event list.
-    pub fn load_trace(path: &Path) -> Result<Vec<TraceRecord>> {
-        let content = std::fs::read_to_string(path)
+    pub async fn load_trace(path: &Path) -> Result<Vec<TraceRecord>> {
+        let content = tokio::fs::read_to_string(path)
+            .await
             .with_context(|| format!("failed to read trace: {path:?}"))?;
         let mut records = Vec::new();
         for (i, line) in content.lines().enumerate() {
@@ -93,8 +94,9 @@ impl Reflector {
 
     /// Load a Runtime EventLog (Envelope JSONL) and convert to digest events.
     /// This bridges the Run's `EventLog` format to the digester's input.
-    pub fn load_event_log(path: &Path) -> Result<Vec<DigestEvent>> {
-        let content = std::fs::read_to_string(path)
+    pub async fn load_event_log(path: &Path) -> Result<Vec<DigestEvent>> {
+        let content = tokio::fs::read_to_string(path)
+            .await
             .with_context(|| format!("failed to read event log: {path:?}"))?;
         let mut events = Vec::new();
         for (i, line) in content.lines().enumerate() {
@@ -159,7 +161,7 @@ impl Reflector {
     /// - Everything else returns [`SuggestionAction::NeedsApproval`] so the
     ///   caller can surface it through the approval channel.
     /// - Security-sensitive fields can never be applied here.
-    pub fn apply(&self, suggestion: &Suggestion) -> Result<SuggestionAction> {
+    pub async fn apply(&self, suggestion: &Suggestion) -> Result<SuggestionAction> {
         // Hard guard: security fields are never writable by the reflector,
         // not even via the approval path.
         if suggestion.touches_security_field() {
@@ -173,7 +175,7 @@ impl Reflector {
         // Auto-apply path: only append-only SKILL generation.
         match suggestion.kind {
             SuggestionKind::AppendSkill => {
-                self.write_skill(suggestion)?;
+                self.write_skill(suggestion).await?;
                 Ok(SuggestionAction::Applied)
             }
             _ => Ok(SuggestionAction::NeedsApproval(suggestion.diff_preview())),
@@ -216,8 +218,8 @@ impl Reflector {
         }
     }
 
-    fn write_skill(&self, suggestion: &Suggestion) -> Result<()> {
-        std::fs::create_dir_all(&self.skills_dir)?;
+    async fn write_skill(&self, suggestion: &Suggestion) -> Result<()> {
+        tokio::fs::create_dir_all(&self.skills_dir).await?;
         let file_name = format!(
             "reflector-{}.md",
             suggestion
@@ -251,7 +253,8 @@ impl Reflector {
                 .collect::<Vec<_>>()
                 .join(", "),
         );
-        std::fs::write(&path, format!("{frontmatter}\n{body}\n"))
+        tokio::fs::write(&path, format!("{frontmatter}\n{body}\n"))
+            .await
             .with_context(|| format!("failed to write skill: {path:?}"))?;
         Ok(())
     }
@@ -424,12 +427,12 @@ mod guard_tests {
         }
     }
 
-    #[test]
-    fn append_skill_is_auto_applied_and_writes_file() {
+    #[tokio::test]
+    async fn append_skill_is_auto_applied_and_writes_file() {
         let dir = TempDir::new().unwrap();
         let r = Reflector::new(dir.path().to_str().unwrap());
         let sug = s(SuggestionKind::AppendSkill, "bash-guide");
-        let action = r.apply(&sug).unwrap();
+        let action = r.apply(&sug).await.unwrap();
         assert!(matches!(action, SuggestionAction::Applied));
         // file written with reflector marker
         // file name is derived from the suggestion id ("g-bash-guide").
@@ -439,52 +442,56 @@ mod guard_tests {
         assert!(written.contains("name: bash-guide"));
     }
 
-    #[test]
-    fn memory_threshold_needs_approval() {
+    #[tokio::test]
+    async fn memory_threshold_needs_approval() {
         let dir = TempDir::new().unwrap();
         let r = Reflector::new(dir.path().to_str().unwrap());
         let action = r
             .apply(&s(SuggestionKind::MemoryThreshold, "memory.consolidation"))
+            .await
             .unwrap();
         assert!(matches!(action, SuggestionAction::NeedsApproval(_)));
     }
 
-    #[test]
-    fn permission_change_is_forbidden_even_though_manual() {
+    #[tokio::test]
+    async fn permission_change_is_forbidden_even_though_manual() {
         let dir = TempDir::new().unwrap();
         let r = Reflector::new(dir.path().to_str().unwrap());
         let action = r
             .apply(&s(SuggestionKind::PermissionChange, "permissions.mode"))
+            .await
             .unwrap();
         assert!(matches!(action, SuggestionAction::Forbidden));
         // nothing written
         assert!(std::fs::read_dir(dir.path()).unwrap().count() == 0);
     }
 
-    #[test]
-    fn credential_change_is_forbidden() {
+    #[tokio::test]
+    async fn credential_change_is_forbidden() {
         let dir = TempDir::new().unwrap();
         let r = Reflector::new(dir.path().to_str().unwrap());
         let action = r
             .apply(&s(SuggestionKind::CredentialChange, "api_key"))
+            .await
             .unwrap();
         assert!(matches!(action, SuggestionAction::Forbidden));
     }
 
-    #[test]
-    fn behavior_limit_needs_approval() {
+    #[tokio::test]
+    async fn behavior_limit_needs_approval() {
         let dir = TempDir::new().unwrap();
         let r = Reflector::new(dir.path().to_str().unwrap());
         let action = r
             .apply(&s(SuggestionKind::BehaviorLimit, "max_iterations"))
+            .await
             .unwrap();
         assert!(matches!(action, SuggestionAction::NeedsApproval(_)));
     }
 
     /// End-to-end: synthesize a trace with 3 consecutive bash errors, load it,
     /// analyze, and verify the emitted suggestion auto-applies as a skill.
-    #[test]
-    fn end_to_end_trace_to_skill() {
+    #[tokio::test]
+    async fn end_to_end_trace_to_skill() {
         let dir = TempDir::new().unwrap();
         let trace_path = dir.path().join("t.jsonl");
         let lines = vec![
@@ -497,7 +504,7 @@ mod guard_tests {
 
         let skills_dir = dir.path().join("skills");
         let reflector = Reflector::new(&skills_dir);
-        let records = Reflector::load_trace(&trace_path).unwrap();
+        let records = Reflector::load_trace(&trace_path).await.unwrap();
         let events: Vec<_> = records.iter().filter_map(|r| r.to_digest_event()).collect();
         let suggestions = reflector.analyze(&events);
 
@@ -508,7 +515,7 @@ mod guard_tests {
         );
         // Apply all; the skill one must be Applied, nothing forbidden.
         for sug in &suggestions {
-            let action = reflector.apply(sug).unwrap();
+            let action = reflector.apply(sug).await.unwrap();
             assert!(!matches!(action, SuggestionAction::Forbidden));
         }
         // The skill file exists.

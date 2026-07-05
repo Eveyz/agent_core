@@ -84,7 +84,10 @@ impl Default for SubagentConfig {
             system_prompt: "You are a focused sub-agent. Complete the given task and return the result. Be concise.".to_string(),
             tools: Vec::new(),
             max_iterations: 50,
-            max_context_tokens: 32000,
+            // Default matches ModelConfig default (128K).  When created
+            // through spawn_single() it is overridden to the parent model's
+            // actual value so modern 1M+ models get the full window.
+            max_context_tokens: 128000,
             model: None,
             skills: Vec::new(),
             permission_mode: None,

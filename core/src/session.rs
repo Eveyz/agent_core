@@ -149,20 +149,40 @@ impl SessionManager {
     }
 
     /// Save a subagent session, linked to a parent session.
+    /// Kept for backward-compat; prefer `save_subagent_with_messages`.
     pub fn save_subagent(
         &self,
         subagent_id: &str,
         result: &impl SubagentResultLike,
     ) -> Result<String> {
-        // Build minimal message log from the result
         let messages = vec![
             Message::user(&format!("Subagent task: {}", subagent_id)),
             Message::assistant(&result.summary_for_session()),
         ];
-        // Create as new session — subagent_id is used as the session ID
         self.save_full(
             None, // always create new
             &messages, "", "subagent", None, "subagent", None,
+        )
+    }
+
+    /// Save a subagent session with the full message history.
+    ///
+    /// Unlike `save_subagent` which only stores a 2-message summary, this
+    /// preserves the complete subagent conversation (tool calls, results,
+    /// reasoning) so it can be inspected later.
+    pub fn save_subagent_with_messages(
+        &self,
+        subagent_id: &str,
+        messages: &[Message],
+    ) -> Result<String> {
+        // Prepend a user message identifying the subagent
+        let mut full_messages = vec![
+            Message::user(&format!("Subagent task: {}", subagent_id)),
+        ];
+        full_messages.extend_from_slice(messages);
+        self.save_full(
+            None,
+            &full_messages, "", "subagent", None, "subagent", None,
         )
     }
 

@@ -337,12 +337,12 @@ impl RunManager {
             if let Some(ref reflector) = brain_for_reflect.reflector {
                 let log_path = std::path::PathBuf::from(default_runs_dir())
                     .join(format!("{reflect_run_id}.jsonl"));
-                match Reflector::load_event_log(&log_path) {
+                match Reflector::load_event_log(&log_path).await {
                     Ok(events) => {
                         crate::reflector::diff_observer::DiffObserver::take_snapshot(&reflect_run_id, &events);
                         let suggestions = reflector.analyze(&events);
                         for sug in &suggestions {
-                            match reflector.apply(sug) {
+                            match reflector.apply(sug).await {
                                 Ok(crate::reflector::SuggestionAction::Applied) => {
                                     tracing::info!(
                                         suggestion = %sug.id,
