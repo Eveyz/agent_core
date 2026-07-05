@@ -1,4 +1,4 @@
-import React, { useState, memo } from 'react';
+import React, { useState, useEffect, memo, useCallback } from 'react';
 import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
 import ChevronRightIcon from 'lucide-react/dist/esm/icons/chevron-right.mjs';
 import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
@@ -47,17 +47,23 @@ const BashWidget = memo(function BashWidget({
   const displayCommand = command.length > 50 ? command.substring(0, 50) + '...' : command;
   
   const labelPrefix = active ? 'Running' : 'Ran';
+  const ToolIcon = getToolIcon(toolName);
 
-  const handleCopy = async (e: React.MouseEvent) => {
+  const handleCopy = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
       await navigator.clipboard.writeText(result || '');
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
     } catch (error) {
       console.error('Failed to copy:', error);
     }
-  };
+  }, [result]);
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 2000);
+    return () => clearTimeout(timer);
+  }, [copied]);
 
   return (
     <div className="step-block bash-block">
@@ -65,7 +71,7 @@ const BashWidget = memo(function BashWidget({
         className={`step-row ${active ? 'step-row-active' : ''} ${is_error ? 'step-row-error' : ''} step-row-pointer`}
         onClick={() => setCollapsed(!collapsed)}
       >
-        {(() => { const ToolIcon = getToolIcon(toolName); return <ToolIcon size={13} className="step-icon tool-icon-margin" color={is_error ? 'var(--danger)' : 'var(--text-muted)'} />; })()}
+        <ToolIcon size={13} className="step-icon tool-icon-margin" color={is_error ? 'var(--danger)' : 'var(--text-muted)'} />
         <span className="step-label bash-label">
           {customLabel ? (
             customLabel

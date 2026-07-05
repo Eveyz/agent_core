@@ -326,7 +326,7 @@ impl Subagent {
 
             // Execute tools, emitting SubagentToolStart/SubagentToolEnd events
             let results = {
-                let mut orchestrator = crate::agent::executor::ToolOrchestrator {
+                let mut orchestrator = crate::runtime::tool_orchestrator::ToolOrchestrator {
                     registry: &self.registry,
                     permission_policy: &mut self.permission_policy,
                     hook_registry: self.hook_registry.clone(),

@@ -19,7 +19,7 @@ import {
 import { useAppDispatch } from "../../hooks/useAppDispatch";
 import { useSaveSession } from "../../hooks/useSaveSession";
 import { useConfirmDialog } from "../ui/DialogManager";
-import { formatTimeAgo } from "../../utils/time";
+import { SessionList } from "./SessionList";
 import PlusIcon from "lucide-react/dist/esm/icons/plus.mjs";
 import MessageSquareIcon from "lucide-react/dist/esm/icons/message-square.mjs";
 import FolderIcon from "lucide-react/dist/esm/icons/folder.mjs";
@@ -34,7 +34,6 @@ import ExternalLinkIcon from "lucide-react/dist/esm/icons/external-link.mjs";
 import ChevronRightIcon from "lucide-react/dist/esm/icons/chevron-right.mjs";
 import ChevronDownIcon from "lucide-react/dist/esm/icons/chevron-down.mjs";
 import MoreHorizontalIcon from "lucide-react/dist/esm/icons/more-horizontal.mjs";
-import LoaderIcon from "lucide-react/dist/esm/icons/loader.mjs";
 import ClockIcon from "lucide-react/dist/esm/icons/clock.mjs";
 import { CronjobModal } from "../ui/CronjobModal";
 
@@ -138,53 +137,6 @@ function ProjectContextMenu({
   );
 }
 
-// ── Session context menu ─────────────────────────────────────────────
-
-function SessionContextMenu({
-  sessionId,
-  projectId,
-  onDelete,
-}: {
-  sessionId: string;
-  projectId: string;
-  onDelete: (sessionId: string, projectId: string) => void;
-}) {
-  const { open, setOpen, pos, setPos, menuRef } = useContextMenu();
-
-  return (
-    <>
-      <button
-        className="sidebar-context-trigger"
-        onClick={(e) => {
-          e.stopPropagation();
-          setPos({ x: e.clientX, y: e.clientY });
-          setOpen(true);
-        }}
-      >
-        <MoreHorizontalIcon size={12} />
-      </button>
-      {open && (
-        <div
-          ref={menuRef}
-          className="context-menu"
-          style={{ left: pos.x, top: pos.y }}
-        >
-          <div
-            className="context-menu-item context-menu-danger"
-            onClick={(e) => {
-              e.stopPropagation();
-              setOpen(false);
-              onDelete(sessionId, projectId);
-            }}
-          >
-            <TrashIcon size={13} /> Delete
-          </div>
-        </div>
-      )}
-    </>
-  );
-}
-
 // ── Sidebar ──────────────────────────────────────────────────────────
 
 export type AppView = "chat" | "agents" | "workflows";
@@ -225,30 +177,11 @@ export const Sidebar = memo(function Sidebar({
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(
     new Set(),
   );
-  const [expandedSessions, setExpandedSessions] = useState<Set<string>>(
-    new Set(),
-  );
   const [creatingSession, setCreatingSession] = useState(false);
   const [isCronModalOpen, setIsCronModalOpen] = useState(false);
   const [projectsCollapsed, setProjectsCollapsed] = useState(false);
   const [chatCollapsed, setChatCollapsed] = useState(false);
   const { confirm, prompt, dialogElement } = useConfirmDialog();
-
-  const toggleSessionsExpand = useCallback(
-    (projectId: string, e: React.MouseEvent) => {
-      e.stopPropagation();
-      setExpandedSessions((prev) => {
-        const next = new Set(prev);
-        if (next.has(projectId)) {
-          next.delete(projectId);
-        } else {
-          next.add(projectId);
-        }
-        return next;
-      });
-    },
-    [],
-  );
 
   // Auto-expand active project when it changes
   const lastAutoExpanded = useRef<string | null>(null);
@@ -433,7 +366,7 @@ export const Sidebar = memo(function Sidebar({
       <div className="sidebar-scrollable">
         {/* Projects list */}
         <div className={`projects-section ${projectsCollapsed ? "section-collapsed" : ""}`}>
-        <div className="projects-header" onClick={() => setProjectsCollapsed(!projectsCollapsed)}>
+        <div className="projects-header" role="button" tabIndex={0} aria-expanded={!projectsCollapsed} onClick={() => setProjectsCollapsed(!projectsCollapsed)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setProjectsCollapsed(!projectsCollapsed); } }}>
           <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
             {projectsCollapsed ? (
               <ChevronRightIcon size={12} style={{ opacity: 0.7 }} />
@@ -511,84 +444,23 @@ export const Sidebar = memo(function Sidebar({
                   className={`session-list-container ${isExpanded ? "expanded" : ""}`}
                 >
                   <div className="session-list">
-                    {(() => {
-                      const maxInitial = 6;
-                      const sessionsFullyExpanded = expandedSessions.has(project.id);
-                      const visibleSessions = sessionsFullyExpanded
-                        ? projectSessions
-                        : projectSessions.slice(0, maxInitial);
-                      const hiddenCount = projectSessions.length - maxInitial;
-
-                      return (
-                        <>
-                          {visibleSessions.map((session) => {
-                            const isSessionActive =
-                              activeView === "chat" &&
-                              activeSessionId === session.id &&
-                              activeProjectId === project.id;
-                            return (
-                              <div
-                                key={session.id}
-                                className={`session-row ${isSessionActive ? "session-row-active" : ""}`}
-                                onClick={() =>
-                                  handleSelectSession(session.id, project.id)
-                                }
-                              >
-                                <span className="session-row-text">
-                                  {session.title || "Untitled"}
-                                </span>
-                                <>
-                                  <span className="session-row-time">
-                                    {isSessionActive && isProcessing ? (
-                                      <LoaderIcon
-                                        size={12}
-                                        className="session-processing-spinner"
-                                        style={{ marginRight: 0 }}
-                                      />
-                                    ) : (
-                                      formatTimeAgo(session.updated_at)
-                                    )}
-                                  </span>
-                                  <span className="session-row-actions">
-                                    <SessionContextMenu
-                                      sessionId={session.id}
-                                      projectId={project.id}
-                                      onDelete={handleDeleteSession}
-                                    />
-                                    <button
-                                      className="sidebar-context-trigger session-delete-btn"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        handleDeleteSession(session.id, project.id);
-                                      }}
-                                      title="Delete session"
-                                    >
-                                      <TrashIcon size={12} />
-                                    </button>
-                                  </span>
-                                </>
-                              </div>
-                            );
-                          })}
-                          {!sessionsFullyExpanded && hiddenCount > 0 && (
-                            <div
-                              className="session-expand-toggle"
-                              onClick={(e) => toggleSessionsExpand(project.id, e)}
-                            >
-                              See all ({hiddenCount})
-                            </div>
-                          )}
-                          {sessionsFullyExpanded && hiddenCount > 0 && (
-                            <div
-                              className="session-expand-toggle"
-                              onClick={(e) => toggleSessionsExpand(project.id, e)}
-                            >
-                              View less
-                            </div>
-                          )}
-                        </>
-                      );
-                    })()}
+                    <SessionList
+                      sessions={projectSessions}
+                      activeSessionId={
+                        activeView === "chat" && activeProjectId === project.id
+                          ? activeSessionId
+                          : null
+                      }
+                      onSelectSession={(sessionId) =>
+                        handleSelectSession(sessionId, project.id)
+                      }
+                      title={project.name}
+                      emptyMessage="No sessions yet."
+                      isProcessing={isProcessing}
+                      onDeleteSession={(sessionId) =>
+                        handleDeleteSession(sessionId, project.id)
+                      }
+                    />
                   </div>
                 </div>
               </div>
@@ -600,7 +472,7 @@ export const Sidebar = memo(function Sidebar({
 
       {/* Chat section */}
       <div className={`projects-section ${chatCollapsed ? "section-collapsed" : ""}`} style={{ marginTop: "12px" }}>
-        <div className="projects-header" onClick={() => setChatCollapsed(!chatCollapsed)}>
+        <div className="projects-header" role="button" tabIndex={0} aria-expanded={!chatCollapsed} onClick={() => setChatCollapsed(!chatCollapsed)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setChatCollapsed(!chatCollapsed); } }}>
           <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
             {chatCollapsed ? (
               <ChevronRightIcon size={12} style={{ opacity: 0.7 }} />
@@ -623,99 +495,25 @@ export const Sidebar = memo(function Sidebar({
 
         {!chatCollapsed && (
           <div className="projects-list">
-          <div className="session-list">
-            {(() => {
-              const defaultSessions = sessions['__adhoc_chat__'] ?? [];
-              if (defaultSessions.length === 0) {
-                return (
-                  <div
-                    style={{ padding: "8px 20px", color: "var(--text-tertiary)", fontSize: "12px" }}
-                  >
-                    No chats yet. Click the plus icon above to start one.
-                  </div>
-                );
-              }
-
-              const maxInitial = 6;
-              const sessionsFullyExpanded = expandedSessions.has('__adhoc_chat__');
-              const visibleSessions = sessionsFullyExpanded
-                ? defaultSessions
-                : defaultSessions.slice(0, maxInitial);
-              const hiddenCount = defaultSessions.length - maxInitial;
-
-              return (
-                <>
-                  {visibleSessions.map((session) => {
-                    const isSessionActive =
-                      activeView === "chat" &&
-                      activeSessionId === session.id &&
-                      activeProjectId === '__adhoc_chat__';
-                    return (
-                      <div
-                        key={session.id}
-                        className={`session-row ${isSessionActive ? "session-row-active" : ""}`}
-                        style={{ paddingLeft: "16px" }}
-                        onClick={() =>
-                          handleSelectSession(session.id, '__adhoc_chat__')
-                        }
-                      >
-                        <span className="session-row-text">
-                          {session.title || "Untitled"}
-                        </span>
-                        <>
-                          <span className="session-row-time">
-                            {isSessionActive && isProcessing ? (
-                              <LoaderIcon
-                                size={12}
-                                className="session-processing-spinner"
-                                style={{ marginRight: 0 }}
-                              />
-                            ) : (
-                              formatTimeAgo(session.updated_at)
-                            )}
-                          </span>
-                          <span className="session-row-actions">
-                            <SessionContextMenu
-                              sessionId={session.id}
-                              projectId="__adhoc_chat__"
-                              onDelete={handleDeleteSession}
-                            />
-                            <button
-                              className="sidebar-context-trigger session-delete-btn"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleDeleteSession(session.id, '__adhoc_chat__');
-                              }}
-                              title="Delete session"
-                            >
-                              <TrashIcon size={12} />
-                            </button>
-                          </span>
-                        </>
-                      </div>
-                    );
-                  })}
-                  {!sessionsFullyExpanded && hiddenCount > 0 && (
-                    <div
-                      className="session-expand-toggle"
-                      style={{ paddingLeft: "16px" }}
-                      onClick={(e) => toggleSessionsExpand('__adhoc_chat__', e)}
-                    >
-                      See all ({hiddenCount})
-                    </div>
-                  )}
-                  {sessionsFullyExpanded && hiddenCount > 0 && (
-                    <div
-                      className="session-expand-toggle"
-                      style={{ paddingLeft: "16px" }}
-                      onClick={(e) => toggleSessionsExpand('__adhoc_chat__', e)}
-                    >
-                      View less
-                    </div>
-                  )}
-                </>
-              );
-            })()}
+            <div className="session-list">
+              <SessionList
+                sessions={sessions['__adhoc_chat__'] ?? []}
+                activeSessionId={
+                  activeView === "chat" && activeProjectId === '__adhoc_chat__'
+                    ? activeSessionId
+                    : null
+                }
+                onSelectSession={(sessionId) =>
+                  handleSelectSession(sessionId, '__adhoc_chat__')
+                }
+                title="Chat"
+                emptyMessage="No chats yet. Click the plus icon above to start one."
+                isProcessing={isProcessing}
+                onDeleteSession={(sessionId) =>
+                  handleDeleteSession(sessionId, '__adhoc_chat__')
+                }
+                paddingLeft="16px"
+              />
             </div>
           </div>
         )}
@@ -727,7 +525,7 @@ export const Sidebar = memo(function Sidebar({
         <div className="nav-item">
           <SmartphoneIcon size={14} /> Connect phone
         </div>
-        <div className="nav-item" onClick={onOpenSettings}>
+        <div className="nav-item" role="button" tabIndex={0} onClick={onOpenSettings} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenSettings(); } }}>
           <SettingsIcon size={14} /> Settings
         </div>
       </div>

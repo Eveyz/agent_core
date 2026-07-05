@@ -1,4 +1,4 @@
-import { useMemo, useCallback, memo } from 'react';
+import { useMemo, useCallback, useState, useEffect, memo } from 'react';
 import { useSelector } from 'react-redux';
 import type { RootState } from '../../store';
 import { useAppDispatch } from '../../hooks/useAppDispatch';
@@ -50,6 +50,13 @@ const SubagentCard = memo(function SubagentCard({ subagentId }: { subagentId: st
   const dispatch = useAppDispatch();
   const subagent = useSelector((state: RootState) => state.chat.subagents[subagentId]);
 
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!subagent || subagent.status !== 'working') return;
+    const interval = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, [subagent?.status]);
+
   const statusIcon = useMemo(() => {
     if (!subagent) return null;
     if (subagent.status === 'working') return <div className="black-hole-spinner" style={{ width: 12, height: 12 }} />;
@@ -65,7 +72,7 @@ const SubagentCard = memo(function SubagentCard({ subagentId }: { subagentId: st
     if (subagent.status === 'working') {
       const elapsed = subagent.endTime
         ? formatTime(subagent.endTime - subagent.startTime)
-        : formatTime(Date.now() - subagent.startTime);
+        : formatTime(now - subagent.startTime);
       return `Working · ${toolCount} tools · ${elapsed}`;
     }
     const iterText = subagent.iterations_used ? `${subagent.iterations_used} iter` : '';
@@ -77,7 +84,7 @@ const SubagentCard = memo(function SubagentCard({ subagentId }: { subagentId: st
     if (toolText) parts.push(toolText);
     if (timeText) parts.push(timeText);
     return parts.join(' · ');
-  }, [subagent, toolCount]);
+  }, [subagent, toolCount, now]);
 
   const displayStr = subagent?.role_name || subagent?.id || subagentId;
   const idText = typeof displayStr === 'string' ? displayStr : JSON.stringify(displayStr);

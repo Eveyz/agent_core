@@ -54,7 +54,7 @@ function FilesChangedCard({ files }: { files: FileChangeItem[] }) {
 
   return (
     <div className="files-changed-card">
-      <div className="files-changed-header" onClick={() => setExpanded(!expanded)}>
+      <div className="files-changed-header" role="button" tabIndex={0} aria-expanded={expanded} onClick={() => setExpanded(!expanded)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded(!expanded); } }}>
         <div className="files-changed-summary">
           {expanded ? <ChevronDownIcon size={14} className="files-changed-chevron" /> : <ChevronRightIcon size={14} className="files-changed-chevron" />}
           <span>
@@ -275,7 +275,6 @@ export const AgentTurnUI = memo(function AgentTurnUI({
                 <MarkdownContent
                   content={item.data.text}
                   className="assistant-msg"
-                  isStreaming={item.data.isStreaming}
                 />
               )
             ) : item.type === 'error' ? (

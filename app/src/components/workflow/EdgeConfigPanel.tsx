@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import type { Edge } from "@xyflow/react";
 import XIcon from "lucide-react/dist/esm/icons/x.mjs";
 
@@ -36,9 +36,13 @@ export function EdgeConfigPanel({
   const [sourceField, setSourceField] = useState("");
   const [targetField, setTargetField] = useState("");
 
+  const persistDataMapping = useCallback((updates: Partial<{ pass_through: boolean; source_field: string; target_field: string }>) => {
+    const dm = { ...((edge.data as Record<string, unknown> | undefined)?.data_mapping as Record<string, unknown> | undefined) ?? {}, ...updates };
+    onUpdate({ data: { ...edge.data, data_mapping: dm } });
+  }, [edge, onUpdate]);
+
   useEffect(() => {
     setLabel((edge.label as string) ?? "");
-    // Parse existing data_mapping from edge data if present
     const dm = (edge.data as Record<string, unknown> | undefined)?.data_mapping as Record<string, unknown> | undefined;
     if (dm) {
       setPassThrough(dm.pass_through !== false);
@@ -47,9 +51,9 @@ export function EdgeConfigPanel({
     }
   }, [edge]);
 
-  const applyLabel = () => {
+  const applyLabel = useCallback(() => {
     onUpdate({ label });
-  };
+  }, [label, onUpdate]);
 
   return (
     <div style={{ width: "280px", borderLeft: "1px solid var(--border-color)", padding: "12px", overflowY: "auto" }}>
@@ -59,8 +63,9 @@ export function EdgeConfigPanel({
       </div>
 
       <div style={{ marginBottom: "12px" }}>
-        <label style={{ fontSize: "12px", display: "block", marginBottom: "4px" }}>Label</label>
+        <label htmlFor="edge-config-label" style={{ fontSize: "12px", display: "block", marginBottom: "4px" }}>Label</label>
         <input
+          id="edge-config-label"
           className="settings-input"
           value={label}
           onChange={(e) => setLabel(e.target.value)}
@@ -76,7 +81,11 @@ export function EdgeConfigPanel({
           <input
             type="checkbox"
             checked={passThrough}
-            onChange={(e) => setPassThrough(e.target.checked)}
+            onChange={(e) => {
+              const checked = e.target.checked;
+              setPassThrough(checked);
+              persistDataMapping({ pass_through: checked, source_field: sourceField, target_field: targetField });
+            }}
           />
           Pass through entire output
         </label>
@@ -88,7 +97,11 @@ export function EdgeConfigPanel({
             <input
               className="settings-input"
               value={sourceField}
-              onChange={(e) => setSourceField(e.target.value)}
+              onChange={(e) => {
+                const val = e.target.value;
+                setSourceField(val);
+              }}
+              onBlur={() => persistDataMapping({ pass_through: passThrough, source_field: sourceField, target_field: targetField })}
               placeholder="e.g. result"
               style={{ width: "100%", fontSize: "12px" }}
             />
@@ -98,7 +111,11 @@ export function EdgeConfigPanel({
             <input
               className="settings-input"
               value={targetField}
-              onChange={(e) => setTargetField(e.target.value)}
+              onChange={(e) => {
+                const val = e.target.value;
+                setTargetField(val);
+              }}
+              onBlur={() => persistDataMapping({ pass_through: passThrough, source_field: sourceField, target_field: targetField })}
               placeholder="(defaults to source)"
               style={{ width: "100%", fontSize: "12px" }}
             />

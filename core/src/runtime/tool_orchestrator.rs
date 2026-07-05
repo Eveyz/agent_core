@@ -1,5 +1,5 @@
 #![allow(deprecated)]
-use crate::agent::scheduler::{DepGraph, SchedNode, classify_resources};
+use crate::runtime::tool_scheduler::{DepGraph, SchedNode, classify_resources};
 use crate::hooks::{HookRegistry, PreToolResult};
 use crate::permission::{
     ApprovalChoice, ApprovalScope, PermissionDecision, PermissionPolicy, ToolPermissionPattern,

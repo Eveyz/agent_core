@@ -261,6 +261,13 @@ impl Run {
                 RunCommand::Answer { prompt_id, answer } => {
                     self.resolve_input(&prompt_id, &answer);
                 }
+                RunCommand::FollowUp { message } => {
+                    self.follow_up_queue.push_back(Message::user(&message));
+                }
+                RunCommand::ClearQueues => {
+                    self.steering_queue.clear();
+                    self.follow_up_queue.clear();
+                }
                 _ => {}
             }
         }
@@ -313,6 +320,13 @@ impl Run {
                 }
                 Some(RunCommand::Answer { prompt_id, answer }) => {
                     self.resolve_input(&prompt_id, &answer);
+                }
+                Some(RunCommand::FollowUp { message }) => {
+                    self.follow_up_queue.push_back(Message::user(&message));
+                }
+                Some(RunCommand::ClearQueues) => {
+                    self.steering_queue.clear();
+                    self.follow_up_queue.clear();
                 }
                 _ => {}
             }

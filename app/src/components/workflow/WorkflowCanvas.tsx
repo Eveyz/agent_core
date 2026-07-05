@@ -8,6 +8,8 @@ import {
   type Edge,
   type Connection,
   type NodeTypes,
+  type NodeChange,
+  type EdgeChange,
   useReactFlow,
 } from "@xyflow/react";
 import { nodeTypes } from "./nodes";
@@ -17,8 +19,8 @@ import "./WorkflowCanvas.css";
 interface WorkflowCanvasProps {
   nodes: Node[];
   edges: Edge[];
-  onNodesChange: (changes: any) => void;
-  onEdgesChange: (changes: any) => void;
+  onNodesChange: (changes: NodeChange[]) => void;
+  onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (params: Connection) => void;
   onNodeClick: (_: unknown, node: Node) => void;
   onEdgeClick: (_: unknown, edge: Edge) => void;

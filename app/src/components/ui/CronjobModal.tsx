@@ -1,8 +1,14 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSelector } from "react-redux";
 import { RootState } from "../../store";
 import XIcon from "lucide-react/dist/esm/icons/x.mjs";
+
+interface SkillInfo {
+  name: string;
+  description: string;
+  version?: string;
+}
 import ChevronDownIcon from "lucide-react/dist/esm/icons/chevron-down.mjs";
 import WandIcon from "lucide-react/dist/esm/icons/wand-2.mjs";
 
@@ -46,30 +52,30 @@ export function CronjobModal({
   const [maxConcurrency, setMaxConcurrency] = useState<number | "">("");
   const [model, setModel] = useState("");
 
-  useEffect(() => {
-    if (isOpen) {
-      loadJobs();
-      loadSkills();
-    }
-  }, [isOpen]);
-
-  const loadJobs = async () => {
+  const loadJobs = useCallback(async () => {
     try {
       const data = await invoke<CronJob[]>("list_cronjobs");
       setJobs(data);
     } catch (e) {
       console.error(e);
     }
-  };
+  }, []);
 
-  const loadSkills = async () => {
+  const loadSkills = useCallback(async () => {
     try {
-      const data = await invoke<any[]>("get_skills");
+      const data = await invoke<SkillInfo[]>("get_skills");
       setSkillsList(data.map((s) => ({ id: s.name, name: s.name })));
     } catch (e) {
       console.error(e);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    if (isOpen) {
+      loadJobs();
+      loadSkills();
+    }
+  }, [isOpen, loadJobs, loadSkills]);
 
   const handleCreate = async () => {
     try {
@@ -89,7 +95,7 @@ export function CronjobModal({
       setPrompt("");
       loadJobs();
     } catch (e) {
-      alert(`Error creating job: ${e}`);
+      console.error(`Error creating job: ${e}`);
     }
   };
 

@@ -93,7 +93,7 @@ export function NodeInspectorDrawer({
                     <div className="node-inspector-metric-card">
                       <div className="node-inspector-metric-label">Cost</div>
                       <div className="node-inspector-metric-value">
-                        ${result.cost_usd.toFixed(4)}
+                        ${(result.cost_usd ?? 0).toFixed(4)}
                       </div>
                     </div>
                   </div>

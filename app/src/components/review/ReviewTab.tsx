@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useSelector } from 'react-redux';
 import MoreVerticalIcon from 'lucide-react/dist/esm/icons/more-vertical.mjs';
 import SearchIcon from 'lucide-react/dist/esm/icons/search.mjs';
@@ -297,6 +297,9 @@ export function ReviewTab() {
     });
   };
 
+  const fileContentsRef = useRef(fileContents);
+  fileContentsRef.current = fileContents;
+
   useEffect(() => {
     const handleOpen = (e: Event) => {
       const customEvent = e as CustomEvent;
@@ -307,21 +310,22 @@ export function ReviewTab() {
           next.add(filePath);
           return next;
         });
-        if (!fileContents[filePath]) {
+        if (!fileContentsRef.current[filePath]) {
           fetchFileContent(filePath);
         }
-        setTimeout(() => {
+        const timer = setTimeout(() => {
           const id = `review-file-${filePath}`;
           const element = document.getElementById(id);
           if (element) {
             element.scrollIntoView({ behavior: 'smooth', block: 'center' });
           }
         }, 150);
+        return () => clearTimeout(timer);
       }
     };
     window.addEventListener('open-right-sidebar', handleOpen);
     return () => window.removeEventListener('open-right-sidebar', handleOpen);
-  }, [fileContents]);
+  }, []);
 
   // Extract modified files from the current session's chat entries
   const modifiedFiles = useMemo(() => {

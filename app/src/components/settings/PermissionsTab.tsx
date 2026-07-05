@@ -1,5 +1,6 @@
-import { useSelector, useDispatch } from 'react-redux';
+import { useSelector } from 'react-redux';
 import { RootState } from '../../store';
+import { useAppDispatch } from '../../hooks/useAppDispatch';
 import { saveConfig } from '../../features/settings/settingsSlice';
 import ShieldIcon from 'lucide-react/dist/esm/icons/shield.mjs';
 import ShieldAlertIcon from 'lucide-react/dist/esm/icons/shield-alert.mjs';
@@ -53,7 +54,7 @@ const PERMISSION_LEVELS = [
 
 export default function PermissionsTab() {
   const config = useSelector((state: RootState) => state.settings.config);
-  const dispatch = useDispatch<any>();
+  const dispatch = useAppDispatch();
 
   if (!config) {
     return (

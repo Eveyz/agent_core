@@ -32,7 +32,7 @@ use crate::types::ToolExecutionMode;
 /// The reusable "brain" shared by all Runs.
 ///
 /// Cloneable via `Arc` — each Run holds an `Arc<Brain>`.
-/// Contains only immutable/shared state; per-request state lives in [`crate::runtime::Run`].
+/// Contains shared state and runtime overrides; per-request state lives in [`crate::runtime::Run`].
 #[derive(Clone)]
 pub struct Brain {
     /// The full configuration (models, permissions, memory, mcp).
@@ -57,6 +57,19 @@ pub struct Brain {
     /// Shared hook registry. When set, Runs use this instead of building fresh.
     /// This allows the Agent wrapper to register hooks that fire during Run execution.
     pub hook_registry: Arc<Mutex<HookRegistry>>,
+    /// Persistent tool registry for CLI display / permission checking.
+    /// NOT cloned into Runs — use [`Brain::register_tool_fn`] for tools that
+    /// must execute during Runs (e.g. MCP tools).
+    pub base_tool_registry: Arc<Mutex<ToolRegistry>>,
+    /// Tool registration callbacks applied to every per-Run ToolRegistry.
+    /// CLI pushes callbacks here (e.g. MCP tools) so they flow into every Run.
+    extra_tool_fns: Arc<Mutex<Vec<Box<dyn Fn(&mut ToolRegistry) + Send + Sync>>>>,
+    /// Runtime temperature override (applied to each Run's client).
+    pub temperature_override: Option<f64>,
+    /// Runtime max_tokens override (applied to each Run's client).
+    pub max_tokens_override: Option<u32>,
+    /// Tool execution mode (Parallel or Sequential) for new Runs.
+    pub tool_execution_mode: ToolExecutionMode,
 }
 
 impl Brain {
@@ -68,17 +81,30 @@ impl Brain {
         let reflector = Self::build_reflector(&config);
 
         let current_model_name = config.default_model.clone();
+        let todo_list = Arc::new(Mutex::new(TodoList::new()));
+
+        // Build a baseline tool registry for CLI display.
+        let mut base_tool_registry = ToolRegistry::with_defaults();
+        crate::tools::todo::register_todo_tools(&mut base_tool_registry, todo_list.clone());
+        if let Some(ref sm) = skill_manager {
+            crate::tools::skill::register_skill_tools(&mut base_tool_registry, sm.clone());
+        }
 
         Ok(Self {
             config,
             memory,
             reflection_daemon,
             skill_manager,
-            todo_list: Arc::new(Mutex::new(TodoList::new())),
+            todo_list,
             reflector,
             current_model_name,
             current_mode: Arc::new(Mutex::new(AgentMode::default())),
             hook_registry: Arc::new(Mutex::new(HookRegistry::new())),
+            base_tool_registry: Arc::new(Mutex::new(base_tool_registry)),
+            extra_tool_fns: Arc::new(Mutex::new(Vec::new())),
+            temperature_override: None,
+            max_tokens_override: None,
+            tool_execution_mode: ToolExecutionMode::Parallel,
         })
     }
 
@@ -367,10 +393,10 @@ impl Brain {
         Ok(OpenAIClient::new(model_config))
     }
 
-    /// Build a fresh ToolRegistry for a Run, filtered by mode.
+    /// Build a per-Run ToolRegistry cloned from the base registry, filtered by mode.
     ///
-    /// Each Run gets its own registry so MCP tools, memory tools, and
-    /// subagent tools can be registered per-Run without interference.
+    /// Each Run gets its own registry cloned from [`Brain::base_tool_registry`],
+    /// with mode-based tool removal and subagent tool registration applied.
     ///
     /// Tools are removed based on [`AgentMode`]:
     /// - **Ask**: read-only tools only (no write, no plans, no subagents)
@@ -391,6 +417,14 @@ impl Brain {
 
         if let Some(ref sm) = self.skill_manager {
             crate::tools::skill::register_skill_tools(&mut registry, sm.clone());
+        }
+
+        // Apply extra tool registration callbacks (e.g. MCP tools).
+        {
+            let fns = self.extra_tool_fns.lock();
+            for f in fns.iter() {
+                f(&mut registry);
+            }
         }
 
         // ── Mode-based filtering ─────────────────────────────────────
@@ -473,6 +507,33 @@ impl Brain {
             .as_ref()
             .map(|m| crate::config::MemoryMode::from_str(&m.mode))
             .unwrap_or_default()
+    }
+
+    /// Apply a temperature override for subsequent Runs.
+    pub fn set_temperature(&mut self, val: f64) {
+        self.temperature_override = Some(val);
+    }
+
+    /// Apply a max_tokens override for subsequent Runs.
+    pub fn set_max_tokens(&mut self, val: u32) {
+        self.max_tokens_override = Some(val);
+    }
+
+    /// Set the tool execution mode for subsequent Runs.
+    pub fn set_tool_execution_mode(&mut self, mode: ToolExecutionMode) {
+        self.tool_execution_mode = mode;
+    }
+
+    /// Register a tool registration callback. Applied to every per-Run ToolRegistry.
+    /// Use this for tools that need to execute during Runs (e.g. MCP tools).
+    pub fn register_tool_fn(&self, f: Box<dyn Fn(&mut ToolRegistry) + Send + Sync>) {
+        self.extra_tool_fns.lock().push(f);
+    }
+
+    /// The base tool registry (for CLI display / permission checking).
+    /// This is NOT used during Run execution — use [`register_tool_fn`] for that.
+    pub fn display_registry(&self) -> parking_lot::MutexGuard<'_, ToolRegistry> {
+        self.base_tool_registry.lock()
     }
 }
 

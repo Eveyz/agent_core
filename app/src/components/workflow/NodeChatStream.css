@@ -4,7 +4,7 @@
   gap: 12px;
 }
 
-.node-chat-log {
+.node-chat-log-item {
   background: var(--bg-hover);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
@@ -12,7 +12,7 @@
   font-size: 13px;
 }
 
-.node-chat-log.system {
+.node-chat-log-item.system {
   border-color: var(--accent-border);
   background: var(--accent-subtle);
 }

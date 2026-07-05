@@ -72,6 +72,12 @@ pub enum RunCommand {
     /// Set the agent mode on the Brain. Takes effect on the NEXT Run.
     /// Existing Runs keep their mode.
     SetMode { mode: String },
+
+    /// Queue a follow-up message that will be processed after the Run finishes,
+    /// mimicking the user sending a follow-up input.
+    FollowUp { message: String },
+    /// Clear all queued steer and follow-up messages.
+    ClearQueues,
 }
 
 impl RunCommand {
@@ -105,5 +111,15 @@ mod tests {
         let json2 = serde_json::to_string(&cmd2).unwrap();
         assert!(json2.contains("\"type\":\"steer\""));
         assert!(json2.contains("hello"));
+
+        let cmd3 = RunCommand::FollowUp {
+            message: "next step".into(),
+        };
+        let json3 = serde_json::to_string(&cmd3).unwrap();
+        assert!(json3.contains("\"type\":\"follow_up\""));
+
+        let cmd4 = RunCommand::ClearQueues;
+        let json4 = serde_json::to_string(&cmd4).unwrap();
+        assert!(json4.contains("\"type\":\"clear_queues\""));
     }
 }

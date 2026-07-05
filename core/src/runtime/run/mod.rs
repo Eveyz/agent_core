@@ -46,7 +46,7 @@ use tokio_util::sync::CancellationToken;
 
 use parking_lot::{Mutex, RwLock};
 
-use crate::agent::ContextProcessor;
+use crate::context_processor::ContextProcessor;
 use crate::client::OpenAIClient;
 use crate::config::ModelConfig;
 use crate::context::ContextEngine as Context;
@@ -139,6 +139,8 @@ pub struct Run {
 
     // ── Queues for mid-run injection ──────────────────────────────
     steering_queue: VecDeque<SteerEntry>,
+    /// Queued follow-up messages — injected as user messages after the Run completes.
+    follow_up_queue: VecDeque<Message>,
 
     // ── Pending approvals (per-Run, not global) ───────────────────
     approval_resolver: ApprovalResolver,
@@ -281,6 +283,7 @@ impl Run {
             supervisor,
             join_set: JoinSet::new(),
             steering_queue: VecDeque::new(),
+            follow_up_queue: VecDeque::new(),
             approval_resolver: ApprovalResolver::new(),
             working_dir,
             mode,

@@ -1,4 +1,4 @@
-import { useState, useMemo, memo } from 'react';
+import { useState, useMemo, useEffect, memo, useCallback } from 'react';
 import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
 import ChevronRightIcon from 'lucide-react/dist/esm/icons/chevron-right.mjs';
 import { formatTime } from '../../utils/format';
@@ -10,6 +10,7 @@ import CheckCircleIcon from 'lucide-react/dist/esm/icons/check-circle.mjs';
 import CircleIcon from 'lucide-react/dist/esm/icons/circle.mjs';
 import LoaderIcon from 'lucide-react/dist/esm/icons/loader.mjs';
 import AlertCircleIcon from 'lucide-react/dist/esm/icons/alert-circle.mjs';
+import './ToolBlockUI.css';
 
 interface TodoItem {
   id: string;
@@ -23,6 +24,17 @@ interface ParsedTodoResult {
   summaryText?: string;
   totalCount: number;
   completedCount: number;
+}
+
+interface MemoryResult {
+  id?: string;
+  role?: string;
+  importance?: number;
+  created_at?: string;
+  content?: string;
+  text?: string;
+  message?: string;
+  metadata?: string;
 }
 
 function parseTodoResult(result: string): ParsedTodoResult | null {
@@ -55,7 +67,7 @@ function parseTodoResult(result: string): ParsedTodoResult | null {
       if (match) {
         items.push({
           id: match[2],
-          status: match[3] as any,
+          status: match[3] as TodoItem['status'],
           description: match[4],
         });
       }
@@ -94,6 +106,64 @@ function todoStatusIcon(status: string) {
   }
 }
 
+function MemorySearchResults({ result }: { result: string }) {
+  try {
+    const parsed = JSON.parse(result);
+    const results: MemoryResult[] = parsed.results || [];
+    if (results.length === 0) return <div style={{ color: 'var(--text-muted)' }}>No results found.</div>;
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        {results.map((r, idx: number) => (
+          <div key={r.id || idx} style={{ padding: '10px', background: 'var(--bg-secondary)', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-muted)', marginBottom: '8px', borderBottom: '1px solid var(--border-color)', paddingBottom: '4px' }}>
+              <span style={{ fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-secondary)' }}>{r.role || 'MEMORY'}</span>
+              <div style={{ display: 'flex', gap: '12px' }}>
+                {r.importance !== undefined && <span>Score: {typeof r.importance === 'number' ? r.importance.toFixed(2) : r.importance}</span>}
+                {r.created_at && <span>{new Date(r.created_at).toLocaleString()}</span>}
+              </div>
+            </div>
+            <div style={{ color: 'var(--text-primary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: '1.5' }}>{r.content || r.text || r.message}</div>
+            {r.metadata && <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '8px', background: 'var(--overlay-0_02)', padding: '6px', borderRadius: '4px', border: '1px solid var(--border-color)', fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{r.metadata}</div>}
+          </div>
+        ))}
+      </div>
+    );
+  } catch {
+    return <MarkdownContent content={result} plainText={true} />;
+  }
+}
+
+function TodoResultDisplay({ result }: { result: string }) {
+  const parsed = parseTodoResult(result);
+  if (!parsed) return <MarkdownContent content={result} plainText={true} />;
+  return (
+    <div className="tool-result-content scrollable-markdown" style={{ padding: '12px 16px', borderRadius: 'var(--radius-lg)' }}>
+      {parsed.headerMessage && (
+        <div style={{ marginBottom: '12px', fontSize: '13px', color: 'var(--text-main)', fontWeight: 500, borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
+          {parsed.headerMessage}
+        </div>
+      )}
+      <div className="todo-panel" style={{ margin: 0, background: 'transparent', border: 'none', padding: 0 }}>
+        <div className="todo-header">
+          <span className="todo-title">Current Plan</span>
+          <span className="todo-progress-text">{parsed.completedCount}/{parsed.totalCount}</span>
+        </div>
+        <div className="todo-progress-bar">
+          <div className="todo-progress-fill" style={{ width: `${(parsed.completedCount / (parsed.totalCount || 1)) * 100}%` }} />
+        </div>
+        <ul className="todo-list">
+          {parsed.items.map((item) => (
+            <li key={item.id} className={`todo-item todo-item-${item.status}`}>
+              {todoStatusIcon(item.status)}
+              <span className="todo-desc">{item.description}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 
 const ToolBlockUI = memo(function ToolBlockUI({
   name,
@@ -116,26 +186,29 @@ const ToolBlockUI = memo(function ToolBlockUI({
 }) {
   const isExpandable = name !== 'write_file' && name !== 'write_to_file';
   const [collapsed, setCollapsed] = useState(true);
-  const [prevActive, setPrevActive] = useState(active);
   const [copied, setCopied] = useState(false);
 
-  if (active !== prevActive) {
-    setPrevActive(active);
+  useEffect(() => {
     if (!active && is_error) {
       setCollapsed(false);
     }
-  }
+  }, [active, is_error]);
 
-  const handleCopy = async (e: React.MouseEvent) => {
+  const handleCopy = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
       await navigator.clipboard.writeText(result || '');
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
     } catch (error) {
       console.error('Failed to copy:', error);
     }
-  };
+  }, [result]);
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 2000);
+    return () => clearTimeout(timer);
+  }, [copied]);
 
   const formattedArgs = useMemo(() => {
     if (!args) return '';
@@ -212,47 +285,22 @@ const ToolBlockUI = memo(function ToolBlockUI({
   const isSearch = name === 'tavily_search' || name === 'webfetch';
   const hideInput = isSearch || name.startsWith('todo_') || name.startsWith('skill_') || name === 'archival_memory_search' || name === 'conversation_search';
 
+  const ToolIcon = getToolIcon(name);
+  const isSearching = active && (name === 'tavily_search' || name === 'webfetch');
+
   return (
     <div className="step-block">
-      <style>{`
-        .search-tool-result {
-          font-size: 13px !important;
-        }
-        .search-tool-result h1, .search-tool-result h2, .search-tool-result h3, .search-tool-result h4, .search-tool-result h5, .search-tool-result h6 {
-          font-size: 14px !important;
-          margin: 10px 0 6px 0 !important;
-          line-height: 1.4 !important;
-          font-weight: 600 !important;
-        }
-        .search-tool-result * {
-          font-size: 13px !important;
-        }
-        .scrollable-markdown {
-          max-height: 400px;
-          overflow-y: auto;
-        }
-        .tool-result-content {
-          background: var(--overlay-0_02) !important;
-          border: 1px solid var(--border-color) !important;
-        }
-      `}</style>
       <div
         className={`step-row ${active ? 'step-row-active' : ''} ${is_error ? 'step-row-error' : ''} ${isExpandable ? 'step-row-pointer' : 'step-row-default'}`}
         onClick={() => {
           if (isExpandable) setCollapsed(!collapsed);
         }}
       >
-        {(() => {
-          const ToolIcon = getToolIcon(name);
-          const isSearching = active && (name === 'tavily_search' || name === 'webfetch');
-          return (
-            <ToolIcon
-              size={13}
-              className={`step-icon tool-icon-margin ${isSearching ? 'step-icon-searching' : ''}`}
-              color={is_error ? 'var(--danger)' : 'var(--text-muted)'}
-            />
-          );
-        })()}
+        <ToolIcon
+          size={13}
+          className={`step-icon tool-icon-margin ${isSearching ? 'step-icon-searching' : ''}`}
+          color={is_error ? 'var(--danger)' : 'var(--text-muted)'}
+        />
         <span className="step-label tool-name tool-name-flex">
           <span>{displayLabel}</span>
           {startTime && endTime && (
@@ -291,64 +339,11 @@ const ToolBlockUI = memo(function ToolBlockUI({
                 ) : name === 'archival_memory_search' || name === 'conversation_search' ? (
                   <div style={{ position: 'relative' }}>
                     <div style={{ padding: '12px', background: 'var(--overlay-0_02)', borderRadius: '8px', border: '1px solid var(--border-color)', fontSize: '13px' }}>
-                      {(() => {
-                        try {
-                          const parsed = JSON.parse(result);
-                          const results = parsed.results || [];
-                          if (results.length === 0) return <div style={{ color: 'var(--text-muted)' }}>No results found.</div>;
-                          return (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                              {results.map((r: any, idx: number) => (
-                                <div key={r.id || idx} style={{ padding: '10px', background: 'var(--bg-secondary)', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
-                                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-muted)', marginBottom: '8px', borderBottom: '1px solid var(--border-color)', paddingBottom: '4px' }}>
-                                    <span style={{ fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-secondary)' }}>{r.role || 'MEMORY'}</span>
-                                    <div style={{ display: 'flex', gap: '12px' }}>
-                                      {r.importance !== undefined && <span>Score: {typeof r.importance === 'number' ? r.importance.toFixed(2) : r.importance}</span>}
-                                      {r.created_at && <span>{new Date(r.created_at).toLocaleString()}</span>}
-                                    </div>
-                                  </div>
-                                  <div style={{ color: 'var(--text-primary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: '1.5' }}>{r.content || r.text || r.message}</div>
-                                  {r.metadata && <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '8px', background: 'var(--overlay-0_02)', padding: '6px', borderRadius: '4px', border: '1px solid var(--border-color)', fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{r.metadata}</div>}
-                                </div>
-                              ))}
-                            </div>
-                          );
-                        } catch (e) {
-                          return <MarkdownContent content={result} plainText={true} />;
-                        }
-                      })()}
+                      <MemorySearchResults result={result} />
                     </div>
                   </div>
                 ) : name.startsWith('todo_') && parseTodoResult(result) ? (
-                  (() => {
-                    const parsed = parseTodoResult(result)!;
-                    return (
-                      <div className="tool-result-content scrollable-markdown" style={{ padding: '12px 16px', borderRadius: 'var(--radius-lg)' }}>
-                        {parsed.headerMessage && (
-                          <div style={{ marginBottom: '12px', fontSize: '13px', color: 'var(--text-main)', fontWeight: 500, borderBottom: '1px solid var(--border-color)', paddingBottom: '8px' }}>
-                            {parsed.headerMessage}
-                          </div>
-                        )}
-                        <div className="todo-panel" style={{ margin: 0, background: 'transparent', border: 'none', padding: 0 }}>
-                          <div className="todo-header">
-                            <span className="todo-title">Current Plan</span>
-                            <span className="todo-progress-text">{parsed.completedCount}/{parsed.totalCount}</span>
-                          </div>
-                          <div className="todo-progress-bar">
-                            <div className="todo-progress-fill" style={{ width: `${(parsed.completedCount / (parsed.totalCount || 1)) * 100}%` }} />
-                          </div>
-                          <ul className="todo-list">
-                            {parsed.items.map((item) => (
-                              <li key={item.id} className={`todo-item todo-item-${item.status}`}>
-                                {todoStatusIcon(item.status)}
-                                <span className="todo-desc">{item.description}</span>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      </div>
-                    );
-                  })()
+                  <TodoResultDisplay result={result} />
                 ) : (
                   <div style={{ position: 'relative' }}>
                     <button className="code-block-copy-btn" onClick={handleCopy} title="Copy output" style={{ position: 'absolute', top: '8px', right: '12px', display: 'flex', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '4px', padding: '4px', cursor: 'pointer', color: 'var(--text-muted)', zIndex: 10 }}>

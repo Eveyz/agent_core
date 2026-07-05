@@ -107,7 +107,13 @@ export function getFileIcon(name: string) {
   }
 }
 
-interface FileNode {
+interface DirEntry {
+  name: string;
+  type: 'file' | 'dir';
+  size: string;
+}
+
+interface FileNode extends DirEntry {
   name: string;
   type: 'file' | 'dir';
   size: string;
@@ -152,8 +158,8 @@ function FileTreeItem({ node, level, selectedPath, onItemClick, onSelect }: File
     if (!expanded && children.length === 0) {
       setLoading(true);
       try {
-        const result: any[] = await invoke('list_directory', { path: node.path });
-        const visibleFiles = result.filter(item => !item.name.startsWith('.'));
+        const result = await invoke<DirEntry[]>('list_directory', { path: node.path });
+        const visibleFiles = result.filter((item: DirEntry) => !item.name.startsWith('.'));
         setChildren(visibleFiles.map(item => ({
           ...item,
           path: `${node.path}/${item.name}`
@@ -224,11 +230,11 @@ export function FileTree({ rootPath, onSelectFile }: FileTreeProps) {
     let isMounted = true;
     setLoading(true);
 
-    invoke('list_directory', { path: rootPath })
-      .then((result: any) => {
+    invoke<DirEntry[]>('list_directory', { path: rootPath })
+      .then((result) => {
         if (!isMounted) return;
-        const visibleFiles = result.filter((item: any) => !item.name.startsWith('.'));
-        setNodes(visibleFiles.map((item: any) => ({
+        const visibleFiles = result.filter((item) => !item.name.startsWith('.'));
+        setNodes(visibleFiles.map((item) => ({
           ...item,
           path: `${rootPath}/${item.name}`
         })));

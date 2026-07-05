@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSelector } from "react-redux";
 import { RootState } from "../../store";
@@ -6,6 +6,12 @@ import { PERMISSION_MODES, MEMORY_MODES, type AgentDef } from "../../features/ag
 import XIcon from "lucide-react/dist/esm/icons/x.mjs";
 import ChevronDownIcon from "lucide-react/dist/esm/icons/chevron-down.mjs";
 import WandIcon from "lucide-react/dist/esm/icons/wand-2.mjs";
+
+interface SkillInfo {
+  name: string;
+  description: string;
+  version?: string;
+}
 
 export function NewAgentModal({
   isOpen,
@@ -43,6 +49,24 @@ export function NewAgentModal({
 
   const isEditing = !!editingAgent;
 
+  const loadSkills = useCallback(async () => {
+    try {
+      const data = await invoke<SkillInfo[]>("get_skills");
+      setSkillsList(data.map((s) => ({ id: s.name, name: s.name })));
+    } catch (e) {
+      console.error(e);
+    }
+  }, []);
+
+  const loadTools = useCallback(async () => {
+    try {
+      const data = await invoke<string[]>("list_available_tools");
+      setToolsList(data);
+    } catch (e) {
+      console.error(e);
+    }
+  }, []);
+
   useEffect(() => {
     if (isOpen) {
       loadSkills();
@@ -72,26 +96,7 @@ export function NewAgentModal({
       }
       setError(null);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, editingAgent]);
-
-  const loadSkills = async () => {
-    try {
-      const data = await invoke<any[]>("get_skills");
-      setSkillsList(data.map((s) => ({ id: s.name, name: s.name })));
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const loadTools = async () => {
-    try {
-      const data = await invoke<string[]>("list_available_tools");
-      setToolsList(data);
-    } catch (e) {
-      console.error(e);
-    }
-  };
+  }, [isOpen, editingAgent, config?.default_model, loadSkills, loadTools]);
 
   if (!isOpen) return null;
 

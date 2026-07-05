@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppSelector } from "../../hooks/useAppDispatch";
 import XIcon from "lucide-react/dist/esm/icons/x.mjs";
@@ -45,18 +45,18 @@ export function SkillDrafts({
   const [error, setError] = useState<string | null>(null);
   const [expandedDraft, setExpandedDraft] = useState<string | null>(null);
 
-  const loadDrafts = async () => {
+  const loadDrafts = useCallback(async () => {
     try {
       const data = await invoke<SkillDraft[]>("list_skill_drafts");
       setDrafts(data);
     } catch (e) {
       console.error(e);
     }
-  };
+  }, []);
 
   useEffect(() => {
     loadDrafts();
-  }, []);
+  }, [loadDrafts]);
 
   const handleGenerate = async () => {
     setGenerating(true);

@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, memo } from 'react';
+import { useState, useMemo, useCallback, useEffect, memo } from 'react';
 import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
 import CopyIcon from 'lucide-react/dist/esm/icons/copy.mjs';
 import type { ChatEntry, TurnBlock } from '../../features/chat/chatSlice';
@@ -27,11 +27,16 @@ const TurnFooter = memo(function TurnFooter({ entry }: { entry: ChatEntry }) {
     try {
       await navigator.clipboard.writeText(rawOutput);
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
     } catch {
       // ignore
     }
   }, [rawOutput]);
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(timer);
+  }, [copied]);
 
   const isProcessing = !entry.endTime;
 

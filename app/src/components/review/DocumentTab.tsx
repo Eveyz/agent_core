@@ -25,32 +25,31 @@ export function DocumentTab({ projectPath, relativePaths, title, placeholderMess
     let isMounted = true;
     setLoading(true);
 
-    // Helper function to try paths sequentially
-    const tryReadPaths = async (index: number) => {
-      if (index >= relativePaths.length) {
-        if (isMounted) {
-          setContent(null);
-          setLoading(false);
+    const tryReadPaths = async () => {
+      for (let i = 0; i < relativePaths.length; i++) {
+        if (!isMounted) return;
+        const fullPath = relativePaths[i].startsWith('~/') || relativePaths[i].startsWith('/')
+          ? relativePaths[i]
+          : `${projectPath}/${relativePaths[i]}`;
+        try {
+          const fileContent = await invoke<string>('read_file', { path: fullPath });
+          if (isMounted) {
+            setContent(fileContent);
+            setLoading(false);
+          }
+          return;
+        } catch {
+          // Try next path
         }
-        return;
       }
-
-      const fullPath = relativePaths[index].startsWith('~/') || relativePaths[index].startsWith('/')
-        ? relativePaths[index]
-        : `${projectPath}/${relativePaths[index]}`;
-      try {
-        const fileContent = await invoke<string>('read_file', { path: fullPath });
-        if (isMounted) {
-          setContent(fileContent);
-          setLoading(false);
-        }
-      } catch (err) {
-        // If it fails, try the next path
-        tryReadPaths(index + 1);
+      // All paths failed
+      if (isMounted) {
+        setContent(null);
+        setLoading(false);
       }
     };
 
-    tryReadPaths(0);
+    tryReadPaths();
 
     return () => {
       isMounted = false;

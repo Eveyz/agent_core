@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
 import CopyIcon from 'lucide-react/dist/esm/icons/copy.mjs';
 import { createHighlighter, type Highlighter, type BundledLanguage } from 'shiki';
@@ -193,15 +193,20 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({ code, language, className 
     };
   }, [code, language]);
 
-  const handleCopy = async () => {
+  const handleCopy = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(code);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
     } catch (error) {
       console.error('Failed to copy:', error);
     }
-  };
+  }, [code]);
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 2000);
+    return () => clearTimeout(timer);
+  }, [copied]);
 
   const displayName = LANGUAGE_NAMES[language.toLowerCase()] || language || 'Plain Text';
 

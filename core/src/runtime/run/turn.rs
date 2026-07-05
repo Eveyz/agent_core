@@ -5,7 +5,7 @@ use futures::StreamExt;
 use std::sync::atomic::Ordering;
 use tokio::sync::broadcast;
 
-use crate::agent::executor::ToolOrchestrator;
+use crate::runtime::tool_orchestrator::ToolOrchestrator;
 use crate::client::streaming::{TokenAccumulator, ToolCallAccumulator};
 use crate::runtime::event::{Envelope, RunEvent, TodoItemPayload};
 use crate::runtime::guard::EventGuard;

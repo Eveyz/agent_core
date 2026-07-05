@@ -4,6 +4,7 @@ import { useAppDispatch } from '../../hooks/useAppDispatch';
 import { RootState } from '../../store';
 import { upsertProvider, deleteProvider, setDefaultModel, updateProvider } from '../../features/settings/settingsSlice';
 import type { ProviderModelEntry } from '../../features/settings/settingsSlice';
+import { useConfirmDialog } from '../ui/DialogManager';
 import ServerIcon from 'lucide-react/dist/esm/icons/server.mjs';
 import PlusIcon from 'lucide-react/dist/esm/icons/plus.mjs';
 import PencilIcon from 'lucide-react/dist/esm/icons/pencil.mjs';
@@ -342,13 +343,21 @@ export default function ProviderTab() {
   const config = useSelector((state: RootState) => state.settings.config);
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
+  const { confirm, dialogElement } = useConfirmDialog();
 
-  const handleDeleteProvider = (key: string) => {
+  const handleDeleteProvider = async (key: string) => {
     if (!config) return;
     const provider = config.providers[key];
     if (!provider) return;
     const names = Object.keys(provider.models).map((k) => `"${k}"`).join(', ');
-    if (!confirm(`Delete provider "${key}" and all its models (${names})?`)) return;
+    const ok = await confirm({
+      title: 'Delete Provider',
+      message: `Delete provider "${key}" and all its models (${names})?`,
+      confirmLabel: 'Delete',
+      cancelLabel: 'Cancel',
+      danger: true,
+    });
+    if (!ok) return;
     dispatch(deleteProvider(key));
   };
 
@@ -479,6 +488,7 @@ export default function ProviderTab() {
           );
         })}
       </div>
+      {dialogElement}
     </div>
   );
 }

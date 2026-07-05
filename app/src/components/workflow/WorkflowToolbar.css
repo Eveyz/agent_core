@@ -35,8 +35,8 @@
   font-size: 13px;
   padding: 6px 16px;
   gap: 6px;
-  background: var(--success, var(--success));
-  border-color: var(--success, var(--success));
+  background: var(--success, #22c55e);
+  border-color: var(--success, #22c55e);
   font-weight: 600;
 }
 
@@ -44,8 +44,8 @@
   font-size: 13px;
   padding: 6px 16px;
   gap: 6px;
-  background: var(--danger, var(--danger));
-  border-color: var(--danger, var(--danger));
+  background: var(--danger, #ef4444);
+  border-color: var(--danger, #ef4444);
   font-weight: 600;
 }
 
@@ -55,7 +55,7 @@
 
 .toolbar-unsaved {
   font-size: 12px;
-  color: var(--warning, var(--warning));
+  color: var(--warning, #f59e0b);
   display: flex;
   align-items: center;
   gap: 4px;
@@ -67,10 +67,10 @@
 
 .toolbar-msg-success {
   font-size: 12px;
-  color: var(--success, var(--success));
+  color: var(--success, #22c55e);
 }
 
 .toolbar-msg-danger {
   font-size: 12px;
-  color: var(--danger, var(--danger));
+  color: var(--danger, #ef4444);
 }

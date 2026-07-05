@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSelector } from "react-redux";
 import { RootState } from "../../../store";
@@ -8,6 +8,12 @@ import { updateAgent } from "../../../features/agents/agentSlice";
 import XIcon from "lucide-react/dist/esm/icons/x.mjs";
 import ChevronDownIcon from "lucide-react/dist/esm/icons/chevron-down.mjs";
 import WandIcon from "lucide-react/dist/esm/icons/wand-2.mjs";
+
+interface SkillInfo {
+  name: string;
+  description: string;
+  version?: string;
+}
 
 interface AgentConfigTabProps {
   agent: AgentDef;
@@ -39,6 +45,12 @@ export function AgentConfigTab({ agent }: AgentConfigTabProps) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState("");
+  const successTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clean up success message timer on unmount
+  useEffect(() => () => {
+    if (successTimerRef.current) clearTimeout(successTimerRef.current);
+  }, []);
 
   // Re-sync local state if agent prop changes
   useEffect(() => {
@@ -61,7 +73,7 @@ export function AgentConfigTab({ agent }: AgentConfigTabProps) {
 
   const loadSkills = async () => {
     try {
-      const data = await invoke<any[]>("get_skills");
+      const data = await invoke<SkillInfo[]>("get_skills");
       setSkillsList(data.map((s) => ({ id: s.name, name: s.name })));
     } catch (e) {
       console.error(e);
@@ -101,7 +113,8 @@ export function AgentConfigTab({ agent }: AgentConfigTabProps) {
       })).unwrap();
       
       setSuccessMsg("Configuration saved successfully.");
-      setTimeout(() => setSuccessMsg(""), 3000);
+      if (successTimerRef.current) clearTimeout(successTimerRef.current);
+      successTimerRef.current = setTimeout(() => setSuccessMsg(""), 3000);
     } catch (e) {
       setError(String(e));
     } finally {

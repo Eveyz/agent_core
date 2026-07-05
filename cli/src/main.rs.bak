@@ -1,6 +1,7 @@
 #![allow(deprecated)]
 mod cli_completer;
 mod state;
+mod tui;
 
 use agent_core::{
     AgentEvent, Brain, ApprovalChoice, CancellationToken, McpClientManager, Message, MessageDelta,
@@ -9,7 +10,6 @@ use agent_core::{
     TodoItem, TodoList, TodoStatus, ToolExecutionMode, hooks::LoggingHook, tasks, tools,
 };
 use state::CliState;
-
 use argh::FromArgs;
 use rustyline::completion::Completer;
 use rustyline::error::ReadlineError;
@@ -188,7 +188,7 @@ fn try_load_config() -> anyhow::Result<Brain> {
                 eprintln!("config.toml: {e}");
             }
             eprintln!("Falling back to OPENAI_API_KEY environment variable...");
-            let config = agent_core::Config::from_env()?;
+            let config = Config::from_env()?;
             Brain::from_config(config)
         }
     }
@@ -251,8 +251,54 @@ max_context_tokens = 128000
 }
 
 async fn run_tui_mode() -> anyhow::Result<()> {
-    eprintln!("TUI mode not yet ported to CliState. Use CLI mode instead.");
-    std::process::exit(1);
+    let builder = try_load_config()?;
+
+    // Skill manager (created before build so it can be passed to agent)
+    let mut skill_manager = SkillManager::with_defaults();
+    let _ = skill_manager.scan();
+    let skill_manager = Arc::new(Mutex::new(skill_manager));
+
+    let builder = builder
+        .with_memory(true)
+        .with_skill_manager(skill_manager.clone())
+        .with_tool_execution_mode(ToolExecutionMode::Parallel);
+
+    let mut agent = builder.build()?;
+
+    // Register tools
+    let todo_list: Arc<Mutex<TodoList>> = Arc::new(Mutex::new(TodoList::new()));
+    let task_board: Arc<Mutex<TaskBoard>> = Arc::new(Mutex::new(TaskBoard::new()));
+
+    {
+        let model_config = agent.current_model_config().clone();
+        let permission_config = agent.config().permissions.clone();
+        let reg = agent.tool_registry_mut();
+        tools::todo::register_todo_tools(reg, todo_list.clone());
+        tools::skill::register_skill_tools(reg, skill_manager.clone());
+        let task_board_clone = task_board.clone();
+        tasks::register_task_tools(reg, task_board_clone, model_config, permission_config);
+    }
+    {
+        let model_config = agent.current_model_config().clone();
+        let permission_config = agent.config().permissions.clone();
+        let tool_names: Vec<String> = agent
+            .tool_registry()
+            .list_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let reg = agent.tool_registry_mut();
+        tools::subagent::register_subagent_tools(
+            reg,
+            model_config,
+            tool_names,
+            None,
+            permission_config,
+        );
+    }
+
+    let agent = Arc::new(tokio::sync::Mutex::new(agent));
+    tui::run_tui(agent).await
 }
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -336,12 +382,13 @@ async fn main() -> anyhow::Result<()> {
     {
         let tl = todo_list.clone();
         let tb = task_board.clone();
-        let sm = skill_manager.clone();
-        let mc = brain.current_model_config().ok();
+        let mc = brain.current_model_config().ok().cloned();
         let pc = brain.config.permissions.clone();
         brain.register_tool_fn(Box::new(move |reg: &mut agent_core::ToolRegistry| {
             tools::todo::register_todo_tools(reg, tl.clone());
-            tools::skill::register_skill_tools(reg, sm.clone());
+            if let (Some(ref mc), Some(ref sm)) = (&mc, &skill_manager) {
+                tools::skill::register_skill_tools(reg, sm.clone());
+            }
             tasks::register_task_tools(reg, tb.clone(), mc.clone().unwrap_or_default(), pc.clone());
         }));
     }
@@ -393,7 +440,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Build CliState
     let mut state = CliState {
-        brain: (**run_manager.brain()).clone(),
+        brain: run_manager.brain().clone(),
         run_manager,
         context_history: Vec::new(),
         session_id: None,
@@ -504,8 +551,12 @@ async fn main() -> anyhow::Result<()> {
                 print_help();
             }
             "/models" => {
+                let model_names = state.brain.config.list_models();
                 let current = state.brain.current_model_name();
-                println!("  * {current} (current)");
+                for name in &model_names {
+                    let marker = if name == current { "* " } else { "  " };
+                    println!("{marker}{name}");
+                }
             }
             "/clear" => {
                 state.context_history.clear();
@@ -521,7 +572,7 @@ async fn main() -> anyhow::Result<()> {
                 let rest = cmd.strip_prefix("/rewind").unwrap_or("").trim();
                 if rest.is_empty() {
                     // Show rewindable points
-                    let msgs = state.context_history.clone();
+                    let msgs = agent.context_messages();
                     let user_indices: Vec<(usize, &str)> = msgs
                         .iter()
                         .enumerate()
@@ -541,9 +592,7 @@ async fn main() -> anyhow::Result<()> {
                 } else {
                     match rest.parse::<usize>() {
                         Ok(idx) => {
-                            let total = state.context_history.len();
-                            state.context_history.truncate(idx);
-                            let removed = total.saturating_sub(state.context_history.len());
+                            let (removed, total) = agent.rewind_context_to(idx);
                             if removed > 0 {
                                 println!(
                                     "Rewound: kept first {idx} messages, removed {removed} (was {total} total)."
@@ -562,7 +611,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             "/tokens" => {
-                println!("Current tokens: {}", state.context_history.len() as u32 * 4);
+                println!("Current tokens: {}", agent.context_token_count());
             }
             "/permission" | "/perm" => {
                 println!("=== Permission Policy ===");
@@ -659,7 +708,7 @@ async fn main() -> anyhow::Result<()> {
             }
             "/status" => {
                 print_status(
-                    &state,
+                    &agent,
                     enable_permission,
                     enable_hooks,
                     &todo_list,
@@ -691,7 +740,7 @@ async fn main() -> anyhow::Result<()> {
 
                 match args.get(1).copied() {
                     Some("save") => {
-                        let all_messages = state.context_history.clone();
+                        let all_messages = agent.context_messages();
                         // Filter out system messages — they're generated from segments,
                         // not part of the conversation history
                         let messages: Vec<Message> = all_messages
@@ -702,11 +751,11 @@ async fn main() -> anyhow::Result<()> {
                             .ok()
                             .and_then(|p| p.to_str().map(|s| s.to_string()))
                             .unwrap_or_default();
-                        let model = state.brain.current_model_name().to_string();
-                        let current_id = state.session_id.clone();
+                        let model = agent.current_model();
+                        let current_id = _current_session_id.lock().clone();
                         match mgr.save(current_id.as_deref(), &messages, &cwd, &model) {
                             Ok(id) => {
-                                state.session_id = Some(id.clone());
+                                *_current_session_id.lock() = Some(id.clone());
                                 println!("Session saved: {}", &id[..8]);
                             }
                             Err(e) => eprintln!("Failed to save session: {e}"),
@@ -719,12 +768,11 @@ async fn main() -> anyhow::Result<()> {
                         } else {
                             match mgr.resume(session_id) {
                                 Ok(Some(session)) => {
-                                    state.context_history.clear();
-                state.session_id = None;
+                                    agent.clear_context();
                                     for msg in &session.messages {
-                                        state.context_history.extend_from_slice(&[msg.clone()]);
+                                        agent.context_mut().add(msg.clone());
                                     }
-                                    state.session_id =
+                                    *_current_session_id.lock() =
                                         Some(session_id.to_string());
                                     println!(
                                         "Resumed session '{}' ({} messages).",
@@ -805,22 +853,22 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             "/abort" => {
-                if let Some(ref rid) = state.current_run_id { let _ = state.run_manager.cancel_run(rid); };
+                cancel_token.cancel();
                 println!("Abort signal sent. The agent will stop at the next opportunity.");
             }
             "/state" => {
-                println!("Agent state: {:?}", state.current_run_id.as_ref().map(|_| "Running").unwrap_or("Idle"));
+                println!("Agent state: {:?}", agent.state());
             }
             "/tool-mode" => {
-                println!("Tool execution mode: {:?}", state.brain.tool_execution_mode);
+                println!("Tool execution mode: {:?}", agent.tool_execution_mode());
             }
             "/clear-queues" => {
-                
+                agent.clear_all_queues();
                 println!("Steering and follow-up queues cleared.");
             }
             cmd if cmd.starts_with("/model ") => {
                 let name = cmd.strip_prefix("/model ").unwrap().trim();
-                match state.brain.switch_model(name) {
+                match agent.switch_model(name) {
                     Ok(()) => println!("Switched to model: {name}"),
                     Err(e) => eprintln!("Error: {e}"),
                 }
@@ -829,7 +877,7 @@ async fn main() -> anyhow::Result<()> {
                 let val_str = cmd.strip_prefix("/temp ").unwrap().trim();
                 match val_str.parse::<f64>() {
                     Ok(val) => {
-                        state.brain.set_temperature(val);
+                        agent.set_temperature(val);
                         println!("Temperature set to {val}");
                     }
                     Err(_) => eprintln!("Invalid temperature value"),
@@ -839,7 +887,7 @@ async fn main() -> anyhow::Result<()> {
                 let val_str = cmd.strip_prefix("/max-tokens ").unwrap().trim();
                 match val_str.parse::<u32>() {
                     Ok(val) => {
-                        state.brain.set_max_tokens(val);
+                        agent.set_max_tokens(val);
                         println!("Max tokens set to {val}");
                     }
                     Err(_) => eprintln!("Invalid max-tokens value"),
@@ -849,11 +897,11 @@ async fn main() -> anyhow::Result<()> {
                 let mode_str = cmd.strip_prefix("/tool-mode ").unwrap().trim();
                 match mode_str.to_lowercase().as_str() {
                     "parallel" | "par" => {
-                        state.brain.set_tool_execution_mode(ToolExecutionMode::Parallel);
+                        agent.set_tool_execution_mode(ToolExecutionMode::Parallel);
                         println!("Tool execution mode set to: parallel");
                     }
                     "sequential" | "seq" => {
-                        state.brain.set_tool_execution_mode(ToolExecutionMode::Sequential);
+                        agent.set_tool_execution_mode(ToolExecutionMode::Sequential);
                         println!("Tool execution mode set to: sequential");
                     }
                     _ => {
@@ -863,21 +911,12 @@ async fn main() -> anyhow::Result<()> {
             }
             cmd if cmd.starts_with("/steer ") => {
                 let msg = cmd.strip_prefix("/steer ").unwrap().trim();
-                if let Some(ref rid) = state.current_run_id {
-                    let _ = state.run_manager.command(rid, RunCommand::Steer {
-                        steer_id: format!("steer-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()),
-                        message: msg.to_string(),
-                    });
-                }
+                agent.steer(SteerEntry::from_text(msg));
                 println!("Steering message queued. It will be injected after the current turn.");
             }
             cmd if cmd.starts_with("/follow-up ") => {
                 let msg = cmd.strip_prefix("/follow-up ").unwrap().trim();
-                if let Some(ref rid) = state.current_run_id {
-                    let _ = state.run_manager.command(rid, RunCommand::FollowUp {
-                        message: msg.to_string(),
-                    });
-                }
+                agent.follow_up(Message::user(msg));
                 println!(
                     "Follow-up message queued. It will be processed after the agent finishes."
                 );
@@ -937,8 +976,8 @@ async fn main() -> anyhow::Result<()> {
                     let parts: Vec<&str> = rest.splitn(2, ' ').collect();
                     let tool_name = parts[0];
                     let tool_input = parts.get(1).unwrap_or(&"{}");
-                    let decision = state
-                        .brain.build_permission_policy()
+                    let decision = agent
+                        .permission_policy_mut()
                         .check(tool_name, tool_input, None, None, None);
                     println!(
                         "Permission check: {}({}) -> {:?}",
@@ -957,7 +996,7 @@ async fn main() -> anyhow::Result<()> {
                             continue;
                         }
                     };
-                    state.brain.build_permission_policy().set_mode(mode);
+                    agent.permission_policy_mut().set_mode(mode);
                     println!("Permission mode set to: {:?}", mode);
                 } else {
                     eprintln!("Usage:");
@@ -966,9 +1005,16 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             "/context" => {
-                let msgs = state.context_history.clone();
-                let tokens = state.context_history.len() as u32 * 4;
+                let msgs = agent.context_messages();
+                let tokens = agent.context_token_count();
                 println!("=== Context ({tokens} tokens, {} messages) ===", msgs.len());
+                // Show the 7-segment breakdown
+                if let Some(hint) = agent.context_cache_hint() {
+                    println!(
+                        "KV Cache: {} stable tokens, strategy={}",
+                        hint.stable_prefix_tokens, hint.strategy
+                    );
+                }
                 println!("\nMessages (newest last):");
                 for (i, msg) in msgs.iter().enumerate() {
                     let role_str = match msg.role {
@@ -996,9 +1042,8 @@ async fn main() -> anyhow::Result<()> {
                 let rest = cmd.strip_prefix("/memory ").unwrap().trim();
                 if rest.starts_with("search ") {
                     let query = rest.strip_prefix("search ").unwrap().trim();
-                    if let Some(ref memory) = state.brain.memory {
-                        let mem = memory.lock();
-                        match mem.search_conversation(query, 5) {
+                    if let Some(memory) = agent.memory() {
+                        match memory.search_conversation(query, 5) {
                             Ok(results) => {
                                 if results.is_empty() {
                                     println!("No results for '{}'", query);
@@ -1023,9 +1068,8 @@ async fn main() -> anyhow::Result<()> {
                         println!("Memory is disabled.");
                     }
                 } else if rest == "stats" {
-                    if let Some(ref memory) = state.brain.memory {
-                        let mem = memory.lock();
-                        match mem.stats() {
+                    if let Some(memory) = agent.memory() {
+                        match memory.stats() {
                             Ok(stats) => {
                                 println!("=== Memory Stats ===");
                                 println!("Total:       {}", stats.total_count);
@@ -1042,13 +1086,12 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             "/memory" => {
-                if let Some(ref memory) = state.brain.memory {
-                    let mem = memory.lock();
+                if let Some(memory) = agent.memory() {
                     println!("=== Core Memory ===");
-                    for block in mem.core().list() {
+                    for block in memory.core().list() {
                         println!("[{}]: {}", block.id, block.content);
                     }
-                    println!("\nSession: {}", mem.session_id());
+                    println!("\nSession: {}", memory.session_id());
                 } else {
                     println!("Memory is disabled.");
                 }
@@ -1063,8 +1106,8 @@ async fn main() -> anyhow::Result<()> {
             _ => {
                 // Reset abort flag before each run
                 // The cancel_token is recreated by agent run loop on next start.
-                // state.cancel_token.cancel() would cancel it, but to clear it we do nothing.
-                run_agent(&mut state, &input, use_styles).await;
+                // agent.cancel_token.cancel() would cancel it, but to clear it we do nothing.
+                run_agent(&mut agent, &input, use_styles).await;
             }
         }
     }
@@ -1177,7 +1220,7 @@ fn handle_tasks_cmd(cmd: &str, task_board: &Arc<Mutex<TaskBoard>>) {
 }
 
 fn print_status(
-    state: &CliState,
+    agent: &agent_core::Agent,
     enable_permission: bool,
     enable_hooks: bool,
     todo_list: &Arc<Mutex<TodoList>>,
@@ -1185,17 +1228,17 @@ fn print_status(
     skill_manager: &Arc<Mutex<SkillManager>>,
 ) {
     println!("=== Agent Status ===");
-    println!("Model:       {}", state.brain.current_model_name().to_string());
-    println!("State:       {:?}", state.current_run_id.as_ref().map(|_| "Running").unwrap_or("Idle"));
-    println!("Tool mode:   {:?}", state.brain.tool_execution_mode);
-    println!("Tokens:      {}", state.context_history.len() as u32 * 4);
-    println!("Memory:      {}", if state.brain.memory.is_some() { "on" } else { "off" });
+    println!("Model:       {}", agent.current_model());
+    println!("State:       {:?}", agent.state());
+    println!("Tool mode:   {:?}", agent.tool_execution_mode());
+    println!("Tokens:      {}", agent.context_token_count());
+    println!("Memory:      {}", if agent.memory_enabled() { "on" } else { "off" });
     println!(
         "Permission:  {}",
         if enable_permission { "on" } else { "off" }
     );
     println!("Hooks:       {}", if enable_hooks { "on" } else { "off" });
-    println!("Tools:       {}", state.brain.display_registry().list_names().len());
+    println!("Tools:       {}", agent.tool_registry().list_names().len());
     {
         let list = todo_list.lock();
         println!("Todo:        {}", list.summary());
@@ -1267,109 +1310,347 @@ fn print_tool_line(
 /// Run agent inline — aborts are handled via `cancel_token` which is
 /// checked inside `collect_stream` on every chunk and between turns.
 async fn run_agent(
-    state: &mut CliState,
+    agent: &mut agent_core::Agent,
     input: &str,
     use_styles: bool,
 ) {
-    let session_id = state.session_id.clone();
-    let history = std::mem::take(&mut state.context_history);
-    let run_id = match state.run_manager.create_run(input, session_id.clone(), history).await {
-        Ok(id) => id,
-        Err(e) => { eprintln!("Error creating run: {e}"); return; }
-    };
-    state.current_run_id = Some(run_id.clone());
-    if let Err(e) = state.run_manager.command(&run_id, RunCommand::Start).await {
-        eprintln!("Error starting run: {e}");
-        state.current_run_id = None;
-        return;
-    }
-    let mut event_rx = match state.run_manager.subscribe(&run_id).await {
-        Ok(rx) => rx,
-        Err(e) => { eprintln!("Error subscribing: {e}"); state.current_run_id = None; return; }
-    };
+    let first_event = std::sync::atomic::AtomicBool::new(true);
     let in_thinking = std::sync::atomic::AtomicBool::new(false);
     let in_agent_text = std::sync::atomic::AtomicBool::new(false);
-    let first_event = std::sync::atomic::AtomicBool::new(true);
+    let skin = termimad::MadSkin::default();
+    let in_sub_thinking = std::sync::atomic::AtomicBool::new(false);
+    let in_sub_text = std::sync::atomic::AtomicBool::new(false);
+
+    // Deferred tool output: buffer ToolExecutionStart until ToolExecutionEnd arrives
+    let pending_tool: Mutex<Option<(String, serde_json::Value)>> = Mutex::new(None);
+
     print!("\r  ⏳{}", reset(use_styles));
     io::stdout().flush().ok();
-    loop {
-        match event_rx.recv().await {
-            Ok(envelope) => {
-                if first_event.load(std::sync::atomic::Ordering::Relaxed) {
-                    print!("\r                                    \r");
-                    io::stdout().flush().ok();
-                    first_event.store(false, std::sync::atomic::Ordering::Relaxed);
+
+    match agent
+        .run_with_events(input, |event| {
+            if first_event.load(std::sync::atomic::Ordering::Relaxed) {
+                print!("\r                                    \r");
+                io::stdout().flush().ok();
+                first_event.store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+            match event {
+                AgentEvent::AgentStart => {}
+                AgentEvent::AgentEnd { .. } => {}
+                AgentEvent::TurnStart { turn_index } => {
+                    // Flush any pending tool before new turn
+                    in_thinking.store(false, std::sync::atomic::Ordering::Relaxed);
+                    in_agent_text.store(false, std::sync::atomic::Ordering::Relaxed);
+                    if turn_index > 0 {
+                        println!(
+                            "\n  {}─── Turn {turn_index} ───{}",
+                            dim(use_styles),
+                            reset(use_styles)
+                        );
+                    }
                 }
-                match envelope.event {
-                    RunEvent::TurnStarted { index } => {
-                        if index > 1 {
-                            println!("\n  {}─── Turn {index} ───{}", dim(use_styles), reset(use_styles));
+                AgentEvent::MessageUpdate { delta, .. } => match delta {
+                    MessageDelta::Thinking(t) => {
+                        // Flush pending tool output before thinking
+                        pending_tool.lock().take();
+                        if in_agent_text.load(std::sync::atomic::Ordering::Relaxed) {
+                            println!();
+                            in_agent_text.store(false, std::sync::atomic::Ordering::Relaxed);
                         }
-                    }
-                    RunEvent::ModelStreaming { delta, .. } => match delta {
-                        MessageDelta::Text(t) => {
-                            if !in_agent_text.load(std::sync::atomic::Ordering::Relaxed) {
-                                println!();
-                                print!("  {}{}>>{} {}", bold(use_styles), green(use_styles), reset(use_styles), reset(use_styles));
-                                in_agent_text.store(true, std::sync::atomic::Ordering::Relaxed);
-                            }
-                            print!("{}{}", t, reset(use_styles));
-                            io::stdout().flush().ok();
+                        if !in_thinking.load(std::sync::atomic::Ordering::Relaxed) {
+                            println!(); // visual separator before think block
+                            print!(
+                                "  {}{}💭 Think{} {}",
+                                bold(use_styles),
+                                yellow(use_styles),
+                                reset(use_styles),
+                                dim(use_styles),
+                            );
+                            in_thinking.store(true, std::sync::atomic::Ordering::Relaxed);
                         }
-                        MessageDelta::Thinking(t) => {
-                            if !in_thinking.load(std::sync::atomic::Ordering::Relaxed) {
-                                println!();
-                                print!("  {}{}💭 Think{} {}", bold(use_styles), yellow(use_styles), reset(use_styles), dim(use_styles));
-                                in_thinking.store(true, std::sync::atomic::Ordering::Relaxed);
-                            }
-                            print!("{}{}{}", dim(use_styles), t, reset(use_styles));
-                            io::stdout().flush().ok();
-                        }
-                        _ => {}
-                    },
-                    RunEvent::ToolEnded { name, result, .. } => {
-                        let r = result;
-                        if !r.is_empty() {
-                            print_tool_line(&name, &serde_json::Value::Null, &r, false, use_styles);
-                        }
-                    }
-                    RunEvent::ApprovalRequired { prompt_id, tool_name, tool_input, explanation, .. } => {
-                        println!();
-                        println!("  {}⚠  Approval required:{}", yellow(use_styles), reset(use_styles));
-                        println!("  Tool: {}\n  Reason: {}", tool_name, explanation);
-                        print!("  Allow? [y/N]: ");
+                        print!("{}{}{}", dim(use_styles), t, reset(use_styles));
                         io::stdout().flush().ok();
-                        let mut answer = String::new();
-                        if io::stdin().read_line(&mut answer).is_ok() {
-                            let choice = if answer.trim().to_lowercase() == "y" {
-                                ApprovalChoice::AllowOnce
-                            } else {
-                                ApprovalChoice::Deny
-                            };
-                            let _ = state.run_manager.command(&run_id, RunCommand::Approve { prompt_id, choice });
+                    }
+                    MessageDelta::Text(t) => {
+                        // Flush pending tool output before text
+                        pending_tool.lock().take();
+                        if in_thinking.load(std::sync::atomic::Ordering::Relaxed) {
+                            println!("{}", reset(use_styles));
+                            in_thinking.store(false, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        if !in_agent_text.load(std::sync::atomic::Ordering::Relaxed) {
+                            println!(); // visual separator before model output
+                            print!(
+                                "  {}{}>>{} {}{}",
+                                bold(use_styles),
+                                green(use_styles),
+                                reset(use_styles),
+                                reset(use_styles),
+                                reset(use_styles),
+                            );
+                            in_agent_text.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        if use_styles {
+                            skin.print_inline(&t);
+                        } else {
+                            print!("{t}");
+                        }
+                        io::stdout().flush().ok();
+                    }
+                },
+                AgentEvent::MessageEnd { .. } => {}
+                AgentEvent::ToolExecutionStart {
+                    tool_name, args, ..
+                } => {
+                    // Defer — buffer it, print when ToolExecutionEnd arrives
+                    pending_tool.lock().replace((tool_name, args));
+                }
+                AgentEvent::ToolExecutionUpdate { .. } => {
+                    // Silently consume — end event will show final result
+                }
+                AgentEvent::ToolExecutionEnd {
+                    tool_name,
+                    result,
+                    is_error,
+                    ..
+                } => {
+                    // Flush thinking/text prefix before tool line
+                    if in_thinking.load(std::sync::atomic::Ordering::Relaxed) {
+                        println!("{}", reset(use_styles));
+                        in_thinking.store(false, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    if in_agent_text.load(std::sync::atomic::Ordering::Relaxed) {
+                        println!(); // end in-progress text line
+                        in_agent_text.store(false, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    println!(); // visual separator before tool output
+
+                    let pt = pending_tool.lock().take();
+                    let args = pt
+                        .as_ref()
+                        .map(|(_, a)| a.clone())
+                        .unwrap_or_else(|| serde_json::Value::String("?".to_string()));
+
+                    print_tool_line(&tool_name, &args, &result, is_error, use_styles);
+                    io::stdout().flush().ok();
+                }
+                AgentEvent::Error(e) => {
+                    pending_tool.lock().take();
+                    eprintln!(
+                        "  {}{}✗{}{} {}{}",
+                        bold(use_styles),
+                        red(use_styles),
+                        reset(use_styles),
+                        reset(use_styles),
+                        e,
+                        reset(use_styles),
+                    );
+                }
+                AgentEvent::ApprovalRequired {
+                    prompt_id,
+                    tool_name,
+                    danger_level,
+                    explanation,
+                    ..
+                } | AgentEvent::SubagentApprovalRequired {
+                    prompt_id,
+                    tool_name,
+                    danger_level,
+                    explanation,
+                    ..
+                } => {
+                    pending_tool.lock().take();
+                    println!(
+                        "  {}⚠ APPROVAL{} {} ({})",
+                        yellow(use_styles),
+                        reset(use_styles),
+                        tool_name,
+                        danger_level
+                    );
+                    println!(
+                        "  {}   Reason: {}{}",
+                        dim(use_styles),
+                        explanation,
+                        reset(use_styles)
+                    );
+                    let approvals = agent_core::permission::global_pending_approvals();
+                    let mut pending = approvals.lock();
+                    if let Some(tx) = pending.remove(&prompt_id) {
+                        let _ = tx.send(agent_core::permission::ApprovalChoice::AllowSession);
+                    }
+                }
+
+                // ── Subagent events ────────────────────────────────
+                AgentEvent::SubagentStart { subagent_id, role_name, task } => {
+                    pending_tool.lock().take();
+                    in_sub_thinking.store(false, std::sync::atomic::Ordering::Relaxed);
+                    in_sub_text.store(false, std::sync::atomic::Ordering::Relaxed);
+                    println!(
+                        "\n  {}=== Subagent '{}' ({}) Started ==={}{}\n  {}{}",
+                        cyan(use_styles),
+                        role_name,
+                        subagent_id,
+                        reset(use_styles),
+                        dim(use_styles),
+                        truncate(&task, 60),
+                        reset(use_styles),
+                    );
+                }
+                AgentEvent::SubagentTurnStart { turn_index, .. } => {
+                    in_sub_thinking.store(false, std::sync::atomic::Ordering::Relaxed);
+                    in_sub_text.store(false, std::sync::atomic::Ordering::Relaxed);
+                    // Print turn line + immediate "waiting" indicator
+                    print!(
+                        "\n  {}│  ── Turn {turn_index} ──{}  {}⏳{}",
+                        dim(use_styles),
+                        reset(use_styles),
+                        yellow(use_styles),
+                        reset(use_styles),
+                    );
+                    io::stdout().flush().ok();
+                }
+                AgentEvent::SubagentMessageUpdate { delta, .. } => {
+                    match delta {
+                        MessageDelta::Thinking(t) => {
+                            // Clear the ⏳ indicator on first thinking token
+                            if !in_sub_thinking.load(std::sync::atomic::Ordering::Relaxed) {
+                                in_sub_text.store(false, std::sync::atomic::Ordering::Relaxed);
+                                // Clear the ⏳ + newline + print prefix
+                                print!("\r                                    \r");
+                                print!(
+                                    "  {}│  {}💭 Think{} {}",
+                                    dim(use_styles),
+                                    yellow(use_styles),
+                                    reset(use_styles),
+                                    dim(use_styles),
+                                );
+                                in_sub_thinking.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            print!("{}", t);
+                            io::stdout().flush().ok();
+                        }
+                        MessageDelta::Text(t) => {
+                            if in_sub_thinking.load(std::sync::atomic::Ordering::Relaxed) {
+                                println!("{}", reset(use_styles));
+                                in_sub_thinking.store(false, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            if !in_sub_text.load(std::sync::atomic::Ordering::Relaxed) {
+                                println!(); // visual separator before sub-agent text
+                                print!(
+                                    "  {}│ {}{}",
+                                    dim(use_styles),
+                                    reset(use_styles),
+                                    reset(use_styles),
+                                );
+                                in_sub_text.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            print!("{}", t);
+                            io::stdout().flush().ok();
                         }
                     }
-                    RunEvent::RunCompleted { .. } => { println!("\n"); break; }
-                    RunEvent::RunCancelled { .. } => {
-                        println!("\n  {}⏹  Run cancelled.{}", dim(use_styles), reset(use_styles));
-                        break;
-                    }
-                    RunEvent::RunFailed { error } => {
-                        eprintln!("\n  Error: {error}");
-                        break;
-                    }
-                    _ => {}
                 }
+                AgentEvent::SubagentToolStart {
+                    tool_name, args, ..
+                } => {
+                    // Flush any pending thinking/text before tool line
+                    if in_sub_thinking.load(std::sync::atomic::Ordering::Relaxed) {
+                        println!("{}", reset(use_styles));
+                        in_sub_thinking.store(false, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    in_sub_text.store(false, std::sync::atomic::Ordering::Relaxed);
+                    println!(); // visual separator before sub-agent tool
+                    let args_str = fmt_tool_args(&args);
+                    println!(
+                        "  {}│  {}{}🔧{} {}({})",
+                        dim(use_styles),
+                        bold(use_styles),
+                        cyan(use_styles),
+                        reset(use_styles),
+                        tool_name,
+                        args_str,
+                    );
+                }
+                AgentEvent::SubagentToolEnd {
+                    tool_name,
+                    result,
+                    is_error,
+                    ..
+                } => {
+                    let preview = truncate(&result, 100).replace('\n', " ");
+                    if is_error {
+                        println!(
+                            "  {}│     {}✗{} {} {}",
+                            dim(use_styles),
+                            red(use_styles),
+                            reset(use_styles),
+                            tool_name,
+                            preview,
+                        );
+                    } else {
+                        println!(
+                            "  {}│     {}→{} {} {}",
+                            dim(use_styles),
+                            green(use_styles),
+                            reset(use_styles),
+                            tool_name,
+                            preview,
+                        );
+                    }
+                }
+                AgentEvent::SubagentEnd {
+                    subagent_id,
+                    role_name,
+                    success,
+                    iterations_used,
+                } => {
+                    in_sub_thinking.store(false, std::sync::atomic::Ordering::Relaxed);
+                    in_sub_text.store(false, std::sync::atomic::Ordering::Relaxed);
+                    if success {
+                        println!(
+                            "  {}├─ '{}' ({}){} {}✓{} ({} iterations){}",
+                            yellow(use_styles),
+                            role_name,
+                            subagent_id,
+                            reset(use_styles),
+                            green(use_styles),
+                            reset(use_styles),
+                            iterations_used,
+                            reset(use_styles),
+                        );
+                    } else {
+                        println!(
+                            "  {}├─ '{}' ({}){} {}✗{} ({} iterations){}",
+                            yellow(use_styles),
+                            role_name,
+                            subagent_id,
+                            reset(use_styles),
+                            red(use_styles),
+                            reset(use_styles),
+                            iterations_used,
+                            reset(use_styles),
+                        );
+                    }
+                }
+                _ => {} // TurnEnd, MessageStart, ToolExecutionUpdate — silently ignored
             }
-            Err(_) => break,
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                eprintln!("  (skipped {n} events)");
-                continue;
-            }
+        })
+        .await
+    {
+        Ok(_answer) => {
+            println!();
+        }
+        Err(e) => {
+            eprintln!(
+                "\n  {}{}✗{}{} {}{}",
+                bold(use_styles),
+                red(use_styles),
+                reset(use_styles),
+                reset(use_styles),
+                e,
+                reset(use_styles),
+            );
         }
     }
-    state.context_history = Vec::new();
-    state.current_run_id = None;
 }
 
 fn print_help() {
@@ -1446,6 +1727,6 @@ fn print_help() {
     /skill deactivate <name|all>  Deactivate a skill
     /skill reload      Rescan skill directories
 
-Just type a message to chat with the state."#
+Just type a message to chat with the agent."#
     );
 }

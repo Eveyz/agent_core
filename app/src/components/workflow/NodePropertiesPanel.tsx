@@ -1,8 +1,12 @@
+import { useMemo, useCallback, useRef } from "react";
 import type { Node, Edge } from "@xyflow/react";
 import type { AgentDef } from "../../features/agents/types";
 import { RouterEditor, type RouterConfig } from "./EdgeConfigPanel";
 import InfoIcon from "lucide-react/dist/esm/icons/info.mjs";
 import "./NodePropertiesPanel.css";
+
+// Named constants
+const DEBOUNCE_MS = 300;
 
 interface NodePropertiesPanelProps {
   selectedNode: Node;
@@ -10,7 +14,7 @@ interface NodePropertiesPanelProps {
   nodes: Node[];
   agents: AgentDef[];
   isExecuting: boolean;
-  onUpdateNode: (nodeId: string, data: any) => void;
+  onUpdateNode: (nodeId: string, data: Record<string, unknown>) => void;
   onDeleteNode: (nodeId: string) => void;
 }
 
@@ -23,10 +27,27 @@ export function NodePropertiesPanel({
   onUpdateNode,
   onDeleteNode,
 }: NodePropertiesPanelProps) {
-  const nodeData = (selectedNode.data || {}) as Record<string, any>;
-  const nodeConfig = (nodeData.config || {}) as Record<string, any>;
-  const outputConstraint = nodeConfig.output_constraint || "text";
-  
+  const nodeData = (selectedNode.data || {}) as Record<string, unknown>;
+  const nodeConfig = (nodeData.config || {}) as Record<string, unknown>;
+  const outputConstraint = (nodeConfig.output_constraint as string) || "text";
+
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const debouncedUpdate = useCallback((data: Record<string, unknown>) => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      onUpdateNode(selectedNode.id, data);
+    }, DEBOUNCE_MS);
+  }, [selectedNode.id, onUpdateNode]);
+
+  // Downstream nodes for router editor — computed once, not on every render
+  const downstream = useMemo(() =>
+    edges.filter(e => e.source === selectedNode.id).map(e => {
+      const tn = nodes.find(n => n.id === e.target);
+      return { id: e.target, label: (tn?.data as Record<string, unknown> | undefined)?.label as string ?? e.target };
+    }), [edges, nodes, selectedNode.id]);
+  const router = (nodeConfig.router ?? null) as RouterConfig | null;
+
   if (isExecuting) {
     return (
       <div className="node-properties-locked">
@@ -39,13 +60,18 @@ export function NodePropertiesPanel({
     <div className="node-properties-panel">
       <div>
         <div className="node-properties-title">Node Properties</div>
-        
+
         <div className="node-properties-group">
-          <label className="node-properties-label">Label</label>
+          <label htmlFor="np-label" className="node-properties-label">Label</label>
           <input
+            id="np-label"
             className="settings-input node-properties-input"
             value={nodeData.label as string ?? ""}
-            onChange={(e) => onUpdateNode(selectedNode.id, { ...nodeData, label: e.target.value })}
+            onChange={(e) => {
+              const label = e.target.value;
+              const updated = { ...nodeData, label };
+              debouncedUpdate(updated);
+            }}
           />
         </div>
 
@@ -70,8 +96,12 @@ export function NodePropertiesPanel({
             <label className="node-properties-label">Input Template</label>
             <textarea
               className="settings-input node-properties-input"
-              value={nodeConfig.input_template || ""}
-              onChange={(e) => onUpdateNode(selectedNode.id, { ...nodeData, config: { ...nodeConfig, input_template: e.target.value } })}
+              value={(nodeConfig.input_template as string) || ""}
+              onChange={(e) => {
+                const input_template = e.target.value;
+                const updated = { ...nodeData, config: { ...nodeConfig, input_template } };
+                debouncedUpdate(updated);
+              }}
               placeholder="e.g. {node_1.output} please analyze..."
               style={{ minHeight: "80px", resize: "vertical" }}
             />
@@ -83,8 +113,12 @@ export function NodePropertiesPanel({
               <label className="node-properties-label">Model Override</label>
               <input
                 className="settings-input node-properties-input"
-                value={nodeConfig.model_override || ""}
-                onChange={(e) => onUpdateNode(selectedNode.id, { ...nodeData, config: { ...nodeConfig, model_override: e.target.value } })}
+                value={(nodeConfig.model_override as string) || ""}
+                onChange={(e) => {
+                  const model_override = e.target.value;
+                  const updated = { ...nodeData, config: { ...nodeConfig, model_override } };
+                  debouncedUpdate(updated);
+                }}
                 placeholder="Leave blank for agent default"
               />
             </div>
@@ -93,8 +127,12 @@ export function NodePropertiesPanel({
               <input
                 type="number"
                 className="settings-input node-properties-input"
-                value={nodeConfig.max_iterations_override || ""}
-                onChange={(e) => onUpdateNode(selectedNode.id, { ...nodeData, config: { ...nodeConfig, max_iterations_override: e.target.value ? Number(e.target.value) : undefined } })}
+                value={(nodeConfig.max_iterations_override as number) || ""}
+                onChange={(e) => {
+                  const val = e.target.value ? Number(e.target.value) : undefined;
+                  const updated = { ...nodeData, config: { ...nodeConfig, max_iterations_override: val } };
+                  debouncedUpdate(updated);
+                }}
                 placeholder="Default"
               />
             </div>
@@ -123,8 +161,12 @@ export function NodePropertiesPanel({
                   <label className="node-properties-schema-label">JSON Schema (Optional)</label>
                   <textarea
                     className="settings-input node-properties-schema-input"
-                    value={nodeConfig.response_schema || ""}
-                    onChange={(e) => onUpdateNode(selectedNode.id, { ...nodeData, config: { ...nodeConfig, response_schema: e.target.value } })}
+                    value={(nodeConfig.response_schema as string) || ""}
+                    onChange={(e) => {
+                      const response_schema = e.target.value;
+                      const updated = { ...nodeData, config: { ...nodeConfig, response_schema } };
+                      debouncedUpdate(updated);
+                    }}
                     placeholder='{"type": "object", "properties": {...}}'
                     spellCheck={false}
                   />
@@ -136,22 +178,13 @@ export function NodePropertiesPanel({
       )}
 
       <div className="node-properties-section">
-        {(() => {
-          const downstream = edges.filter(e => e.source === selectedNode.id).map(e => {
-            const tn = nodes.find(n => n.id === e.target);
-            return { id: e.target, label: (tn?.data as Record<string, unknown>)?.label as string ?? e.target };
-          });
-          const router = (nodeConfig.router ?? null) as RouterConfig | null;
-          return (
-            <RouterEditor
-              router={router}
-              downstreamNodes={downstream}
-              onChange={(newRouter) => {
-                onUpdateNode(selectedNode.id, { ...nodeData, config: { ...nodeConfig, router: newRouter } });
-              }}
-            />
-          );
-        })()}
+        <RouterEditor
+          router={router}
+          downstreamNodes={downstream}
+          onChange={(newRouter) => {
+            onUpdateNode(selectedNode.id, { ...nodeData, config: { ...nodeConfig, router: newRouter } });
+          }}
+        />
       </div>
 
       <div className="node-properties-footer">

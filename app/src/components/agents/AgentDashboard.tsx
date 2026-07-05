@@ -3,6 +3,7 @@ import type { AgentDef } from "../../features/agents/types";
 import { AgentTabs } from "./AgentTabs";
 import { useAppDispatch } from "../../hooks/useAppDispatch";
 import { deleteAgent, setSelectedAgent } from "../../features/agents/agentSlice";
+import { useConfirmDialog } from "../ui/DialogManager";
 import BotIcon from "lucide-react/dist/esm/icons/bot.mjs";
 import TrashIcon from "lucide-react/dist/esm/icons/trash.mjs";
 import "./AgentDashboard.css";
@@ -13,10 +14,18 @@ interface AgentDashboardProps {
 
 export function AgentDashboard({ agent }: AgentDashboardProps) {
   const dispatch = useAppDispatch();
+  const { confirm, dialogElement } = useConfirmDialog();
   const [activeTab, setActiveTab] = useState<"config" | "memory" | "skills" | "history">("config");
 
   const handleDelete = async () => {
-    if (confirm(`Are you sure you want to delete ${agent.name}?`)) {
+    const ok = await confirm({
+      title: 'Delete Agent',
+      message: `Are you sure you want to delete ${agent.name}?`,
+      confirmLabel: 'Delete',
+      cancelLabel: 'Cancel',
+      danger: true,
+    });
+    if (ok) {
       await dispatch(deleteAgent(agent.id));
       dispatch(setSelectedAgent(null));
     }
@@ -75,6 +84,7 @@ export function AgentDashboard({ agent }: AgentDashboardProps) {
       <div className="agent-dashboard-content">
         <AgentTabs agent={agent} activeTab={activeTab} />
       </div>
+      {dialogElement}
     </div>
   );
 }

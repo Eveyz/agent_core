@@ -40,6 +40,8 @@ pub mod manager;
 pub mod run;
 pub mod state;
 pub mod supervisor;
+pub mod tool_orchestrator;
+pub mod tool_scheduler;
 
 pub use approval::ApprovalResolver;
 pub use brain::Brain;

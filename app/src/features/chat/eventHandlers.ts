@@ -6,7 +6,6 @@ import type {
   RunEventPayload,
   RunState,
   TodoItem,
-  CacheMetrics,
 } from './types';
 import {
   closeStreamingBlock,

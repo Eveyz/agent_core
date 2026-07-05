@@ -1,4 +1,4 @@
-import { memo, useState } from 'react';
+import { memo, useState, useEffect, useCallback } from 'react';
 import CopyIcon from 'lucide-react/dist/esm/icons/copy.mjs';
 import Edit2Icon from 'lucide-react/dist/esm/icons/edit-2.mjs';
 import RotateCwIcon from 'lucide-react/dist/esm/icons/rotate-cw.mjs';
@@ -37,13 +37,18 @@ export const UserRow = memo(function UserRow({ entry, modelName, onRetry, isProc
     onRetry?.(entry.id, trimmed);
   };
 
-  const handleCopy = async () => {
+  const handleCopy = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(entry.text ?? '');
       setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
     } catch {}
-  };
+  }, [entry.text]);
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(timer);
+  }, [copied]);
 
   if (editing) {
     return (

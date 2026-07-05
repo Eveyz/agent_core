@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppSelector } from "../../hooks/useAppDispatch";
 import type { WorkflowRun, WorkflowRunNodeResult } from "../../features/workflow/types";
@@ -7,6 +7,9 @@ import CheckCircleIcon from "lucide-react/dist/esm/icons/check-circle.mjs";
 import XCircleIcon from "lucide-react/dist/esm/icons/x-circle.mjs";
 import ClockIcon from "lucide-react/dist/esm/icons/clock.mjs";
 import LoaderIcon from "lucide-react/dist/esm/icons/loader.mjs";
+
+const RUN_HISTORY_LIMIT = 20;
+const POLL_INTERVAL_MS = 1500;
 
 const STATUS_META: Record<string, { color: string; icon: typeof CheckCircleIcon }> = {
   completed: { color: "var(--success)", icon: CheckCircleIcon },
@@ -35,20 +38,19 @@ export function WorkflowRunView({
   const [loadingResults, setLoadingResults] = useState(false);
 
   // Load run history.
-  const loadRuns = async () => {
+  const loadRuns = useCallback(async () => {
     try {
-      const data = await invoke<WorkflowRun[]>("list_workflow_runs", { workflowId, limit: 20 });
+      const data = await invoke<WorkflowRun[]>("list_workflow_runs", { workflowId, limit: RUN_HISTORY_LIMIT });
       setRuns(data);
       if (data.length > 0 && !selectedRunId) setSelectedRunId(data[0].id);
     } catch (e) {
       console.error(e);
     }
-  };
+  }, [workflowId, selectedRunId]);
 
   useEffect(() => {
     loadRuns();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workflowId, lastRunResult, running]);
+  }, [loadRuns, lastRunResult, running]);
 
   // Load node results for the selected run.
   useEffect(() => {
@@ -56,22 +58,28 @@ export function WorkflowRunView({
       setNodeResults([]);
       return;
     }
-    setLoadingResults(true);
-    invoke<WorkflowRunNodeResult[]>("get_workflow_run_results", { runId: selectedRunId })
-      .then(setNodeResults)
-      .catch(console.error)
-      .finally(() => setLoadingResults(false));
 
-    // Poll while running.
+    let isMounted = true;
+    setLoadingResults(true);
+
+    const fetchResults = () => {
+      invoke<WorkflowRunNodeResult[]>("get_workflow_run_results", { runId: selectedRunId })
+        .then((results) => { if (isMounted) setNodeResults(results); })
+        .catch((e) => { if (isMounted) console.error(e); })
+        .finally(() => { if (isMounted) setLoadingResults(false); });
+    };
+
+    fetchResults();
+
     if (running) {
-      const interval = setInterval(() => {
-        invoke<WorkflowRunNodeResult[]>("get_workflow_run_results", { runId: selectedRunId })
-          .then(setNodeResults)
-          .catch(console.error);
-      }, 1500);
-      return () => clearInterval(interval);
+      const interval = setInterval(fetchResults, POLL_INTERVAL_MS);
+      return () => {
+        isMounted = false;
+        clearInterval(interval);
+      };
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
+    return () => { isMounted = false; };
   }, [selectedRunId, running]);
 
   const totalTokens = nodeResults.reduce((sum, r) => sum + r.token_input + r.token_output, 0);

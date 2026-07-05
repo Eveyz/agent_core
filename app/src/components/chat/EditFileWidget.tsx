@@ -1,4 +1,4 @@
-import { useState, useMemo, memo } from 'react';
+import { useState, useMemo, useEffect, memo } from 'react';
 import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
 import ChevronRightIcon from 'lucide-react/dist/esm/icons/chevron-right.mjs';
 import { getToolIcon } from './toolIcons';
@@ -16,12 +16,10 @@ const EditFileWidget = memo(function EditFileWidget({
   is_error?: boolean;
 }) {
   const [collapsed, setCollapsed] = useState(!active);
-  const [prevActive, setPrevActive] = useState(active);
 
-  if (active !== prevActive) {
-    setPrevActive(active);
+  useEffect(() => {
     setCollapsed(!active);
-  }
+  }, [active]);
 
   const filePath = (args as Record<string, unknown> | undefined)?.file_path as string | undefined;
   const fileName = filePath ? basename(filePath) : 'file';
@@ -40,7 +38,8 @@ const EditFileWidget = memo(function EditFileWidget({
     return summary.start === summary.end ? `L${summary.start}` : `L${summary.start}–L${summary.end}`;
   }, [summary]);
 
-  const labelPrefix = active ? 'Editing' : is_error ? 'Edit failed:' : summary ? 'Edited' : 'Edited';
+  const labelPrefix = active ? 'Editing' : is_error ? 'Edit failed:' : 'Edited';
+  const ToolIcon = getToolIcon('edit');
 
   return (
     <div className="step-block edit-file-block">
@@ -48,7 +47,7 @@ const EditFileWidget = memo(function EditFileWidget({
         className={`step-row ${active ? 'step-row-active' : ''} ${is_error ? 'step-row-error' : ''} ${active ? 'step-row-default' : 'step-row-pointer'}`}
         onClick={() => !active && setCollapsed(!collapsed)}
       >
-        {(() => { const ToolIcon = getToolIcon('edit'); return <ToolIcon size={13} className="step-icon tool-icon-margin" color={is_error ? 'var(--danger)' : (active ? 'var(--text-muted)' : 'var(--text-muted)')} />; })()}
+        <ToolIcon size={13} className="step-icon tool-icon-margin" color={is_error ? 'var(--danger)' : 'var(--text-muted)'} />
         <span className="step-label edit-file-label">
           {labelPrefix} <span className="edit-file-name">{fileName}</span>
           {range && <span className="edit-file-range"> · {range}</span>}

@@ -36,13 +36,17 @@ export const DialogManager = memo(function DialogManager({
   onClose: () => void;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const focusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [inputValue, setInputValue] = useState('');
 
   useEffect(() => {
     if (state && 'defaultValue' in state) {
       setInputValue(state.defaultValue ?? '');
-      setTimeout(() => inputRef.current?.focus(), 50);
+      focusTimerRef.current = setTimeout(() => inputRef.current?.focus(), 50);
     }
+    return () => {
+      if (focusTimerRef.current) clearTimeout(focusTimerRef.current);
+    };
   }, [state]);
 
   const handleConfirm = useCallback(() => {

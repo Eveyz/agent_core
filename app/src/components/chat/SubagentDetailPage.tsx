@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 import type { SubagentEntry } from '../../features/chat/chatSlice';
 import { convertSubagentBlocks } from '../../utils/chatUtils';
 import { UserRow } from './UserRow';
@@ -16,13 +16,13 @@ export const SubagentDetailPage = memo(function SubagentDetailPage({
   defaultModel,
 }: SubagentDetailPageProps) {
   const taskText = typeof subagent.task === 'string' ? subagent.task : JSON.stringify(subagent.task);
-  const syntheticEntry = {
+  const syntheticEntry = useMemo(() => ({
     id: `subagent-detail-${subagent.id}`,
     type: 'turn' as const,
     blocks: convertSubagentBlocks(subagent.blocks),
     startTime: subagent.startTime,
     endTime: subagent.endTime,
-  };
+  }), [subagent.id, subagent.blocks, subagent.startTime, subagent.endTime]);
 
   return (
     <div className="chat-history">

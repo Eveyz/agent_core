@@ -46,7 +46,7 @@ export function OverviewTab() {
   // Extract modified files
   const modifiedFiles = useMemo(() => {
     const files = new Map<string, string>();
-    const getParsedArgs = (rawArgs: any) => {
+    const getParsedArgs = (rawArgs: unknown) => {
       if (typeof rawArgs === 'string') {
         try {
           return JSON.parse(rawArgs);
@@ -87,7 +87,7 @@ export function OverviewTab() {
     const files = new Map<string, string>();
     const systemDocs = ['PLAN.md', 'plan.md', 'implementation_plan.md', 'walkthrough.md', 'task.md'];
     const mediaExts = ['png', 'jpg', 'jpeg', 'webp', 'gif'];
-    const getParsedArgs = (rawArgs: any) => {
+    const getParsedArgs = (rawArgs: unknown) => {
       if (typeof rawArgs === 'string') {
         try {
           return JSON.parse(rawArgs);
@@ -176,7 +176,7 @@ export function OverviewTab() {
   };
 
   const sectionHeader = (key: SectionKey, label: string, count?: number) => (
-    <div className="overview-section-header" onClick={() => toggleSection(key)}>
+    <div className="overview-section-header" role="button" tabIndex={0} aria-expanded={expanded.has(key)} onClick={() => toggleSection(key)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleSection(key); } }}>
       <span className="overview-section-label-group">
         <span className="overview-section-label">{label}</span>
         {count !== undefined && (
@@ -227,13 +227,13 @@ export function OverviewTab() {
                   {subagents.length === 0 ? (
                     <div className="overview-placeholder">No subagents active</div>
                   ) : (
-                    subagents.map((sa: any) => (
+                    subagents.map((sa) => (
                       <div key={sa.id} className="overview-file-row" title={sa.id}>
                         <span className="overview-file-icon">
                           <BotIcon size={14} style={{ color: 'var(--accent)' }} />
                         </span>
-                        <span className="overview-file-name">{sa.name || sa.role || 'Subagent'}</span>
-                        <span className="overview-file-path">{sa.role}</span>
+                        <span className="overview-file-name">{sa.role_name || 'Subagent'}</span>
+                        <span className="overview-file-path">{sa.role_name}</span>
                       </div>
                     ))
                   )}

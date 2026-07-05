@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useMemo } from "react";
+import { useCallback, useEffect, useState, useMemo, useRef } from "react";
 import {
   type Node,
   type Edge,
@@ -81,15 +81,24 @@ export function WorkflowEditor() {
     }
   }, [activeWorkflow?.id]);
 
-  // Sync back to Redux for save
+  // Sync back to Redux for save (debounced to avoid drag stutter)
+  const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeWorkflowId = activeWorkflow?.id;
   useEffect(() => {
-    if (activeWorkflowId && (nodes.length > 0 || edges.length > 0) && !isExecuting) {
-       dispatch(updateActiveWorkflowNodes({ 
-         nodes: nodes.map(n => rfToNodeDef(n, activeWorkflowId)), 
-         edges: edges.map(e => rfToEdgeDef(e, activeWorkflowId)) 
-       }));
-    }
+    if (!activeWorkflowId || isExecuting) return;
+    if (nodes.length === 0 && edges.length === 0) return;
+
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    syncTimerRef.current = setTimeout(() => {
+      dispatch(updateActiveWorkflowNodes({
+        nodes: nodes.map(n => rfToNodeDef(n, activeWorkflowId)),
+        edges: edges.map(e => rfToEdgeDef(e, activeWorkflowId))
+      }));
+    }, 500);
+
+    return () => {
+      if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    };
   }, [nodes, edges, activeWorkflowId, dispatch, isExecuting]);
 
   // Bug 1 Fix: Automatically open Inspector Drawer on failure
@@ -158,12 +167,19 @@ export function WorkflowEditor() {
   };
 
   const handleRun = async () => {
-    if (!activeWorkflow || dirty) {
-      await handleSave();
+    const workflowId = activeWorkflow?.id;
+    if (!workflowId) return;
+
+    if (dirty) {
+      try {
+        await handleSave();
+      } catch (e) {
+        setCreateError(`Failed to save before run: ${e}`);
+        return;
+      }
     }
-    if (activeWorkflow) {
-      dispatch(runWorkflow({ workflowId: activeWorkflow.id, input: { task: "Run workflow" } }));
-    }
+
+    dispatch(runWorkflow({ workflowId, input: { task: "Run workflow" } }));
   };
 
   const handleNewWorkflow = async () => {

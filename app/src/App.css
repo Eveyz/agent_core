@@ -9,3 +9,8 @@
 @import './styles/subagent.css';
 @import './styles/settings.css';
 @import './styles/widgets.css';
+
+@keyframes toastSlideIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
