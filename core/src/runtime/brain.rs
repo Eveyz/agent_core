@@ -1,15 +1,14 @@
-//! Brain — the reusable, stateless part of the agent.
+//! Brain — the reusable, shared core of the agent.
 //!
 //! A Brain is constructed once (from config) and shared across all Runs.
-//! It holds everything that does NOT change per-request:
+//! It holds:
 //! - LLM client configuration
-//! - Tool factory (each Run builds its own registry)
+//! - Persistent tool registry (tools registered once, cloned per Run)
 //! - Memory manager (shared SQLite + embeddings)
 //! - Skill manager (shared catalog)
-//! - Recovery engine (shared strategy)
+//! - Runtime overrides (temperature, max_tokens, tool_execution_mode)
 //!
-//! It does NOT hold: context, cancel tokens, permissions (per-Run copy),
-//! hooks (per-Run), or any mutable execution state.
+//! Per-request state lives in [`crate::runtime::Run`].
 
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
@@ -28,6 +27,7 @@ use crate::reflector::Reflector;
 use crate::skills::SkillManager;
 use crate::todo::TodoList;
 use crate::tools::ToolRegistry;
+use crate::types::ToolExecutionMode;
 
 /// The reusable "brain" shared by all Runs.
 ///
