@@ -11,7 +11,7 @@
 | PLAN | 8 | Development Plans |
 | RUN | 0 | Runbooks |
 | POST | 0 | Post-mortems |
-| AI-NOTE | 2 | AI Analysis Notes |
+| AI-NOTE | 3 | AI Analysis Notes |
 | META | 1 | Process Documentation |
 
 ---
@@ -60,6 +60,7 @@
 |----|-------|--------|--------|---------|
 | AI-NOTE-0004 | Skill Load Truncation Analysis & Fix Plan | Draft | agent_core | 2026-06-28 |
 | AI-NOTE-0005 | Reflector Evolution To Continuous Learning | Proposed | agent_core | 2026-06-29 |
+| AI-NOTE-0006 | A++ Code Quality Improvement Roadmap — Core Crate (Excluding TUI) | Draft | AI Agent | 2026-07-05 |
 
 ## META (Process & Meta Documents)
 
