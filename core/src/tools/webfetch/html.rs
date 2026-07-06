@@ -1,4 +1,12 @@
-fn build_browser_headers(profile: &UaProfile, _url: &str) -> header::HeaderMap {
+use std::time::Duration;
+use std::io::Cursor;
+use anyhow::{Result, bail};
+use reqwest::header;
+use url::Url;
+
+use super::UaProfile;
+
+pub(crate) fn build_browser_headers(profile: &UaProfile, _url: &str) -> header::HeaderMap {
     let mut h = header::HeaderMap::new();
 
     // ── Standard browser headers ────────────────────────────────────
@@ -14,8 +22,8 @@ fn build_browser_headers(profile: &UaProfile, _url: &str) -> header::HeaderMap {
         header::HeaderValue::from_static("en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7"),
     );
     h.insert(
-    "Accept-Encoding",
-    header::HeaderValue::from_static("gzip, deflate, br"),
+        "Accept-Encoding",
+        header::HeaderValue::from_static("gzip, deflate, br"),
     );
     h.insert(
         header::CACHE_CONTROL,
@@ -73,9 +81,9 @@ fn build_browser_headers(profile: &UaProfile, _url: &str) -> header::HeaderMap {
 // Robots.txt check
 // ─────────────────────────────────────────────────────────────────────
 
-async fn check_robots(
+pub(crate) async fn check_robots(
     client: &reqwest::Client,
-    parsed_url: &url::Url,
+    parsed_url: &Url,
     url_to_fetch: &str,
 ) -> Result<()> {
     let origin = parsed_url.origin().ascii_serialization();
@@ -101,7 +109,7 @@ async fn check_robots(
     // Use "*" as the user-agent since we rotate UAs — this is the most
     // conservative (and polite) choice.
     if !matcher.one_agent_allowed_by_robots(&robots_body, "*", parsed_url.as_str()) {
-        anyhow::bail!(
+        bail!(
             "Access denied by robots.txt for URL: {url_to_fetch}\n\n\
              The site explicitly forbids automated access to this path."
         );
@@ -113,7 +121,7 @@ async fn check_robots(
 // Meta tag extraction — title, description, Open Graph, Twitter cards
 // ─────────────────────────────────────────────────────────────────────
 
-fn extract_meta(html: &str) -> String {
+pub(crate) fn extract_meta(html: &str) -> String {
     let mut title = String::new();
     let mut description = String::new();
     let mut og_title = String::new();
@@ -253,7 +261,7 @@ fn unescape_html(s: &str) -> String {
 //   raw HTML → Readability (article body) → htmd (Markdown)
 // ─────────────────────────────────────────────────────────────────────
 
-fn extract_readable(html: &str, url: &str) -> String {
+pub(crate) fn extract_readable(html: &str, url: &str) -> String {
     let article_html = match run_readability(html, url) {
         Some(h) if !h.trim().is_empty() => h,
         _ => html.to_string(),
@@ -283,8 +291,8 @@ fn extract_readable(html: &str, url: &str) -> String {
 }
 
 fn run_readability(html: &str, url: &str) -> Option<String> {
-    let url_parsed = url::Url::parse(url).ok()?;
-    let mut cursor = std::io::Cursor::new(html.as_bytes());
+    let url_parsed = Url::parse(url).ok()?;
+    let mut cursor = Cursor::new(html.as_bytes());
     let product = readability::extractor::extract(&mut cursor, &url_parsed).ok()?;
 
     let title = product.title.trim();
@@ -358,8 +366,3 @@ fn strip_html_tags(html: &str) -> String {
     }
     cleaned.trim().to_string()
 }
-
-// ─────────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────────
-

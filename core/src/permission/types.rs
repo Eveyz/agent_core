@@ -535,9 +535,10 @@ mod tests {
     #[test]
     fn test_whitelist_entry_once_consumed() {
         let entry = WhitelistEntry::new(ToolPermissionPattern::simple("bash"), ApprovalScope::Once);
-        // Once scope says is_valid = false (consumed), but we don't delete it.
-        // The caller should check scope and decide.
-        assert!(!entry.scope.is_valid(&entry.created_at, &Utc::now()));
+        // Once scope is valid before being matched; the whitelist consumes
+        // (removes) the entry on first match rather than invalidating it
+        // in place. See whitelist.rs `query()`.
+        assert!(entry.scope.is_valid(&entry.created_at, &Utc::now()));
     }
 
     #[test]

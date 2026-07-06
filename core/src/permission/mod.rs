@@ -743,6 +743,4 @@ impl PermissionPolicy {
 include!("command_analysis.inc.rs");
 
 #[cfg(test)]
-mod tests {
 include!("tests.inc.rs");
-}

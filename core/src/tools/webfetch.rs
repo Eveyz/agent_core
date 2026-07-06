@@ -11,6 +11,12 @@ use serde_json::{Value, json};
 use super::Tool;
 use reqwest::header;
 
+mod error;
+mod html;
+
+use error::{format_http_error, format_http_status, is_image_content_type, upgrade_to_https};
+use html::{build_browser_headers, check_robots, extract_meta, extract_readable};
+
 // ─────────────────────────────────────────────────────────────────────
 // User-Agent profiles — each UA comes with matching Client Hints
 // so the full fingerprint is consistent. Weights control selection.
@@ -355,9 +361,5 @@ Use when you need to retrieve and analyze web content."
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Header construction — full browser emulation with Client Hints
+// Submodules html and error hold browser emulation, robots check, and error formatting.
 // ─────────────────────────────────────────────────────────────────────
-
-
-include!("webfetch_html.inc.rs");
-include!("webfetch_error.inc.rs");

@@ -1,22 +1,7 @@
 use anyhow::Result;
-use parking_lot;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
-
-/// RAII guard that restores the process CWD on drop.
-/// Used by subagents to scope their working directory to the
-/// duration of run_with_sender, avoiding cross-subagent CWD races.
-struct SubagentCwdGuard(Option<PathBuf>);
-
-impl Drop for SubagentCwdGuard {
-    fn drop(&mut self) {
-        if let Some(ref orig) = self.0 {
-            let _ = std::env::set_current_dir(orig);
-        }
-    }
-}
 
 use crate::agent_registry::memory::AgentMemoryStore;
 
@@ -146,6 +131,8 @@ impl Subagent {
         let permission_policy = crate::permission::PermissionPolicy::with_builtin_defaults()
             .with_config(&permission_config);
 
+        let registry = Self::wire_working_dir(registry, &config);
+
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             role_name: role_name.to_string(),
@@ -159,6 +146,24 @@ impl Subagent {
             agent_id: None,
             session_id: None,
         }
+    }
+
+    /// Replace the BashTool in `registry` with one whose
+    /// `default_working_dir` is set to the subagent's `working_dir`, if any.
+    /// This is how the subagent's bash commands execute in the intended
+    /// directory WITHOUT touching the process-global CWD (which would race
+    /// with concurrent subagents on the same tokio runtime).
+    fn wire_working_dir(mut registry: ToolRegistry, config: &SubagentConfig) -> ToolRegistry {
+        if let Some(ref wd) = config.working_dir {
+            if registry.has("bash") {
+                registry.register(Box::new(
+                    crate::tools::bash::BashTool::with_default_working_dir(Some(
+                        wd.to_string_lossy().to_string(),
+                    )),
+                ));
+            }
+        }
+        registry
     }
 
     /// Construct a subagent with an optional per-agent memory store.
@@ -190,23 +195,12 @@ impl Subagent {
         task: &str,
         event_sender: Option<EventSender>,
     ) -> Result<SubagentResult> {
-        // Set the subagent's working directory. Each subagent manages its own
-        // CWD scope — the CWD is set at the start of run_with_sender and
-        // restored on exit (including panic) via SubagentCwdGuard drop.
-        // This avoids the process-global CWD race when multiple subagents
-        // run concurrently via SubagentSpawnAllTool.
-        let _cwd_guard = if let Some(ref working_dir) = self.config.working_dir {
-            let orig = std::env::current_dir().ok();
-            if let Err(e) = std::env::set_current_dir(working_dir) {
-                tracing::warn!(dir = %working_dir.display(), error = %e,
-                    "subagent failed to set working directory");
-                SubagentCwdGuard(None)
-            } else {
-                SubagentCwdGuard(orig)
-            }
-        } else {
-            SubagentCwdGuard(None)
-        };
+        // NOTE: We intentionally do NOT touch the process-global CWD here.
+        // Modifying std::env::set_current_dir() races with concurrent
+        // subagents sharing the same tokio runtime. The subagent's working
+        // directory is instead plumbed into the BashTool via
+        // `default_working_dir` (set in Subagent::new). File-based tools
+        // (edit/read_file/write_file/grep) take absolute paths anyway.
 
         // PLAN-0009: inject relevant memories before the task is added.
         self.inject_memory(task);

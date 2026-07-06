@@ -52,8 +52,18 @@ impl Run {
         // Store in memory if enabled
         if let Some(ref mem) = self.brain.memory {
             if self.brain.memory_mode() != crate::config::MemoryMode::Stateless {
+                // Compute the embedding OUTSIDE the memory lock so other
+                // memory operations are not blocked for the 10-50ms the
+                // embedding model takes. The lock is then only held for
+                // the lightweight I/O + index update.
+                let embedding = {
+                    let m = mem.lock();
+                    m.embedding_model()
+                        .map(|model| model.embed_single(user_input).unwrap_or_default())
+                };
                 let m = mem.lock();
-                let _ = m.store_conversation("user", user_input);
+                let _ =
+                    m.store_conversation_precomputed("user", user_input, embedding.as_deref());
             }
         }
 

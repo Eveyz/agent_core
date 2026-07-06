@@ -24,6 +24,9 @@ interface ModelRow {
   max_context_tokens?: number;
   reasoning_effort?: string;
   thinking_enabled?: boolean;
+  use_chat_template_kwargs?: boolean;
+  rate_limit_retries?: number;
+  rate_limit_retry_delay_secs?: number;
 }
 
 interface ProviderFormData {
@@ -45,10 +48,14 @@ const EMPTY_FORM: ProviderFormData = {
 function modelRowToEntry(row: ModelRow): ProviderModelEntry {
   return {
     model_id: row.model_id,
+    temperature: row.temperature,
     max_context_tokens: row.max_context_tokens || undefined,
     max_tokens: row.max_tokens || undefined,
     reasoning_effort: row.reasoning_effort || undefined,
     thinking_enabled: row.thinking_enabled || false,
+    use_chat_template_kwargs: row.use_chat_template_kwargs ?? false,
+    rate_limit_retries: row.rate_limit_retries ?? undefined,
+    rate_limit_retry_delay_secs: row.rate_limit_retry_delay_secs ?? undefined,
   };
 }
 
@@ -75,10 +82,14 @@ function ProviderForm({
         models: Object.entries(provider.models).map(([k, m]) => ({ 
           key: k, 
           model_id: m.model_id, 
+          temperature: m.temperature,
           max_context_tokens: m.max_context_tokens,
           max_tokens: m.max_tokens,
           reasoning_effort: m.reasoning_effort,
           thinking_enabled: m.thinking_enabled,
+          use_chat_template_kwargs: m.use_chat_template_kwargs,
+          rate_limit_retries: m.rate_limit_retries,
+          rate_limit_retry_delay_secs: m.rate_limit_retry_delay_secs,
         })),
       });
     } else {
@@ -167,17 +178,20 @@ function ProviderForm({
       }
     });
 
+    const existingProvider = editKey && config ? config.providers[editKey] : null;
     const providerData = {
       name: form.provider_key.trim(),
       base_url: form.base_url,
       api_key: form.api_key,
-      max_context_tokens: 32768,
-      temperature: undefined,
-      max_tokens: undefined,
-      react_enabled: true,
-      system_prompt: undefined,
-      max_iterations: 100,
-      request_timeout_secs: 1800,
+      max_context_tokens: existingProvider?.max_context_tokens ?? 32768,
+      temperature: existingProvider?.temperature,
+      max_tokens: existingProvider?.max_tokens,
+      react_enabled: existingProvider?.react_enabled ?? true,
+      system_prompt: existingProvider?.system_prompt,
+      max_iterations: existingProvider?.max_iterations ?? 100,
+      request_timeout_secs: existingProvider?.request_timeout_secs ?? 1800,
+      rate_limit_retries: existingProvider?.rate_limit_retries ?? 20,
+      rate_limit_retry_delay_secs: existingProvider?.rate_limit_retry_delay_secs ?? 60,
       models,
     };
 
@@ -255,6 +269,7 @@ function ProviderForm({
             <span title="Max Output Tokens">Output Tkns</span>
             <span title="Reasoning Effort">Reasoning</span>
             <span title="Thinking Enabled">Thinking</span>
+            <span title="Use chat_template_kwargs (NVIDIA-style)">NVIDIA</span>
             <span style={{ width: '32px' }} />
           </div>
           {form.models.map((row, index) => (
@@ -302,6 +317,14 @@ function ProviderForm({
                   type="checkbox"
                   checked={row.thinking_enabled || false}
                   onChange={(e) => updateModelRow(index, { thinking_enabled: e.target.checked })}
+                />
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'center' }}>
+                <input
+                  type="checkbox"
+                  checked={row.use_chat_template_kwargs || false}
+                  onChange={(e) => updateModelRow(index, { use_chat_template_kwargs: e.target.checked })}
+                  title="Use chat_template_kwargs (NVIDIA API style)"
                 />
               </div>
               <button

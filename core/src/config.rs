@@ -18,6 +18,19 @@ pub struct ProviderModelEntry {
     pub reasoning_effort: Option<String>,
     #[serde(default)]
     pub thinking_enabled: bool,
+    /// When true, thinking and reasoning_effort are sent inside chat_template_kwargs
+    /// (required by NVIDIA API proxy), instead of top-level (OpenAI standard).
+    #[serde(default)]
+    pub use_chat_template_kwargs: bool,
+    /// Maximum retries for 429 rate limit errors (default: 20).
+    /// Overrides provider-level default.
+    #[serde(default)]
+    pub rate_limit_retries: Option<u32>,
+    /// Delay in seconds between rate limit retries (default: 60).
+    /// Used when the response doesn't include a Retry-After header.
+    /// Overrides provider-level default.
+    #[serde(default)]
+    pub rate_limit_retry_delay_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,6 +49,13 @@ pub struct ProviderConfig {
     pub max_iterations: usize,
     #[serde(default = "default_request_timeout")]
     pub request_timeout_secs: u64,
+    /// Maximum retries for 429 rate limit errors (default: 20).
+    #[serde(default = "default_rate_limit_retries")]
+    pub rate_limit_retries: u32,
+    /// Delay in seconds between rate limit retries (default: 60).
+    /// Used when the response doesn't include a Retry-After header.
+    #[serde(default = "default_rate_limit_retry_delay")]
+    pub rate_limit_retry_delay_secs: u64,
     pub models: HashMap<String, ProviderModelEntry>,
 }
 
@@ -66,6 +86,17 @@ pub struct ModelConfig {
     pub reasoning_effort: Option<String>,
     #[serde(default)]
     pub thinking_enabled: bool,
+    /// When true, thinking and reasoning_effort are sent inside chat_template_kwargs
+    /// (required by NVIDIA API proxy), instead of top-level (OpenAI standard).
+    #[serde(default)]
+    pub use_chat_template_kwargs: bool,
+    /// Maximum retries for 429 rate limit errors (default: 20).
+    #[serde(default = "default_rate_limit_retries")]
+    pub rate_limit_retries: u32,
+    /// Delay in seconds between rate limit retries (default: 60).
+    /// Used when the response doesn't include a Retry-After header.
+    #[serde(default = "default_rate_limit_retry_delay")]
+    pub rate_limit_retry_delay_secs: u64,
 }
 
 fn default_request_timeout() -> u64 {
@@ -82,6 +113,14 @@ fn default_max_iterations() -> usize {
 
 fn default_max_context_tokens() -> usize {
     128000
+}
+
+fn default_rate_limit_retries() -> u32 {
+    20
+}
+
+fn default_rate_limit_retry_delay() -> u64 {
+    60
 }
 
 impl Default for ModelConfig {
@@ -101,6 +140,9 @@ impl Default for ModelConfig {
             fallback_model: None,
             reasoning_effort: None,
             thinking_enabled: false,
+            use_chat_template_kwargs: false,
+            rate_limit_retries: default_rate_limit_retries(),
+            rate_limit_retry_delay_secs: default_rate_limit_retry_delay(),
         }
     }
 }
@@ -393,6 +435,9 @@ impl Config {
                 max_context_tokens: None,
                 reasoning_effort: None,
                 thinking_enabled: false,
+                use_chat_template_kwargs: false,
+                rate_limit_retries: None,
+                rate_limit_retry_delay_secs: None,
             },
         );
 
@@ -409,6 +454,8 @@ impl Config {
                 system_prompt: None,
                 max_iterations: 50,
                 request_timeout_secs: 1800,
+                rate_limit_retries: default_rate_limit_retries(),
+                rate_limit_retry_delay_secs: default_rate_limit_retry_delay(),
                 models: provider_models,
             },
         );
@@ -429,6 +476,9 @@ impl Config {
             fallback_model: None,
             reasoning_effort: None,
             thinking_enabled: false,
+            use_chat_template_kwargs: false,
+            rate_limit_retries: default_rate_limit_retries(),
+            rate_limit_retry_delay_secs: default_rate_limit_retry_delay(),
         };
         model_config.auto_detect_max_context_tokens();
         models.insert("default/default".to_string(), model_config);
@@ -480,6 +530,9 @@ impl Config {
                     fallback_model: None,
                     reasoning_effort: entry.reasoning_effort.clone(),
                     thinking_enabled: entry.thinking_enabled,
+                    use_chat_template_kwargs: entry.use_chat_template_kwargs,
+                    rate_limit_retries: entry.rate_limit_retries.unwrap_or(provider.rate_limit_retries),
+                    rate_limit_retry_delay_secs: entry.rate_limit_retry_delay_secs.unwrap_or(provider.rate_limit_retry_delay_secs),
                 };
                 model_config.auto_detect_max_context_tokens();
                 self.models.insert(full_key, model_config);
@@ -517,6 +570,8 @@ impl Config {
                     system_prompt: model.system_prompt.clone(),
                     max_iterations: model.max_iterations,
                     request_timeout_secs: model.request_timeout_secs,
+                    rate_limit_retries: default_rate_limit_retries(),
+                    rate_limit_retry_delay_secs: default_rate_limit_retry_delay(),
                     models: HashMap::new(),
                 });
 
@@ -530,6 +585,9 @@ impl Config {
                     max_context_tokens: Some(model.max_context_tokens),
                     reasoning_effort: model.reasoning_effort.clone(),
                     thinking_enabled: model.thinking_enabled,
+                    use_chat_template_kwargs: false,
+                    rate_limit_retries: None,
+                    rate_limit_retry_delay_secs: None,
                 },
             );
         }
@@ -565,6 +623,8 @@ impl Config {
                 system_prompt: model.system_prompt.clone(),
                 max_iterations: model.max_iterations,
                 request_timeout_secs: model.request_timeout_secs,
+                rate_limit_retries: default_rate_limit_retries(),
+                rate_limit_retry_delay_secs: default_rate_limit_retry_delay(),
                 models: HashMap::new(),
             });
 
@@ -578,6 +638,9 @@ impl Config {
                 max_context_tokens: Some(model.max_context_tokens),
                 reasoning_effort: model.reasoning_effort.clone(),
                 thinking_enabled: model.thinking_enabled,
+                use_chat_template_kwargs: model.use_chat_template_kwargs,
+                rate_limit_retries: Some(model.rate_limit_retries),
+                rate_limit_retry_delay_secs: Some(model.rate_limit_retry_delay_secs),
             },
         );
 

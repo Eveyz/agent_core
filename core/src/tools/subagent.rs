@@ -137,6 +137,7 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
         // Persist full subagent conversation to disk so the parent context
         // stays small (cache-friendly) while preserving the complete history.
         let file_ref = persist_subagent_messages(&id, &messages)
+            .await
             .map(|p| format!("\n\n---\n⚠️ Full subagent messages persisted to: {}", p.display()))
             .unwrap_or_default();
 
@@ -305,6 +306,7 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                 // Persist messages to file (cache-friendly: parent context stays small).
                 let file_ref = match &result {
                     Ok((_, messages)) => persist_subagent_messages(&id, messages)
+                        .await
                         .map(|p| p.display().to_string()),
                     Err(_) => None,
                 };
@@ -547,31 +549,48 @@ use crate::util::floor_char_boundary;
 /// Returns the absolute path on success so it can be included in the
 /// parent-agent tool result as a pointer.  The parent context stays small
 /// (cache-friendly), while the full history is preserved on disk.
-fn persist_subagent_messages(agent_id: &str, messages: &[Message]) -> Option<std::path::PathBuf> {
+///
+/// Runs file I/O on a blocking thread so we don't stall the async runtime.
+async fn persist_subagent_messages(
+    agent_id: &str,
+    messages: &[Message],
+) -> Option<std::path::PathBuf> {
     let home = std::env::var("HOME").ok()?;
-    let dir = std::path::PathBuf::from(&home)
-        .join(".agverse")
-        .join("subagents");
-    std::fs::create_dir_all(&dir).ok()?;
-
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let filename = format!("{}_{}.messages.json", agent_id, ts);
-    let path = dir.join(&filename);
-
     let json = serde_json::to_string_pretty(messages).ok()?;
-    std::fs::write(&path, json).ok()?;
+    let msg_count = messages.len();
 
-    tracing::info!(
-        agent_id = %agent_id,
-        path = %path.display(),
-        msg_count = messages.len(),
-        "Persisted subagent messages"
-    );
+    let agent_id = agent_id.to_string();
+    tokio::task::spawn_blocking(move || -> Option<std::path::PathBuf> {
+        let dir = std::path::PathBuf::from(&home)
+            .join(".agverse")
+            .join("subagents");
+        if std::fs::create_dir_all(&dir).is_err() {
+            return None;
+        }
 
-    Some(path)
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let filename = format!("{}_{}.messages.json", agent_id, ts);
+        let path = dir.join(&filename);
+
+        if std::fs::write(&path, &json).is_err() {
+            return None;
+        }
+
+        tracing::info!(
+            agent_id = %agent_id,
+            path = %path.display(),
+            msg_count = msg_count,
+            "Persisted subagent messages"
+        );
+
+        Some(path)
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 // ── Shared spawn logic ───────────────────────────────────────────────

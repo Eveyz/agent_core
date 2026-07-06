@@ -1,4 +1,6 @@
-fn upgrade_to_https(url: &str) -> String {
+use std::time::Duration;
+
+pub(crate) fn upgrade_to_https(url: &str) -> String {
     if let Some(stripped) = url.strip_prefix("http://") {
         format!("https://{stripped}")
     } else {
@@ -6,7 +8,7 @@ fn upgrade_to_https(url: &str) -> String {
     }
 }
 
-fn is_image_content_type(ct: &str) -> bool {
+pub(crate) fn is_image_content_type(ct: &str) -> bool {
     ct.to_lowercase().starts_with("image/")
 }
 
@@ -14,7 +16,7 @@ fn is_image_content_type(ct: &str) -> bool {
 // Error formatting — includes rate-limit info when applicable
 // ─────────────────────────────────────────────────────────────────────
 
-fn format_http_error(
+pub(crate) fn format_http_error(
     url: &str,
     rate_delay: Option<Duration>,
     error: &reqwest::Error,
@@ -73,7 +75,7 @@ fn format_http_error(
     }
 }
 
-fn format_http_status(
+pub(crate) fn format_http_status(
     _original_url: &str,
     fetch_url: &str,
     final_url: &str,

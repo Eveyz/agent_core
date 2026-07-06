@@ -197,7 +197,26 @@ impl Run {
         mode: AgentMode,
         context_snapshot: Arc<RwLock<Vec<Message>>>,
     ) -> anyhow::Result<Self> {
-        let client = brain.build_client()?;
+        let mut client = brain.build_client()?;
+
+        // Wire up a status callback so rate-limit retry messages are visible in the UI.
+        {
+            let event_tx = event_tx.clone();
+            let run_id = id.clone();
+            let seq = seq.clone();
+            client.set_status_callback(Arc::new(move |msg| {
+                let seq_val = seq.fetch_add(1, Ordering::Relaxed);
+                let _ = event_tx.send(Envelope {
+                    ts: chrono::Utc::now(),
+                    seq: seq_val,
+                    event_id: uuid::Uuid::new_v4().to_string(),
+                    run_id: run_id.clone(),
+                    turn_id: None,
+                    parent_call_id: None,
+                    event: RunEvent::Error { message: msg },
+                });
+            }));
+        }
         let permission_policy = brain.build_permission_policy();
         let recovery = brain.build_recovery();
 

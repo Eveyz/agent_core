@@ -49,6 +49,17 @@ impl BashTool {
             default_working_dir,
         }
     }
+
+    /// Create an unsupervised BashTool with a default working directory.
+    /// Used by subagents so their bash commands execute in the subagent's
+    /// working directory without relying on the process-global CWD (which
+    /// would race with concurrent subagents).
+    pub fn with_default_working_dir(default_working_dir: Option<String>) -> Self {
+        Self {
+            supervisor: None,
+            default_working_dir,
+        }
+    }
 }
 
 #[async_trait]
@@ -334,5 +345,99 @@ impl BashTool {
         }
 
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn tool() -> BashTool {
+        BashTool::new()
+    }
+
+    #[tokio::test]
+    async fn test_bash_echo_hello() {
+        let out = tool()
+            .execute(json!({"command": "echo hello"}))
+            .await
+            .unwrap();
+        assert!(out.contains("hello"));
+        assert!(!out.contains("exit code"));
+    }
+
+    #[tokio::test]
+    async fn test_bash_nonzero_exit_code_is_propagated() {
+        let out = tool()
+            .execute(json!({"command": "exit 42"}))
+            .await
+            .unwrap();
+        assert!(out.contains("42"), "exit code 42 should be in output: {out}");
+    }
+
+    #[tokio::test]
+    async fn test_bash_captures_stderr() {
+        let out = tool()
+            .execute(json!({"command": "echo err >&2; true"}))
+            .await
+            .unwrap();
+        assert!(out.contains("err"), "stderr should be captured: {out}");
+    }
+
+    #[tokio::test]
+    async fn test_bash_timeout_returns_error() {
+        let res = tool()
+            .execute(json!({
+                "command": "sleep 10",
+                "timeout_secs": 1
+            }))
+            .await;
+        assert!(res.is_err(), "sleep 10 with 1s timeout should time out");
+    }
+
+    #[tokio::test]
+    async fn test_bash_working_dir_override() {
+        // Run `pwd` in /tmp and verify the directory is reflected.
+        // Skip on Windows where /tmp may not exist.
+        if !std::path::Path::new("/tmp").exists() {
+            return;
+        }
+        let out = tool()
+            .execute(json!({
+                "command": "pwd",
+                "working_dir": "/tmp"
+            }))
+            .await
+            .unwrap();
+        assert!(out.contains("/tmp"), "pwd should report /tmp: {out}");
+    }
+
+    #[tokio::test]
+    async fn test_bash_default_working_dir_from_tool() {
+        // When the tool is constructed with with_default_working_dir, the
+        // command should execute in that directory without an explicit
+        // working_dir argument.
+        if !std::path::Path::new("/tmp").exists() {
+            return;
+        }
+        let t = BashTool::with_default_working_dir(Some("/tmp".to_string()));
+        let out = t.execute(json!({"command": "pwd"})).await.unwrap();
+        assert!(out.contains("/tmp"), "default working_dir should apply: {out}");
+    }
+
+    #[tokio::test]
+    async fn test_bash_missing_command_errors() {
+        let res = tool().execute(json!({})).await;
+        assert!(res.is_err(), "missing 'command' should error");
+    }
+
+    #[tokio::test]
+    async fn test_bash_multiline_output_preserved() {
+        let out = tool()
+            .execute(json!({"command": "printf 'a\\nb\\nc\\n'"}))
+            .await
+            .unwrap();
+        assert!(out.contains("a") && out.contains("b") && out.contains("c"));
     }
 }

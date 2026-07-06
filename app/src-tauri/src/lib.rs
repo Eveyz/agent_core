@@ -1665,6 +1665,9 @@ pub fn run() {
                             max_context_tokens: None,
                             reasoning_effort: None,
                             thinking_enabled: false,
+                            use_chat_template_kwargs: false,
+                            rate_limit_retries: None,
+                            rate_limit_retry_delay_secs: None,
                         });
                         p.insert("default".to_string(), agent_core::config::ProviderConfig {
                             name: "default".to_string(),
@@ -1677,6 +1680,8 @@ pub fn run() {
                             system_prompt: None,
                             max_iterations: 100,
                             request_timeout_secs: 60,
+                            rate_limit_retries: 20,
+                            rate_limit_retry_delay_secs: 60,
                             models: m,
                         });
                         p

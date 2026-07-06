@@ -135,3 +135,125 @@ async fn search_path(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::path::PathBuf;
+
+    fn setup_fixture() -> PathBuf {
+        // Use a per-test unique subdir with a process-local counter to avoid
+        // races between parallel tests sharing /tmp.
+        static COUNTER: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "grep_tool_tests_{}",
+            COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let sub = dir.join("src");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        std::fs::write(sub.join("a.rs"), "fn alpha() {}\nfn beta() {}\n").unwrap();
+        std::fs::write(sub.join("b.rs"), "const GAMMA: u32 = 1;\n").unwrap();
+        std::fs::write(dir.join("notes.md"), "# Alpha notes\nbeta mentions\n").unwrap();
+
+        // hidden dir + file should be skipped
+        let hid = dir.join(".hidden");
+        std::fs::create_dir_all(&hid).unwrap();
+        std::fs::write(hid.join("secret.rs"), "ALPHA\n").unwrap();
+
+        dir
+    }
+
+    #[tokio::test]
+    async fn test_grep_matches_pattern_in_files() {
+        let dir = setup_fixture();
+        let out = GrepTool
+            .execute(json!({
+                "pattern": "alpha",
+                "path": dir.to_string_lossy(),
+                "include": "*.rs"
+            }))
+            .await
+            .unwrap();
+        assert!(out.contains("a.rs"), "out = {out}");
+        assert!(out.contains("fn alpha"));
+        assert!(!out.contains("notes.md"));
+    }
+
+    #[tokio::test]
+    async fn test_grep_no_matches_returns_message() {
+        let dir = setup_fixture();
+        let out = GrepTool
+            .execute(json!({
+                "pattern": "definitely_not_present_xyz123",
+                "path": dir.to_string_lossy()
+            }))
+            .await
+            .unwrap();
+        assert_eq!(out, "No matches found.");
+    }
+
+    #[tokio::test]
+    async fn test_grep_skips_hidden_directories() {
+        let dir = setup_fixture();
+        let out = GrepTool
+            .execute(json!({
+                "pattern": "ALPHA",
+                "path": dir.to_string_lossy()
+            }))
+            .await
+            .unwrap();
+        assert!(
+            !out.contains("secret.rs"),
+            "files in hidden dirs should be skipped: {out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_grep_invalid_pattern_errors() {
+        let dir = setup_fixture();
+        let res = GrepTool
+            .execute(json!({
+                "pattern": "(",  // invalid regex
+                "path": dir.to_string_lossy()
+            }))
+            .await;
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_grep_invalid_include_pattern_errors_not_silently_matches_all() {
+        let dir = setup_fixture();
+        let res = GrepTool
+            .execute(json!({
+                "pattern": "alpha",
+                "path": dir.to_string_lossy(),
+                "include": "[bad"
+            }))
+            .await;
+        assert!(
+            res.is_err(),
+            "invalid include pattern should error, not silently match all"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_grep_max_results_limits() {
+        let dir = setup_fixture();
+        let out = GrepTool
+            .execute(json!({
+                "pattern": "fn|const",
+                "path": dir.to_string_lossy(),
+                "include": "*.rs",
+                "max_results": 1
+            }))
+            .await
+            .unwrap();
+        assert_eq!(out.lines().count(), 1);
+    }
+}

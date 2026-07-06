@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn actively_read_char_capped_when_large() {
-        let big = "x".repeat(100_000);
+        let big = "x".repeat(150_000);
         let out = truncate_content(Some("read_file"), &big).unwrap();
         assert!(out.contains("truncated"));
         assert!(out.len() < big.len());

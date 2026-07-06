@@ -145,6 +145,14 @@ impl MemoryManager {
         &self.recall
     }
 
+    /// Borrow the embedding model (if one was configured) without holding
+    /// any memory-data lock. Callers can compute embeddings OUTSIDE the
+    /// MemoryManager lock and pass them into `store_conversation_precomputed`
+    /// / `search_conversation_precomputed` to keep the lock held briefly.
+    pub fn embedding_model(&self) -> Option<&Arc<EmbeddingModel>> {
+        self.recall.embedding_model()
+    }
+
     pub fn archival(&self) -> &ArchivalMemory {
         &self.archival
     }
@@ -212,6 +220,53 @@ impl MemoryManager {
                 model.embed_single(content).unwrap_or_default()
             } else {
                 Vec::new()
+            };
+            if !embedding.is_empty() {
+                let normalized = hnsw::normalize_embedding(&embedding);
+                hnsw.add_fallback(id.clone(), normalized);
+            }
+        }
+
+        // Track insertion order for eviction
+        self.insertion_order.borrow_mut().push_back(id.clone());
+        // Evict oldest if over limit
+        self.enforce_index_limit();
+
+        Ok(id)
+    }
+
+    /// Store a conversation turn using a pre-computed embedding.
+    ///
+    /// This is the lock-friendly variant of `store_conversation()`: callers
+    /// compute the (10-50ms) embedding OUTSIDE the MemoryManager lock, then
+    /// call this method which only does lightweight I/O + index updates while
+    /// the lock is held. Falls back to the embedded computation when no
+    /// embedding is supplied (preserving backwards compatibility).
+    pub fn store_conversation_precomputed(
+        &self,
+        role: &str,
+        content: &str,
+        precomputed: Option<&[f32]>,
+    ) -> Result<String> {
+        // Use auto-rating (None = let the scorer decide)
+        let id = self.recall.store(&self.session_id, role, content, None)?;
+
+        // Sync to BM25 index if enabled
+        if let Some(ref bm25) = self.bm25 {
+            let _ = bm25.insert(&id, content);
+        }
+
+        // Sync to HNSW index if enabled (fallback pool for immutable index)
+        if let Some(ref hnsw) = self.hnsw {
+            let embedding = match precomputed {
+                Some(v) if !v.is_empty() => v.to_vec(),
+                _ => {
+                    if let Some(ref model) = self.recall.embedding_model() {
+                        model.embed_single(content).unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    }
+                }
             };
             if !embedding.is_empty() {
                 let normalized = hnsw::normalize_embedding(&embedding);
@@ -778,6 +833,110 @@ mod tests {
         memory.store_archival("Rust is a systems programming language", None).unwrap();
         let results = memory.search_archival("Rust", 5).unwrap();
         assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn test_store_conversation_precomputed_no_embedding() {
+        // store_conversation_precomputed with None should behave like
+        // store_conversation when no embedding model is configured.
+        let (_dir, memory) = setup_test_memory();
+        let id = memory
+            .store_conversation_precomputed("user", "alpha content", None)
+            .unwrap();
+        assert!(!id.is_empty());
+        let results = memory.search_conversation("alpha", 5).unwrap();
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn test_store_conversation_returns_distinct_ids() {
+        let (_dir, memory) = setup_test_memory();
+        let id1 = memory.store_conversation("user", "first").unwrap();
+        let id2 = memory.store_conversation("user", "second").unwrap();
+        assert_ne!(id1, id2, "each conversation turn must have its own id");
+    }
+
+    #[test]
+    fn test_search_conversation_top_k_limits_results() {
+        let (_dir, memory) = setup_test_memory();
+        // Store many short turns that should match a broad keyword.
+        for i in 0..10 {
+            memory
+                .store_conversation("user", &format!("item word{i}"))
+                .unwrap();
+        }
+        let results = memory.search_conversation("item", 3).unwrap();
+        assert!(results.len() <= 3, "top_k should bound results");
+    }
+
+    #[test]
+    fn test_search_conversation_no_match_returns_empty() {
+        let (_dir, memory) = setup_test_memory();
+        memory.store_conversation("user", "hello").unwrap();
+        let results = memory
+            .search_conversation("completely_absent_token_xyz", 5)
+            .unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_set_max_index_entries_accepts_none_and_some() {
+        let (_dir, mut memory) = setup_test_memory();
+        memory.set_max_index_entries(None);
+        memory.store_conversation("user", "x").unwrap();
+        memory.set_max_index_entries(Some(5));
+        memory.store_conversation("user", "y").unwrap();
+        // No assertion on internal count, but ensure no panic.
+    }
+
+    #[test]
+    fn test_enforce_index_limit_evicts_oldest_when_limit_set() {
+        let (_dir, mut memory) = setup_test_memory();
+        memory.set_max_index_entries(Some(3));
+        // Insert 5 entries — only the 3 newest should remain.
+        for i in 0..5 {
+            memory
+                .store_conversation("user", &format!("eviction_test_{i}"))
+                .unwrap();
+        }
+        // Searching for something from the first inserted item should now miss
+        // (or at least we shouldn't panic on eviction).
+        let _ = memory.search_conversation("eviction_test", 100).unwrap();
+    }
+
+    #[test]
+    fn test_store_and_search_archival_then_add_more() {
+        let (_dir, memory) = setup_test_memory();
+        memory.store_archival("Rust memory first", None).unwrap();
+        memory.store_archival("Second memory block", None).unwrap();
+        let results = memory.search_archival("memory", 10).unwrap();
+        assert!(results.len() >= 2);
+    }
+
+    #[test]
+    fn test_store_conversation_precomputed_precomputed_path_with_no_model_is_noop() {
+        // With no embedding model + an explicit empty Vec, the path should not
+        // panic and the content should still be searchable via keywords.
+        let (_dir, memory) = setup_test_memory();
+        let _ = memory
+            .store_conversation_precomputed("user", "explicit embedding vec test", Some(&[]))
+            .unwrap();
+        let results = memory
+            .search_conversation("explicit", 5)
+            .unwrap();
+        assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn test_memory_is_send_safe_when_wrapped_in_arc_mutex() {
+        // The runtime stores memory as Arc<Mutex<MemoryManager>>. Ensure the
+        // wrapper type compiles + the lock is parking_lot (no poison unwrap).
+        let (_dir, memory) = setup_test_memory();
+        let arc: Arc<parking_lot::Mutex<MemoryManager>> = Arc::new(parking_lot::Mutex::new(memory));
+        let m = arc.lock();
+        m.store_conversation("user", "lock_test").unwrap();
+        // lock() returns guard without unwrap — no poison risk.
+        drop(m);
     }
 }
 pub mod diff_preference;

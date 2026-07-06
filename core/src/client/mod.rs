@@ -16,6 +16,9 @@ pub struct OpenAIClient {
     pub(crate) overrides: RuntimeOverrides,
     circuit_breaker: Arc<CircuitBreaker>,
     fallback_client: Option<Box<OpenAIClient>>,
+    /// Optional callback to surface status messages (e.g. "rate limited, retrying...")
+    /// to the frontend. Called from within `send_with_retry`.
+    status_cb: Option<Arc<dyn Fn(String) + Send + Sync>>,
 }
 
 impl OpenAIClient {
@@ -39,6 +42,16 @@ impl OpenAIClient {
             },
             circuit_breaker: CircuitBreaker::new(CircuitBreakerConfig::default()),
             fallback_client: fallback.map(Box::new),
+            status_cb: None,
+        }
+    }
+
+    /// Set a callback for status messages that should be visible in the UI.
+    /// Passed to the fallback client as well.
+    pub fn set_status_callback(&mut self, cb: Arc<dyn Fn(String) + Send + Sync>) {
+        self.status_cb = Some(cb.clone());
+        if let Some(ref mut fallback) = self.fallback_client {
+            fallback.status_cb = Some(cb);
         }
     }
 
@@ -96,14 +109,29 @@ impl OpenAIClient {
             body["max_tokens"] = serde_json::json!(max_tokens);
         }
 
-        if let Some(effort) = &self.model.reasoning_effort {
-            body["reasoning_effort"] = serde_json::json!(effort);
-        }
+        if self.model.use_chat_template_kwargs {
+            // NVIDIA API proxy format: thinking and reasoning_effort inside chat_template_kwargs
+            let mut kwargs = serde_json::Map::new();
+            if let Some(effort) = &self.model.reasoning_effort {
+                kwargs.insert("reasoning_effort".into(), serde_json::json!(effort));
+            }
+            if self.model.thinking_enabled {
+                kwargs.insert("thinking".into(), serde_json::json!(true));
+            }
+            if !kwargs.is_empty() {
+                body["chat_template_kwargs"] = serde_json::Value::Object(kwargs);
+            }
+        } else {
+            // OpenAI standard format: top-level fields
+            if let Some(effort) = &self.model.reasoning_effort {
+                body["reasoning_effort"] = serde_json::json!(effort);
+            }
 
-        if self.model.thinking_enabled {
-            body["thinking"] = serde_json::json!({
-                "type": "enabled"
-            });
+            if self.model.thinking_enabled {
+                body["thinking"] = serde_json::json!({
+                    "type": "enabled"
+                });
+            }
         }
 
         if !tools.is_empty() {
@@ -181,11 +209,19 @@ impl OpenAIClient {
             let url = format!("{}/chat/completions", current_client.model.base_url);
             let base_delay = Duration::from_millis(500);
             let max_delay = Duration::from_secs(10);
-            let max_retries = 3;
+            let max_retries_5xx = 3u32;
+            let rate_limit_retries = current_client.model.rate_limit_retries;
+            let rate_limit_base =
+                Duration::from_secs(current_client.model.rate_limit_retry_delay_secs);
+            let rate_limit_max = Duration::from_secs(std::cmp::max(
+                current_client.model.rate_limit_retry_delay_secs * 32,
+                3600,
+            ));
 
             let mut final_error = None;
+            let mut rate_limit_attempts = 0u32;
 
-            for attempt in 0..max_retries {
+            for attempt in 0..max_retries_5xx {
                 let resp = current_client
                     .http
                     .post(&url)
@@ -199,9 +235,49 @@ impl OpenAIClient {
                         current_client.circuit_breaker.record_success();
                         return Ok(r);
                     }
-                    Ok(r) if r.status().as_u16() == 429 || r.status().is_server_error() => {
+                    Ok(r) if r.status().as_u16() == 429 => {
                         current_client.circuit_breaker.record_failure();
-                        if attempt == max_retries - 1 {
+
+                        // Respect Retry-After header if present; otherwise exponential backoff
+                        let delay = r
+                            .headers()
+                            .get("retry-after")
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|v| v.parse::<u64>().ok())
+                            .map(Duration::from_secs)
+                            .unwrap_or_else(|| {
+                                calculate_backoff(rate_limit_attempts, rate_limit_base, rate_limit_max)
+                            });
+
+                        // Use separate retry count for rate limits
+                        if rate_limit_attempts >= rate_limit_retries {
+                            final_error = Some(anyhow::anyhow!(
+                                "API error 429: rate limit exceeded after {} retries",
+                                rate_limit_attempts
+                            ));
+                            break;
+                        }
+
+                        rate_limit_attempts += 1;
+                        let msg = format!(
+                            "429 rate limited, retrying in {}s (attempt {}/{})",
+                            delay.as_secs(),
+                            rate_limit_attempts,
+                            rate_limit_retries,
+                        );
+                        if let Some(ref cb) = current_client.status_cb {
+                            cb(msg.clone());
+                        }
+                        tracing::warn!(
+                            "Model {}: {}",
+                            current_client.model.model_id,
+                            msg,
+                        );
+                        tokio::time::sleep(delay).await;
+                    }
+                    Ok(r) if r.status().is_server_error() => {
+                        current_client.circuit_breaker.record_failure();
+                        if attempt == max_retries_5xx - 1 {
                             final_error = Some(anyhow::anyhow!("API error {}", r.status()));
                             break;
                         }
@@ -232,7 +308,7 @@ impl OpenAIClient {
                     }
                     Err(e) => {
                         current_client.circuit_breaker.record_failure();
-                        if attempt == max_retries - 1 {
+                        if attempt == max_retries_5xx - 1 {
                             final_error = Some(e.into());
                             break;
                         }
