@@ -44,7 +44,7 @@ impl MemoryConsolidator {
 
     fn dedup_recall_memory(&self) -> Result<usize> {
         // Phase 1: read records from SQLite (lock held briefly)
-        let mut records: Vec<(String, Vec<f32>)> = {
+        let records: Vec<(String, Vec<f32>)> = {
             let db = self.storage.conn();
             let mut stmt = db.prepare(
                 "SELECT id, embedding FROM recall_memory ORDER BY created_at DESC LIMIT 5000",
@@ -98,7 +98,7 @@ impl MemoryConsolidator {
 
     fn dedup_archival_memory(&self) -> Result<usize> {
         // Phase 1: read records (lock held briefly)
-        let mut records: Vec<(String, Vec<f32>)> = {
+        let records: Vec<(String, Vec<f32>)> = {
             let db = self.storage.conn();
             let mut stmt = db.prepare(
                 "SELECT id, embedding FROM archival_memory ORDER BY created_at DESC LIMIT 5000",

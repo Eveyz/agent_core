@@ -522,6 +522,7 @@ mod tests {
             }]),
             tool_call_id: None,
             name: None,
+            model: None,
         }
     }
 
@@ -532,6 +533,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: Some(id.to_string()),
             name: Some(name.to_string()),
+            model: None,
         }
     }
 

@@ -31,6 +31,9 @@ export interface SessionMeta {
 export interface FrontendMessage {
   role: string;
   content: string;
+  /** Model that ran this prompt; persisted per-message so each restored
+   * message shows its own model instead of the global current one. */
+  model?: string;
 }
 
 export interface EventLogEntry {

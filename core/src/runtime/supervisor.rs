@@ -133,7 +133,7 @@ impl ProcessSupervisor {
 
         self.apply_process_group(&mut cmd);
 
-        let mut child = cmd
+        let child = cmd
             .spawn()
             .with_context(|| format!("failed to spawn bash command: {command}"))?;
 
@@ -178,7 +178,7 @@ impl ProcessSupervisor {
 
         self.apply_process_group(&mut cmd);
 
-        let mut child = cmd
+        let child = cmd
             .spawn()
             .with_context(|| format!("failed to spawn process: {program} {args:?}"))?;
 

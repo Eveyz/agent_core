@@ -9,7 +9,6 @@ use rand::Rng;
 use serde_json::{Value, json};
 
 use super::Tool;
-use reqwest::header;
 
 mod error;
 mod html;

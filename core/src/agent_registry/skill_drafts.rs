@@ -8,7 +8,7 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::memory::storage::Storage;
 use crate::agent_registry::history::{list as history_list, AgentHistoryEntry};

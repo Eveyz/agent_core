@@ -264,7 +264,7 @@ function App() {
         }
       }
 
-      dispatch(userMessageSent(msg));
+      dispatch(userMessageSent({ text: msg, model: defaultModel }));
       scrollToBottom();
 
       const shouldRename = isNewSession || sessionTitle === 'New Session' || sessionTitle === '';
@@ -292,7 +292,7 @@ function App() {
       const msg = editedText ?? entry.text ?? '';
       if (!msg.trim() || !activeSessionId) return;
 
-      dispatch(userMessageSent(msg));
+      dispatch(userMessageSent({ text: msg, model: entry.model ?? defaultModel }));
       scrollToBottom();
 
       try {

@@ -37,6 +37,11 @@ pub struct Message {
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Model that ran the prompt that produced this message (per-message,
+    /// distinct from the session-level `model_used`). Persisted so restored
+    /// sessions show each message's own model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -292,6 +297,7 @@ impl Message {
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            model: None,
         }
     }
 
@@ -302,6 +308,7 @@ impl Message {
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            model: None,
         }
     }
 
@@ -312,6 +319,7 @@ impl Message {
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            model: None,
         }
     }
 
@@ -322,6 +330,7 @@ impl Message {
             tool_calls: Some(tool_calls),
             tool_call_id: None,
             name: None,
+            model: None,
         }
     }
 
@@ -332,6 +341,7 @@ impl Message {
             tool_calls: None,
             tool_call_id: Some(tool_call_id),
             name: tool_name,
+            model: None,
         }
     }
 

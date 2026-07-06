@@ -60,7 +60,7 @@ impl RecallMemory {
     }
 
     /// Access the DB connection (for hybrid search reads).
-    pub fn storage_conn(&self) -> parking_lot::MutexGuard<rusqlite::Connection> {
+    pub fn storage_conn(&self) -> parking_lot::MutexGuard<'_, rusqlite::Connection> {
         self.storage.conn()
     }
 

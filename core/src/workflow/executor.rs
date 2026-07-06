@@ -14,12 +14,10 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent_registry::{self, AgentDef, AgentHistoryEntry, AgentMemoryStore};
-use crate::config::Config;
+use crate::agent_registry::{self, AgentHistoryEntry, AgentMemoryStore};
 use crate::mode::AgentMode;
 use crate::memory::embedding::EmbeddingModel;
 use crate::memory::storage::Storage;
-use crate::permission::PermissionConfig;
 use crate::runtime::Brain;
 use crate::subagent::Subagent;
 use crate::tools::ToolRegistry;
@@ -30,7 +28,6 @@ use super::definition::{
     NodeType, NodeDef, OnNodeFailure, WorkflowDef, WorkflowRunNodeResult,
 };
 use super::planner;
-use super::definition::TrustMode;
 
 /// Result of a workflow execution.
 #[derive(Debug, Clone)]

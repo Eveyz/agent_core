@@ -1,6 +1,5 @@
 //! Shared utility functions used across the crate.
 
-use std::path::PathBuf;
 
 /// Find the largest valid UTF-8 character boundary at or before `idx`.
 /// Prevents panics when slicing strings at arbitrary byte offsets.

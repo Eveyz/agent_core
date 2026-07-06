@@ -1,8 +1,5 @@
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use tokio_cron_scheduler::{Job, JobScheduler};
+use tokio_cron_scheduler::JobScheduler;
 
-use crate::cron::CronJob;
 
 pub struct CronScheduler {
     scheduler: JobScheduler,

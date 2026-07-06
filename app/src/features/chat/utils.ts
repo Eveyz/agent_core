@@ -154,7 +154,7 @@ export function entriesToMessages(entries: ChatEntry[]): FrontendMessage[] {
   const msgs: FrontendMessage[] = [];
   for (const entry of entries) {
     if (entry.type === 'user' && entry.text) {
-      msgs.push({ role: 'user', content: entry.text });
+      msgs.push({ role: 'user', content: entry.text, model: entry.model });
     } else if (entry.type === 'turn' && entry.blocks) {
       let thinkingText = '';
       let assistantText = '';
@@ -172,7 +172,7 @@ export function entriesToMessages(entries: ChatEntry[]): FrontendMessage[] {
         content = `<think>${thinkingText.trim()}</think>${content ? '\n' + content : ''}`;
       }
       if (content) {
-        msgs.push({ role: 'assistant', content });
+        msgs.push({ role: 'assistant', content, model: entry.model });
       }
     }
   }

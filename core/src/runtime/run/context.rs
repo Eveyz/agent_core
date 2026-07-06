@@ -25,12 +25,7 @@ impl Run {
             .iter()
             .map(|m| {
                 let content = m.content.as_deref().unwrap_or("");
-                let preview = if content.len() > 500 {
-                    let end = content.floor_char_boundary(500);
-                    format!("{}...", &content[..end])
-                } else {
-                    content.to_string()
-                };
+                let preview = truncate_for_hook_preview(content);
                 serde_json::json!({
                     "role": format!("{:?}", m.role),
                     "preview": preview
@@ -256,7 +251,7 @@ impl Run {
     /// Register / unregister `skill.<name>.<script>` tools so they match the
     /// currently active skills. Called once per turn from refresh_context_segments.
     fn sync_skill_scripts(&mut self) {
-        use crate::skills::SkillManager;
+        
         use crate::tools::script::SkillScriptTool;
 
         let sm = match self.brain.skill_manager.as_ref() {
@@ -312,4 +307,23 @@ impl Run {
             self.tool_catalog_cache = None;
         }
     }
+}
+
+/// Truncate message content for hook/snapshot previews so JSON payloads
+/// stay small. Keeps the first N chars and appends "… (truncated)" if the
+/// original was longer.
+fn truncate_for_hook_preview(content: &str) -> String {
+    const MAX: usize = 200;
+    if content.len() <= MAX {
+        return content.to_string();
+    }
+    // Find the char boundary at or before MAX to avoid mid-char panic.
+    let trunc_at = content
+        .char_indices()
+        .take(MAX)
+        .last()
+        .map(|(i, c)| i + c.len_utf8())
+        .unwrap_or(MAX)
+        .min(content.len());
+    format!("{}… (truncated)", &content[..trunc_at])
 }

@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::definition::{NodeDef, NodeType, WorkflowDef};
+use super::definition::{NodeType, WorkflowDef};
 use super::planner;
 
 /// A single validation issue.

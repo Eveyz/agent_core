@@ -80,7 +80,7 @@ export const UserRow = memo(function UserRow({ entry, modelName, onRetry, isProc
       <div style={flexColumnEnd}>
         <div className="user-msg">{entry.text?.trimEnd()}</div>
         <div style={flexRowMeta}>
-          <span>{modelName || '—'}</span>
+          <span>{entry.model || modelName || '—'}</span>
           <span style={cursorPointer} onClick={handleCopy}>
             {copied ? '✓ Copied' : <><CopyIcon size={12} /></>}
           </span>

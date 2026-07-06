@@ -4,6 +4,23 @@ use crate::types::Message;
 
 use super::Run;
 
+/// Pure decision helper for `maybe_compact` so the threshold math can be
+/// unit-tested in isolation (without constructing a full `Run`).
+///
+/// Returns `Some(keep)` = number of recent turns to retain via chunked_drop,
+/// or `None` when the context is under the compaction threshold.
+fn compact_decision(max_tokens: usize, current_tokens: usize, context_len: usize) -> Option<usize> {
+    const COMPACT_THRESHOLD: f64 = 0.80;
+    const CHUNK_KEEP_RECENT: usize = 20;
+
+    let threshold = (max_tokens as f64 * COMPACT_THRESHOLD) as usize;
+    if current_tokens < threshold {
+        return None;
+    }
+    let keep = (context_len / 2).max(4).min(CHUNK_KEEP_RECENT);
+    Some(keep)
+}
+
 impl Run {
     /// Compact strategy (Stage: Compact).
     ///
@@ -19,19 +36,15 @@ impl Run {
     ///    (e.g., a single tool result is dominating), fall back to the
     ///    LLM-based summary compact with `micro_compact()` as last resort.
     pub(super) async fn maybe_compact(&mut self) {
-        const COMPACT_THRESHOLD: f64 = 0.80;
-        const CHUNK_KEEP_RECENT: usize = 20;
-
         let current = self.context.current_token_count();
-        let threshold =
-            (self.client.model.max_context_tokens as f64 * COMPACT_THRESHOLD) as usize;
-
-        if current < threshold {
-            return;
-        }
+        let max_tokens = self.client.model.max_context_tokens;
+        let context_len = self.context.len();
+        let keep = match compact_decision(max_tokens, current, context_len) {
+            Some(k) => k,
+            None => return, // under threshold — nothing to do
+        };
 
         // Tier 1: Chunked drop — zero-cost, cache-friendly bulk removal.
-        let keep = (self.context.len() / 2).max(4).min(CHUNK_KEEP_RECENT);
         if self.context.chunked_drop(keep) > 0 {
             tracing::info!(
                 compact = "chunked_drop",
@@ -40,6 +53,7 @@ impl Run {
                 "Chunked drop compact applied"
             );
             // Check if this brought us below the threshold.
+            let threshold = (max_tokens as f64 * 0.80) as usize;
             if self.context.current_token_count() < threshold {
                 return;
             }
@@ -48,12 +62,13 @@ impl Run {
         // Also run trim_to_fit for snip/dedup/chunk compression.
         let _result = self.context.trim_to_fit();
 
+        let threshold = (max_tokens as f64 * 0.80) as usize;
         if self.context.current_token_count() < threshold {
             return;
         }
 
         // Tier 2: LLM summarize — expensive, but handles pathological cases.
-        let num_turns = self.context.len().max(4) * 2 / 5;
+        let num_turns = context_len.max(4) * 2 / 5;
         let request = match self.context.prepare_summary(num_turns) {
             Some(r) => r,
             None => return,
@@ -64,7 +79,7 @@ impl Run {
             Ok(r) => r,
             Err(_) => {
                 // LLM call failed — fallback to micro_compact
-                self.context.micro_compact(self.context.len().max(4) / 3);
+                self.context.micro_compact(context_len.max(4) / 3);
                 return;
             }
         };
@@ -80,7 +95,7 @@ impl Run {
             }
             Err(_) => {
                 // JSON parse failed — fallback to micro_compact
-                self.context.micro_compact(self.context.len().max(4) / 3);
+                self.context.micro_compact(context_len.max(4) / 3);
                 return;
             }
         };
@@ -122,5 +137,56 @@ impl Run {
 
         self.context
             .apply_summary(request.split_index, &summary, num_turns);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_compact_decision_returns_none_under_threshold() {
+        // 500 tokens vs 10000 max — well below the 80% threshold.
+        assert_eq!(compact_decision(10_000, 500, 10), None);
+    }
+
+    #[test]
+    fn test_compact_decision_returns_none_at_exactly_threshold_minus_one() {
+        // 7999 tokens vs 8000 threshold — returns None at strictly-below.
+        assert_eq!(compact_decision(10_000, 7999, 30), None);
+    }
+
+    #[test]
+    fn test_compact_decision_triggers_at_threshold() {
+        // exactly 80% → triggers chunked_drop
+        assert!(compact_decision(10_000, 8_000, 30).is_some());
+    }
+
+    #[test]
+    fn test_compact_decision_keep_is_half_of_context_len() {
+        // 20 turns → keep 10
+        let keep = compact_decision(10_000, 9_000, 20).unwrap();
+        assert_eq!(keep, 10);
+    }
+
+    #[test]
+    fn test_compact_decision_keep_min_is_4() {
+        // 2 turns → keep 4 (the min floor)
+        let keep = compact_decision(10_000, 9_000, 2).unwrap();
+        assert_eq!(keep, 4);
+    }
+
+    #[test]
+    fn test_compact_decision_keep_capped_at_20() {
+        // 100 turns → keep 20 (the cap)
+        let keep = compact_decision(10_000, 9_000, 100).unwrap();
+        assert_eq!(keep, 20);
+    }
+
+    #[test]
+    fn test_compact_decision_keep_at_floor_when_odd_len() {
+        // 5 turns → keep = max(5/2, 4) = max(2, 4) = 4
+        let keep = compact_decision(10_000, 9_000, 5).unwrap();
+        assert_eq!(keep, 4);
     }
 }

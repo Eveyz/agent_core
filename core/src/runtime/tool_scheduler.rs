@@ -17,7 +17,6 @@
 //!   chain (one node per index, each depending on the previous).
 
 use serde_json::Value;
-use std::collections::HashMap;
 
 use crate::types::ToolExecutionMode;
 

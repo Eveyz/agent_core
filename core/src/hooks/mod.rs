@@ -1,4 +1,3 @@
-use parking_lot::Mutex;
 use serde_json::Value;
 
 #[derive(Debug, Clone)]

@@ -305,7 +305,7 @@ pub struct Envelope {
 /// This bridge lets us migrate incrementally: existing tool/subagent code
 /// still emits `AgentEvent`, and the Run translates before broadcasting.
 impl RunEvent {
-    pub fn from_agent_event(run_id: &str, ev: crate::types::AgentEvent) -> Option<Self> {
+    pub fn from_agent_event(_run_id: &str, ev: crate::types::AgentEvent) -> Option<Self> {
         use crate::types::AgentEvent;
         Some(match ev {
             AgentEvent::AgentStart => RunEvent::RunStarted,

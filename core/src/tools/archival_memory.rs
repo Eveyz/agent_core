@@ -5,7 +5,6 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 use crate::memory::MemoryManager;
-use crate::memory::embedding::EmbeddingModel;
 use crate::tools::{Tool, try_lock_memory};
 
 pub struct ArchivalMemoryInsertTool {

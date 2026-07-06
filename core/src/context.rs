@@ -1101,6 +1101,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: Some("call_1".to_string()),
             name: Some("test_tool".to_string()),
+            model: None,
         });
 
         let msgs = engine.messages();
@@ -1222,6 +1223,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: Some("call_1".to_string()),
             name: Some("test_tool".to_string()),
+            model: None,
         });
 
         // Use compressor directly to test snipCompact
@@ -1321,6 +1323,7 @@ mod tests {
             tool_calls: None,
             tool_call_id: Some("call_1".to_string()),
             name: Some("write_file".to_string()),
+            model: None,
         };
         engine.add(tool_msg);
         

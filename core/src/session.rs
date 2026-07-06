@@ -244,11 +244,12 @@ impl SessionManager {
                 serde_json::to_string(&msg.tool_calls).unwrap_or_else(|_| "[]".to_string());
             let tool_call_id = msg.tool_call_id.as_deref().unwrap_or("");
             let name = msg.name.as_deref().unwrap_or("");
+            let model = msg.model.as_deref().unwrap_or("");
 
             db.execute(
-                "INSERT OR REPLACE INTO session_messages (session_id, msg_index, role, content, tool_calls, tool_call_id, name, created_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                rusqlite::params![id, i as i64, role, content, tool_calls, tool_call_id, name, now],
+                "INSERT OR REPLACE INTO session_messages (session_id, msg_index, role, content, tool_calls, tool_call_id, name, model, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                rusqlite::params![id, i as i64, role, content, tool_calls, tool_call_id, name, model, now],
             )?;
         }
 
@@ -339,7 +340,7 @@ impl SessionManager {
         let messages = {
             let db = self.storage.conn();
             let mut stmt = db.prepare(
-                "SELECT role, content, tool_calls, tool_call_id, name, msg_index \
+                "SELECT role, content, tool_calls, tool_call_id, name, model, msg_index \
                  FROM session_messages WHERE session_id = ?1 ORDER BY msg_index ASC",
             )?;
 
@@ -350,7 +351,8 @@ impl SessionManager {
                 let tool_calls_json: String = row.get(2)?;
                 let tool_call_id: String = row.get(3)?;
                 let name: String = row.get(4)?;
-                let idx: i64 = row.get(5)?;
+                let model: String = row.get(5)?;
+                let idx: i64 = row.get(6)?;
 
                 let tool_calls: Option<Vec<crate::types::ToolCall>> =
                     serde_json::from_str(&tool_calls_json)
@@ -379,6 +381,7 @@ impl SessionManager {
                             Some(tool_call_id)
                         },
                         name: if name.is_empty() { None } else { Some(name) },
+                        model: if model.is_empty() { None } else { Some(model) },
                     },
                 ))
             })?;
@@ -730,6 +733,7 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                model: None,
             },
             Message {
                 role: Role::Assistant,
@@ -737,6 +741,7 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                model: None,
             },
             Message {
                 role: Role::Assistant,
@@ -751,6 +756,7 @@ mod tests {
                 }]),
                 tool_call_id: None,
                 name: None,
+                model: None,
             },
             Message {
                 role: Role::Tool,
@@ -758,6 +764,7 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: Some("call_1".to_string()),
                 name: Some("read_file".to_string()),
+                model: None,
             },
         ]
     }

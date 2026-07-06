@@ -378,6 +378,7 @@ impl Storage {
             "ALTER TABLE sessions ADD COLUMN thought_time_ms INTEGER DEFAULT 0",
             "ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'build'",
             "ALTER TABLE cronjobs ADD COLUMN model TEXT DEFAULT ''",
+            "ALTER TABLE session_messages ADD COLUMN model TEXT DEFAULT ''",
         ];
         for migration in migrations {
             let _ = db.execute_batch(migration);

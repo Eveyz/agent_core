@@ -59,6 +59,10 @@ export interface ChatEntry {
   turnIds?: string[];
   turnIndex?: number;
   text?: string;
+  /** Model that was active when this prompt was submitted. Per-prompt, not
+   * the global currently-selected model. Falls back to the global model for
+   * entries created before this field existed. */
+  model?: string;
   blocks?: TurnBlock[];
   startTime?: number;
   endTime?: number;

@@ -28,6 +28,8 @@ struct AppState {
 struct FrontendMessage {
     role: String,
     content: String,
+    #[serde(default)]
+    model: Option<String>,
 }
 
 impl FrontendMessage {
@@ -44,6 +46,7 @@ impl FrontendMessage {
             tool_calls: None,
             tool_call_id: None,
             name: None,
+            model: self.model.clone(),
         }
     }
 }
@@ -751,6 +754,7 @@ async fn resume_session(state: State<'_, AppState>, session_id: String) -> Resul
         .map(|m| FrontendMessage {
             role: m.role.to_string(),
             content: m.content.clone().unwrap_or_default(),
+            model: m.model.clone(),
         })
         .collect();
     Ok(FrontendSession {

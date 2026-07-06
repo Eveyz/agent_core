@@ -310,7 +310,7 @@ impl MemoryManager {
         query: &str,
         top_k: usize,
     ) -> Result<Vec<recall::RecallRecord>> {
-        let normalized = hnsw::normalize_embedding(query_emb);
+        let _normalized = hnsw::normalize_embedding(query_emb);
         if self.bm25.is_some() && self.hnsw.is_some() {
             return self.search_conversation_hybrid_precomputed(query_emb, query, top_k);
         }

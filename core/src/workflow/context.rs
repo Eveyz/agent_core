@@ -57,7 +57,7 @@ impl WorkflowContext {
     /// - `_workflow_input`: the original input.
     pub fn resolve_input(
         &self,
-        node_id: &str,
+        _node_id: &str,
         incoming: &[&EdgeDef],
     ) -> serde_json::Value {
         let outputs = self.node_outputs.read();

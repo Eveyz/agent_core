@@ -148,11 +148,12 @@ export const chatSlice = createSlice({
       state.goal = null;
       state.goalCompleted = false;
     },
-    userMessageSent: (state, action: PayloadAction<string>) => {
+    userMessageSent: (state, action: PayloadAction<{ text: string; model?: string }>) => {
       state.entries.push({
         id: `user-${Date.now()}`,
         type: 'user',
-        text: action.payload,
+        text: action.payload.text,
+        model: action.payload.model,
       });
       state.isProcessing = true;
       state._resumedFromBackend = false;
@@ -231,6 +232,7 @@ export const chatSlice = createSlice({
         id: `user-${Date.now()}`,
         type: 'user',
         text: userText,
+        model: state.entries[idx]?.model,
       });
       state.isProcessing = true;
       state._resumedFromBackend = false;
@@ -355,10 +357,12 @@ export const chatSlice = createSlice({
       let assistantIdx = 0;
       for (const msg of messages) {
         if (msg.role === 'user') {
+          const msgModel = (msg as { model?: string }).model;
           state.entries.push({
             id: `user-${Date.now()}-${Math.random()}`,
             type: 'user',
             text: msg.content,
+            model: msgModel,
           });
         } else if (msg.role === 'assistant') {
           const turnIdx = assistantIdx;

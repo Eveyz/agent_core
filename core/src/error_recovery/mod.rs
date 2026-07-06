@@ -231,4 +231,66 @@ mod tests {
             _ => panic!("expected Fail"),
         }
     }
+
+    #[test]
+    fn test_context_too_long_keyword_variants_compact() {
+        // Both "too long" and "context length" should map to CompactContext.
+        let engine = RecoveryEngine::new();
+        for kw in ["context too long", "maximum context length", "context length exceeded"] {
+            let mut ctx = RecoveryContext::new("model", 4096);
+            ctx.record_error(kw);
+            match engine.determine_strategy(&ctx) {
+                RecoveryAction::CompactContext { .. } => {}
+                other => panic!("for '{kw}' expected CompactContext, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_switch_to_fallback_on_network_error_after_retries() {
+        // Mirrors the contract the Run's SwitchModel recovery path relies on
+        // (recovery.rs): after max_retries, a network error routes to the fallback.
+        let engine = RecoveryEngine::new().with_fallback_model("fallback-model");
+        let mut ctx = RecoveryContext::new("model", 4096);
+        for _ in 0..3 {
+            ctx.record_error("connection reset");
+        }
+        match engine.determine_strategy(&ctx) {
+            RecoveryAction::SwitchModel { model } => assert_eq!(model, "fallback-model"),
+            other => panic!("expected SwitchModel after retries, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_retry_backoff_grows_exponentially() {
+        let engine = RecoveryEngine::new();
+        let mut delays = Vec::new();
+        for i in 0..3 {
+            let mut ctx = RecoveryContext::new("model", 4096);
+            ctx.attempt = i;
+            ctx.last_error = Some("transient".into());
+            match engine.determine_strategy(&ctx) {
+                RecoveryAction::Retry { delay_ms } => delays.push(delay_ms),
+                other => panic!("attempt {i}: expected Retry, got {other:?}"),
+            }
+        }
+        assert_eq!(delays[0], 500);
+        assert_eq!(delays[1], 1000);
+        assert_eq!(delays[2], 2000);
+    }
+
+    #[test]
+    fn test_escalate_tokens_scales_by_factor() {
+        // token_escalation_factor default = 1.5
+        let engine = RecoveryEngine::new();
+        let mut ctx = RecoveryContext::new("model", 4096);
+        ctx.record_error("input truncat");
+        match engine.determine_strategy(&ctx) {
+            RecoveryAction::EscalateTokens { new_max_tokens } => {
+                // (4096 * 1.5) = 6144
+                assert_eq!(new_max_tokens, 6144);
+            }
+            other => panic!("expected EscalateTokens, got {other:?}"),
+        }
+    }
 }
