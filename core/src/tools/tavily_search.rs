@@ -11,9 +11,13 @@ pub struct TavilySearchTool {
 
 impl TavilySearchTool {
     pub fn new(api_key: String) -> Self {
+        use std::time::Duration;
         Self {
             api_key,
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(15))
+                .build()
+                .expect("failed to build tavily http client"),
         }
     }
 
@@ -65,48 +69,65 @@ Use this whenever you need to find up-to-date information on the internet."
             "max_results": 3
         });
 
-        let response: Value = self
-            .client
-            .post("https://api.tavily.com/search")
-            .json(&request_body)
-            .send()
-            .await
-            .context("Failed to send HTTP request to Tavily")?
-            .json()
-            .await
-            .context("Failed to parse Tavily JSON response")?;
+        const MAX_RETRIES: u32 = 3;
+        let mut last_err = None;
+        for attempt in 0..MAX_RETRIES {
+            let resp = self
+                .client
+                .post("https://api.tavily.com/search")
+                .json(&request_body)
+                .send()
+                .await;
 
-        // ── Parse and format ──────────────────────────────────────────
-        let mut output = String::new();
-
-        if let Some(answer) = response["answer"].as_str() {
-            if !answer.is_empty() {
-                output.push_str(&format!("{}\n\n", answer));
+            match resp {
+                Ok(r) if r.status().is_success() => {
+                    let response: Value = r.json().await
+                        .context("Failed to parse Tavily JSON response")?;
+                    // ── Parse and format ─────────────────────────
+                    let mut output = String::new();
+                    if let Some(answer) = response["answer"].as_str() {
+                        if !answer.is_empty() {
+                            output.push_str(&format!("{}\n\n", answer));
+                        }
+                    }
+                    if let Some(results) = response["results"].as_array() {
+                        if results.is_empty() {
+                            return Ok("No relevant information found for this query.".to_string());
+                        }
+                        for (i, res) in results.iter().enumerate() {
+                            let title = res["title"].as_str().unwrap_or("Unknown Title");
+                            let url = res["url"].as_str().unwrap_or("Unknown URL");
+                            let content = res["content"].as_str().unwrap_or("No content");
+                            output.push_str(&format!(
+                                "{}. **{}**\nURL: {}\nContent: {}\n\n",
+                                i + 1, title, url, content
+                            ));
+                        }
+                    } else {
+                        output.push_str("Failed to extract results from API.");
+                    }
+                    return Ok(output);
+                }
+                Ok(r) => {
+                    let status = r.status();
+                    last_err = Some(anyhow::anyhow!("Tavily API error: {status}"));
+                    if attempt + 1 < MAX_RETRIES {
+                        let delay = std::time::Duration::from_millis(500 * 2u64.pow(attempt));
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    last_err = Some(anyhow::anyhow!("Tavily request failed: {e}"));
+                    if attempt + 1 < MAX_RETRIES {
+                        let delay = std::time::Duration::from_millis(500 * 2u64.pow(attempt));
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                }
             }
         }
 
-        if let Some(results) = response["results"].as_array() {
-            if results.is_empty() {
-                return Ok("No relevant information found for this query.".to_string());
-            }
-
-            for (i, res) in results.iter().enumerate() {
-                let title = res["title"].as_str().unwrap_or("Unknown Title");
-                let url = res["url"].as_str().unwrap_or("Unknown URL");
-                let content = res["content"].as_str().unwrap_or("No content");
-
-                output.push_str(&format!(
-                    "{}. **{}**\nURL: {}\nContent: {}\n\n",
-                    i + 1,
-                    title,
-                    url,
-                    content
-                ));
-            }
-        } else {
-            output.push_str("Failed to extract results from API.");
-        }
-
-        Ok(output)
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Tavily search failed after retries")))
     }
 }

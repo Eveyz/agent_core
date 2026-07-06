@@ -208,9 +208,9 @@ mod tests {
 
     #[test]
     fn actively_read_tool_exempts_head_tail() {
-        // read_file is ActivelyRead: over the 128K cap it is char-capped
+        // read_file is ActivelyRead: under the 24K cap it is left untouched even
         // though it would be head/tail-split as Incidental.
-        let content = "line\n".repeat(30000); // ~150K chars, 30000 lines
+        let content = "line\n".repeat(5000); // ~25K chars, 5000 lines
         let mut msg = Message {
             role: Role::Tool,
             content: Some(content.clone()),

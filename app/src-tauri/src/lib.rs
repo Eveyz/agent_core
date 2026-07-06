@@ -1634,8 +1634,34 @@ async fn reject_skill_draft(name: String) -> Result<(), String> {
 // ── App entry point ──────────────────────────────────────────────────
 
 pub fn run() {
-    tauri::Builder::default()
-        .setup(|app| {
+    // ── Initialize structured logging to ~/.agverse/logs/ ─────────
+    // All `tracing::info!` / `debug!` / `warn!` / `error!` calls from
+    // the Rust backend (including agent_core) are written here.
+    {
+        let log_dir = agent_core::paths::get_agverse_dir().join("logs");
+        let _ = std::fs::create_dir_all(&log_dir);
+        let log_path = log_dir.join("agent.log");
+        // Append mode: single file, no rotation.  Set RUST_LOG=agent_core=debug
+        // at runtime for verbose output.
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&log_path)
+        {
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::builder()
+                        .from_env_lossy()
+                        .add_directive(
+                            "agent_core=info".parse().unwrap_or_default()
+                        ),
+                )
+                .with_writer(std::sync::Mutex::new(file))
+                .try_init();
+        }
+    }
+
+    tauri::Builder::default()        .setup(|app| {
             // Resolve home directory
             let agverse_dir = agent_core::paths::get_agverse_dir();
             let config_path = agverse_dir.join("config.toml");
@@ -1665,9 +1691,6 @@ pub fn run() {
                             max_context_tokens: None,
                             reasoning_effort: None,
                             thinking_enabled: false,
-                            use_chat_template_kwargs: false,
-                            rate_limit_retries: None,
-                            rate_limit_retry_delay_secs: None,
                         });
                         p.insert("default".to_string(), agent_core::config::ProviderConfig {
                             name: "default".to_string(),
@@ -1680,8 +1703,6 @@ pub fn run() {
                             system_prompt: None,
                             max_iterations: 100,
                             request_timeout_secs: 60,
-                            rate_limit_retries: 20,
-                            rate_limit_retry_delay_secs: 60,
                             models: m,
                         });
                         p

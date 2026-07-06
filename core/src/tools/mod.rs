@@ -46,6 +46,15 @@ pub type ToolUpdateFn = Arc<dyn Fn(&str) + Send + Sync>;
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
+
+    /// Name sent to the LLM API in `tools[].function.name`.
+    /// The OpenAI spec requires `^[a-zA-Z0-9_-]+$`.
+    /// Default implementation sanitizes `self.name()`; override if the
+    /// tool needs a custom API-facing name.
+    fn api_name(&self) -> String {
+        sanitize_tool_name(self.name())
+    }
+
     fn description(&self) -> &str;
     fn parameters_schema(&self) -> Value;
 
@@ -74,8 +83,35 @@ pub trait Tool: Send + Sync {
     }
 }
 
+/// Sanitize a tool name for the OpenAI-compatible `function.name` field.
+/// Only `[a-zA-Z0-9_-]` are allowed; all other characters are
+/// replaced with `_`.  Consecutive `_` are collapsed.
+pub fn sanitize_tool_name(name: &str) -> String {
+    let mapped: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    // Collapse multiple consecutive `_` into a single `_`.
+    let mut collapsed = mapped;
+    while collapsed.contains("__") {
+        collapsed = collapsed.replace("__", "_");
+    }
+    collapsed
+}
+
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
+    /// Map from API-sanitized name → internal tool name.
+    /// `tool_definitions()` uses `api_name()` so the LLM sees sanitized
+    /// names; tool calls coming back from the API carry the sanitized name
+    /// and need to be routed to the correct internal tool.
+    api_name_to_internal: HashMap<String, String>,
 }
 
 impl Default for ToolRegistry {
@@ -88,6 +124,7 @@ impl ToolRegistry {
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
+            api_name_to_internal: HashMap::new(),
         }
     }
 
@@ -107,11 +144,28 @@ impl ToolRegistry {
     }
 
     pub fn register(&mut self, tool: Box<dyn Tool>) {
-        self.tools.insert(tool.name().to_string(), tool);
+        let internal_name = tool.name().to_string();
+        let api_name = tool.api_name();
+        self.tools.insert(internal_name.clone(), tool);
+        self.api_name_to_internal
+            .insert(api_name, internal_name);
     }
 
     pub fn has(&self, name: &str) -> bool {
-        self.tools.contains_key(name)
+        self.tools.contains_key(name) || self.api_name_to_internal.contains_key(name)
+    }
+
+    /// Look up a tool by either its internal name or its API-sanitized name.
+    pub fn get(&self, name: &str) -> Option<&dyn Tool> {
+        // Fast path: direct internal name lookup.
+        if let Some(t) = self.tools.get(name) {
+            return Some(t.as_ref());
+        }
+        // Slow path: API name lookup.
+        if let Some(internal) = self.api_name_to_internal.get(name) {
+            return self.tools.get(internal).map(|t| t.as_ref());
+        }
+        None
     }
 
     /// Returns a fingerprint of the current registry contents.
@@ -125,10 +179,6 @@ impl ToolRegistry {
         names.join("|")
     }
 
-    pub fn get(&self, name: &str) -> Option<&dyn Tool> {
-        self.tools.get(name).map(|t| t.as_ref())
-    }
-
     pub fn tool_definitions(&self) -> Vec<ToolDefinition> {
         let mut defs: Vec<_> = self
             .tools
@@ -136,7 +186,7 @@ impl ToolRegistry {
             .map(|t| ToolDefinition {
                 tool_type: "function".to_string(),
                 function: FunctionSchema {
-                    name: t.name().to_string(),
+                    name: t.api_name(),
                     description: t.description().to_string(),
                     parameters: canonicalize_json_object(&t.parameters_schema()),
                 },
@@ -148,7 +198,6 @@ impl ToolRegistry {
 
     pub fn validate_args(&self, name: &str, args: &Value) -> Result<()> {
         let tool = self
-            .tools
             .get(name)
             .with_context(|| format!("tool '{name}' not found"))?;
 

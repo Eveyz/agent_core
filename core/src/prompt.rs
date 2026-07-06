@@ -21,7 +21,6 @@ File operations:
 
 Skills:
 - To use or activate any available skill listed in the context, call the `skill_load` tool with the skill's name. Do NOT attempt to read `SKILL.md` or other files inside the skill's directory directly using file reading tools.
-- When executing a script provided by an active skill, ALWAYS use the specific `skill.<name>.<script>` tool (e.g., `skill.antigravity_guide.make`). Do NOT use the generic `bash` tool to run skill scripts.
 
 ## Planning Protocol
 

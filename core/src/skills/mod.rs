@@ -244,24 +244,7 @@ impl SkillManager {
         if manifest.content_path.as_os_str().is_empty() {
             anyhow::bail!("No content path for skill '{}'", manifest.name);
         }
-        let body = SkillManifest::read_body(&manifest.content_path)?;
-
-        // Find the source_dir for this manifest in self.manifests to get the skill_dir
-        let skill_dir = self.manifests
-            .iter()
-            .find(|s| s.manifest.name == manifest.name)
-            .map(|s| &s.source_dir);
-
-        if let Some(dir) = skill_dir {
-            let dir_str = dir.to_string_lossy();
-            let re = regex::Regex::new(r"(?m)(^|[^a-zA-Z0-9_/\.-])(?:\./)?scripts/").unwrap();
-            let rewritten = re.replace_all(&body, |caps: &regex::Captures| {
-                format!("{}{}/scripts/", &caps[1], dir_str)
-            });
-            Ok(rewritten.into_owned())
-        } else {
-            Ok(body)
-        }
+        SkillManifest::read_body(&manifest.content_path)
     }
 
     /// Build context string for all active skills (for Segment 6).
@@ -791,52 +774,6 @@ Skill body for {}"#,
         assert!(ctx.contains("Skill directory:"));
         // Must expose the skill's own dir, not the search dir.
         assert!(ctx.contains(&dir.join("my-skill").display().to_string()));
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn test_load_content_rewrites_paths() {
-        let dir = PathBuf::from("/tmp/test_skills_rewrite");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(dir.join("rewrite-skill")).unwrap();
-
-        let body = "\
----
-name: rewrite-skill
-description: Skill for testing relative path rewriting
----
-Run scripts/make.sh directly.
-Or run ./scripts/make.sh like this.
-But do not rewrite /absolute/path/to/scripts/make.sh.
-Do not rewrite javascriptscripts/make.sh.
-Do not rewrite some_scripts/make.sh.
-Do not rewrite ../scripts/make.sh.
-Do not rewrite my-scripts/make.sh.
-Also check markdown: [script](scripts/make.sh) and [script2](./scripts/make.sh).
-";
-
-        fs::write(dir.join("rewrite-skill/SKILL.md"), body).unwrap();
-
-        let mut mgr = SkillManager::new(dir.clone());
-        mgr.scan().unwrap();
-
-        let skill_manifest = mgr.find_by_name("rewrite-skill").unwrap();
-        let content = mgr.load_content(skill_manifest).unwrap();
-
-        let expected_dir = dir.join("rewrite-skill").to_string_lossy().into_owned();
-
-        // Should rewrite relative paths
-        assert!(content.contains(&format!("Run {}/scripts/make.sh directly.", expected_dir)));
-        assert!(content.contains(&format!("Or run {}/scripts/make.sh like this.", expected_dir)));
-        assert!(content.contains(&format!("Also check markdown: [script]({}/scripts/make.sh) and [script2]({}/scripts/make.sh).", expected_dir, expected_dir)));
-
-        // Should NOT rewrite absolute or invalid matches
-        assert!(content.contains("But do not rewrite /absolute/path/to/scripts/make.sh."));
-        assert!(content.contains("Do not rewrite javascriptscripts/make.sh."));
-        assert!(content.contains("Do not rewrite some_scripts/make.sh."));
-        assert!(content.contains("Do not rewrite ../scripts/make.sh."));
-        assert!(content.contains("Do not rewrite my-scripts/make.sh."));
 
         let _ = fs::remove_dir_all(&dir);
     }

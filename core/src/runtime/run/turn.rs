@@ -15,6 +15,12 @@ use super::{RecoveryOutcome, Run, RunError, TurnOutcome, CACHE_IDLE_WARN_SECS};
 
 impl Run {
     pub(super) async fn run_turn(&mut self, turn_index: usize) -> Result<TurnOutcome, RunError> {
+        tracing::info!(
+            turn = turn_index,
+            context_msgs = self.context.messages().len(),
+            "TURN: entering"
+        );
+
         // Stage: Idle detection — warn if the cache likely expired between turns.
         // DeepSeek's prefix cache has an undocumented ~5–10 minute idle timeout.
         // If the user paused for > CACHE_IDLE_WARN_SECS, the next API call will
@@ -53,12 +59,21 @@ impl Run {
         self.maybe_compact().await;
 
         // Stage: Model
+        tracing::info!("TURN: calling model_turn");
         let (text, tool_calls, message_id, cache_usage) = match self.model_turn().await {
-            Ok(r) => r,
+            Ok(r) => {
+                tracing::info!(
+                    text_len = r.0.len(),
+                    tool_count = r.1.len(),
+                    "TURN: model_turn ok"
+                );
+                r
+            }
             Err(e) => {
                 if self.cancel.is_cancelled() {
                     return Err(RunError::Cancelled);
                 }
+                tracing::warn!(error = %e, "TURN: model_turn failed");
                 self.emit(RunEvent::Error { message: e.clone() });
                 return Ok(TurnOutcome::Stop(format!(
                     "Error communicating with the model: {e}"
@@ -81,6 +96,7 @@ impl Run {
             // Final answer
             let assistant_msg = Message::assistant(&text);
             self.context.add(assistant_msg.clone());
+            self.save_session_snapshot();
             self.emit(RunEvent::MessageEnd {
                 message_id: message_id.clone(),
                 message: assistant_msg.clone(),
@@ -166,12 +182,18 @@ impl Run {
         // Add assistant message with tool calls
         let assistant_msg = Message::assistant_with_tools(&text, tool_calls.clone());
         self.context.add(assistant_msg.clone());
+        self.save_session_snapshot();
         self.emit(RunEvent::MessageEnd {
             message_id: message_id.clone(),
             message: assistant_msg.clone(),
         });
 
         // Stage: Execute
+        tracing::info!(
+            tool_count = tool_calls.len(),
+            tools = ?tool_calls.iter().map(|c| &c.function.name).collect::<Vec<_>>(),
+            "TURN: executing tools"
+        );
         // Clone the event sender and run id out of self so the bridge
         // closure doesn't borrow self (which would conflict with the
         // &mut borrows the orchestrator needs).
@@ -259,6 +281,7 @@ impl Run {
             self.context
                 .add(Message::tool(call.id.clone(), result.clone(), Some(call.function.name.clone())));
         }
+        self.save_session_snapshot();
 
         // All tools completed normally — disarm the guards.
         for g in tool_guards.iter_mut() {
@@ -314,8 +337,11 @@ impl Run {
 
     pub(super) async fn model_turn(&mut self) -> Result<(String, Vec<ToolCall>, String, CacheUsage), String> {
         const MAX_RECOVERY_ATTEMPTS: u32 = 3;
+        /// How many times we restart a dropped SSE stream before escalating to recovery.
+        const MAX_STREAM_RETRIES: u32 = 2;
 
         for _attempt in 0..MAX_RECOVERY_ATTEMPTS {
+            tracing::info!(attempt = _attempt, "TURN: model_turn recovery attempt");
             if self.cancel.is_cancelled() {
                 return Err("aborted".to_string());
             }
@@ -334,41 +360,101 @@ impl Run {
                 return Ok((preset, Vec::new(), uuid::Uuid::new_v4().to_string(), CacheUsage::default()));
             }
 
-            let stream = self
-                .client
-                .chat_completion_stream(&messages, &tools)
-                .await
-                .map_err(|e| format!("LLM request failed: {e}"))?;
+            // ── Inner stream-retry loop ──────────────────────────────
+            // The outer `send_with_retry` handles HTTP-level failures
+            // (429, 5xx, connection refused). This inner loop handles
+            // *mid-stream* drops — the HTTP connection succeeded, the
+            // SSE stream started delivering tokens, then the connection
+            // reset / the proxy timed out / the gateway dropped us.
+            // Because LLM APIs are stateless, reapplying the same
+            // messages+tools is safe — the model restarts from scratch.
+            let mut stream_error: Option<String> = None;
+            for stream_attempt in 0..=MAX_STREAM_RETRIES {
+                if self.cancel.is_cancelled() {
+                    return Err("aborted".to_string());
+                }
 
-            let collected: Result<(String, Vec<ToolCall>, String, CacheUsage), String> = {
+                let stream = self
+                    .client
+                    .chat_completion_stream(&messages, &tools)
+                    .await
+                    .map_err(|e| format!("LLM request failed: {e}"))?;
+
                 let cancel = self.cancel.clone();
                 let event_tx = self.event_tx.clone();
                 let res = self.collect_stream(stream, &event_tx).await;
                 match res {
-                    Ok(r) => Ok(r),
-                    Err(e) => {
-                        if cancel.is_cancelled() {
-                            return Err("aborted".to_string());
+                    Ok(r) => {
+                        // Treat empty responses (no text, no tool calls) as stream errors.
+                        // The SSE parser got zero useful events — likely the API returned
+                        // a non-SSE response (e.g. JSON error) that was silently eaten.
+                        if r.0.is_empty() && r.1.is_empty() {
+                            let msg = "empty response from model — SSE stream had no useful events".to_string();
+                            tracing::warn!(attempt = stream_attempt, "{}", msg);
+                            if stream_attempt < MAX_STREAM_RETRIES {
+                                let delay_ms = 1000u64 * 2u64.pow(stream_attempt);
+                                tracing::warn!(
+                                    attempt = stream_attempt + 1,
+                                    delay_ms,
+                                    "retrying after empty response",
+                                );
+                                self.emit(RunEvent::Error {
+                                    message: format!(
+                                        "Model returned empty response, retrying in {}s (attempt {}/{})",
+                                        delay_ms / 1000,
+                                        stream_attempt + 1,
+                                        MAX_STREAM_RETRIES,
+                                    ),
+                                });
+                                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                                stream_error = Some(msg);
+                                continue;
+                            }
+                            stream_error = Some(msg);
+                            break;
                         }
-                        Err(format!("Stream error: {e}"))
+                        self.recovery_ctx.record_success();
+                        self.hook_registry.lock().fire_after_model(&r.0, r.1.len());
+                        return Ok(r);
+                    }
+                    Err(e) if cancel.is_cancelled() => return Err("aborted".to_string()),
+                    Err(e) => {
+                        let msg = format!("Stream error: {e}");
+                        if stream_attempt < MAX_STREAM_RETRIES {
+                            let delay_ms = 1000u64 * 2u64.pow(stream_attempt);
+                            tracing::warn!(
+                                attempt = stream_attempt + 1,
+                                delay_ms,
+                                error = %e,
+                                "SSE stream dropped mid-response — retrying",
+                            );
+                            self.emit(RunEvent::Error {
+                                message: format!(
+                                    "Stream interrupted, retrying in {}s (attempt {}/{})",
+                                    delay_ms / 1000,
+                                    stream_attempt + 1,
+                                    MAX_STREAM_RETRIES,
+                                ),
+                            });
+                            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                            stream_error = Some(msg);
+                            continue;
+                        }
+                        stream_error = Some(msg);
+                        break;
                     }
                 }
-            };
+            }
 
-            match collected {
-                Ok((text, tool_calls, message_id, cache_usage)) => {
-                    self.recovery_ctx.record_success();
-                    self.hook_registry.lock().fire_after_model(&text, tool_calls.len());
-
-                    return Ok((text, tool_calls, message_id, cache_usage));
+            // Stream retries exhausted — escalate to recovery engine.
+            let msg = stream_error.unwrap_or_else(|| "unknown stream error".to_string());
+            self.recovery_ctx.record_error(&msg);
+            match self.try_recover(&msg).await {
+                RecoveryOutcome::Retry => {
+                    tracing::info!("recovery engine retrying after stream errors");
+                    continue;
                 }
-                Err(msg) => {
-                    self.recovery_ctx.record_error(&msg);
-                    match self.try_recover(&msg).await {
-                        RecoveryOutcome::Retry => continue,
-                        RecoveryOutcome::GiveUp => return Err(msg),
-                    }
-                }
+                RecoveryOutcome::GiveUp => return Err(msg),
             }
         }
 
@@ -380,6 +466,7 @@ impl Run {
         stream: impl futures::Stream<Item = Result<StreamEvent>>,
         event_tx: &broadcast::Sender<Envelope>,
     ) -> Result<(String, Vec<ToolCall>, String, CacheUsage)> {
+        tracing::debug!("TURN: collect_stream start");
         let mut text_buffer = String::new();
         let mut accumulator = ToolCallAccumulator::new();
         let mut has_tool_calls = false;
@@ -474,11 +561,48 @@ impl Run {
         }
 
         let tool_calls = if has_tool_calls {
-            accumulator.into_tool_calls()
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                accumulator.into_tool_calls()
+            })) {
+                Ok(calls) => calls,
+                Err(_) => {
+                    tracing::error!("TURN: tool_calls accumulator panicked");
+                    return Err(anyhow::anyhow!("tool call accumulator panicked — incomplete SSE stream"));
+                }
+            }
         } else {
             vec![]
         };
 
+        tracing::debug!(
+            text_len = text_buffer.len(),
+            tool_count = tool_calls.len(),
+            "TURN: collect_stream done"
+        );
+
         Ok((text_buffer, tool_calls, message_id, cache_usage))
+    }
+
+    /// Write the current context messages to the per-session snapshot file.
+    /// This is a best-effort mid-turn persistence — failures are logged but
+    /// never propagated (session save should not block the primary loop).
+    pub(super) fn save_session_snapshot(&self) {
+        let Some(ref path) = self.session_snapshot_path else {
+            return;
+        };
+        let messages = self.context.messages();
+        match serde_json::to_string(&messages) {
+            Ok(json) => {
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if let Err(e) = std::fs::write(path, &json) {
+                    tracing::warn!(path = %path.display(), error = %e, "failed to write session snapshot");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to serialize session snapshot");
+            }
+        }
     }
 }

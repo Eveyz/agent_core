@@ -445,6 +445,8 @@ impl Brain {
                 available_tools,
                 None,
                 self.config.permissions.clone(),
+                None,
+                None,
             );
         }
 

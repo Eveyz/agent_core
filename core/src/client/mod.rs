@@ -16,9 +16,6 @@ pub struct OpenAIClient {
     pub(crate) overrides: RuntimeOverrides,
     circuit_breaker: Arc<CircuitBreaker>,
     fallback_client: Option<Box<OpenAIClient>>,
-    /// Optional callback to surface status messages (e.g. "rate limited, retrying...")
-    /// to the frontend. Called from within `send_with_retry`.
-    status_cb: Option<Arc<dyn Fn(String) + Send + Sync>>,
 }
 
 impl OpenAIClient {
@@ -42,16 +39,6 @@ impl OpenAIClient {
             },
             circuit_breaker: CircuitBreaker::new(CircuitBreakerConfig::default()),
             fallback_client: fallback.map(Box::new),
-            status_cb: None,
-        }
-    }
-
-    /// Set a callback for status messages that should be visible in the UI.
-    /// Passed to the fallback client as well.
-    pub fn set_status_callback(&mut self, cb: Arc<dyn Fn(String) + Send + Sync>) {
-        self.status_cb = Some(cb.clone());
-        if let Some(ref mut fallback) = self.fallback_client {
-            fallback.status_cb = Some(cb);
         }
     }
 
@@ -71,8 +58,11 @@ impl OpenAIClient {
 
     fn build_http_client(timeout_secs: u64) -> reqwest::Client {
         reqwest::Client::builder()
+            .timeout(Duration::from_secs(timeout_secs.saturating_add(30)))
             .read_timeout(Duration::from_secs(timeout_secs))
             .connect_timeout(Duration::from_secs(10))
+            .pool_max_idle_per_host(32)
+            .tcp_keepalive(Duration::from_secs(30))
             .no_gzip()
             .no_deflate()
             .no_brotli()
@@ -109,20 +99,26 @@ impl OpenAIClient {
             body["max_tokens"] = serde_json::json!(max_tokens);
         }
 
-        if self.model.use_chat_template_kwargs {
-            // NVIDIA API proxy format: thinking and reasoning_effort inside chat_template_kwargs
-            let mut kwargs = serde_json::Map::new();
-            if let Some(effort) = &self.model.reasoning_effort {
-                kwargs.insert("reasoning_effort".into(), serde_json::json!(effort));
+        // NVIDIA's API gateway wraps DeepSeek models behind a chat_template_kwargs
+        // translation layer.  Sending top-level `thinking` / `reasoning_effort`
+        // produces a 400 — they must live inside `chat_template_kwargs`.
+        let is_nvidia = self
+            .model
+            .base_url
+            .contains("nvidia.com");
+
+        if is_nvidia {
+            let mut ctk = serde_json::Map::new();
+            if let Some(ref effort) = self.model.reasoning_effort {
+                ctk.insert("reasoning_effort".to_string(), serde_json::json!(effort));
             }
             if self.model.thinking_enabled {
-                kwargs.insert("thinking".into(), serde_json::json!(true));
+                ctk.insert("thinking".to_string(), serde_json::json!(true));
             }
-            if !kwargs.is_empty() {
-                body["chat_template_kwargs"] = serde_json::Value::Object(kwargs);
+            if !ctk.is_empty() {
+                body["chat_template_kwargs"] = serde_json::Value::Object(ctk);
             }
         } else {
-            // OpenAI standard format: top-level fields
             if let Some(effort) = &self.model.reasoning_effort {
                 body["reasoning_effort"] = serde_json::json!(effort);
             }
@@ -184,6 +180,16 @@ impl OpenAIClient {
     ) -> Result<impl futures::Stream<Item = Result<StreamEvent>>> {
         let body = self.build_request_body(messages, tools, true);
         let resp = self.send_with_retry(&body).await?;
+        let status = resp.status();
+        let ct = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("(none)");
+        tracing::info!(%status, content_type = %ct, "LLM stream response received");
+        if !ct.starts_with("text/event-stream") {
+            tracing::warn!(%status, %ct, "unexpected content-type for SSE stream");
+        }
         Ok(streaming::SseParser::parse_stream(resp))
     }
 
@@ -208,20 +214,20 @@ impl OpenAIClient {
 
             let url = format!("{}/chat/completions", current_client.model.base_url);
             let base_delay = Duration::from_millis(500);
-            let max_delay = Duration::from_secs(10);
-            let max_retries_5xx = 3u32;
-            let rate_limit_retries = current_client.model.rate_limit_retries;
-            let rate_limit_base =
-                Duration::from_secs(current_client.model.rate_limit_retry_delay_secs);
-            let rate_limit_max = Duration::from_secs(std::cmp::max(
-                current_client.model.rate_limit_retry_delay_secs * 32,
-                3600,
-            ));
+            let max_delay = Duration::from_secs(60);
+            // Rate-limit retries (429 only) — separate from general network retries.
+            let rate_limit_max_retries = 10usize;
+            let network_max_retries = 3usize;
 
             let mut final_error = None;
-            let mut rate_limit_attempts = 0u32;
+            let mut rate_limit_attempts = 0usize;
+            let mut network_attempts = 0usize;
 
-            for attempt in 0..max_retries_5xx {
+            loop {
+                if rate_limit_attempts >= rate_limit_max_retries || network_attempts >= network_max_retries {
+                    break;
+                }
+
                 let resp = current_client
                     .http
                     .post(&url)
@@ -237,48 +243,9 @@ impl OpenAIClient {
                     }
                     Ok(r) if r.status().as_u16() == 429 => {
                         current_client.circuit_breaker.record_failure();
-
-                        // Respect Retry-After header if present; otherwise exponential backoff
-                        let delay = r
-                            .headers()
-                            .get("retry-after")
-                            .and_then(|v| v.to_str().ok())
-                            .and_then(|v| v.parse::<u64>().ok())
-                            .map(Duration::from_secs)
-                            .unwrap_or_else(|| {
-                                calculate_backoff(rate_limit_attempts, rate_limit_base, rate_limit_max)
-                            });
-
-                        // Use separate retry count for rate limits
-                        if rate_limit_attempts >= rate_limit_retries {
-                            final_error = Some(anyhow::anyhow!(
-                                "API error 429: rate limit exceeded after {} retries",
-                                rate_limit_attempts
-                            ));
-                            break;
-                        }
-
                         rate_limit_attempts += 1;
-                        let msg = format!(
-                            "429 rate limited, retrying in {}s (attempt {}/{})",
-                            delay.as_secs(),
-                            rate_limit_attempts,
-                            rate_limit_retries,
-                        );
-                        if let Some(ref cb) = current_client.status_cb {
-                            cb(msg.clone());
-                        }
-                        tracing::warn!(
-                            "Model {}: {}",
-                            current_client.model.model_id,
-                            msg,
-                        );
-                        tokio::time::sleep(delay).await;
-                    }
-                    Ok(r) if r.status().is_server_error() => {
-                        current_client.circuit_breaker.record_failure();
-                        if attempt == max_retries_5xx - 1 {
-                            final_error = Some(anyhow::anyhow!("API error {}", r.status()));
+                        if rate_limit_attempts >= rate_limit_max_retries {
+                            final_error = Some(anyhow::anyhow!("Rate limited after {} retries", rate_limit_attempts));
                             break;
                         }
 
@@ -290,11 +257,30 @@ impl OpenAIClient {
                             .map(Duration::from_secs);
 
                         let delay = retry_after
-                            .unwrap_or_else(|| calculate_backoff(attempt, base_delay, max_delay));
+                            .unwrap_or_else(|| calculate_backoff(rate_limit_attempts as u32, base_delay, max_delay));
                         tracing::warn!(
-                            "Model {} failed with {}, retrying in {:?}",
+                            "Model {} 429 rate limited, attempt {}/{}, retrying in {:?}",
+                            current_client.model.model_id,
+                            rate_limit_attempts,
+                            rate_limit_max_retries,
+                            delay
+                        );
+                        tokio::time::sleep(delay).await;
+                    }
+                    Ok(r) if r.status().is_server_error() => {
+                        current_client.circuit_breaker.record_failure();
+                        network_attempts += 1;
+                        if network_attempts >= network_max_retries {
+                            final_error = Some(anyhow::anyhow!("Server error {} after {} retries", r.status(), network_attempts));
+                            break;
+                        }
+                        let delay = calculate_backoff(network_attempts as u32, base_delay, max_delay);
+                        tracing::warn!(
+                            "Model {} server error {}, attempt {}/{}, retrying in {:?}",
                             current_client.model.model_id,
                             r.status(),
+                            network_attempts,
+                            network_max_retries,
                             delay
                         );
                         tokio::time::sleep(delay).await;
@@ -308,16 +294,18 @@ impl OpenAIClient {
                     }
                     Err(e) => {
                         current_client.circuit_breaker.record_failure();
-                        if attempt == max_retries_5xx - 1 {
+                        network_attempts += 1;
+                        if network_attempts >= network_max_retries {
                             final_error = Some(e.into());
                             break;
                         }
-
-                        let delay = calculate_backoff(attempt, base_delay, max_delay);
+                        let delay = calculate_backoff(network_attempts as u32, base_delay, max_delay);
                         tracing::warn!(
-                            "Model {} network error: {}, retrying in {:?}",
+                            "Model {} network error: {}, attempt {}/{}, retrying in {:?}",
                             current_client.model.model_id,
                             e,
+                            network_attempts,
+                            network_max_retries,
                             delay
                         );
                         tokio::time::sleep(delay).await;

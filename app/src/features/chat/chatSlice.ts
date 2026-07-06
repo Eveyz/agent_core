@@ -416,11 +416,36 @@ export const chatSlice = createSlice({
           // Prefer full message content over event_log (which may be truncated).
           // The event_log assistant block serves as a fallback — if msg.content
           // is available, use it for a complete restore.
-          const assistantBlock = blocks.find((b) => b.type === 'assistant');
-          if (assistantBlock && msg.content) {
-            assistantBlock.text = msg.content;
-          } else if (!assistantBlock) {
-            blocks.push({ type: 'assistant', text: msg.content, isStreaming: false });
+          //
+          // If the content contains <think>...</think> tags (written by
+          // entriesToMessages for session persistence), extract the thinking
+          // portion into a separate block so the UI renders it correctly.
+          const hasThinkTag = msg.content?.match(/<think>([\s\S]*?)<\/think>/);
+          if (hasThinkTag) {
+            const thinkContent = hasThinkTag[1];
+            const restContent = msg.content!.replace(/<think>[\s\S]*?<\/think>/, '').trim();
+            // Replace or create thinking block
+            const thinkBlock = blocks.find((b) => b.type === 'thinking');
+            if (thinkBlock) {
+              thinkBlock.text = thinkContent;
+            } else {
+              blocks.push({ type: 'thinking', text: thinkContent, isStreaming: false });
+            }
+            // Update assistant block with content after the think tag
+            const asstBlock = blocks.find((b) => b.type === 'assistant');
+            if (asstBlock) {
+              asstBlock.text = restContent;
+            } else if (restContent) {
+              blocks.push({ type: 'assistant', text: restContent, isStreaming: false });
+            }
+          } else {
+            // Legacy: no think tags, just use msg.content as-is
+            const assistantBlock = blocks.find((b) => b.type === 'assistant');
+            if (assistantBlock && msg.content) {
+              assistantBlock.text = msg.content;
+            } else if (!assistantBlock) {
+              blocks.push({ type: 'assistant', text: msg.content, isStreaming: false });
+            }
           }
 
           let startTime: number | undefined = undefined;

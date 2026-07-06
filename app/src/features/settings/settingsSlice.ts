@@ -9,9 +9,6 @@ export interface ProviderModelEntry {
   max_context_tokens?: number;
   reasoning_effort?: string;
   thinking_enabled?: boolean;
-  use_chat_template_kwargs?: boolean;
-  rate_limit_retries?: number;
-  rate_limit_retry_delay_secs?: number;
 }
 
 export interface ProviderConfig {
@@ -25,8 +22,6 @@ export interface ProviderConfig {
   system_prompt?: string;
   max_iterations: number;
   request_timeout_secs: number;
-  rate_limit_retries: number;
-  rate_limit_retry_delay_secs: number;
   models: Record<string, ProviderModelEntry>;
 }
 
@@ -120,9 +115,6 @@ function normalizeProviderModel(raw: Record<string, unknown>): ProviderModelEntr
     max_context_tokens: (raw.max_context_tokens as number) ?? undefined,
     reasoning_effort: (raw.reasoning_effort as string) ?? undefined,
     thinking_enabled: (raw.thinking_enabled as boolean) ?? false,
-    use_chat_template_kwargs: (raw.use_chat_template_kwargs as boolean) ?? false,
-    rate_limit_retries: (raw.rate_limit_retries as number) ?? undefined,
-    rate_limit_retry_delay_secs: (raw.rate_limit_retry_delay_secs as number) ?? undefined,
   };
 }
 

@@ -1,7 +1,9 @@
 use anyhow::Result;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 use crate::agent_registry::memory::AgentMemoryStore;
 
@@ -9,6 +11,7 @@ use crate::client::OpenAIClient;
 use crate::config::ModelConfig;
 use crate::context::Context;
 use crate::runtime::EventGuard;
+use crate::runtime::supervisor::ProcessSupervisor;
 use crate::tools::ToolRegistry;
 use crate::types::{AgentEvent, EventSender, Message, MessageDelta, StreamEvent, ToolCall};
 
@@ -111,6 +114,12 @@ pub struct Subagent {
     /// The agent definition id this subagent was built from (for memory keying).
     agent_id: Option<String>,
     pub session_id: Option<String>,
+    /// Optional cancel token — propagated from the parent Run so canceling the
+    /// parent also stops the subagent. When `None`, a new token is created.
+    pub cancel_token: Option<CancellationToken>,
+    /// Optional process supervisor — when set, the subagent's BashTool is
+    /// replaced with a supervised version for process-group isolation.
+    pub supervisor: Option<Arc<Mutex<ProcessSupervisor>>>,
 }
 
 impl Subagent {
@@ -145,6 +154,34 @@ impl Subagent {
             memory_store: None,
             agent_id: None,
             session_id: None,
+            cancel_token: None,
+            supervisor: None,
+        }
+    }
+
+    /// Builder: attach a `ProcessSupervisor` (propagated from the parent Run)
+    /// so the subagent's bash commands are managed within the same process group.
+    pub fn with_supervisor(mut self, sv: Arc<Mutex<ProcessSupervisor>>) -> Self {
+        self.wire_supervisor_to_registry(&sv);
+        self.supervisor = Some(sv);
+        self
+    }
+
+    /// Builder: attach a `CancellationToken` from the parent Run.
+    pub fn with_cancel_token(mut self, ct: CancellationToken) -> Self {
+        self.cancel_token = Some(ct);
+        self
+    }
+
+    /// Replace the BashTool in the registry with a supervised version.
+    fn wire_supervisor_to_registry(&mut self, supervisor: &Arc<Mutex<ProcessSupervisor>>) {
+        if self.registry.has("bash") {
+            self.registry.register(Box::new(
+                crate::tools::bash::BashTool::with_supervisor(
+                    supervisor.clone(),
+                    None,
+                ),
+            ));
         }
     }
 
@@ -277,12 +314,55 @@ impl Subagent {
             let messages = self.context.messages();
             let tools = self.registry.tool_definitions();
 
-            let stream = self
-                .client
-                .chat_completion_stream(&messages, &tools)
-                .await?;
+            const MAX_STREAM_ATTEMPTS: u32 = 3;
+            let mut stream_error: Option<anyhow::Error> = None;
+            let mut text = String::new();
+            let mut tool_calls = Vec::new();
 
-            let (text, tool_calls) = self.collect_stream(stream, event_sender.as_ref()).await?;
+            for attempt in 0..MAX_STREAM_ATTEMPTS {
+                let stream = match self
+                    .client
+                    .chat_completion_stream(&messages, &tools)
+                    .await
+                {
+                    Ok(s) => s,
+                    Err(e) => {
+                        if attempt + 1 < MAX_STREAM_ATTEMPTS {
+                            let delay = std::time::Duration::from_millis(500 * 2u64.pow(attempt));
+                            tracing::warn!(attempt, delay_ms = delay.as_millis(), error = %e,
+                                "subagent: stream request failed, retrying");
+                            tokio::time::sleep(delay).await;
+                            continue;
+                        }
+                        stream_error = Some(e);
+                        break;
+                    }
+                };
+
+                match self.collect_stream(stream, event_sender.as_ref()).await {
+                    Ok((t, tc)) => {
+                        text = t;
+                        tool_calls = tc;
+                        stream_error = None;
+                        break;
+                    }
+                    Err(e) => {
+                        if attempt + 1 < MAX_STREAM_ATTEMPTS {
+                            let delay = std::time::Duration::from_millis(1000 * 2u64.pow(attempt));
+                            tracing::warn!(attempt, delay_ms = delay.as_millis(), error = %e,
+                                "subagent: SSE stream dropped mid-response, retrying");
+                            tokio::time::sleep(delay).await;
+                            continue;
+                        }
+                        stream_error = Some(e);
+                    }
+                }
+            }
+
+            if let Some(e) = stream_error {
+                return Err(e);
+            }
+
             last_text = text.clone();
             if !all_text.is_empty() && !text.is_empty() {
                 all_text.push_str("\n\n");
@@ -320,12 +400,14 @@ impl Subagent {
 
             // Execute tools, emitting SubagentToolStart/SubagentToolEnd events
             let results = {
+                let cancel = self.cancel_token.clone()
+                    .unwrap_or_else(|| tokio_util::sync::CancellationToken::new());
                 let mut orchestrator = crate::runtime::tool_orchestrator::ToolOrchestrator {
                     registry: &self.registry,
                     permission_policy: &mut self.permission_policy,
                     hook_registry: self.hook_registry.clone(),
                     tool_execution_mode: crate::types::ToolExecutionMode::Sequential,
-                    cancel_token: tokio_util::sync::CancellationToken::new(),
+                    cancel_token: cancel,
                     approval_resolver: None,
                     session_id: self.session_id.clone(),
                 };

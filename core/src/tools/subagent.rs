@@ -16,32 +16,46 @@ pub fn register_subagent_tools(
     available_tool_names: Vec<String>,
     session_mgr: Option<Arc<Mutex<SessionManager>>>,
     permission_config: PermissionConfig,
+    supervisor: Option<Arc<Mutex<crate::runtime::supervisor::ProcessSupervisor>>>,
+    cancel_token: Option<tokio_util::sync::CancellationToken>,
 ) {
     let parent_max_iterations = model_config.max_iterations;
-    registry.register(Box::new(SubagentSpawnTool::new(
+    let mut single = SubagentSpawnTool::new(
         model_config.clone(),
         available_tool_names.clone(),
         session_mgr.clone(),
         permission_config.clone(),
         parent_max_iterations,
-    )));
-    registry.register(Box::new(SubagentSpawnAllTool::new(
+    );
+    let mut spawn_all = SubagentSpawnAllTool::new(
         model_config,
         available_tool_names,
         session_mgr,
         permission_config,
         parent_max_iterations,
-    )));
+    );
+    if let Some(sv) = supervisor {
+        single = single.with_supervisor(sv.clone());
+        spawn_all = spawn_all.with_supervisor(sv);
+    }
+    if let Some(ct) = cancel_token {
+        single = single.with_cancel_token(ct.clone());
+        spawn_all = spawn_all.with_cancel_token(ct);
+    }
+    registry.register(Box::new(single));
+    registry.register(Box::new(spawn_all));
 }
 
 // ── SubagentSpawnTool ────────────────────────────────────────────────
 
-struct SubagentSpawnTool {
+pub(crate) struct SubagentSpawnTool {
     model_config: ModelConfig,
     available_tools: Vec<String>,
     session_mgr: Option<Arc<Mutex<SessionManager>>>,
     permission_config: PermissionConfig,
     parent_max_iterations: usize,
+    supervisor: Option<Arc<Mutex<crate::runtime::supervisor::ProcessSupervisor>>>,
+    cancel_token: Option<tokio_util::sync::CancellationToken>,
 }
 
 impl SubagentSpawnTool {
@@ -58,7 +72,19 @@ impl SubagentSpawnTool {
             session_mgr,
             permission_config,
             parent_max_iterations,
+            supervisor: None,
+            cancel_token: None,
         }
+    }
+
+    pub fn with_supervisor(mut self, sv: Arc<Mutex<crate::runtime::supervisor::ProcessSupervisor>>) -> Self {
+        self.supervisor = Some(sv);
+        self
+    }
+
+    pub fn with_cancel_token(mut self, ct: tokio_util::sync::CancellationToken) -> Self {
+        self.cancel_token = Some(ct);
+        self
     }
 }
 
@@ -131,6 +157,8 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
             &self.permission_config,
             self.parent_max_iterations,
             strategy,
+            self.supervisor.clone(),
+            self.cancel_token.clone(),
         )
         .await?;
 
@@ -144,7 +172,7 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
         // Save subagent session if session manager is available
         if let Some(ref mgr) = self.session_mgr {
             let mgr = mgr.lock();
-            let _ = mgr.save_subagent_with_messages("subagent", &messages);
+            let _ = mgr.save_subagent_with_messages(&id, &messages);
         }
 
         Ok(format!("{}{}", result.format_output(strategy), file_ref))
@@ -153,12 +181,14 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
 
 // ── SubagentSpawnAllTool (concurrent) ────────────────────────────────
 
-struct SubagentSpawnAllTool {
+pub(crate) struct SubagentSpawnAllTool {
     model_config: ModelConfig,
     available_tools: Vec<String>,
     session_mgr: Option<Arc<Mutex<SessionManager>>>,
     permission_config: PermissionConfig,
     parent_max_iterations: usize,
+    supervisor: Option<Arc<Mutex<crate::runtime::supervisor::ProcessSupervisor>>>,
+    cancel_token: Option<tokio_util::sync::CancellationToken>,
 }
 
 impl SubagentSpawnAllTool {
@@ -175,7 +205,19 @@ impl SubagentSpawnAllTool {
             session_mgr,
             permission_config,
             parent_max_iterations,
+            supervisor: None,
+            cancel_token: None,
         }
+    }
+
+    pub fn with_supervisor(mut self, sv: Arc<Mutex<crate::runtime::supervisor::ProcessSupervisor>>) -> Self {
+        self.supervisor = Some(sv);
+        self
+    }
+
+    pub fn with_cancel_token(mut self, ct: tokio_util::sync::CancellationToken) -> Self {
+        self.cancel_token = Some(ct);
+        self
     }
 }
 
@@ -283,6 +325,8 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
 
             let mgr_clone = self.session_mgr.clone();
             let sub_sender = event_sender.clone();
+            let sv_clone = self.supervisor.clone();
+            let ct_clone = self.cancel_token.clone();
 
             join_set.spawn(async move {
                 let args = serde_json::json!({
@@ -300,6 +344,8 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                     &permission_config,
                     parent_max_iterations,
                     strategy,
+                    sv_clone,
+                    ct_clone,
                 )
                 .await;
 
@@ -720,6 +766,8 @@ async fn spawn_single(
     permission_config: &PermissionConfig,
     parent_max_iterations: usize,
     result_strategy: ResultStrategy,
+    supervisor: Option<Arc<Mutex<crate::runtime::supervisor::ProcessSupervisor>>>,
+    cancel_token: Option<tokio_util::sync::CancellationToken>,
 ) -> Result<(SpawnResult, Vec<crate::types::Message>)> {
     let id = args["id"]
         .as_str()
@@ -852,6 +900,12 @@ Do NOT attempt to read or process image files.";
         permission_config.clone(),
     );
     subagent.session_id = session_id;
+    if let Some(sv) = supervisor {
+        subagent = subagent.with_supervisor(sv);
+    }
+    if let Some(ct) = cancel_token {
+        subagent = subagent.with_cancel_token(ct);
+    }
 
     let result = subagent.run_with_sender(task, event_sender).await?;
 

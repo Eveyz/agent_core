@@ -177,6 +177,10 @@ pub struct Run {
     /// Names of script tools currently registered (for diff on deactivation).
     registered_script_tools: Vec<String>,
 
+    /// Path to the per-session context snapshot file for mid-turn persistence.
+    /// Written after each assistant message to prevent data loss on disconnect.
+    session_snapshot_path: Option<std::path::PathBuf>,
+
     /// Shared, read-only context snapshot for side-channel `/btw` queries.
     /// Refreshed at turn boundaries; read via `RunHandle::context_snapshot()`.
     context_snapshot: Arc<RwLock<Vec<Message>>>,
@@ -197,26 +201,7 @@ impl Run {
         mode: AgentMode,
         context_snapshot: Arc<RwLock<Vec<Message>>>,
     ) -> anyhow::Result<Self> {
-        let mut client = brain.build_client()?;
-
-        // Wire up a status callback so rate-limit retry messages are visible in the UI.
-        {
-            let event_tx = event_tx.clone();
-            let run_id = id.clone();
-            let seq = seq.clone();
-            client.set_status_callback(Arc::new(move |msg| {
-                let seq_val = seq.fetch_add(1, Ordering::Relaxed);
-                let _ = event_tx.send(Envelope {
-                    ts: chrono::Utc::now(),
-                    seq: seq_val,
-                    event_id: uuid::Uuid::new_v4().to_string(),
-                    run_id: run_id.clone(),
-                    turn_id: None,
-                    parent_call_id: None,
-                    event: RunEvent::Error { message: msg },
-                });
-            }));
-        }
+        let client = brain.build_client()?;
         let permission_policy = brain.build_permission_policy();
         let recovery = brain.build_recovery();
 
@@ -229,6 +214,7 @@ impl Run {
         // shared with the tool via Arc<Mutex>.
         let supervisor = Arc::new(Mutex::new(ProcessSupervisor::new()));
         let working_dir_for_tool = working_dir.clone();
+        let cancel_token = CancellationToken::new();
 
         let mut registry = brain.build_tool_registry(mode);
         // Replace the default BashTool with a supervised version
@@ -238,6 +224,25 @@ impl Run {
                 supervisor.clone(),
                 working_dir_for_tool,
             )));
+        }
+
+        // Replace subagent tools with supervised + cancel-aware versions.
+        if registry.has("subagent") {
+            let available_tools: Vec<String> = registry
+                .list_names()
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect();
+            registry.remove_all(&["subagent", "subagents"]);
+            crate::tools::subagent::register_subagent_tools(
+                &mut registry,
+                model_config.clone(),
+                available_tools,
+                None,
+                brain.permission_config().clone(),
+                Some(supervisor.clone()),
+                Some(cancel_token.clone()),
+            );
         }
 
         let mut context = Context::new(&identity, max_context_tokens);
@@ -283,6 +288,13 @@ impl Run {
         // Compute initial stable prefix fingerprint
         let last_prefix_fingerprint = context.stable_prefix_fingerprint();
 
+        // Per-session context snapshot for mid-turn persistence.
+        let session_snapshot_path = session_id.as_ref().map(|sid| {
+            crate::paths::get_agverse_dir()
+                .join("sessions")
+                .join(format!("{}.messages.json", sid))
+        });
+
         Ok(Self {
             id,
             session_id,
@@ -301,7 +313,7 @@ impl Run {
             event_tx,
             seq,
             current_turn_id: None,
-            cancel: CancellationToken::new(),
+            cancel: cancel_token,
             supervisor,
             join_set: JoinSet::new(),
             steering_queue: VecDeque::new(),
@@ -315,6 +327,7 @@ impl Run {
             last_turn_end_time: None,
             tool_catalog_cache: None,
             registered_script_tools: Vec::new(),
+            session_snapshot_path,
             context_snapshot,
             goal: None,
             goal_completed: false,

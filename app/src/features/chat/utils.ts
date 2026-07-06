@@ -156,14 +156,23 @@ export function entriesToMessages(entries: ChatEntry[]): FrontendMessage[] {
     if (entry.type === 'user' && entry.text) {
       msgs.push({ role: 'user', content: entry.text });
     } else if (entry.type === 'turn' && entry.blocks) {
+      let thinkingText = '';
       let assistantText = '';
       for (const block of entry.blocks) {
-        if (block.type === 'assistant') {
+        if (block.type === 'thinking') {
+          thinkingText += block.text;
+        } else if (block.type === 'assistant') {
           assistantText += block.text;
         }
       }
-      if (assistantText.trim()) {
-        msgs.push({ role: 'assistant', content: assistantText.trim() });
+      // Wrap thinking in <think> tags and prepend to assistant content
+      // so it can be restored when resuming the session.
+      let content = assistantText.trim();
+      if (thinkingText.trim()) {
+        content = `<think>${thinkingText.trim()}</think>${content ? '\n' + content : ''}`;
+      }
+      if (content) {
+        msgs.push({ role: 'assistant', content });
       }
     }
   }

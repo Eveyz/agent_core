@@ -3,6 +3,7 @@ use anyhow::Result;
 use futures::stream::{self, Stream};
 use reqwest::Response;
 use serde_json::Value;
+use tracing::debug;
 
 pub struct SseParser;
 
@@ -30,11 +31,20 @@ impl SseParser {
                                 return Some((Ok(StreamEvent::Done), (resp, buffer, done)));
                             }
 
+                            if data.len() < 300 {
+                                debug!(%data, "SSE data");
+                            } else {
+                                debug!(len = data.len(), prefix = %&data[..200], "SSE data (truncated)");
+                            }
+
                             match parse_sse_data(data) {
                                 Ok(event) => {
                                     return Some((Ok(event), (resp, buffer, done)));
                                 }
-                                Err(_) => continue,
+                                Err(e) => {
+                                    debug!(error = %e, %data, "SSE parse error");
+                                    continue;
+                                }
                             }
                         }
                         continue;
@@ -43,12 +53,32 @@ impl SseParser {
                     match resp.chunk().await {
                         Ok(Some(chunk)) => {
                             let text = String::from_utf8_lossy(&chunk);
+                            if text.len() < 300 {
+                                debug!(chunk = %text, "SSE raw chunk");
+                            } else {
+                                debug!(len = text.len(), prefix = %&text[..200], "SSE raw chunk (truncated)");
+                            }
                             buffer.push_str(&text);
                         }
-                        Ok(None) => {
-                            done = true;
-                            return Some((Ok(StreamEvent::Done), (resp, buffer, done)));
+                    Ok(None) => {
+                        if !buffer.trim().is_empty() {
+                            let trimmed = buffer.trim();
+                            if trimmed.starts_with('{') {
+                                debug!(body = %trimmed, "SSE stream ended with non-SSE JSON (likely an API error)");
+                                done = true;
+                                return Some((
+                                    Err(anyhow::anyhow!(
+                                        "API returned non-SSE response: {}",
+                                        if trimmed.len() > 300 { &trimmed[..300] } else { trimmed }
+                                    )),
+                                    (resp, buffer, done),
+                                ));
+                            }
+                            debug!(remaining = %trimmed, "SSE stream ended with unparsed data");
                         }
+                        done = true;
+                        return Some((Ok(StreamEvent::Done), (resp, buffer, done)));
+                    }
                         Err(e) => {
                             done = true;
                             return Some((
@@ -77,17 +107,12 @@ fn parse_sse_data(data: &str) -> Result<StreamEvent> {
     let choice = &choices[0];
     let delta = &choice["delta"];
 
-    if let Some(finish_reason) = choice["finish_reason"].as_str()
-        && (finish_reason == "stop" || finish_reason == "tool_calls")
-    {
-        let hit = v["usage"]["prompt_cache_hit_tokens"].as_u64();
-        let miss = v["usage"]["prompt_cache_miss_tokens"].as_u64();
-        return Ok(StreamEvent::CompleteWithUsage {
-            prompt_cache_hit_tokens: hit,
-            prompt_cache_miss_tokens: miss,
-        });
-    }
-
+    // ── Tool calls MUST be processed before finish_reason.  ────────
+    // NVIDIA's DeepSeek Flash gateway sometimes packs the last
+    // tool-call fragment and `finish_reason: "tool_calls"` into a
+    // single SSE chunk.  If we short-circuit on finish_reason first,
+    // the trailing argument delta is dropped and the accumulator
+    // builds a broken partial call → crash.
     if let Some(tool_calls) = delta["tool_calls"].as_array()
         && let Some(tc) = tool_calls.first()
     {
@@ -97,6 +122,21 @@ fn parse_sse_data(data: &str) -> Result<StreamEvent> {
             id: tc["id"].as_str().map(|s| s.to_string()),
             function_name: tc["function"]["name"].as_str().map(|s| s.to_string()),
             arguments_delta: tc["function"]["arguments"].as_str().map(|s| s.to_string()),
+        });
+    }
+
+    // finish_reason AFTER tool_calls — when they share a chunk the
+    // tool delta above takes priority.  Usage info is best-effort:
+    // if finish_reason is alone (empty delta) or follows a tool_call
+    // in a separate chunk, we still capture it here.
+    if let Some(finish_reason) = choice["finish_reason"].as_str()
+        && (finish_reason == "stop" || finish_reason == "tool_calls")
+    {
+        let hit = v["usage"]["prompt_cache_hit_tokens"].as_u64();
+        let miss = v["usage"]["prompt_cache_miss_tokens"].as_u64();
+        return Ok(StreamEvent::CompleteWithUsage {
+            prompt_cache_hit_tokens: hit,
+            prompt_cache_miss_tokens: miss,
         });
     }
 

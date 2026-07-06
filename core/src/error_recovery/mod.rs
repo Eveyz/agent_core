@@ -110,6 +110,26 @@ impl RecoveryEngine {
                 };
             }
 
+            // Network-level errors — stream drops, timeouts, connection resets.
+            // These benefit from a longer base delay (1s) since the underlying
+            // infrastructure may need more time to stabilize.
+            if ["timeout", "stream error", "connection", "reset",
+                "broken pipe", "connection refused", "eof",
+                "unexpected eof", "dns"].iter()
+                .any(|kw| error.contains(kw))
+            {
+                if let Some(ref fallback) = self.fallback_model
+                    && ctx.attempt >= self.max_retries
+                {
+                    return RecoveryAction::SwitchModel {
+                        model: fallback.clone(),
+                    };
+                }
+                return RecoveryAction::Retry {
+                    delay_ms: 1000 * 2u64.pow(ctx.attempt),
+                };
+            }
+
             if error.contains("length") || error.contains("truncat") {
                 let new_max = (ctx.max_tokens as f64 * self.token_escalation_factor) as u32;
                 return RecoveryAction::EscalateTokens {
