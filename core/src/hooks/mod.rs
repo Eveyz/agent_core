@@ -255,6 +255,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::sync::Arc;
+    use parking_lot::Mutex;
 
     struct VetoHook;
 

@@ -151,7 +151,7 @@ pub fn validate(wf: &WorkflowDef) -> ValidationResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::definition::{EdgeDef, TrustMode, OnNodeFailure};
+    use crate::workflow::definition::{EdgeDef, TrustMode, OnNodeFailure, NodeDef};
 
     fn make_wf(nodes: Vec<NodeDef>, edges: Vec<EdgeDef>) -> WorkflowDef {
         WorkflowDef {

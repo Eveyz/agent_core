@@ -587,18 +587,73 @@ impl SessionManager {
         Ok(changed > 0)
     }
 
-    /// Permanently delete a session and its messages.
+    /// Permanently delete a session and all its associated data (messages, recall memory, summaries, runs, agent history, subagent sessions, and files).
     pub fn delete(&self, session_id: &str) -> Result<bool> {
         let db = self.storage.conn();
-        // Delete messages first (foreign key cascade should handle this, but do it explicitly)
+
+        // 1. Find and delete child/subagent sessions recursively to clean their files and database entries
+        let mut stmt = db.prepare("SELECT id FROM sessions WHERE parent_session_id = ?1")?;
+        let child_ids: Vec<String> = stmt
+            .query_map(rusqlite::params![session_id], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        for child_id in child_ids {
+            let _ = self.delete(&child_id);
+        }
+
+        // 2. Clean up associated database tables referencing session_id
+        db.execute(
+            "DELETE FROM recall_memory WHERE session_id = ?1",
+            rusqlite::params![session_id],
+        )?;
+        db.execute(
+            "DELETE FROM conversation_summaries WHERE session_id = ?1",
+            rusqlite::params![session_id],
+        )?;
+        db.execute(
+            "DELETE FROM agent_history WHERE session_id = ?1",
+            rusqlite::params![session_id],
+        )?;
+        db.execute(
+            "DELETE FROM workflow_runs WHERE session_id = ?1",
+            rusqlite::params![session_id],
+        )?;
+        db.execute(
+            "DELETE FROM cronjob_runs WHERE session_id = ?1",
+            rusqlite::params![session_id],
+        )?;
+
+        // 3. Delete messages first (foreign key cascade should handle this, but do it explicitly)
         db.execute(
             "DELETE FROM session_messages WHERE session_id = ?1",
             rusqlite::params![session_id],
         )?;
+
+        // 4. Delete the main session row
         let changed = db.execute(
             "DELETE FROM sessions WHERE id = ?1",
             rusqlite::params![session_id],
         )?;
+
+        // 5. Clean up associated files from the filesystem
+        let agverse_dir = crate::paths::get_agverse_dir();
+
+        // Delete mid-turn session snapshot file
+        let snapshot_file = agverse_dir.join("sessions").join(format!("{}.messages.json", session_id));
+        if snapshot_file.exists() {
+            if let Err(e) = std::fs::remove_file(&snapshot_file) {
+                tracing::warn!(path = %snapshot_file.display(), error = %e, "Failed to delete session snapshot file");
+            }
+        }
+
+        // Delete chat folder (containing plans, walkthroughs, tasks, and local media)
+        let chat_dir = agverse_dir.join("chats").join(session_id);
+        if chat_dir.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&chat_dir) {
+                tracing::warn!(path = %chat_dir.display(), error = %e, "Failed to delete session chat directory");
+            }
+        }
+
         Ok(changed > 0)
     }
 
@@ -1144,5 +1199,112 @@ mod tests {
         let meta = mgr.get_meta(&id).unwrap().unwrap();
         assert_eq!(meta.session_type, "subagent");
         assert_eq!(meta.message_count, 2);
+    }
+
+    #[test]
+    fn test_cascading_delete() {
+        let (mgr, _dir) = make_manager();
+
+        // 1. Create a parent session
+        let parent_id = mgr.save(None, &[Message::user("parent")], "/tmp", "gpt").unwrap();
+
+        // 2. Create a child session linked to parent
+        let child_id = mgr.save_full(
+            None,
+            &[Message::user("child")],
+            "/tmp",
+            "gpt",
+            Some(&parent_id),
+            "subagent",
+            None,
+        ).unwrap();
+
+        // Populate dependent database tables
+        let db = mgr.storage.conn();
+
+        // Insert parent records to satisfy foreign key constraints
+        db.execute(
+            "INSERT INTO agents (id, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["agent-1", "test agent", "2026-07-06T12:00:00Z", "2026-07-06T12:00:00Z"],
+        ).unwrap();
+
+        db.execute(
+            "INSERT INTO workflows (id, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["wf-1", "test workflow", "2026-07-06T12:00:00Z", "2026-07-06T12:00:00Z"],
+        ).unwrap();
+
+        db.execute(
+            "INSERT INTO cronjobs (id, name, cadence_type, cadence_value, prompt, permission_level, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params!["cron-1", "test cron", "daily", "12", "prompt", "standard", "2026-07-06T12:00:00Z"],
+        ).unwrap();
+
+        // recall_memory
+        db.execute(
+            "INSERT INTO recall_memory (id, session_id, role, content, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["rec-1", parent_id, "user", "some recall data", "2026-07-06T12:00:00Z"],
+        ).unwrap();
+
+        // conversation_summaries
+        db.execute(
+            "INSERT INTO conversation_summaries (id, session_id, summary, message_range, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["sum-1", parent_id, "some summary", "1-2", "2026-07-06T12:00:00Z"],
+        ).unwrap();
+
+        // agent_history
+        db.execute(
+            "INSERT INTO agent_history (id, agent_id, session_id, trigger, input, output, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params!["hist-1", "agent-1", parent_id, "manual", "input", "output", "2026-07-06T12:00:00Z"],
+        ).unwrap();
+
+        // workflow_runs
+        db.execute(
+            "INSERT INTO workflow_runs (id, workflow_id, session_id, started_at, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["run-1", "wf-1", parent_id, "now", "2026-07-06T12:00:00Z"],
+        ).unwrap();
+
+        // cronjob_runs
+        db.execute(
+            "INSERT INTO cronjob_runs (id, cronjob_id, session_id, started_at, status) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params!["cron-run-1", "cron-1", parent_id, "now", "success"],
+        ).unwrap();
+
+        // 3. Create dummy files on filesystem
+        let agverse_dir = crate::paths::get_agverse_dir();
+
+        let session_dir = agverse_dir.join("sessions");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let snapshot_file = session_dir.join(format!("{}.messages.json", parent_id));
+        std::fs::write(&snapshot_file, "[]").unwrap();
+
+        let chat_dir = agverse_dir.join("chats").join(&parent_id);
+        std::fs::create_dir_all(&chat_dir).unwrap();
+        let plan_file = chat_dir.join("plan.md");
+        std::fs::write(&plan_file, "plan content").unwrap();
+
+        // Verify everything exists before deletion
+        assert!(mgr.get_meta(&parent_id).unwrap().is_some());
+        assert!(mgr.get_meta(&child_id).unwrap().is_some());
+        assert_eq!(db.query_row::<i64, _, _>("SELECT COUNT(*) FROM recall_memory WHERE session_id = ?1", rusqlite::params![parent_id], |r| r.get(0)).unwrap(), 1);
+        assert_eq!(db.query_row::<i64, _, _>("SELECT COUNT(*) FROM conversation_summaries WHERE session_id = ?1", rusqlite::params![parent_id], |r| r.get(0)).unwrap(), 1);
+        assert_eq!(db.query_row::<i64, _, _>("SELECT COUNT(*) FROM agent_history WHERE session_id = ?1", rusqlite::params![parent_id], |r| r.get(0)).unwrap(), 1);
+        assert_eq!(db.query_row::<i64, _, _>("SELECT COUNT(*) FROM workflow_runs WHERE session_id = ?1", rusqlite::params![parent_id], |r| r.get(0)).unwrap(), 1);
+        assert_eq!(db.query_row::<i64, _, _>("SELECT COUNT(*) FROM cronjob_runs WHERE session_id = ?1", rusqlite::params![parent_id], |r| r.get(0)).unwrap(), 1);
+        assert!(snapshot_file.exists());
+        assert!(chat_dir.exists());
+
+        // 4. Perform Delete
+        let deleted = mgr.delete(&parent_id).unwrap();
+        assert!(deleted);
+
+        // Verify everything is deleted
+        assert!(mgr.get_meta(&parent_id).unwrap().is_none());
+        assert!(mgr.get_meta(&child_id).unwrap().is_none()); // child deleted recursively!
+        assert_eq!(db.query_row::<i64, _, _>("SELECT COUNT(*) FROM recall_memory WHERE session_id = ?1", rusqlite::params![parent_id], |r| r.get(0)).unwrap(), 0);
+        assert_eq!(db.query_row::<i64, _, _>("SELECT COUNT(*) FROM conversation_summaries WHERE session_id = ?1", rusqlite::params![parent_id], |r| r.get(0)).unwrap(), 0);
+        assert_eq!(db.query_row::<i64, _, _>("SELECT COUNT(*) FROM agent_history WHERE session_id = ?1", rusqlite::params![parent_id], |r| r.get(0)).unwrap(), 0);
+        assert_eq!(db.query_row::<i64, _, _>("SELECT COUNT(*) FROM workflow_runs WHERE session_id = ?1", rusqlite::params![parent_id], |r| r.get(0)).unwrap(), 0);
+        assert_eq!(db.query_row::<i64, _, _>("SELECT COUNT(*) FROM cronjob_runs WHERE session_id = ?1", rusqlite::params![parent_id], |r| r.get(0)).unwrap(), 0);
+        assert!(!snapshot_file.exists());
+        assert!(!chat_dir.exists());
     }
 }
