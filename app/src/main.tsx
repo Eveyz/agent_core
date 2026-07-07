@@ -7,6 +7,8 @@ import { store } from './store'
 import App from './App'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { ToastProvider } from './components/ui/Toast'
+import './i18n'
+
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

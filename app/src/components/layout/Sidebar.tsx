@@ -2,6 +2,7 @@ import { memo, useState, useCallback, useRef, useEffect } from "react";
 import { useSelector } from "react-redux";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
+import { useTranslation } from "react-i18next";
 import { RootState } from "../../store";
 import {
   createProject,
@@ -74,6 +75,7 @@ function ProjectContextMenu({
   onDelete: (id: string) => void;
   onRename: (id: string, name: string) => void;
 }) {
+  const { t } = useTranslation();
   const { open, setOpen, pos, setPos, menuRef } = useContextMenu();
 
   const handleOpenExplorer = async () => {
@@ -109,7 +111,7 @@ function ProjectContextMenu({
               setOpen(false);
             }}
           >
-            <PencilIcon size={13} /> Rename
+            <PencilIcon size={13} /> {t("sidebar.actions.rename")}
           </div>
           <div
             className="context-menu-item"
@@ -118,7 +120,7 @@ function ProjectContextMenu({
               handleOpenExplorer();
             }}
           >
-            <ExternalLinkIcon size={13} /> Open in Explorer
+            <ExternalLinkIcon size={13} /> {t("sidebar.actions.openInExplorer")}
           </div>
           <div className="context-menu-separator" />
           <div
@@ -129,7 +131,7 @@ function ProjectContextMenu({
               onDelete(projectId);
             }}
           >
-            <TrashIcon size={13} /> Delete
+            <TrashIcon size={13} /> {t("sidebar.actions.delete")}
           </div>
         </div>
       )}
@@ -156,6 +158,7 @@ export const Sidebar = memo(function Sidebar({
   activeView?: AppView;
   onNavigate?: (view: AppView) => void;
 }) {
+  const { t } = useTranslation();
   const dispatch = useAppDispatch();
   const projects = useSelector((state: RootState) => state.project.projects);
   const sessions = useSelector((state: RootState) => state.project.sessions);
@@ -230,32 +233,32 @@ export const Sidebar = memo(function Sidebar({
   const handleDeleteProject = useCallback(
     async (projectId: string) => {
       const confirmed = await confirm({
-        title: "Delete Project",
-        message: "Delete this project and all its sessions?",
-        confirmLabel: "Delete",
-        cancelLabel: "Cancel",
+        title: t("sidebar.prompts.deleteProjectTitle"),
+        message: t("sidebar.prompts.deleteProjectMessage"),
+        confirmLabel: t("sidebar.actions.delete"),
+        cancelLabel: t("sidebar.actions.cancel"),
         danger: true,
       });
       if (confirmed) {
         dispatch(deleteProject(projectId));
       }
     },
-    [dispatch, confirm],
+    [dispatch, confirm, t],
   );
 
   const handleRenameProject = useCallback(
     async (projectId: string, newName: string) => {
       const name = await prompt({
-        title: "Rename Project",
-        message: "Enter new name:",
+        title: t("sidebar.prompts.renameProjectTitle"),
+        message: t("sidebar.prompts.renameProjectMessage"),
         defaultValue: newName,
-        confirmLabel: "Rename",
-        cancelLabel: "Cancel",
+        confirmLabel: t("sidebar.actions.rename"),
+        cancelLabel: t("sidebar.actions.cancel"),
       });
       if (name?.trim())
         dispatch(renameProject({ projectId, newName: name.trim() }));
     },
-    [dispatch, prompt],
+    [dispatch, prompt, t],
   );
 
   // Save current session to backend + memory cache (P2-3: uses shared useSaveSession hook)
@@ -301,17 +304,17 @@ export const Sidebar = memo(function Sidebar({
   const handleDeleteSession = useCallback(
     async (sessionId: string, projectId: string) => {
       const confirmed = await confirm({
-        title: "Delete Session",
-        message: "Delete this session?",
-        confirmLabel: "Delete",
-        cancelLabel: "Cancel",
+        title: t("sidebar.prompts.deleteSessionTitle"),
+        message: t("sidebar.prompts.deleteSessionMessage"),
+        confirmLabel: t("sidebar.actions.delete"),
+        cancelLabel: t("sidebar.actions.cancel"),
         danger: true,
       });
       if (confirmed) {
         dispatch(deleteSession({ sessionId, projectId }));
       }
     },
-    [dispatch, confirm],
+    [dispatch, confirm, t],
   );
 
   const regularProjects = projects.filter((p) => p.id !== '__adhoc_chat__');
@@ -324,13 +327,13 @@ export const Sidebar = memo(function Sidebar({
           className={`toggle-btn ${activeTab === "code" ? "active" : ""}`}
           onClick={() => { onTabChange("code"); onNavigate?.("chat"); }}
         >
-          <BotIcon size={14} /> Code
+          <BotIcon size={14} /> {t("sidebar.tabs.code")}
         </button>
         <button
           className={`toggle-btn ${activeTab === "write" ? "active" : ""}`}
           onClick={() => onTabChange("write")}
         >
-          <MessageSquareIcon size={14} /> Write
+          <MessageSquareIcon size={14} /> {t("sidebar.tabs.write")}
         </button>
       </div>
 
@@ -340,26 +343,26 @@ export const Sidebar = memo(function Sidebar({
           className={`nav-item ${activeView === "agents" ? "active" : ""}`}
           onClick={() => onNavigate?.("agents")}
         >
-          <BotIcon size={14} /> Agents
+          <BotIcon size={14} /> {t("sidebar.agents")}
         </div>
         <div
           className={`nav-item ${activeView === "workflows" ? "active" : ""}`}
           onClick={() => onNavigate?.("workflows")}
         >
-          <WorkflowIcon size={14} /> Workflows
+          <WorkflowIcon size={14} /> {t("sidebar.workflows")}
         </div>
         <div
           className="nav-item"
           onClick={() => setIsCronModalOpen(true)}
         >
-          <ClockIcon size={14} /> Schedule Task
+          <ClockIcon size={14} /> {t("sidebar.nav.scheduleTask")}
         </div>
         <div
           className="nav-item"
           style={{ opacity: 0.4, cursor: "default" }}
-          title="Coming soon"
+          title={t("sidebar.nav.comingSoon")}
         >
-          <MessageSquareIcon size={14} /> New requirement
+          <MessageSquareIcon size={14} /> {t("sidebar.nav.newRequirement")}
         </div>
       </div>
 
@@ -373,7 +376,7 @@ export const Sidebar = memo(function Sidebar({
             ) : (
               <ChevronDownIcon size={12} style={{ opacity: 0.7 }} />
             )}
-            Projects
+            {t("sidebar.projects")}
           </span>
           <button
             className="icon-btn"
@@ -393,7 +396,7 @@ export const Sidebar = memo(function Sidebar({
             <div
               style={{ padding: "16px 20px", color: "var(--text-tertiary)", fontSize: "12px" }}
             >
-              No projects yet. Click the folder icon above to add one.
+              {t("sidebar.projectsSection.noProjects")}
             </div>
           )}
           {regularProjects.map((project) => {
@@ -455,7 +458,7 @@ export const Sidebar = memo(function Sidebar({
                         handleSelectSession(sessionId, project.id)
                       }
                       title={project.name}
-                      emptyMessage="No sessions yet."
+                      emptyMessage={t("sidebar.projectsSection.emptySessions")}
                       isProcessing={isProcessing}
                       onDeleteSession={(sessionId) =>
                         handleDeleteSession(sessionId, project.id)
@@ -479,7 +482,7 @@ export const Sidebar = memo(function Sidebar({
             ) : (
               <ChevronDownIcon size={12} style={{ opacity: 0.7 }} />
             )}
-            Chat
+            {t("sidebar.chat")}
           </span>
           <button
             className="icon-btn"
@@ -506,8 +509,8 @@ export const Sidebar = memo(function Sidebar({
                 onSelectSession={(sessionId) =>
                   handleSelectSession(sessionId, '__adhoc_chat__')
                 }
-                title="Chat"
-                emptyMessage="No chats yet. Click the plus icon above to start one."
+                title={t("sidebar.chat")}
+                emptyMessage={t("sidebar.projectsSection.noChats")}
                 isProcessing={isProcessing}
                 onDeleteSession={(sessionId) =>
                   handleDeleteSession(sessionId, '__adhoc_chat__')
@@ -523,10 +526,10 @@ export const Sidebar = memo(function Sidebar({
     {/* Bottom */}
       <div className="sidebar-bottom">
         <div className="nav-item">
-          <SmartphoneIcon size={14} /> Connect phone
+          <SmartphoneIcon size={14} /> {t("sidebar.nav.connectPhone")}
         </div>
         <div className="nav-item" role="button" tabIndex={0} onClick={onOpenSettings} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenSettings(); } }}>
-          <SettingsIcon size={14} /> Settings
+          <SettingsIcon size={14} /> {t("sidebar.nav.settings")}
         </div>
       </div>
 

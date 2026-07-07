@@ -12,6 +12,7 @@ import WrenchIcon from 'lucide-react/dist/esm/icons/wrench.mjs';
 import LoaderIcon from 'lucide-react/dist/esm/icons/loader.mjs';
 import ShieldIcon from 'lucide-react/dist/esm/icons/shield.mjs';
 import GeneralTab from './GeneralTab';
+import { useTranslation } from 'react-i18next';
 
 const ProviderTab = lazy(() => import('./ProviderTab'));
 const MemoryTab = lazy(() => import('./MemoryTab'));
@@ -20,15 +21,16 @@ const SkillsTab = lazy(() => import('./SkillsTab'));
 const PermissionsTab = lazy(() => import('./PermissionsTab'));
 
 const TABS = [
-  { key: 'general' as const, label: 'General', icon: SettingsIcon },
-  { key: 'provider' as const, label: 'Provider', icon: ServerIcon },
-  { key: 'memory' as const, label: 'Memory', icon: BrainIcon },
-  { key: 'mcp' as const, label: 'MCP', icon: PlugIcon },
-  { key: 'skills' as const, label: 'Skills', icon: WrenchIcon },
-  { key: 'permissions' as const, label: 'Permissions', icon: ShieldIcon },
+  { key: 'general' as const, icon: SettingsIcon },
+  { key: 'provider' as const, icon: ServerIcon },
+  { key: 'memory' as const, icon: BrainIcon },
+  { key: 'mcp' as const, icon: PlugIcon },
+  { key: 'skills' as const, icon: WrenchIcon },
+  { key: 'permissions' as const, icon: ShieldIcon },
 ];
 
 export default function SettingsModal() {
+  const { t } = useTranslation();
   const dispatch = useAppDispatch();
   const isOpen = useSelector((state: RootState) => state.settings.isOpen);
   const activeTab = useSelector((state: RootState) => state.settings.activeTab);
@@ -70,7 +72,7 @@ export default function SettingsModal() {
     <div className="settings-modal-backdrop" onClick={handleBackdropClick}>
       <div className="settings-modal" role="dialog" aria-modal="true">
         <div className="settings-modal-header">
-          <h2 className="settings-modal-title">Settings</h2>
+          <h2 className="settings-modal-title">{t('settings.title')}</h2>
           <button className="settings-modal-close" onClick={handleClose}>
             <XIcon size={18} />
           </button>
@@ -87,7 +89,7 @@ export default function SettingsModal() {
                   onClick={() => dispatch(setActiveTab(tab.key))}
                 >
                   <Icon size={14} />
-                  {tab.label}
+                  {t(`settings.tabs.${tab.key}`)}
                 </button>
               );
             })}
@@ -97,13 +99,13 @@ export default function SettingsModal() {
             {loading && (
               <div className="settings-loading">
                 <LoaderIcon size={20} className="settings-spinner" />
-                <span>Loading configuration...</span>
+                <span>{t('settings.loading')}</span>
               </div>
             )}
             {error && (
               <div className="settings-error">
                 <XIcon size={16} />
-                <span>Failed to load config: {error}</span>
+                <span>{t('settings.error', { error })}</span>
               </div>
             )}
             {!loading && !error && (
@@ -128,3 +130,4 @@ export default function SettingsModal() {
     </div>
   );
 }
+

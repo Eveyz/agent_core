@@ -1,0 +1,79 @@
+{
+  "settings": {
+    "title": "设置",
+    "tabs": {
+      "general": "通用",
+      "provider": "模型提供商",
+      "memory": "记忆/内存",
+      "mcp": "MCP",
+      "skills": "技能",
+      "permissions": "权限"
+    },
+    "loading": "正在加载配置...",
+    "loadingTab": "加载中...",
+    "error": "加载配置失败: {{error}}",
+    "general": {
+      "application": "应用程序",
+      "appearance": "主题外观",
+      "language": "语言",
+      "defaultModel": "默认模型",
+      "availableModels": "可用模型",
+      "modelsConfigured": "已配置 {{count}} 个",
+      "tip": "配置读取自 config.toml。重启应用程序以应用更改。",
+      "noConfig": "未加载任何配置。",
+      "themes": {
+        "system": "跟随系统",
+        "dark": "深色",
+        "light": "浅色"
+      }
+    }
+  },
+  "chat": {
+    "emptyState": {
+      "title": "我能帮您构建什么？",
+      "subtitle": "生成子智能体、分析代码并编排复杂任务。",
+      "suggestions": {
+        "search": "在代码库中搜索 TODO 注释和 FIXME 标记",
+        "refactor": "重构错误处理以一致地使用 thiserror 和 anyhow",
+        "explore": "解释子智能体是如何生成的，以及它们如何共享工具注册表",
+        "create": "为权限模块编写全面的单元测试"
+      }
+    }
+  },
+  "sidebar": {
+    "chat": "对话",
+    "agents": "智能体",
+    "workflows": "工作流",
+    "projects": "项目",
+    "tabs": {
+      "code": "代码模式",
+      "write": "自由创作"
+    },
+    "nav": {
+      "scheduleTask": "定时任务",
+      "newRequirement": "新需求",
+      "connectPhone": "连接手机",
+      "settings": "设置",
+      "comingSoon": "敬请期待"
+    },
+    "projectsSection": {
+      "noProjects": "暂无项目。点击上方文件夹图标添加一个项目。",
+      "emptySessions": "暂无会话。",
+      "noChats": "暂无会话。点击上方加号图标开始新的会话。"
+    },
+    "actions": {
+      "rename": "重命名",
+      "openInExplorer": "在访达/资源管理器中打开",
+      "delete": "删除",
+      "cancel": "取消"
+    },
+    "prompts": {
+      "deleteProjectTitle": "删除项目",
+      "deleteProjectMessage": "要删除此项目及其所有会话吗？",
+      "renameProjectTitle": "重命名项目",
+      "renameProjectMessage": "请输入新名称：",
+      "deleteSessionTitle": "删除会话",
+      "deleteSessionMessage": "确定要删除此会话吗？"
+    }
+  }
+}

@@ -1,0 +1,79 @@
+{
+  "settings": {
+    "title": "Settings",
+    "tabs": {
+      "general": "General",
+      "provider": "Provider",
+      "memory": "Memory",
+      "mcp": "MCP",
+      "skills": "Skills",
+      "permissions": "Permissions"
+    },
+    "loading": "Loading configuration...",
+    "loadingTab": "Loading...",
+    "error": "Failed to load config: {{error}}",
+    "general": {
+      "application": "Application",
+      "appearance": "Appearance",
+      "language": "Language",
+      "defaultModel": "Default Model",
+      "availableModels": "Available Models",
+      "modelsConfigured": "{{count}} configured",
+      "tip": "Configuration is read from config.toml. Restart the application to apply changes.",
+      "noConfig": "No configuration loaded.",
+      "themes": {
+        "system": "System",
+        "dark": "Dark",
+        "light": "Light"
+      }
+    }
+  },
+  "chat": {
+    "emptyState": {
+      "title": "What can I help you build?",
+      "subtitle": "Spawn subagents, analyze code, and orchestrate complex tasks.",
+      "suggestions": {
+        "search": "Search for TODO comments and FIXME notes across the codebase",
+        "refactor": "Refactor error handling to use thiserror and anyhow consistently",
+        "explore": "Explain how subagents are spawned and how they share the tool registry",
+        "create": "Write comprehensive unit tests for the permission module"
+      }
+    }
+  },
+  "sidebar": {
+    "chat": "Chat",
+    "agents": "Agents",
+    "workflows": "Workflows",
+    "projects": "Projects",
+    "tabs": {
+      "code": "Code",
+      "write": "Write"
+    },
+    "nav": {
+      "scheduleTask": "Schedule Task",
+      "newRequirement": "New requirement",
+      "connectPhone": "Connect phone",
+      "settings": "Settings",
+      "comingSoon": "Coming soon"
+    },
+    "projectsSection": {
+      "noProjects": "No projects yet. Click the folder icon above to add one.",
+      "emptySessions": "No sessions yet.",
+      "noChats": "No chats yet. Click the plus icon above to start one."
+    },
+    "actions": {
+      "rename": "Rename",
+      "openInExplorer": "Open in Explorer",
+      "delete": "Delete",
+      "cancel": "Cancel"
+    },
+    "prompts": {
+      "deleteProjectTitle": "Delete Project",
+      "deleteProjectMessage": "Delete this project and all its sessions?",
+      "renameProjectTitle": "Rename Project",
+      "renameProjectMessage": "Enter new name:",
+      "deleteSessionTitle": "Delete Session",
+      "deleteSessionMessage": "Delete this session?"
+    }
+  }
+}
