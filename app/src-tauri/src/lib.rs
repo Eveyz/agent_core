@@ -82,8 +82,13 @@ async fn send_message(
     app_handle: AppHandle,
     message: String,
     session_id: Option<String>,
+    model: Option<String>,
 ) -> Result<String, String> {
-    let manager = state.run_manager.lock().await;
+    let mut manager = state.run_manager.lock().await;
+
+    if let Some(ref m) = model {
+        let _ = manager.switch_model(m);
+    }
 
     // Load history if resuming a session
     let mut history = vec![];

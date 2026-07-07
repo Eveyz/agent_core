@@ -274,14 +274,14 @@ function App() {
       }
 
       try {
-        const id = await invoke<string>('send_message', { message: msg, sessionId });
+        const id = await invoke<string>('send_message', { message: msg, sessionId, model: defaultModel });
         dispatch(runIdSet(id));
       } catch (e) {
         console.error('Invoke error:', e);
         dispatch(agentEventReceived({ Error: String(e) }));
       }
     },
-    [dispatch, activeProjectId, activeSessionId, sessionTitle, scrollToBottom]
+    [dispatch, activeProjectId, activeSessionId, sessionTitle, scrollToBottom, defaultModel]
   );
 
   const handleRetry = useCallback(
@@ -292,18 +292,18 @@ function App() {
       const msg = editedText ?? entry.text ?? '';
       if (!msg.trim() || !activeSessionId) return;
 
-      dispatch(userMessageSent({ text: msg, model: entry.model ?? defaultModel }));
+      dispatch(userMessageSent({ text: msg, model: defaultModel }));
       scrollToBottom();
 
       try {
-        const id = await invoke<string>('send_message', { message: msg, sessionId: activeSessionId });
+        const id = await invoke<string>('send_message', { message: msg, sessionId: activeSessionId, model: defaultModel });
         dispatch(runIdSet(id));
       } catch (e) {
         console.error('Retry invoke error:', e);
         dispatch(agentEventReceived({ Error: String(e) }));
       }
     },
-    [dispatch, activeSessionId, store, scrollToBottom]
+    [dispatch, activeSessionId, store, scrollToBottom, defaultModel]
   );
 
   const handleOpenSettings = useCallback(() => {

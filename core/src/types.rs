@@ -333,6 +333,17 @@ impl Message {
         }
     }
 
+    pub fn user_with_model(content: &str, model: &str) -> Self {
+        Self {
+            role: Role::User,
+            content: Some(content.to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+            model: Some(model.to_string()),
+        }
+    }
+
     pub fn assistant(content: &str) -> Self {
         Self {
             role: Role::Assistant,

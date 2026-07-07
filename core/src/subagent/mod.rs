@@ -279,7 +279,7 @@ impl Subagent {
             }
         }
 
-        self.context.add(Message::user(task));
+        self.context.add(Message::user_with_model(task, &self.client.model.model_id));
 
         // Emit SubagentStart
         if let Some(ref tx) = event_sender {

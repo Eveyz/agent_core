@@ -46,7 +46,7 @@ impl Run {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
         let display_input = goal.clone().unwrap_or_else(|| user_input.to_string());
-        self.context.add(Message::user(&display_input));
+        self.context.add(Message::user_with_model(&display_input, &self.client.model.model_id));
         self.refresh_context_snapshot();
 
         // Store in memory if enabled
