@@ -19,6 +19,7 @@ use crate::mode::AgentMode;
 use crate::memory::embedding::EmbeddingModel;
 use crate::memory::storage::Storage;
 use crate::runtime::Brain;
+use crate::skills::SkillManager;
 use crate::subagent::Subagent;
 use crate::tools::ToolRegistry;
 use crate::types::{AgentEvent, EventSender};
@@ -405,10 +406,13 @@ async fn execute_agent_node(
     storage: &Storage,
     workflow: &WorkflowDef,
     session_id: &str,
-    _run_id: &str,
-    _cancel_token: CancellationToken,
+    run_id: &str,
+    cancel_token: CancellationToken,
     event_tx: Option<EventSender>,
 ) -> Result<(serde_json::Value, (i64, i64))> {
+    use crate::runtime::supervisor::ProcessSupervisor;
+    use crate::tools::subagent::re_wire_subagent_tools;
+
     // Fetch the agent definition.
     let agent_id = node.agent_id.clone();
     let s = storage.clone();
@@ -419,19 +423,65 @@ async fn execute_agent_node(
 
     // Build runtime components.
     let mut subagent_config = agent_registry::build_subagent_config(&def);
-    subagent_config.system_prompt =
-        inject_skill_content(brain, &def.skills, &subagent_config.system_prompt);
+    subagent_config.system_prompt = SkillManager::inject_skill_content_into(
+        brain.skill_manager.as_ref(),
+        &def.skills,
+        &subagent_config.system_prompt,
+    );
 
     let model_config = agent_registry::build_model_config(&def, &brain.config);
     let permission_config = workflow
         .trust_mode
         .build_permission_config(&brain.config.permissions, &def);
 
-    let registry = if def.tools.is_empty() {
+    // Each workflow agent node owns its own ProcessSupervisor so its bash
+    // children are process-group isolated and killed when the node finishes
+    // (or when the workflow is cancelled — the cancel_token is propagated
+    // to the subagent below, which stops the turn loop and lets Drop reap).
+    let supervisor = Arc::new(Mutex::new(ProcessSupervisor::new()));
+
+    let mut registry = if def.tools.is_empty() {
         brain.build_tool_registry(AgentMode::Build)
     } else {
         ToolRegistry::from_names(&def.tools)
     };
+
+    // Re-wire subagent meta tools so spawns from inside this agent carry
+    // the node's supervisor + workflow cancel_token (rather than the
+    // Brain-default `None, None`). When def.tools is empty, the Brain
+    // build returns the full Build registry including `subagent`/`subagents`
+    // — those would otherwise spawn grand-subagents with NO cancel
+    // propagation. Subject to the recursion depth cap enforced by
+    // spawn_single; this node is at depth 1 (workflow parent → agent node).
+    re_wire_subagent_tools(
+        &mut registry,
+        model_config.clone(),
+        None,
+        permission_config.clone(),
+        Some(supervisor.clone()),
+        Some(cancel_token.clone()),
+        1,
+    );
+
+    // Also ensure BashTool (when present) is the supervised version so the
+    // node's own bash commands are process-group isolated.
+    if registry.has("bash") {
+        registry.register(Box::new(crate::tools::bash::BashTool::with_supervisor(
+            supervisor.clone(),
+            None,
+        )));
+    }
+
+    // P0-3: register skill scripts for the agent's declared skills so that
+    // the subagent can call them as tools. Only the agent's `def.skills`
+    // get wired — Brain-wide active_skills are deliberately NOT inherited
+    // here (avoids leaking unrelated script tools to a workflow node).
+    SkillManager::sync_skill_scripts_for_skills(
+        brain.skill_manager.as_ref(),
+        &def.skills,
+        &mut registry,
+        Some(supervisor.clone()),
+    );
 
     let memory = if def.memory_enabled > 0 {
         Some(Arc::new(build_agent_memory_store(brain, storage.clone())))
@@ -447,7 +497,9 @@ async fn execute_agent_node(
         permission_config,
         memory,
         Some(def.id.clone()),
-    );
+    )
+    .with_supervisor(supervisor.clone())
+    .with_cancel_token(cancel_token);
 
     let task = format_agent_input(node, input);
     let started = std::time::Instant::now();
@@ -458,7 +510,7 @@ async fn execute_agent_node(
     let entry = AgentHistoryEntry {
         agent_id: def.id.clone(),
         session_id: session_id.to_string(),
-        workflow_run_id: _run_id.to_string(),
+        workflow_run_id: run_id.to_string(),
         trigger: "workflow".to_string(),
         input: task,
         output: result.output.clone(),
@@ -521,23 +573,6 @@ pub fn build_agent_memory_store(
         }
     }
     AgentMemoryStore::without_embedding(storage)
-}
-
-/// Inject skill content into a system prompt (content path).
-fn inject_skill_content(brain: &Brain, skills: &[String], system_prompt: &str) -> String {
-    let mut prompt = system_prompt.to_string();
-    if let Some(ref sm) = brain.skill_manager {
-        let mgr = sm.lock();
-        for name in skills {
-            if let Ok(Some(content)) = mgr.load_skill_context(name) {
-                if !prompt.is_empty() {
-                    prompt.push_str("\n\n");
-                }
-                prompt.push_str(&content);
-            }
-        }
-    }
-    prompt
 }
 
 /// Format a node's resolved JSON input into a readable task string.

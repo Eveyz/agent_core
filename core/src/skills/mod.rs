@@ -3,9 +3,11 @@ pub mod manifest;
 pub use manifest::{ScriptEntry, SkillManifest};
 
 use anyhow::Result;
+use parking_lot::Mutex;
 use serde_json;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Backward-compatible alias.
 pub type SkillLoader = SkillManager;
@@ -505,6 +507,99 @@ impl SkillManager {
 
     pub fn count(&self) -> usize {
         self.manifests.len()
+    }
+
+    // ── Composition helpers (used by Workflow executor + Standalone paths) ──
+
+    /// Inject skill content for the given skill `names` into `system_prompt`.
+    ///
+    /// This is the canonical implementation used by every subagent construction
+    /// path (workflow `execute_agent_node` and `run_agent_standalone`). It
+    /// folds each named skill's `SKILL.md` body + available script catalog
+    /// into the subagent's system prompt.
+    ///
+    /// Calling with `skill_manager = None` returns the prompt unchanged.
+    pub fn inject_skill_content_into(
+        skill_manager: Option<&Arc<Mutex<SkillManager>>>,
+        skills: &[String],
+        system_prompt: &str,
+    ) -> String {
+        let Some(sm) = skill_manager else {
+            return system_prompt.to_string();
+        };
+        let mgr = sm.lock();
+        let mut prompt = system_prompt.to_string();
+        for name in skills {
+            if let Ok(Some(content)) = mgr.load_skill_context(name) {
+                if !prompt.is_empty() {
+                    prompt.push_str("\n\n");
+                }
+                prompt.push_str(&content);
+            }
+        }
+        prompt
+    }
+
+    /// Register `skill.<name>.<script>` tools for the named skills into
+    /// `registry`, removing any previously-registered `skill.*` tools first
+    /// (so a Brain-built registry doesn't leak Brain-wide active_skills'
+    /// script tools to a subagent that only declares a subset).
+    ///
+    /// This is the subagent-side mirror of `Run::sync_skill_scripts`, but
+    /// restricted to an explicit skill list rather than the live `active_skills`
+    /// set, so workflow / standalone agent nodes only get script tools for
+    /// their *own* declared skills (P2-16: don't inherit unrelated skills).
+    ///
+    /// When `supervisor` is set, the script tools will use it for
+    /// process-group isolation.
+    pub fn sync_skill_scripts_for_skills(
+        skill_manager: Option<&Arc<Mutex<SkillManager>>>,
+        skills: &[String],
+        registry: &mut crate::tools::ToolRegistry,
+        supervisor: Option<Arc<Mutex<crate::runtime::supervisor::ProcessSupervisor>>>,
+    ) {
+        use crate::tools::script::SkillScriptTool;
+        // 1. Remove any existing `skill.*` tools (could be Brain-inherited).
+        let existing_skill_tools: Vec<String> = registry
+            .list_names()
+            .into_iter()
+            .filter(|n| n.starts_with("skill."))
+            .map(|s| s.to_string())
+            .collect();
+        if !existing_skill_tools.is_empty() {
+            let names: Vec<&str> =
+                existing_skill_tools.iter().map(|s| s.as_str()).collect();
+            registry.remove_all(&names);
+        }
+
+        let Some(sm) = skill_manager else {
+            return;
+        };
+        let mgr = sm.lock();
+
+        // 2. For each named skill, register script tools.
+        for skill_name in skills {
+            let Some(source_dir) = mgr.source_dir_of(skill_name) else {
+                tracing::warn!(
+                    skill = %skill_name,
+                    "sync_skill_scripts_for_skills: skill not found — skipping"
+                );
+                continue;
+            };
+            for script in mgr.discover_scripts(skill_name) {
+                let tool_name = format!("skill.{}.{}", skill_name, script.name);
+                if registry.has(&tool_name) {
+                    // Shouldn't happen given clear above + unique script
+                    // names within a skill, but defensive.
+                    continue;
+                }
+                let mut tool = SkillScriptTool::new(skill_name, &script, source_dir.to_path_buf());
+                if let Some(sv) = &supervisor {
+                    tool = tool.with_supervisor(sv.clone());
+                }
+                registry.register(Box::new(tool));
+            }
+        }
     }
 }
 

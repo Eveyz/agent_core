@@ -30,6 +30,12 @@ struct FrontendMessage {
     content: String,
     #[serde(default)]
     model: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<serde_json::Value>,
+    #[serde(default)]
+    tool_call_id: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
 }
 
 impl FrontendMessage {
@@ -40,12 +46,19 @@ impl FrontendMessage {
             "tool" => agent_core::types::Role::Tool,
             _ => agent_core::types::Role::User,
         };
+        let tool_calls: Option<Vec<agent_core::types::ToolCall>> = self.tool_calls.as_ref()
+            .and_then(|v| serde_json::from_value(v.clone()).ok());
+        let is_assistant_with_tools = role == agent_core::types::Role::Assistant && tool_calls.is_some();
         agent_core::types::Message {
             role,
-            content: Some(self.content.clone()),
-            tool_calls: None,
-            tool_call_id: None,
-            name: None,
+            content: if self.content.is_empty() && is_assistant_with_tools {
+                None
+            } else {
+                Some(self.content.clone())
+            },
+            tool_calls,
+            tool_call_id: self.tool_call_id.clone(),
+            name: self.name.clone(),
             model: self.model.clone(),
         }
     }
@@ -755,6 +768,9 @@ async fn resume_session(state: State<'_, AppState>, session_id: String) -> Resul
             role: m.role.to_string(),
             content: m.content.clone().unwrap_or_default(),
             model: m.model.clone(),
+            tool_calls: m.tool_calls.as_ref().and_then(|v| serde_json::to_value(v).ok()),
+            tool_call_id: m.tool_call_id.clone(),
+            name: m.name.clone(),
         })
         .collect();
     Ok(FrontendSession {
@@ -1057,27 +1073,6 @@ fn build_agent_memory_store(
     agent_core::agent_registry::AgentMemoryStore::without_embedding(storage)
 }
 
-/// Inject skill content into a system prompt (content path).
-fn inject_skill_content(
-    brain: &Brain,
-    skills: &[String],
-    system_prompt: &str,
-) -> String {
-    let mut prompt = system_prompt.to_string();
-    if let Some(ref sm) = brain.skill_manager {
-        let mgr = sm.lock();
-        for name in skills {
-            if let Ok(Some(content)) = mgr.load_skill_context(name) {
-                if !prompt.is_empty() {
-                    prompt.push_str("\n\n");
-                }
-                prompt.push_str(&content);
-            }
-        }
-    }
-    prompt
-}
-
 /// List the names of all available tools (for the agent editor's tool picker).
 #[tauri::command]
 async fn list_available_tools(state: State<'_, AppState>) -> Result<Vec<String>, String> {
@@ -1271,7 +1266,11 @@ async fn run_agent_standalone(
     input: String,
     session_id: Option<String>,
 ) -> Result<String, String> {
+    use agent_core::runtime::supervisor::ProcessSupervisor;
+    use agent_core::skills::SkillManager;
     use agent_core::subagent::Subagent;
+    use agent_core::tools::subagent::re_wire_subagent_tools;
+    use agent_core::CancellationToken;
 
     let run_manager = state.run_manager.lock().await;
     let brain = run_manager.brain().clone();
@@ -1291,19 +1290,57 @@ async fn run_agent_standalone(
     // Build runtime components from the Brain.
     let mut subagent_config = agent_core::agent_registry::build_subagent_config(&def);
     // Inject skill content into the system prompt (content path).
-    subagent_config.system_prompt =
-        inject_skill_content(&brain, &def.skills, &subagent_config.system_prompt);
+    subagent_config.system_prompt = SkillManager::inject_skill_content_into(
+        brain.skill_manager.as_ref(),
+        &def.skills,
+        &subagent_config.system_prompt,
+    );
 
     let model_config = agent_core::agent_registry::build_model_config(&def, &brain.config);
     let permission_config =
         agent_core::agent_registry::build_permission_config(&def, &brain.config.permissions);
 
+    // Standalone agent gets its own ProcessSupervisor + cancel token so:
+    //  - its bash children are process-group isolated and killed on cancel
+    //  - any subagent it spawns (path D) inherits the supervisor+cancel
+    //    via re_wire_subagent_tools (vs. the Brain-built registry's None,None)
+    let supervisor = std::sync::Arc::new(parking_lot::Mutex::new(ProcessSupervisor::new()));
+    let cancel_token = CancellationToken::new();
+
     // Build tool registry: inherit all if tools empty, else named subset.
-    let registry = if def.tools.is_empty() {
+    let mut registry = if def.tools.is_empty() {
         brain.build_tool_registry(agent_core::AgentMode::Build)
     } else {
         agent_core::ToolRegistry::from_names(&def.tools)
     };
+
+    // Re-wire subagent meta tools with our supervisor + cancel so spawned
+    // grand-subagents are cancellable. (depth 0: standalone agent itself).
+    re_wire_subagent_tools(
+        &mut registry,
+        model_config.clone(),
+        None,
+        permission_config.clone(),
+        Some(supervisor.clone()),
+        Some(cancel_token.clone()),
+        0,
+    );
+
+    // Ensure BashTool (when present) is the supervised version.
+    if registry.has("bash") {
+        registry.register(Box::new(
+            agent_core::tools::bash::BashTool::with_supervisor(supervisor.clone(), None),
+        ));
+    }
+
+    // P0-3: register script tools ONLY for the agent's declared skills
+    // (Brain active_skills deliberately NOT inherited).
+    SkillManager::sync_skill_scripts_for_skills(
+        brain.skill_manager.as_ref(),
+        &def.skills,
+        &mut registry,
+        Some(supervisor.clone()),
+    );
 
     // Build the per-agent memory store (if enabled).
     let memory = if def.memory_enabled > 0 {
@@ -1321,7 +1358,9 @@ async fn run_agent_standalone(
         permission_config,
         memory,
         Some(def.id.clone()),
-    );
+    )
+    .with_supervisor(supervisor.clone())
+    .with_cancel_token(cancel_token);
 
     let session = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let started = std::time::Instant::now();

@@ -323,6 +323,7 @@ pub fn build_subagent_config(def: &AgentDef) -> SubagentConfig {
         temperature: None,
         result_strategy: crate::subagent::ResultStrategy::Auto,
         working_dir: None,
+        recursion_depth: 0,
     }
 }
 

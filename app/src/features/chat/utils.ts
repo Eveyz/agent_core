@@ -158,21 +158,53 @@ export function entriesToMessages(entries: ChatEntry[]): FrontendMessage[] {
     } else if (entry.type === 'turn' && entry.blocks) {
       let thinkingText = '';
       let assistantText = '';
+      const toolBlocks: Extract<TurnBlock, { type: 'tool' }>[] = [];
+
       for (const block of entry.blocks) {
         if (block.type === 'thinking') {
           thinkingText += block.text;
         } else if (block.type === 'assistant') {
           assistantText += block.text;
+        } else if (block.type === 'tool') {
+          toolBlocks.push(block);
         }
       }
-      // Wrap thinking in <think> tags and prepend to assistant content
-      // so it can be restored when resuming the session.
+
       let content = assistantText.trim();
       if (thinkingText.trim()) {
         content = `<think>${thinkingText.trim()}</think>${content ? '\n' + content : ''}`;
       }
-      if (content) {
-        msgs.push({ role: 'assistant', content, model: entry.model });
+
+      if (toolBlocks.length > 0) {
+        const tool_calls = toolBlocks.map(tb => ({
+          id: tb.call_id,
+          type: 'function',
+          function: {
+            name: tb.name,
+            arguments: typeof tb.args === 'string' ? tb.args : JSON.stringify(tb.args || {})
+          }
+        }));
+
+        msgs.push({
+          role: 'assistant',
+          content: content || '',
+          model: entry.model,
+          tool_calls
+        });
+
+        for (const tb of toolBlocks) {
+          msgs.push({
+            role: 'tool',
+            content: tb.result || '',
+            tool_call_id: tb.call_id,
+            name: tb.name,
+            model: entry.model
+          });
+        }
+      } else {
+        if (content) {
+          msgs.push({ role: 'assistant', content, model: entry.model });
+        }
       }
     }
   }

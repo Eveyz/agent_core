@@ -26,10 +26,31 @@ impl fmt::Display for Role {
     }
 }
 
+fn serialize_content<S>(content: &Option<String>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match content {
+        Some(s) => serializer.serialize_str(s),
+        None => serializer.serialize_str(""),
+    }
+}
+
+fn deserialize_content<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = Option::<String>::deserialize(deserializer)?;
+    match s {
+        Some(val) if val.is_empty() => Ok(None),
+        other => Ok(other),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(serialize_with = "serialize_content", deserialize_with = "deserialize_content")]
     pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,

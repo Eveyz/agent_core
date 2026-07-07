@@ -18,6 +18,7 @@ pub fn register_subagent_tools(
     permission_config: PermissionConfig,
     supervisor: Option<Arc<Mutex<crate::runtime::supervisor::ProcessSupervisor>>>,
     cancel_token: Option<tokio_util::sync::CancellationToken>,
+    parent_depth: u8,
 ) {
     let parent_max_iterations = model_config.max_iterations;
     let mut single = SubagentSpawnTool::new(
@@ -26,14 +27,16 @@ pub fn register_subagent_tools(
         session_mgr.clone(),
         permission_config.clone(),
         parent_max_iterations,
-    );
+    )
+    .with_parent_depth(parent_depth);
     let mut spawn_all = SubagentSpawnAllTool::new(
         model_config,
         available_tool_names,
         session_mgr,
         permission_config,
         parent_max_iterations,
-    );
+    )
+    .with_parent_depth(parent_depth);
     if let Some(sv) = supervisor {
         single = single.with_supervisor(sv.clone());
         spawn_all = spawn_all.with_supervisor(sv);
@@ -46,6 +49,47 @@ pub fn register_subagent_tools(
     registry.register(Box::new(spawn_all));
 }
 
+/// Re-wire `subagent`/`subagents` tools in `registry` so that any spawn from
+/// this registry propagates cancellation and process isolation.
+///
+/// Use at any agent-level execution boundary to fix up the Brain-built
+/// registry (which is constructed with `None, None` for the meta tools,
+/// because `Brain::build_tool_registry` doesn't have a `CancellationToken`
+/// or `ProcessSupervisor` of its own — the boundary — Run, WorkflowNode,
+/// Standalone — owns one and must inject it).
+///
+/// `parent_depth` is the recursion depth of the agent owning `registry`;
+/// spawn calls inside it will become depth `parent_depth + 1`.
+pub fn re_wire_subagent_tools(
+    registry: &mut ToolRegistry,
+    model_config: ModelConfig,
+    session_mgr: Option<Arc<Mutex<SessionManager>>>,
+    permission_config: PermissionConfig,
+    supervisor: Option<Arc<Mutex<crate::runtime::supervisor::ProcessSupervisor>>>,
+    cancel_token: Option<tokio_util::sync::CancellationToken>,
+    parent_depth: u8,
+) {
+    if !registry.has("subagent") && !registry.has("subagents") {
+        return;
+    }
+    let available_tools: Vec<String> = registry
+        .list_names()
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect();
+    registry.remove_all(&["subagent", "subagents"]);
+    register_subagent_tools(
+        registry,
+        model_config,
+        available_tools,
+        session_mgr,
+        permission_config,
+        supervisor,
+        cancel_token,
+        parent_depth,
+    );
+}
+
 // ── SubagentSpawnTool ────────────────────────────────────────────────
 
 pub(crate) struct SubagentSpawnTool {
@@ -56,6 +100,10 @@ pub(crate) struct SubagentSpawnTool {
     parent_max_iterations: usize,
     supervisor: Option<Arc<Mutex<crate::runtime::supervisor::ProcessSupervisor>>>,
     cancel_token: Option<tokio_util::sync::CancellationToken>,
+    /// Recursion depth of the agent that owns this tool. When this tool
+    /// spawns a subagent, the child gets `parent_depth + 1` and the spawn
+    /// is refused past `MAX_SUBAGENT_DEPTH`.
+    parent_depth: u8,
 }
 
 impl SubagentSpawnTool {
@@ -74,6 +122,7 @@ impl SubagentSpawnTool {
             parent_max_iterations,
             supervisor: None,
             cancel_token: None,
+            parent_depth: 0,
         }
     }
 
@@ -84,6 +133,11 @@ impl SubagentSpawnTool {
 
     pub fn with_cancel_token(mut self, ct: tokio_util::sync::CancellationToken) -> Self {
         self.cancel_token = Some(ct);
+        self
+    }
+
+    pub fn with_parent_depth(mut self, depth: u8) -> Self {
+        self.parent_depth = depth;
         self
     }
 }
@@ -159,6 +213,7 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
             strategy,
             self.supervisor.clone(),
             self.cancel_token.clone(),
+            self.parent_depth,
         )
         .await?;
 
@@ -189,6 +244,8 @@ pub(crate) struct SubagentSpawnAllTool {
     parent_max_iterations: usize,
     supervisor: Option<Arc<Mutex<crate::runtime::supervisor::ProcessSupervisor>>>,
     cancel_token: Option<tokio_util::sync::CancellationToken>,
+    /// Recursion depth of the agent that owns this tool.
+    parent_depth: u8,
 }
 
 impl SubagentSpawnAllTool {
@@ -207,6 +264,7 @@ impl SubagentSpawnAllTool {
             parent_max_iterations,
             supervisor: None,
             cancel_token: None,
+            parent_depth: 0,
         }
     }
 
@@ -217,6 +275,11 @@ impl SubagentSpawnAllTool {
 
     pub fn with_cancel_token(mut self, ct: tokio_util::sync::CancellationToken) -> Self {
         self.cancel_token = Some(ct);
+        self
+    }
+
+    pub fn with_parent_depth(mut self, depth: u8) -> Self {
+        self.parent_depth = depth;
         self
     }
 }
@@ -327,6 +390,7 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
             let sub_sender = event_sender.clone();
             let sv_clone = self.supervisor.clone();
             let ct_clone = self.cancel_token.clone();
+            let parent_depth = self.parent_depth;
 
             join_set.spawn(async move {
                 let args = serde_json::json!({
@@ -346,6 +410,7 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                     strategy,
                     sv_clone,
                     ct_clone,
+                    parent_depth,
                 )
                 .await;
 
@@ -597,7 +662,7 @@ use crate::util::floor_char_boundary;
 /// (cache-friendly), while the full history is preserved on disk.
 ///
 /// Runs file I/O on a blocking thread so we don't stall the async runtime.
-async fn persist_subagent_messages(
+pub(crate) async fn persist_subagent_messages(
     agent_id: &str,
     messages: &[Message],
 ) -> Option<std::path::PathBuf> {
@@ -758,6 +823,27 @@ fn parse_result_strategy(args: &Value) -> ResultStrategy {
     }
 }
 
+/// Check if a tool name is a meta-dispatch tool that should NOT be inherited
+/// by a spawned subagent. Tools excluded here can only reach a subagent
+/// explicitly through path D (`brain.build_tool_registry` for a workflow
+/// agent node with empty `def.tools`).
+///
+/// Filtering policy: spawn-driven subagents (`subagent`/`subagents`) and
+/// runtime skill loaders (`skill_list`/`skill_load`/`skill_deactivate`/
+/// `skill_reload`) are meta tools that orchestrate OTHER pieces of work
+/// from the parent — they should never be inherited implicitly.
+pub(crate) fn is_meta_dispatch_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "subagent"
+            | "subagents"
+            | "skill_list"
+            | "skill_load"
+            | "skill_deactivate"
+            | "skill_reload"
+    )
+}
+
 async fn spawn_single(
     args: &Value,
     model_config: &ModelConfig,
@@ -768,13 +854,29 @@ async fn spawn_single(
     result_strategy: ResultStrategy,
     supervisor: Option<Arc<Mutex<crate::runtime::supervisor::ProcessSupervisor>>>,
     cancel_token: Option<tokio_util::sync::CancellationToken>,
+    parent_depth: u8,
 ) -> Result<(SpawnResult, Vec<crate::types::Message>)> {
+    use crate::subagent::MAX_SUBAGENT_DEPTH;
+
     let id = args["id"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
     let task = args["task"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing 'task'"))?;
+
+    // Hard cap on recursion depth: don't let a subagent spawn another if we
+    // are already at MAX_SUBAGENT_DEPTH. Returning Err propagates up to the
+    // parent LLM, which can decide to inline the work instead.
+    if parent_depth >= MAX_SUBAGENT_DEPTH {
+        return Err(anyhow::anyhow!(
+            "Refusing to spawn subagent '{}' at recursion depth {}: \
+             that would exceed the max depth of {}. \
+             Do the work inline in the parent context instead.",
+            id, parent_depth, MAX_SUBAGENT_DEPTH,
+        ));
+    }
+    let child_depth = parent_depth + 1;
 
     let default_system_prompt = "You are a focused sub-agent. Complete the given task and return the result. Be concise. \
 You have access to tools: read_file, glob, grep, bash, edit, webfetch, and git tools. \
@@ -868,6 +970,14 @@ Do NOT attempt to read or process image files.";
     // Prevent subagents from getting tools the parent agent doesn't have.
     final_tool_names.retain(|t| available_tools.contains(t));
 
+    // Strip meta-dispatch tools so a spawned subagent cannot recursively
+    // spawn its own subagents or trigger skill loading — those operations
+    // must remain under the explicit control of the parent LLM (or workflow
+    // executor). This is the second layer of defence beyond the recursion
+    // depth check above: even if a subagent somehow gets past the check
+    // (e.g. via the `"all"` wildcard), the tool name won't be available.
+    final_tool_names.retain(|t| !is_meta_dispatch_tool(t));
+
     // If all requested tools were filtered out, give at least read_file so it can do something.
     if final_tool_names.is_empty() {
         final_tool_names = vec!["read_file".to_string()];
@@ -887,6 +997,7 @@ Do NOT attempt to read or process image files.";
         max_context_tokens: model_config.max_context_tokens,
         result_strategy,
         working_dir: Some(workspace_root.clone()),
+        recursion_depth: child_depth,
         ..SubagentConfig::default()
     };
 

@@ -293,17 +293,28 @@ Use when you need to retrieve and analyze web content."
             ));
         }
 
-        let body = match response.text().await {
+        let bytes = match response.bytes().await {
             Ok(b) => b,
             Err(e) => {
                 return Ok(format!(
                     "Failed to read response body from {final_url}: {e}\n\n\
                      The request succeeded (status {status_code}) but the response body \
-                     could not be decoded. This may indicate binary content or an encoding \
-                     issue. Try fetching a different URL or use a format that handles \
-                     binary content."
+                     could not be retrieved."
                 ));
             }
+        };
+
+        let body = if bytes.starts_with(&[0x1f, 0x8b]) {
+            use std::io::Read;
+            let mut decoder = flate2::read::GzDecoder::new(&bytes[..]);
+            let mut decoded = Vec::new();
+            if decoder.read_to_end(&mut decoded).is_ok() {
+                String::from_utf8_lossy(&decoded).to_string()
+            } else {
+                String::from_utf8_lossy(&bytes).to_string()
+            }
+        } else {
+            String::from_utf8_lossy(&bytes).to_string()
         };
 
         if is_image_content_type(&content_type) {

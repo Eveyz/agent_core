@@ -447,6 +447,7 @@ impl Brain {
                 self.config.permissions.clone(),
                 None,
                 None,
+                0,
             );
         }
 

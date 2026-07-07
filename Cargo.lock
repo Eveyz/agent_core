@@ -39,6 +39,7 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "fastembed",
+ "flate2",
  "futures",
  "glob",
  "htmd",

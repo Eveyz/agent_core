@@ -64,7 +64,18 @@ pub struct SubagentConfig {
     /// condition when multiple subagents run concurrently on the same thread pool.
     #[serde(default)]
     pub working_dir: Option<std::path::PathBuf>,
+    /// Recursion depth from the top-level agent (0 = top-level Run's agent
+    /// itself, 1 = its direct subagent, 2 = grand-subagent, …).
+    /// Used by `spawn_single` to refuse spawning past the configured limit
+    /// and to safely filter out meta-dispatch tools (`subagent`/`subagents`/
+    /// `skill_list`/`skill_load`/`skill_deactivate`/`skill_reload`) so a
+    /// subagent cannot recursively spawn new subagents beyond the limit.
+    #[serde(default)]
+    pub recursion_depth: u8,
 }
+
+/// Hard cap on subagent recursion depth.
+pub const MAX_SUBAGENT_DEPTH: u8 = 3;
 
 impl Default for SubagentConfig {
     fn default() -> Self {
@@ -83,6 +94,7 @@ impl Default for SubagentConfig {
             temperature: None,
             result_strategy: ResultStrategy::Auto,
             working_dir: None,
+            recursion_depth: 0,
         }
     }
 }

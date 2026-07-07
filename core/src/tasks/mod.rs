@@ -539,7 +539,7 @@ impl Tool for TaskExecuteTool {
             .to_string();
 
         // Check task is ready and get dependency context
-        let (goal, dep_context, force_inline) = {
+        let (goal, dep_context) = {
             let board = self.board.lock();
             let task = board
                 .get(id)
@@ -560,8 +560,7 @@ impl Tool for TaskExecuteTool {
             }
 
             let dep_ctx = build_dependency_context(&board, id);
-            let use_subagent = should_use_subagent(&task.goal(), &board, id);
-            (task.goal().to_string(), dep_ctx, !use_subagent)
+            (task.goal().to_string(), dep_ctx)
         };
 
         // Mark in-progress
@@ -578,37 +577,42 @@ impl Tool for TaskExecuteTool {
         }
         task_prompt.push_str("\nComplete this task and return the result. When done, your output will be stored as the task result.");
 
-        if force_inline {
-            // Execute inline — simple task, no subagent overhead
-            let result_text = format!("[Task '{}' - inline] Goal: {}", id, goal);
+        // Spawn subagent with proper tool registry.
+        //
+        // P1-4/8: previously this used hardcoded `max_context_tokens: 32000`
+        // and `max_iterations: 50`, which silently under-utilised modern
+        // long-context models. We now inherit the parent model's window and
+        // iteration budget so the subagent gets the same headroom as the
+        // `subagent` tool path.
+        //
+        // P1-6: the previous `force_inline` shortcut returned a fake
+        // "[Task '{id}' - inline] Goal: {goal}" placeholder as the task
+        // *result* without ever consulting the model — silently losing the
+        // task's actual content and fooling downstream consumers (e.g.
+        // dependents that read the "result" via `build_dependency_context`,
+        // or the workflow layer that recorded that string as the agent
+        // history output). Inline execution has been removed: every
+        // task_execute now goes through a subagent so the recorded result is
+        // always the real model output.
+        //
+        // Each task_execute owns its own ProcessSupervisor + CancellationToken
+        // so the subagent's bash children are process-group isolated and can
+        // be cancelled cleanly. (P0-1: same treatment as workflow agent nodes.)
+        use crate::runtime::supervisor::ProcessSupervisor;
 
-            let mut board = self.board.lock();
-            board.update(id, TaskStatus::Completed, Some(result_text.clone()))?;
-
-            let ready = board.ready_tasks();
-            let unblocked: Vec<&str> = ready
-                .iter()
-                .filter(|t| t.blocked_by().contains(&id.to_string()))
-                .map(|t| t.id())
-                .collect();
-
-            let mut output = format!(
-                "[Task '{}'] completed (inline, no subagent)\n\n{}",
-                id, result_text
-            );
-            if !unblocked.is_empty() {
-                output.push_str(&format!("\n\nUnblocked tasks: {}", unblocked.join(", ")));
-            }
-            return Ok(output);
-        }
-
-        // Spawn subagent with proper tool registry
         let tool_registry = crate::tools::ToolRegistry::from_names(&custom_tools);
+        let supervisor = Arc::new(Mutex::new(ProcessSupervisor::new()));
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+
         let config = SubagentConfig {
             system_prompt,
             tools: custom_tools,
-            max_iterations: 50,
-            max_context_tokens: 32000,
+            max_iterations: self.model_config.max_iterations.max(10),
+            max_context_tokens: self.model_config.max_context_tokens,
+            working_dir: Some(
+                std::env::current_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            ),
             ..SubagentConfig::default()
         };
 
@@ -618,8 +622,16 @@ impl Tool for TaskExecuteTool {
             &self.model_config,
             tool_registry,
             self.permission_config.clone(),
-        );
+        )
+        .with_supervisor(supervisor)
+        .with_cancel_token(cancel_token);
         let result = subagent.run(&task_prompt).await?;
+
+        // Persist messages (mirrors the `subagent` tool's persistence so the
+        // full task history is recoverable even though the parent context
+        // only sees the formatted result).
+        let messages = subagent.messages();
+        let _ = crate::tools::subagent::persist_subagent_messages(id, &messages).await;
 
         // Update task with result
         {

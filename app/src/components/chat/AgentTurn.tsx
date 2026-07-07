@@ -278,42 +278,76 @@ export const AgentTurnUI = memo(function AgentTurnUI({
                 />
               )
             ) : item.type === 'error' ? (
-              (!collapsed || idx === renderItems.length - 1) && (
-                item.data.text.includes("maximum number of steps") ||
-                item.data.text.includes("Reached the maximum number of steps") ||
-                item.data.text.includes("reached the maximum number of steps") ? (
-                  <div className="warning-block-style">
-                    <div className="warning-block-content">
-                      <AlertTriangleIcon size={16} style={{ flexShrink: 0 }} />
-                      <span style={{ lineHeight: '1.4' }}>You have been working in this project in a while.</span>
-                    </div>
-                    {onSend && (
-                      <button 
-                        className="continue-btn" 
-                        onClick={() => onSend("continue")}
-                        disabled={isProcessing}
-                      >
-                        Continue
-                      </button>
-                    )}
-                  </div>
-                ) : item.data.text.toLowerCase().includes("interrupted") ? (
-                  <div className="interrupted-block-style">
-                    <div className="interrupted-content">
-                      <BanIcon size={14} className="interrupted-icon" style={{ flexShrink: 0 }} />
-                      <div className="interrupted-text-wrapper">
-                        <span className="interrupted-title">Execution Interrupted</span>
-                        <span className="interrupted-subtitle">The task was cancelled before completion</span>
+              (() => {
+                const text = item.data.text;
+                const isRecovery = text.includes("retrying model call") ||
+                                   text.includes("compacting to") ||
+                                   text.includes("escalating max_tokens") ||
+                                   text.includes("switching to fallback model") ||
+                                   text.includes("retrying in");
+                
+                if (isRecovery && idx < renderItems.length - 1) {
+                  return null;
+                }
+
+                if (!collapsed || idx === renderItems.length - 1) {
+                  if (
+                    text.includes("maximum number of steps") ||
+                    text.includes("Reached the maximum number of steps") ||
+                    text.includes("reached the maximum number of steps")
+                  ) {
+                    return (
+                      <div className="warning-block-style">
+                        <div className="warning-block-content">
+                          <AlertTriangleIcon size={16} style={{ flexShrink: 0 }} />
+                          <span style={{ lineHeight: '1.4' }}>You have been working in this project in a while.</span>
+                        </div>
+                        {onSend && (
+                          <button 
+                            className="continue-btn" 
+                            onClick={() => onSend("continue")}
+                            disabled={isProcessing}
+                          >
+                            Continue
+                          </button>
+                        )}
                       </div>
+                    );
+                  }
+                  
+                  if (text.toLowerCase().includes("interrupted")) {
+                    return (
+                      <div className="interrupted-block-style">
+                        <div className="interrupted-content">
+                          <BanIcon size={14} className="interrupted-icon" style={{ flexShrink: 0 }} />
+                          <div className="interrupted-text-wrapper">
+                            <span className="interrupted-title">Execution Interrupted</span>
+                            <span className="interrupted-subtitle">The task was cancelled before completion</span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  if (isRecovery) {
+                    return (
+                      <div className="warning-block-style-simple">
+                        <AlertTriangleIcon size={16} style={{ flexShrink: 0 }} />
+                        <span style={{ lineHeight: '1.4' }}>{text}</span>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="error-block-style">
+                      <AlertTriangleIcon size={16} style={{ flexShrink: 0 }} />
+                      <span style={{ lineHeight: '1.4' }}>{text}</span>
                     </div>
-                  </div>
-                ) : (
-                  <div className="error-block-style">
-                    <AlertTriangleIcon size={16} style={{ flexShrink: 0 }} />
-                    <span style={{ lineHeight: '1.4' }}>{item.data.text}</span>
-                  </div>
-                )
-              )
+                  );
+                }
+                
+                return null;
+              })()
             ) : (
               !collapsed && <TurnIterationUI iteration={item.data} />
             )}
