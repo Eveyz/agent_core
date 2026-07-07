@@ -13,6 +13,7 @@ import TurnIterationUI from './TurnIterationUI';
 import TurnFooter from './TurnFooter';
 import { isSubagentTool, groupBlocksIntoItems, basename, parseEditSummary, parseUnifiedDiff } from './turnHelpers';
 import { getFileIcon } from '../layout/FileTree';
+import { useTranslation } from 'react-i18next';
 
 interface FileChangeItem {
   path: string;
@@ -25,6 +26,7 @@ interface FileChangeItem {
 
 
 function FilesChangedCard({ files }: { files: FileChangeItem[] }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   
   const { totalFiles, totalAdditions, totalDeletions } = useMemo(() => {
@@ -52,13 +54,15 @@ function FilesChangedCard({ files }: { files: FileChangeItem[] }) {
     return parts.slice(0, -1).join('/');
   };
 
+  const suffix = totalFiles > 1 ? '_plural' : '';
+
   return (
     <div className="files-changed-card">
       <div className="files-changed-header" role="button" tabIndex={0} aria-expanded={expanded} onClick={() => setExpanded(!expanded)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded(!expanded); } }}>
         <div className="files-changed-summary">
           {expanded ? <ChevronDownIcon size={14} className="files-changed-chevron" /> : <ChevronRightIcon size={14} className="files-changed-chevron" />}
           <span>
-            {totalFiles} file{totalFiles > 1 ? 's' : ''} changed
+            {t(`chat.turn.filesChanged${suffix}`, { count: totalFiles })}
             <span className="files-changed-summary-text">
               {' '}(<span className="file-change-stat-add">+{totalAdditions}</span>{' '}
               <span className="file-change-stat-del">−{totalDeletions}</span>)
@@ -67,7 +71,7 @@ function FilesChangedCard({ files }: { files: FileChangeItem[] }) {
         </div>
         <button className="files-changed-review-btn" onClick={handleReviewClick}>
           <FileCheckIcon size={12} />
-          Review
+          {t('chat.turn.review')}
         </button>
       </div>
       
@@ -104,6 +108,44 @@ function FilesChangedCard({ files }: { files: FileChangeItem[] }) {
     </div>
   );
 }
+function translateRecoveryMessage(text: string, t: any): string {
+  // 1. Compacting
+  const compactMatch = text.match(/context too long;\s*compacting to\s*(\d+)%\s*before retry/i);
+  if (compactMatch) {
+    return t('chat.recovery.compacting', { percentage: compactMatch[1] });
+  }
+
+  // 2. Escalating
+  const escalateMatch = text.match(/escalating max_tokens to\s*(\d+)/i);
+  if (escalateMatch) {
+    return t('chat.recovery.escalating', { maxTokens: escalateMatch[1] });
+  }
+
+  // 3. Retrying delay
+  const delayMatch = text.match(/retrying model call after\s*(\d+)ms/i);
+  if (delayMatch) {
+    return t('chat.recovery.retryingDelay', { delay: delayMatch[1] });
+  }
+
+  // 4. Switching model
+  const switchMatch = text.match(/switching to fallback model:\s*(.*)/i);
+  if (switchMatch) {
+    return t('chat.recovery.switchingModel', { model: switchMatch[1] });
+  }
+
+  // 5. Retrying in
+  const retryingInMatch = text.match(/retrying in\s*(.*)/i);
+  if (retryingInMatch) {
+    return t('chat.recovery.retryingIn', { time: retryingInMatch[1] });
+  }
+
+  // 6. Generic retrying model call
+  if (text.toLowerCase().includes("retrying model call")) {
+    return t('chat.recovery.retrying');
+  }
+
+  return text;
+}
 
 export const AgentTurnUI = memo(function AgentTurnUI({
   entry,
@@ -112,6 +154,7 @@ export const AgentTurnUI = memo(function AgentTurnUI({
   entry: ChatEntry;
   onSend?: (msg: string) => void;
 }) {
+  const { t } = useTranslation();
   const isProcessing = !!(entry.startTime && !entry.endTime);
   const isDone = !!(entry.endTime);
 
@@ -140,10 +183,16 @@ export const AgentTurnUI = memo(function AgentTurnUI({
   const summaryParts = useMemo(() => {
     const parts: string[] = [];
     if (totalTimeText) parts.push(totalTimeText);
-    if (toolCount > 0) parts.push(`${toolCount} tool${toolCount > 1 ? 's' : ''}`);
-    if (thoughtCount > 0) parts.push(`${thoughtCount} thought${thoughtCount > 1 ? 's' : ''}`);
+    if (toolCount > 0) {
+      const suffix = toolCount > 1 ? '_plural' : '';
+      parts.push(t(`chat.turn.tools${suffix}`, { count: toolCount }));
+    }
+    if (thoughtCount > 0) {
+      const suffix = thoughtCount > 1 ? '_plural' : '';
+      parts.push(t(`chat.turn.thoughts${suffix}`, { count: thoughtCount }));
+    }
     return parts;
-  }, [totalTimeText, toolCount, thoughtCount]);
+  }, [totalTimeText, toolCount, thoughtCount, t]);
 
   // Check if there are any intermediate blocks at all
   const hasIntermediateSteps = toolCount > 0 || thoughtCount > 0;
@@ -258,7 +307,7 @@ export const AgentTurnUI = memo(function AgentTurnUI({
               </>
             ) : (
               <>
-                <span>Worked {summaryParts.join(' · ')}</span>
+                <span>{t('chat.turn.worked', { summary: summaryParts.join(' · ') })}</span>
                 {collapsed ? <ChevronRightIcon size={12} className="ml-4" /> : <ChevronDownIcon size={12} className="ml-4" />}
               </>
             )}
@@ -300,7 +349,7 @@ export const AgentTurnUI = memo(function AgentTurnUI({
                       <div className="warning-block-style">
                         <div className="warning-block-content">
                           <AlertTriangleIcon size={16} style={{ flexShrink: 0 }} />
-                          <span style={{ lineHeight: '1.4' }}>You have been working in this project in a while.</span>
+                          <span style={{ lineHeight: '1.4' }}>{t('chat.turn.longWorkWarning')}</span>
                         </div>
                         {onSend && (
                           <button 
@@ -308,7 +357,7 @@ export const AgentTurnUI = memo(function AgentTurnUI({
                             onClick={() => onSend("continue")}
                             disabled={isProcessing}
                           >
-                            Continue
+                            {t('chat.turn.continue')}
                           </button>
                         )}
                       </div>
@@ -321,8 +370,8 @@ export const AgentTurnUI = memo(function AgentTurnUI({
                         <div className="interrupted-content">
                           <BanIcon size={14} className="interrupted-icon" style={{ flexShrink: 0 }} />
                           <div className="interrupted-text-wrapper">
-                            <span className="interrupted-title">Execution Interrupted</span>
-                            <span className="interrupted-subtitle">The task was cancelled before completion</span>
+                            <span className="interrupted-title">{t('chat.turn.interruptedTitle')}</span>
+                            <span className="interrupted-subtitle">{t('chat.turn.interruptedSubtitle')}</span>
                           </div>
                         </div>
                       </div>
@@ -333,7 +382,7 @@ export const AgentTurnUI = memo(function AgentTurnUI({
                     return (
                       <div className="warning-block-style-simple">
                         <AlertTriangleIcon size={16} style={{ flexShrink: 0 }} />
-                        <span style={{ lineHeight: '1.4' }}>{text}</span>
+                        <span style={{ lineHeight: '1.4' }}>{translateRecoveryMessage(text, t)}</span>
                       </div>
                     );
                   }

@@ -3,6 +3,7 @@ import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
 import ChevronRightIcon from 'lucide-react/dist/esm/icons/chevron-right.mjs';
 import { formatTime } from '../../utils/format';
 import { MarkdownContent } from './MarkdownContent';
+import { useTranslation } from 'react-i18next';
 import { getToolIcon } from './toolIcons';
 import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
 import CopyIcon from 'lucide-react/dist/esm/icons/copy.mjs';
@@ -107,18 +108,19 @@ function todoStatusIcon(status: string) {
 }
 
 function MemorySearchResults({ result }: { result: string }) {
+  const { t } = useTranslation();
   try {
     const parsed = JSON.parse(result);
     const results: MemoryResult[] = parsed.results || [];
-    if (results.length === 0) return <div style={{ color: 'var(--text-muted)' }}>No results found.</div>;
+    if (results.length === 0) return <div style={{ color: 'var(--text-muted)' }}>{t('chat.tools.noResults')}</div>;
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
         {results.map((r, idx: number) => (
           <div key={r.id || idx} style={{ padding: '10px', background: 'var(--bg-secondary)', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--text-muted)', marginBottom: '8px', borderBottom: '1px solid var(--border-color)', paddingBottom: '4px' }}>
-              <span style={{ fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-secondary)' }}>{r.role || 'MEMORY'}</span>
+              <span style={{ fontWeight: 600, textTransform: 'uppercase', color: 'var(--text-secondary)' }}>{r.role ? t(`chat.tools.${r.role.toLowerCase()}`, { defaultValue: r.role }) : t('chat.tools.memory')}</span>
               <div style={{ display: 'flex', gap: '12px' }}>
-                {r.importance !== undefined && <span>Score: {typeof r.importance === 'number' ? r.importance.toFixed(2) : r.importance}</span>}
+                {r.importance !== undefined && <span>{t('chat.tools.score')}: {typeof r.importance === 'number' ? r.importance.toFixed(2) : r.importance}</span>}
                 {r.created_at && <span>{new Date(r.created_at).toLocaleString()}</span>}
               </div>
             </div>
@@ -134,6 +136,10 @@ function MemorySearchResults({ result }: { result: string }) {
 }
 
 function TodoResultDisplay({ result }: { result: string }) {
+  const { t } = useTranslation();
+  if (result.trim() === "No todo items. Create a plan with todo_write.") {
+    return <div className="tool-result-content" style={{ padding: '12px 16px', color: 'var(--text-muted)' }}>{t('chat.tools.noTodoItems')}</div>;
+  }
   const parsed = parseTodoResult(result);
   if (!parsed) return <MarkdownContent content={result} plainText={true} />;
   return (
@@ -145,7 +151,7 @@ function TodoResultDisplay({ result }: { result: string }) {
       )}
       <div className="todo-panel" style={{ margin: 0, background: 'transparent', border: 'none', padding: 0 }}>
         <div className="todo-header">
-          <span className="todo-title">Current Plan</span>
+          <span className="todo-title">{t('chat.tools.currentPlan')}</span>
           <span className="todo-progress-text">{parsed.completedCount}/{parsed.totalCount}</span>
         </div>
         <div className="todo-progress-bar">
@@ -184,6 +190,7 @@ const ToolBlockUI = memo(function ToolBlockUI({
   endTime?: number;
   approvalStatus?: 'approved' | 'denied';
 }) {
+  const { t } = useTranslation();
   const isExpandable = name !== 'write_file' && name !== 'write_to_file';
   const [collapsed, setCollapsed] = useState(true);
   const [copied, setCopied] = useState(false);
@@ -223,22 +230,22 @@ const ToolBlockUI = memo(function ToolBlockUI({
   const displayLabel = useMemo(() => {
     if (name === 'tavily_search') {
       const query = (args as Record<string, unknown> | undefined)?.query as string | undefined;
-      if (query) return active ? `Searching "${query}"` : `Searched "${query}"`;
+      if (query) return active ? t('chat.tools.display.searching', { query }) : t('chat.tools.display.searched', { query });
     } else if (name === 'webfetch') {
       const url = (args as Record<string, unknown> | undefined)?.url as string | undefined;
-      if (url) return active ? `Fetching ${url}` : `Fetched ${url}`;
+      if (url) return active ? t('chat.tools.display.fetching', { url }) : t('chat.tools.display.fetched', { url });
     } else if (name === 'write_file' || name === 'write_to_file') {
       const path = ((args as Record<string, unknown> | undefined)?.TargetFile || (args as Record<string, unknown> | undefined)?.file_path || (args as Record<string, unknown> | undefined)?.path) as string | undefined;
       if (path) {
         const parts = path.replace(/\\/g, '/').split('/');
         const basename = parts[parts.length - 1];
-        return active ? `Creating file: ${basename}` : `Created file: ${basename}`;
+        return active ? t('chat.tools.display.creatingFile', { basename }) : t('chat.tools.display.createdFile', { basename });
       }
-      return active ? 'Creating file' : 'Created file';
+      return active ? t('chat.tools.display.creatingFile', { basename: '' }) : t('chat.tools.display.createdFile', { basename: '' });
     } else if (name === 'todo_write') {
-      return 'Create Task List';
+      return t('chat.tools.display.createTaskList');
     } else if (name === 'todo_read') {
-      return 'Read Task List';
+      return t('chat.tools.display.readTaskList');
     } else if (name === 'todo_update') {
       const id = (args as Record<string, unknown> | undefined)?.id as string | undefined;
       const status = (args as Record<string, unknown> | undefined)?.status as string | undefined;
@@ -254,33 +261,33 @@ const ToolBlockUI = memo(function ToolBlockUI({
       if (id && status) {
         if (desc) {
           const shortDesc = desc.length > 30 ? desc.substring(0, 30) + '...' : desc;
-          return `Update Task "${shortDesc}" to ${status}`;
+          return t('chat.tools.display.updateTaskWithDesc', { desc: shortDesc, status });
         }
-        return `Update Task ${id} to ${status}`;
+        return t('chat.tools.display.updateTaskWithId', { id, status });
       }
-      return 'Update Task';
+      return t('chat.tools.display.updateTask');
     } else if (name === 'skill_load' || name === 'skill_reload') {
       const skillName = (args as Record<string, unknown> | undefined)?.name || (args as Record<string, unknown> | undefined)?.skill_name as string | undefined;
-      const action = name === 'skill_load' ? 'Load' : 'Reload';
+      const action = name === 'skill_load' ? t('sidebar.actions.load', { defaultValue: 'Load' }) : t('sidebar.actions.reload', { defaultValue: 'Reload' });
       if (skillName) {
-        return active ? `${action}ing skill ${skillName}` : `${action} skill ${skillName}`;
+        return active ? t('chat.tools.display.skillActionName', { action, name: skillName }) : t('chat.tools.display.skillActionNameDone', { action, name: skillName });
       }
-      return `${action} skill`;
+      return t('chat.tools.display.skillAction', { action });
     } else if (name === 'skill_deactivate') {
       const skillName = (args as Record<string, unknown> | undefined)?.name || (args as Record<string, unknown> | undefined)?.skill_name as string | undefined;
       if (skillName) {
-        return active ? `Deactivating skill ${skillName}` : `Deactivate skill ${skillName}`;
+        return active ? t('chat.tools.display.deactivatingSkill', { name: skillName }) : t('chat.tools.display.deactivatedSkill', { name: skillName });
       }
-      return 'Deactivate skill';
+      return t('chat.tools.display.deactivateSkill');
     } else if (name === 'archival_memory_search') {
       const query = (args as Record<string, unknown> | undefined)?.query as string | undefined;
-      return query ? `Search memory "${query}"` : 'Search memory';
+      return query ? t('chat.tools.display.searchMemoryQuery', { query }) : t('chat.tools.display.searchMemory');
     } else if (name === 'conversation_search') {
       const query = (args as Record<string, unknown> | undefined)?.query as string | undefined;
-      return query ? `Search conversation "${query}"` : 'Search conversation';
+      return query ? t('chat.tools.display.searchConversationQuery', { query }) : t('chat.tools.display.searchConversation');
     }
     return name;
-  }, [name, args]);
+  }, [name, args, active, result, t]);
 
   const isSearch = name === 'tavily_search' || name === 'webfetch';
   const hideInput = isSearch || name.startsWith('todo_') || name.startsWith('skill_') || name === 'archival_memory_search' || name === 'conversation_search';
@@ -309,31 +316,37 @@ const ToolBlockUI = memo(function ToolBlockUI({
         </span>
         <div className="tool-controls-flex">
           {approvalStatus === 'approved' && (
-            <span className="approval-status-badge status-approved approval-badge-style">Approved</span>
+            <span className="approval-status-badge status-approved approval-badge-style">{t('chat.tools.approved')}</span>
           )}
           {approvalStatus === 'denied' && (
-            <span className="approval-status-badge status-denied approval-badge-style">Denied</span>
+            <span className="approval-status-badge status-denied approval-badge-style">{t('chat.tools.denied')}</span>
           )}
-          {isExpandable && (collapsed ? <ChevronRightIcon size={12} className="step-chevron" /> : <ChevronDownIcon size={12} className="step-chevron" />)}
+          {isExpandable && (
+            collapsed ? (
+              <ChevronRightIcon size={12} className="step-chevron" />
+            ) : (
+              <ChevronDownIcon size={12} className="step-chevron" />
+            )
+          )}
         </div>
       </div>
       {!collapsed && isExpandable && (
         <div className="step-body">
           {formattedArgs && !hideInput && (
             <div className="tool-section">
-              <div className="tool-section-label">INPUT</div>
+              <div className="tool-section-label">{t('chat.tools.input')}</div>
               <pre className="tool-args-pre">{formattedArgs}</pre>
             </div>
           )}
           {!active && (
             <div className="tool-section">
-              {!hideInput && <div className="tool-section-label">OUTPUT</div>}
+              {!hideInput && <div className="tool-section-label">{t('chat.tools.output')}</div>}
               {result ? (
                 name === 'skill_load' ? (
                   <div style={{ position: 'relative' }}>
                     <div style={{ padding: '12px', background: 'var(--overlay-0_02)', borderRadius: '8px', border: '1px solid var(--border-color)', fontSize: '13px' }}>
-                       <div style={{ marginBottom: '8px', color: 'var(--text-primary)' }}><strong>Name:</strong> {((args as Record<string, unknown> | undefined)?.name as string) || ''}</div>
-                       <div style={{ color: 'var(--text-muted)' }}><strong>Description:</strong> {result.match(/Description:\s*(.*?)\n/)?.[1]?.trim() || 'No description available'}</div>
+                       <div style={{ marginBottom: '8px', color: 'var(--text-primary)' }}><strong>{t('chat.tools.name')}:</strong> {((args as Record<string, unknown> | undefined)?.name as string) || ''}</div>
+                       <div style={{ color: 'var(--text-muted)' }}><strong>{t('chat.tools.description')}:</strong> {result.match(/Description:\s*(.*?)\n/)?.[1]?.trim() || t('chat.tools.noDescription')}</div>
                     </div>
                   </div>
                 ) : name === 'archival_memory_search' || name === 'conversation_search' ? (
@@ -346,7 +359,7 @@ const ToolBlockUI = memo(function ToolBlockUI({
                   <TodoResultDisplay result={result} />
                 ) : (
                   <div style={{ position: 'relative' }}>
-                    <button className="code-block-copy-btn" onClick={handleCopy} title="Copy output" style={{ position: 'absolute', top: '8px', right: '12px', display: 'flex', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '4px', padding: '4px', cursor: 'pointer', color: 'var(--text-muted)', zIndex: 10 }}>
+                    <button className="code-block-copy-btn" onClick={handleCopy} title={t('chat.tools.copyOutput')} style={{ position: 'absolute', top: '8px', right: '12px', display: 'flex', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '4px', padding: '4px', cursor: 'pointer', color: 'var(--text-muted)', zIndex: 10 }}>
                       {copied ? <CheckIcon size={14} color="var(--success)" /> : <CopyIcon size={14} />}
                     </button>
                     <MarkdownContent 
@@ -357,7 +370,7 @@ const ToolBlockUI = memo(function ToolBlockUI({
                   </div>
                 )
               ) : (
-                <div className="tool-no-output">(No output returned)</div>
+                <div className="tool-no-output">{t('chat.tools.noOutput')}</div>
               )}
             </div>
           )}
@@ -365,6 +378,6 @@ const ToolBlockUI = memo(function ToolBlockUI({
       )}
     </div>
   );
-});
+});;
 
 export default ToolBlockUI;

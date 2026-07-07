@@ -7,6 +7,7 @@ import LoaderIcon from 'lucide-react/dist/esm/icons/loader.mjs';
 import AlertCircleIcon from 'lucide-react/dist/esm/icons/alert-circle.mjs';
 import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
 import ChevronRightIcon from 'lucide-react/dist/esm/icons/chevron-right.mjs';
+import { useTranslation } from 'react-i18next';
 
 function statusIcon(status: string) {
   switch (status) {
@@ -22,6 +23,7 @@ function statusIcon(status: string) {
 }
 
 function TodoPanel() {
+  const { t } = useTranslation();
   const todo = useSelector((state: RootState) => state.chat.todo);
   const [collapsed, setCollapsed] = useState(true);
 
@@ -41,10 +43,10 @@ function TodoPanel() {
       >
         <span className="todo-title-group" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
           {collapsed ? <ChevronRightIcon size={14} style={{ color: 'var(--text-dim)' }} /> : <ChevronDownIcon size={14} style={{ color: 'var(--text-dim)' }} />}
-          <span className="todo-title">Plan</span>
+          <span className="todo-title">{t('chat.todoPanel.plan')}</span>
         </span>
         <span className="todo-progress-text">
-          {completed}/{todo.length} Completed
+          {t('chat.todoPanel.completed', { completed, total: todo.length })}
         </span>
       </div>
       
@@ -68,3 +70,4 @@ function TodoPanel() {
 }
 
 export default memo(TodoPanel);
+

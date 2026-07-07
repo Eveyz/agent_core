@@ -3,6 +3,7 @@ import { useSelector } from 'react-redux';
 import type { RootState } from '../../store';
 import { useAppDispatch } from '../../hooks/useAppDispatch';
 import { viewSubagent } from '../../features/chat/chatSlice';
+import { useTranslation } from 'react-i18next';
 import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
 import XIcon from 'lucide-react/dist/esm/icons/x.mjs';
 import ChevronRightIcon from 'lucide-react/dist/esm/icons/chevron-right.mjs';
@@ -20,8 +21,12 @@ const SubagentSpawnWidget = memo(function SubagentSpawnWidget({
   active?: boolean;
   subagentRefs?: SubagentRefBlock[];
 }) {
+  const { t } = useTranslation();
   const count = countSpawnedAgents(args);
-  const title = active ? `Spawning ${count} agent${count > 1 ? 's' : ''}...` : `Spawned ${count} agent${count > 1 ? 's' : ''}`;
+  const suffix = count > 1 ? '_plural' : '';
+  const title = active 
+    ? t(`chat.subagent.spawning${suffix}`, { count }) 
+    : t(`chat.subagent.spawned${suffix}`, { count });
   return (
     <div className="step-block spawn-block">
       <div className={`step-row step-row-default ${active ? 'step-row-active' : ''}`}>
@@ -47,6 +52,7 @@ const SubagentSpawnWidget = memo(function SubagentSpawnWidget({
 });
 
 const SubagentCard = memo(function SubagentCard({ subagentId }: { subagentId: string }) {
+  const { t } = useTranslation();
   const dispatch = useAppDispatch();
   const subagent = useSelector((state: RootState) => state.chat.subagents[subagentId]);
 
@@ -73,18 +79,23 @@ const SubagentCard = memo(function SubagentCard({ subagentId }: { subagentId: st
       const elapsed = subagent.endTime
         ? formatTime(subagent.endTime - subagent.startTime)
         : formatTime(now - subagent.startTime);
-      return `Working · ${toolCount} tools · ${elapsed}`;
+      return t('chat.subagent.workingState', { toolCount, elapsed });
     }
-    const iterText = subagent.iterations_used ? `${subagent.iterations_used} iter` : '';
-    const toolText = toolCount > 0 ? `${toolCount} tools` : '';
+    const iterText = subagent.iterations_used 
+      ? t(subagent.iterations_used > 1 ? 'chat.subagent.iterations_plural' : 'chat.subagent.iterations', { count: subagent.iterations_used }) 
+      : '';
+    const toolText = toolCount > 0 
+      ? t(toolCount > 1 ? 'chat.turn.tools_plural' : 'chat.turn.tools', { count: toolCount }) 
+      : '';
     const timeText =
       subagent.endTime && subagent.startTime ? formatTime(subagent.endTime - subagent.startTime) : '';
-    const parts = [subagent.status === 'done' ? 'Done' : 'Failed'];
+    const statusLabel = subagent.status === 'done' ? t('chat.subagent.done') : t('chat.subagent.failed');
+    const parts = [statusLabel];
     if (iterText) parts.push(iterText);
     if (toolText) parts.push(toolText);
     if (timeText) parts.push(timeText);
     return parts.join(' · ');
-  }, [subagent, toolCount, now]);
+  }, [subagent, toolCount, now, t]);
 
   const displayStr = subagent?.role_name || subagent?.id || subagentId;
   const idText = typeof displayStr === 'string' ? displayStr : JSON.stringify(displayStr);
@@ -107,10 +118,10 @@ const SubagentCard = memo(function SubagentCard({ subagentId }: { subagentId: st
       <div className="subagent-header">
         <span className="subagent-icon">{statusIcon}</span>
         <span className="subagent-id">{idText}</span>
-        {hasPendingApproval && <span className="subagent-badge-pending">Approval Required</span>}
+        {hasPendingApproval && <span className="subagent-badge-pending">{t('chat.subagent.approvalRequired')}</span>}
         <span className="subagent-status">{statusText}</span>
-        <button className="subagent-view-btn" onClick={handleViewDetails} title="View details">
-          View Details <ChevronRightIcon size={12} />
+        <button className="subagent-view-btn" onClick={handleViewDetails} title={t('chat.subagent.viewDetails')}>
+          {t('chat.subagent.viewDetails')} <ChevronRightIcon size={12} />
         </button>
       </div>
     </div>

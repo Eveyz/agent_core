@@ -13,12 +13,14 @@ import ReadFileWidget from './ReadFileWidget';
 import BashWidget from './BashWidget';
 import SubagentSpawnWidget, { SubagentCard } from './SubagentWidgets';
 import { generateSmartToolsLabel } from './turnHelpers';
+import { useTranslation } from 'react-i18next';
 
 const TurnIterationUI = memo(function TurnIterationUI({
   iteration,
 }: {
   iteration: TurnIteration;
 }) {
+  const { t } = useTranslation();
   const thinkingBlock = iteration.thinkingBlock;
   const isStreaming = !!thinkingBlock?.isStreaming;
 
@@ -45,16 +47,16 @@ const TurnIterationUI = memo(function TurnIterationUI({
   const hasSubagents = iteration.toolBlocks.some(b => (b.type === 'tool' && isSubagentTool(b)) || b.type === 'subagent_ref');
 
   const thoughtLabel = useMemo(() => {
-    if (isStreaming) return 'Thinking...';
+    if (isStreaming) return t('chat.thinking');
     if (thinkingBlock?.startTime && thinkingBlock?.endTime) {
-      return `Thought for ${formatTime(thinkingBlock.endTime - thinkingBlock.startTime)}`;
+      return t('chat.thoughtFor', { time: formatTime(thinkingBlock.endTime - thinkingBlock.startTime) });
     }
-    return 'Thought';
-  }, [isStreaming, thinkingBlock]);
+    return t('chat.thought');
+  }, [isStreaming, thinkingBlock, t]);
 
   const toolsLabel = useMemo(() => {
-    return generateSmartToolsLabel(iteration.toolBlocks, isStreaming);
-  }, [iteration.toolBlocks, isStreaming]);
+    return generateSmartToolsLabel(iteration.toolBlocks, isStreaming, t);
+  }, [iteration.toolBlocks, isStreaming, t]);
 
   const singleTopLevelTool = useMemo(() => {
     if (regularToolCount !== 1) return false;

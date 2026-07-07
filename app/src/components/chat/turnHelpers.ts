@@ -142,9 +142,13 @@ export function parseEditSummary(result: string): EditSummary | null {
   return { start: +m[1], end: +m[2], additions: +m[3], deletions: +m[4] };
 }
 
-export function generateSmartToolsLabel(toolBlocks: TurnBlock[], isStreaming: boolean): string {
+export function generateSmartToolsLabel(
+  toolBlocks: TurnBlock[],
+  isStreaming: boolean,
+  t: (key: string, options?: any) => string
+): string {
   const regularTools = toolBlocks.filter(b => b.type === 'tool' && !isSubagentTool(b));
-  if (regularTools.length === 0) return isStreaming ? 'Calling tool...' : 'Called tool';
+  if (regularTools.length === 0) return isStreaming ? t('chat.tools.labels.calling') : t('chat.tools.labels.called');
 
   const isAnyToolActive = regularTools.some(b => b.type === 'tool' && b.active);
   const isExecuting = isStreaming || isAnyToolActive;
@@ -159,37 +163,51 @@ export function generateSmartToolsLabel(toolBlocks: TurnBlock[], isStreaming: bo
   const parts: string[] = [];
   const editCount = counts['edit'] || 0;
   if (editCount > 0) {
-    parts.push(isExecuting ? `Editing ${editCount} file${editCount > 1 ? 's' : ''}` : `Edited ${editCount} file${editCount > 1 ? 's' : ''}`);
+    const key = isExecuting ? 'editing' : 'edited';
+    const suffix = editCount > 1 ? '_plural' : '';
+    parts.push(t(`chat.tools.labels.${key}${suffix}`, { count: editCount }));
   }
 
   const createCount = (counts['write_file'] || 0) + (counts['write_to_file'] || 0);
   if (createCount > 0) {
-    parts.push(isExecuting ? `Creating ${createCount} file${createCount > 1 ? 's' : ''}` : `Created ${createCount} file${createCount > 1 ? 's' : ''}`);
+    const key = isExecuting ? 'creating' : 'created';
+    const suffix = createCount > 1 ? '_plural' : '';
+    parts.push(t(`chat.tools.labels.${key}${suffix}`, { count: createCount }));
   }
 
   const readCount = counts['read_file'] || 0;
   if (readCount > 0) {
-    parts.push(isExecuting ? `Reading ${readCount} file${readCount > 1 ? 's' : ''}` : `Read ${readCount} file${readCount > 1 ? 's' : ''}`);
+    const key = isExecuting ? 'reading' : 'read';
+    const suffix = readCount > 1 ? '_plural' : '';
+    parts.push(t(`chat.tools.labels.${key}${suffix}`, { count: readCount }));
   }
 
   const searchCount = (counts['tavily_search'] || 0) + (counts['webfetch'] || 0);
   if (searchCount > 0) {
-    parts.push(isExecuting ? `Searching ${searchCount} quer${searchCount > 1 ? 'ies' : 'y'}` : `Searched ${searchCount} quer${searchCount > 1 ? 'ies' : 'y'}`);
+    const key = isExecuting ? 'searchingQueries' : 'searchedQueries';
+    const suffix = searchCount > 1 ? '_plural' : '';
+    parts.push(t(`chat.tools.labels.${key}${suffix}`, { count: searchCount }));
   }
 
   const bashCount = counts['bash'] || 0;
   if (bashCount > 0) {
-    parts.push(isExecuting ? `Running ${bashCount} command${bashCount > 1 ? 's' : ''}` : `Ran ${bashCount} command${bashCount > 1 ? 's' : ''}`);
+    const key = isExecuting ? 'runningCommands' : 'ranCommands';
+    const suffix = bashCount > 1 ? '_plural' : '';
+    parts.push(t(`chat.tools.labels.${key}${suffix}`, { count: bashCount }));
   }
 
   const grepCount = (counts['grep_search'] || 0) + (counts['grep'] || 0) + (counts['glob_search'] || 0) + (counts['glob'] || 0);
   if (grepCount > 0) {
-    parts.push(isExecuting ? `Searching ${grepCount} pattern${grepCount > 1 ? 's' : ''}` : `Searched ${grepCount} pattern${grepCount > 1 ? 's' : ''}`);
+    const key = isExecuting ? 'searchingPatterns' : 'searchedPatterns';
+    const suffix = grepCount > 1 ? '_plural' : '';
+    parts.push(t(`chat.tools.labels.${key}${suffix}`, { count: grepCount }));
   }
 
   const memorySearchCount = (counts['archival_memory_search'] || 0) + (counts['conversation_search'] || 0) + (counts['conversation_search_date'] || 0);
   if (memorySearchCount > 0) {
-    parts.push(isExecuting ? `Searching ${memorySearchCount} memor${memorySearchCount > 1 ? 'ies' : 'y'}` : `Searched ${memorySearchCount} memor${memorySearchCount > 1 ? 'ies' : 'y'}`);
+    const key = isExecuting ? 'searchingMemories' : 'searchedMemories';
+    const suffix = memorySearchCount > 1 ? '_plural' : '';
+    parts.push(t(`chat.tools.labels.${key}${suffix}`, { count: memorySearchCount }));
   }
 
   let taskCount = 0;
@@ -203,21 +221,28 @@ export function generateSmartToolsLabel(toolBlocks: TurnBlock[], isStreaming: bo
   }
 
   if (taskCount > 0) {
-    parts.push(isExecuting ? `Updating ${taskCount} task${taskCount > 1 ? 's' : ''}` : `Updated ${taskCount} task${taskCount > 1 ? 's' : ''}`);
+    const key = isExecuting ? 'updatingTasks' : 'updatedTasks';
+    const suffix = taskCount > 1 ? '_plural' : '';
+    parts.push(t(`chat.tools.labels.${key}${suffix}`, { count: taskCount }));
   }
 
   if (otherCount > 0 || parts.length === 0) {
     if (parts.length === 0) {
-      return isExecuting ? `Calling ${otherCount} tool${otherCount > 1 ? 's' : ''}...` : `Called ${otherCount} tool${otherCount > 1 ? 's' : ''}`;
+      const suffix = otherCount > 1 ? '_plural' : '';
+      return isExecuting 
+        ? t(`chat.tools.labels.calling${suffix}`, { count: otherCount }) 
+        : t(`chat.tools.labels.called${suffix}`, { count: otherCount });
     } else {
-      parts.push(isExecuting ? `calling ${otherCount} other tool${otherCount > 1 ? 's' : ''}` : `called ${otherCount} other tool${otherCount > 1 ? 's' : ''}`);
+      const key = isExecuting ? 'callingOthers' : 'calledOthers';
+      const suffix = otherCount > 1 ? '_plural' : '';
+      parts.push(t(`chat.tools.labels.${key}${suffix}`, { count: otherCount }));
     }
   }
 
   let label = parts.join(', ');
   // Capitalize first letter
   label = label.charAt(0).toUpperCase() + label.slice(1);
-  if (isExecuting) label += '...';
+  if (isExecuting && !label.endsWith('...')) label += '...';
   
   return label;
 }
