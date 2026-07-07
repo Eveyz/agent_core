@@ -216,8 +216,12 @@ impl OpenAIClient {
             let base_delay = Duration::from_millis(500);
             let max_delay = Duration::from_secs(60);
             // Rate-limit retries (429 only) — separate from general network retries.
+            // Transient 5xx / connection errors used to get only 3 attempts, which was too
+            // few for flaky providers (a 503 is usually a brief overload). Bumped to match
+            // the rate-limit budget (10) so behaviour is consistent across transient failures.
+            // `calculate_backoff` still caps each wait at 60s, so the worst case is bounded.
             let rate_limit_max_retries = 10usize;
-            let network_max_retries = 3usize;
+            let network_max_retries = 10usize;
 
             let mut final_error = None;
             let mut rate_limit_attempts = 0usize;
@@ -245,7 +249,9 @@ impl OpenAIClient {
                         current_client.circuit_breaker.record_failure();
                         rate_limit_attempts += 1;
                         if rate_limit_attempts >= rate_limit_max_retries {
-                            final_error = Some(anyhow::anyhow!("Rate limited after {} retries", rate_limit_attempts));
+                            final_error = Some(anyhow::anyhow!(
+                                "The AI model service is rate-limiting requests right now (HTTP 429). I retried several times but it is still busy — please wait a moment and try again."
+                            ));
                             break;
                         }
 
@@ -271,7 +277,10 @@ impl OpenAIClient {
                         current_client.circuit_breaker.record_failure();
                         network_attempts += 1;
                         if network_attempts >= network_max_retries {
-                            final_error = Some(anyhow::anyhow!("Server error {} after {} retries", r.status(), network_attempts));
+                            final_error = Some(anyhow::anyhow!(
+                                "The AI model service is temporarily unavailable (it returned a {} error). I retried several times but it is still not responding — this is usually a brief overload on the provider's side, so please try again in a minute.",
+                                r.status()
+                            ));
                             break;
                         }
                         let delay = calculate_backoff(network_attempts as u32, base_delay, max_delay);
@@ -289,14 +298,26 @@ impl OpenAIClient {
                         current_client.circuit_breaker.record_failure();
                         let status = r.status();
                         let body_text = r.text().await.unwrap_or_default();
-                        final_error = Some(anyhow::anyhow!("API error {status}: {body_text}"));
+                        // Trim the provider's raw error body so it stays readable in the UI.
+                        let detail = if body_text.chars().count() > 300 {
+                            format!("{}…", body_text.chars().take(300).collect::<String>())
+                        } else {
+                            body_text
+                        };
+                        final_error = Some(anyhow::anyhow!(
+                            "The AI model service rejected the request (HTTP {}). This is usually a configuration problem — e.g. an invalid API key, model name, or request parameter. Details: {}",
+                            status, detail
+                        ));
                         break;
                     }
                     Err(e) => {
                         current_client.circuit_breaker.record_failure();
                         network_attempts += 1;
                         if network_attempts >= network_max_retries {
-                            final_error = Some(e.into());
+                            final_error = Some(anyhow::anyhow!(
+                                "I couldn't reach the AI model service (a network error occurred: {}). I retried several times without success. Please check your internet connection and the provider's status, then try again.",
+                                e
+                            ));
                             break;
                         }
                         let delay = calculate_backoff(network_attempts as u32, base_delay, max_delay);

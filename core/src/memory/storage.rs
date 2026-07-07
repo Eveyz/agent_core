@@ -117,9 +117,26 @@ impl Storage {
             CREATE INDEX IF NOT EXISTS idx_sessions_archived ON sessions(archived);
             CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 
+            CREATE TABLE IF NOT EXISTS prompts (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                turn_index INTEGER NOT NULL,
+                user_message TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'completed',
+                token_usage TEXT NOT NULL DEFAULT '{}',
+                started_at TEXT,
+                ended_at TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(session_id, turn_index)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_prompts_session ON prompts(session_id);
+
             CREATE TABLE IF NOT EXISTS session_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                prompt_id TEXT NOT NULL DEFAULT '',
                 msg_index INTEGER NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT DEFAULT '',
@@ -379,6 +396,8 @@ impl Storage {
             "ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'build'",
             "ALTER TABLE cronjobs ADD COLUMN model TEXT DEFAULT ''",
             "ALTER TABLE session_messages ADD COLUMN model TEXT DEFAULT ''",
+            "ALTER TABLE session_messages ADD COLUMN prompt_id TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE sessions ADD COLUMN prompt_count INTEGER DEFAULT 0",
         ];
         for migration in migrations {
             let _ = db.execute_batch(migration);

@@ -37,6 +37,22 @@ export interface FrontendMessage {
   tool_calls?: any[];
   tool_call_id?: string;
   name?: string;
+  /** Prompt this message belongs to (from backend prompts table). */
+  prompt_id?: string;
+}
+
+export interface FrontendPrompt {
+  id: string;
+  session_id: string;
+  turn_index: number;
+  user_message: string;
+  model: string;
+  status: string;
+  token_usage: Record<string, unknown>;
+  started_at: string | null;
+  ended_at: string | null;
+  created_at: string;
+  messages: FrontendMessage[];
 }
 
 export interface EventLogEntry {
@@ -50,6 +66,7 @@ export interface EventLogEntry {
 export interface ResumeSessionResult {
   meta: SessionMeta;
   messages: FrontendMessage[];
+  prompts: FrontendPrompt[];
   event_log: EventLogEntry[];
 }
 

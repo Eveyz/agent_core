@@ -25,6 +25,7 @@ pub struct SessionMeta {
     pub start_time: String,
     pub end_time: Option<String>,
     pub message_count: u32,
+    pub prompt_count: u32,
     pub cwd: String,
     pub model_used: String,
     pub tags: Vec<String>,
@@ -36,6 +37,23 @@ pub struct SessionMeta {
     pub mode: String,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// A single prompt (user question + assistant's complete response cycle)
+/// within a session. Maps directly to a "turn".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Prompt {
+    pub id: String,
+    pub session_id: String,
+    pub turn_index: u32,
+    pub user_message: String,
+    pub model: String,
+    pub status: String,
+    pub token_usage: serde_json::Value,
+    pub started_at: Option<String>,
+    pub ended_at: Option<String>,
+    pub created_at: String,
+    pub messages: Vec<Message>,
 }
 
 impl SessionMeta {
@@ -61,17 +79,20 @@ impl SessionMeta {
     }
 }
 
-/// A full session with all messages and event log loaded.
+/// A full session with all messages, prompts, and event log loaded.
 #[derive(Debug, Clone)]
 pub struct Session {
     pub meta: SessionMeta,
     pub messages: Vec<Message>,
+    pub prompts: Vec<Prompt>,
     pub event_log: Vec<EventLogEntry>,
 }
 
 // ── Session Manager ──────────────────────────────────────────────────
 
-pub const META_SELECT: &str = "SELECT id, title, summary, start_time, end_time, message_count, cwd, model_used, tags, archived, \
+pub const META_SELECT: &str = "SELECT id, title, summary, start_time, end_time, message_count, \
+    COALESCE(prompt_count, 0), cwd, model_used, tags, \
+    COALESCE(archived, 0), \
     COALESCE(parent_session_id, ''), COALESCE(session_type, 'main'), \
     COALESCE(process_time_ms, 0), COALESCE(thought_time_ms, 0), \
     COALESCE(mode, 'build'), \
@@ -80,8 +101,8 @@ pub const META_SELECT: &str = "SELECT id, title, summary, start_time, end_time, 
 pub fn row_to_meta(row: &rusqlite::Row) -> rusqlite::Result<SessionMeta> {
     let tags_str: String = row.get(8)?;
     let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
-    let parent: String = row.get(10)?;
-    let stype: String = row.get(11)?;
+    let parent: String = row.get(11)?;
+    let stype: String = row.get(12)?;
     Ok(SessionMeta {
         id: row.get(0)?,
         title: row.get(1)?,
@@ -89,21 +110,22 @@ pub fn row_to_meta(row: &rusqlite::Row) -> rusqlite::Result<SessionMeta> {
         start_time: row.get(3)?,
         end_time: row.get(4)?,
         message_count: row.get(5)?,
-        cwd: row.get(6)?,
-        model_used: row.get(7)?,
+        prompt_count: row.get(6)?,
+        cwd: row.get(7)?,
+        model_used: row.get(8)?,
         tags,
-        archived: row.get::<_, i32>(9)? != 0,
+        archived: row.get::<_, i32>(10)? != 0,
         parent_session_id: if parent.is_empty() {
             None
         } else {
             Some(parent)
         },
         session_type: stype,
-        process_time_ms: row.get::<_, i64>(12)? as u64,
-        thought_time_ms: row.get::<_, i64>(13)? as u64,
-        mode: row.get(14)?,
-        created_at: row.get(15)?,
-        updated_at: row.get(16)?,
+        process_time_ms: row.get::<_, i64>(13)? as u64,
+        thought_time_ms: row.get::<_, i64>(14)? as u64,
+        mode: row.get(15)?,
+        created_at: row.get(16)?,
+        updated_at: row.get(17)?,
     })
 }
 
@@ -197,13 +219,18 @@ impl SessionManager {
         session_type: &str,
         project_id: Option<&str>,
     ) -> Result<String> {
-        let db = self.storage.conn();
+        let mut db = self.storage.conn();
+
+        // Wrap everything in a transaction so a crash between DELETE and
+        // INSERT doesn't lose data. If the guard is dropped without commit,
+        // SQLite auto-rolls back.
+        let tx = db.transaction()?;
         let now = Utc::now().to_rfc3339();
         let msg_count = messages.len() as u32;
 
         let exists = match session_id {
             Some(id) => {
-                let mut stmt = db.prepare("SELECT 1 FROM sessions WHERE id = ?1")?;
+                let mut stmt = tx.prepare("SELECT 1 FROM sessions WHERE id = ?1")?;
                 stmt.exists(rusqlite::params![id])?
             }
             None => false,
@@ -212,12 +239,16 @@ impl SessionManager {
         let id = if exists {
             let id = session_id.unwrap();
             // Update existing session
-            db.execute(
-                "UPDATE sessions SET message_count = ?1, updated_at = ?2, end_time = ?3, cwd = ?4, model_used = ?5 WHERE id = ?6",
-                rusqlite::params![msg_count, now, now, cwd, model_used, id],
+            tx.execute(
+                "UPDATE sessions SET message_count = ?1, prompt_count = ?2, updated_at = ?3, end_time = ?4, cwd = ?5, model_used = ?6 WHERE id = ?7",
+                rusqlite::params![msg_count, 0, now, now, cwd, model_used, id],
             )?;
-            // Delete old messages and re-insert
-            db.execute(
+            // Delete old prompts + messages (cascade)
+            tx.execute(
+                "DELETE FROM prompts WHERE session_id = ?1",
+                rusqlite::params![id],
+            )?;
+            tx.execute(
                 "DELETE FROM session_messages WHERE session_id = ?1",
                 rusqlite::params![id],
             )?;
@@ -228,32 +259,82 @@ impl SessionManager {
             let title = Self::auto_title(messages);
             let parent = parent_session_id.unwrap_or("");
             let proj = project_id.unwrap_or("");
-            db.execute(
-                "INSERT INTO sessions (id, title, start_time, message_count, cwd, model_used, parent_session_id, session_type, project_id, mode, created_at, updated_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
-                rusqlite::params![new_id, title, now, msg_count, cwd, model_used, parent, session_type, proj, "build", now],
+            tx.execute(
+                "INSERT INTO sessions (id, title, start_time, message_count, prompt_count, cwd, model_used, parent_session_id, session_type, project_id, mode, created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+                rusqlite::params![new_id, title, now, msg_count, 0, cwd, model_used, parent, session_type, proj, "build", now],
             )?;
             new_id
         };
 
-        // Insert messages
-        for (i, msg) in messages.iter().enumerate() {
-            let role = msg.role.to_string();
-            let content = msg.content.as_deref().unwrap_or("");
-            let tool_calls =
-                serde_json::to_string(&msg.tool_calls).unwrap_or_else(|_| "[]".to_string());
-            let tool_call_id = msg.tool_call_id.as_deref().unwrap_or("");
-            let name = msg.name.as_deref().unwrap_or("");
-            let model = msg.model.as_deref().unwrap_or("");
+        // Split messages into prompts (each User message starts a new prompt)
+        let prompt_groups = Self::split_into_prompts(messages);
+        let prompt_count = prompt_groups.len() as u32;
 
-            db.execute(
-                "INSERT OR REPLACE INTO session_messages (session_id, msg_index, role, content, tool_calls, tool_call_id, name, model, created_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                rusqlite::params![id, i as i64, role, content, tool_calls, tool_call_id, name, model, now],
+        // Update prompt count
+        tx.execute(
+            "UPDATE sessions SET prompt_count = ?1 WHERE id = ?2",
+            rusqlite::params![prompt_count, id],
+        )?;
+
+        // Insert prompts and their messages
+        for (prompt_idx, group) in prompt_groups.iter().enumerate() {
+            let prompt_id = uuid::Uuid::new_v4().to_string();
+            let user_msg = group.first()
+                .and_then(|m| m.content.as_deref())
+                .unwrap_or("");
+            let prompt_model = group.iter()
+                .find_map(|m| m.model.as_deref())
+                .unwrap_or(model_used);
+
+            tx.execute(
+                "INSERT INTO prompts (id, session_id, turn_index, user_message, model, status, started_at, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'completed', ?6, ?6)",
+                rusqlite::params![prompt_id, id, prompt_idx as i64, user_msg, prompt_model, now],
             )?;
+
+            for (msg_idx, msg) in group.iter().enumerate() {
+                let role = msg.role.to_string();
+                let content = msg.content.as_deref().unwrap_or("");
+                let tool_calls =
+                    serde_json::to_string(&msg.tool_calls).unwrap_or_else(|_| "[]".to_string());
+                let tool_call_id = msg.tool_call_id.as_deref().unwrap_or("");
+                let name = msg.name.as_deref().unwrap_or("");
+                let model = msg.model.as_deref().unwrap_or("");
+
+                tx.execute(
+                    "INSERT OR REPLACE INTO session_messages (session_id, prompt_id, msg_index, role, content, tool_calls, tool_call_id, name, model, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    rusqlite::params![id, prompt_id, msg_idx as i64, role, content, tool_calls, tool_call_id, name, model, now],
+                )?;
+            }
         }
 
+        // Commit the transaction. If we crash before this point, everything
+        // is rolled back automatically by SQLite (WAL mode).
+        tx.commit()?;
+
         Ok(id)
+    }
+
+    /// Split a flat message list into prompt groups.
+    /// Each group starts with a User message and includes all subsequent
+    /// messages until the next User (or end of list).
+    fn split_into_prompts(messages: &[Message]) -> Vec<Vec<&Message>> {
+        let mut groups: Vec<Vec<&Message>> = Vec::new();
+        let mut current: Vec<&Message> = Vec::new();
+
+        for msg in messages {
+            if msg.role == crate::types::Role::User && !current.is_empty() {
+                groups.push(std::mem::take(&mut current));
+            }
+            current.push(msg);
+        }
+        if !current.is_empty() {
+            groups.push(current);
+        }
+
+        groups
     }
 
     // ── List ────────────────────────────────────────────────────────
@@ -327,7 +408,7 @@ impl SessionManager {
 
     // ── Resume ──────────────────────────────────────────────────────
 
-    /// Load a session's messages for resume.
+    /// Load a session's messages, prompts, and event log for resume.
     pub fn resume(&self, session_id: &str) -> Result<Option<Session>> {
         let meta = match self.get_meta(session_id)? {
             Some(m) => m,
@@ -337,10 +418,12 @@ impl SessionManager {
         // Scope the db lock so it's released before get_event_log tries to acquire it.
         // Mutex is NOT reentrant — holding the lock and calling
         // get_event_log (which also calls storage.conn()) would deadlock.
-        let messages = {
+        let (messages, prompts) = {
             let db = self.storage.conn();
+
+            // Load messages with prompt_id
             let mut stmt = db.prepare(
-                "SELECT role, content, tool_calls, tool_call_id, name, model, msg_index \
+                "SELECT role, content, tool_calls, tool_call_id, name, model, msg_index, prompt_id \
                  FROM session_messages WHERE session_id = ?1 ORDER BY msg_index ASC",
             )?;
 
@@ -353,6 +436,7 @@ impl SessionManager {
                 let name: String = row.get(4)?;
                 let model: String = row.get(5)?;
                 let idx: i64 = row.get(6)?;
+                let prompt_id: String = row.get(7)?;
 
                 let tool_calls: Option<Vec<crate::types::ToolCall>> =
                     serde_json::from_str(&tool_calls_json)
@@ -383,17 +467,73 @@ impl SessionManager {
                         name: if name.is_empty() { None } else { Some(name) },
                         model: if model.is_empty() { None } else { Some(model) },
                     },
+                    prompt_id,
                 ))
             })?;
 
             for row in rows {
-                messages.push(row?);
+                let (idx, msg, _pid) = row?;
+                messages.push((idx, msg));
             }
             messages.sort_by_key(|(idx, _)| *idx);
-            messages
+            let flat_messages: Vec<Message> = messages
                 .into_iter()
                 .map(|(_, m)| m)
-                .collect::<Vec<Message>>()
+                .collect();
+
+            // Load prompts
+            let mut prompt_stmt = db.prepare(
+                "SELECT id, session_id, turn_index, user_message, model, status, token_usage, \
+                 started_at, ended_at, created_at FROM prompts WHERE session_id = ?1 ORDER BY turn_index ASC",
+            )?;
+            let prompt_rows = prompt_stmt.query_map(rusqlite::params![session_id], |row| {
+                let token_str: String = row.get(6)?;
+                Ok(Prompt {
+                    id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    turn_index: row.get::<_, i64>(2)? as u32,
+                    user_message: row.get(3)?,
+                    model: row.get(4)?,
+                    status: row.get(5)?,
+                    token_usage: serde_json::from_str(&token_str).unwrap_or(serde_json::json!({})),
+                    started_at: row.get(7)?,
+                    ended_at: row.get(8)?,
+                    created_at: row.get(9)?,
+                    messages: Vec::new(), // populated below
+                })
+            })?;
+            let mut prompts: Vec<Prompt> = Vec::new();
+            for row in prompt_rows {
+                prompts.push(row?);
+            }
+
+            // If no prompts exist (legacy data), build them by scanning User boundaries
+            if prompts.is_empty() && !flat_messages.is_empty() {
+                let groups = Self::split_into_prompts(&flat_messages);
+                for (idx, group) in groups.iter().enumerate() {
+                    let user_msg = group.first()
+                        .and_then(|m| m.content.as_deref())
+                        .unwrap_or("");
+                    let model = group.iter()
+                        .find_map(|m| m.model.as_deref())
+                        .unwrap_or("");
+                    prompts.push(Prompt {
+                        id: format!("legacy-prompt-{}", idx),
+                        session_id: session_id.to_string(),
+                        turn_index: idx as u32,
+                        user_message: user_msg.to_string(),
+                        model: model.to_string(),
+                        status: "completed".to_string(),
+                        token_usage: serde_json::json!({}),
+                        started_at: None,
+                        ended_at: None,
+                        created_at: String::new(),
+                        messages: group.iter().map(|m| (*m).clone()).collect(),
+                    });
+                }
+            }
+
+            (flat_messages, prompts)
         }; // db lock released here
 
         let event_log = self.get_event_log(session_id).unwrap_or_default();
@@ -401,6 +541,7 @@ impl SessionManager {
         Ok(Some(Session {
             meta,
             messages,
+            prompts,
             event_log,
         }))
     }
@@ -623,7 +764,11 @@ impl SessionManager {
             rusqlite::params![session_id],
         )?;
 
-        // 3. Delete messages first (foreign key cascade should handle this, but do it explicitly)
+        // 3. Delete prompts and messages first (foreign key cascade should handle this, but do it explicitly)
+        db.execute(
+            "DELETE FROM prompts WHERE session_id = ?1",
+            rusqlite::params![session_id],
+        )?;
         db.execute(
             "DELETE FROM session_messages WHERE session_id = ?1",
             rusqlite::params![session_id],
@@ -1109,6 +1254,7 @@ mod tests {
             start_time: "2026-06-07T12:00:00Z".to_string(),
             end_time: None,
             message_count: 42,
+            prompt_count: 3,
             cwd: "/home/project".to_string(),
             model_used: "gpt-4o".to_string(),
             tags: vec![],
@@ -1137,6 +1283,7 @@ mod tests {
             start_time: "2026-06-07T12:00:00Z".to_string(),
             end_time: None,
             message_count: 1,
+            prompt_count: 0,
             cwd: "/tmp".to_string(),
             model_used: "gpt".to_string(),
             tags: vec![],
@@ -1162,6 +1309,7 @@ mod tests {
             start_time: "2026-06-07T12:00:00Z".to_string(),
             end_time: None,
             message_count: 5,
+            prompt_count: 0,
             cwd: "/tmp".to_string(),
             model_used: "subagent".to_string(),
             tags: vec![],

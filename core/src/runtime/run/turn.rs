@@ -378,7 +378,9 @@ impl Run {
                     .client
                     .chat_completion_stream(&messages, &tools)
                     .await
-                    .map_err(|e| format!("LLM request failed: {e}"))?;
+                    // The client already retried with exponential backoff and surfaced a
+                    // user-friendly message, so just propagate it (no raw "503" leak).
+                    .map_err(|e| e.to_string())?;
 
                 let cancel = self.cancel.clone();
                 let event_tx = self.event_tx.clone();

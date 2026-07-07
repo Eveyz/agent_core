@@ -68,6 +68,7 @@ impl FrontendMessage {
 struct FrontendSession {
     meta: agent_core::SessionMeta,
     messages: Vec<FrontendMessage>,
+    prompts: Vec<agent_core::Prompt>,
     event_log: Vec<agent_core::EventLogEntry>,
 }
 
@@ -781,6 +782,7 @@ async fn resume_session(state: State<'_, AppState>, session_id: String) -> Resul
     Ok(FrontendSession {
         meta: session.meta,
         messages,
+        prompts: session.prompts,
         event_log: session.event_log,
     })
 }
