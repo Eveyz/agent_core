@@ -126,6 +126,7 @@ enum Transport {
 }
 
 struct McpConnection {
+    config: McpServerConfig,
     transport: Transport,
     tools: Vec<McpToolDef>,
 }
@@ -180,11 +181,10 @@ impl McpClientManager {
     /// Returns (server_name → Vec<error_messages>) for partial failures.
     pub async fn connect_all(&mut self) -> HashMap<String, Vec<String>> {
         let mut errors = HashMap::new();
-        let servers: Vec<_> = self.servers.drain(..).collect();
 
-        for config in servers {
+        for config in &self.servers {
             let name = config.name.clone();
-            match Self::connect_one(&config).await {
+            match Self::connect_one(config).await {
                 Ok(conn) => {
                     let tool_count = conn.tools.len();
                     tracing::info!(server = %name, tool_count, "MCP server connected");
@@ -198,7 +198,6 @@ impl McpClientManager {
             }
         }
 
-        self.servers.clear();
         errors
     }
 
@@ -262,7 +261,11 @@ impl McpClientManager {
             })
             .collect();
 
-        Ok(McpConnection { transport, tools })
+        Ok(McpConnection {
+            config: config.clone(),
+            transport,
+            tools,
+        })
     }
 
     /// Get all discovered tools across all connected servers.
@@ -274,16 +277,25 @@ impl McpClientManager {
     }
 
     /// Call a tool on a specific server.
-    pub async fn call_tool(&self, server: &str, tool_name: &str, args: Value) -> Result<String> {
-        let conn = self
-            .connections
-            .get(server)
-            .ok_or_else(|| anyhow::anyhow!("MCP server '{}' not connected", server))?;
+    ///
+    /// If the server's transport has died, tries to reconnect with exponential
+    /// backoff (up to 3 attempts: 100ms, 500ms, 2s) before failing.
+    pub async fn call_tool(&mut self, server: &str, tool_name: &str, args: Value) -> Result<String> {
+        let need_reconnect = {
+            let conn = self
+                .connections
+                .get(server)
+                .ok_or_else(|| anyhow::anyhow!("MCP server '{}' not connected", server))?;
+            !transport_is_alive(&conn.transport).await
+        };
 
-        if !transport_is_alive(&conn.transport).await {
-            anyhow::bail!("MCP server '{}' has died", server);
+        if need_reconnect {
+            tracing::warn!(server = %server, "MCP server died, attempting reconnect");
+            self.reconnect_server(server).await
+                .map_err(|e| anyhow::anyhow!("MCP server '{}' reconnect failed: {}", server, e))?;
         }
 
+        let conn = self.connections.get(server).unwrap();
         let params = serde_json::to_value(ToolCallParams {
             name: tool_name.to_string(),
             arguments: args,
@@ -318,6 +330,39 @@ impl McpClientManager {
             .join("\n");
 
         Ok(text)
+    }
+
+    /// Try to reconnect a dead server with exponential backoff.
+    /// Uses the stored config from the last successful connection.
+    async fn reconnect_server(&mut self, server: &str) -> Result<()> {
+        let config = self
+            .connections
+            .get(server)
+            .map(|c| c.config.clone())
+            .ok_or_else(|| anyhow::anyhow!("Server '{}' not found in connections", server))?;
+
+        let max_retries = 3;
+        let mut last_err = None;
+
+        for attempt in 1..=max_retries {
+            match Self::connect_one(&config).await {
+                Ok(conn) => {
+                    tracing::info!(server = %server, attempt, tools = conn.tools.len(), "MCP server reconnected");
+                    self.connections.insert(server.to_string(), conn);
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::warn!(server = %server, attempt, max_retries, "MCP reconnect failed: {}", e);
+                    last_err = Some(e);
+                    if attempt < max_retries {
+                        let delay = std::time::Duration::from_millis(100 * 2u64.pow(attempt as u32 - 1));
+                        tokio::time::sleep(delay).await;
+                    }
+                }
+            }
+        }
+
+        Err(anyhow::anyhow!("{}", last_err.unwrap()))
     }
 
     /// List connected server names.

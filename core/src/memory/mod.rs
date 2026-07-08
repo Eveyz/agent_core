@@ -177,6 +177,51 @@ impl MemoryManager {
         self.hnsw = Some(hnsw);
     }
 
+    /// Build BM25 index from all recall records in SQLite.
+    /// Call this in a background task after startup — searches fall back
+    /// to SQLite keyword matching until the index is ready.
+    pub fn build_bm25(&self) -> Result<BM25Index> {
+        let db = self.recall.storage_conn();
+        let mut stmt = db.prepare("SELECT id, content FROM recall_memory")?;
+        let records: Vec<(String, String)> = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+        drop(db);
+        BM25Index::from_records(&records)
+    }
+
+    /// Build HNSW index from all recall records with embeddings.
+    /// Call this in a background task after startup — searches fall back
+    /// to brute-force vector scan until the index is ready.
+    pub fn build_hnsw(&self) -> Result<HNSWIndex> {
+        use crate::memory::embedding::bytes_to_embedding;
+        use crate::memory::hnsw::normalize_embedding;
+        let db = self.recall.storage_conn();
+        let mut stmt = db.prepare(
+            "SELECT id, embedding FROM recall_memory \
+             WHERE embedding IS NOT NULL AND length(embedding) > 0",
+        )?;
+        let records: Vec<(String, Vec<f32>)> = stmt
+            .query_map([], |row| {
+                let id: String = row.get(0)?;
+                let emb_bytes: Vec<u8> = row.get(1)?;
+                Ok((id, emb_bytes))
+            })?
+            .filter_map(|r| r.ok())
+            .map(|(id, bytes)| {
+                let emb = bytes_to_embedding(&bytes);
+                (id, normalize_embedding(&emb))
+            })
+            .collect();
+        drop(stmt);
+        drop(db);
+        HNSWIndex::from_records(records)
+    }
+
     /// Set the maximum number of index entries before oldest entries are evicted.
     /// None = unbounded (not recommended for long-running agents).
     pub fn set_max_index_entries(&mut self, max: Option<usize>) {

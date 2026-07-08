@@ -1954,28 +1954,17 @@ pub fn run() {
                     }));
             }
 
-            // Background warmup: preload the embedding model so the first
-            // real embed() call doesn't stall. Runs on a tokio worker thread,
-            // never blocks setup() or the UI.
-            {
-                let embed_model = run_manager
-                    .brain()
-                    .memory
-                    .as_ref()
-                    .and_then(|mm| mm.lock().recall().embedding_model().cloned());
-                if let Some(model) = embed_model {
-                    tauri::async_runtime::spawn(async move {
-                        eprintln!("[warmup] preloading embedding model...");
-                        match tokio::task::spawn_blocking(move || {
-                            model.embed_single("warmup")
-                        }).await {
-                            Ok(Ok(_)) => eprintln!("[warmup] embedding model ready"),
-                            Ok(Err(e)) => eprintln!("[warmup] failed: {e}"),
-                            Err(e) => eprintln!("[warmup] task panicked: {e}"),
-                        }
-                    });
-                }
-            }
+            // Grab handles BEFORE run_manager is moved into AppState —
+            // used for deferred background warmup and index building below.
+            let embed_model = run_manager
+                .brain()
+                .memory
+                .as_ref()
+                .and_then(|mm| mm.lock().recall().embedding_model().cloned());
+            let memory_mgr = run_manager
+                .brain()
+                .memory
+                .clone();
 
             app.manage(AppState {
                 run_manager: Arc::new(AsyncMutex::new(run_manager)),
@@ -1988,6 +1977,54 @@ pub fn run() {
                 mcp_manager,
                 mcp_tool_defs,
             });
+
+            // Deferred warmup: wait for the UI to render, then preload the
+            // embedding model so the first real embed() call doesn't stall.
+            if let Some(model) = embed_model {
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    eprintln!("[warmup] preloading embedding model...");
+                    match tokio::task::spawn_blocking(move || {
+                        model.embed_single("warmup")
+                    }).await {
+                        Ok(Ok(_)) => eprintln!("[warmup] embedding model ready"),
+                        Ok(Err(e)) => eprintln!("[warmup] failed: {e}"),
+                        Err(e) => eprintln!("[warmup] task panicked: {e}"),
+                    }
+                });
+            }
+
+            // Deferred index building: build BM25 + HNSW in background so
+            // the UI isn't blocked. Searches fall back to SQLite until done.
+            if let Some(mm) = memory_mgr {
+                let mm_build = mm.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    eprintln!("[index] building search indexes (BM25 + HNSW)...");
+                    let start = std::time::Instant::now();
+                    let result = tokio::task::spawn_blocking(move || {
+                        let locked = mm_build.lock();
+                        let bm25 = locked.build_bm25().ok();
+                        let hnsw = locked.build_hnsw().ok();
+                        (bm25, hnsw)
+                    }).await;
+                    match result {
+                        Ok((bm25, hnsw)) => {
+                            let mut locked = mm.lock();
+                            if let Some(b) = bm25 {
+                                locked.set_bm25(b);
+                            }
+                            if let Some(h) = hnsw {
+                                locked.set_hnsw(h);
+                            }
+                            drop(locked);
+                            eprintln!("[index] BM25 + HNSW ready in {:?}", start.elapsed());
+                        }
+                        Err(e) => eprintln!("[index] build panicked: {e}"),
+                    }
+                });
+            }
+
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())

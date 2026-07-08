@@ -153,31 +153,10 @@ impl Brain {
 
         match result {
             Ok(mut m) => {
-                // BM25: on by default (can be disabled with bm25.enabled = false)
-                let bm25_enabled = mem_config
-                    .and_then(|c| c.bm25.as_ref())
-                    .map(|b| b.enabled)
-                    .unwrap_or(true);
-                if bm25_enabled {
-                    tracing::info!("building BM25 index...");
-                    match Self::build_bm25_index(&m) {
-                        Ok(bm25) => m.set_bm25(bm25),
-                        Err(e) => tracing::warn!("failed to build BM25 index: {e}"),
-                    }
-                }
-
-                // HNSW: on by default when embedding is enabled
-                let hnsw_enabled = mem_config
-                    .and_then(|c| c.hnsw.as_ref())
-                    .map(|h| h.enabled)
-                    .unwrap_or(true);
-                if hnsw_enabled && embedding_enabled {
-                    tracing::info!("building HNSW index...");
-                    match Self::build_hnsw_index(&m) {
-                        Ok(hnsw) => m.set_hnsw(hnsw),
-                        Err(e) => tracing::warn!("failed to build HNSW index: {e}"),
-                    }
-                }
+                // Indexes (BM25 + HNSW) are built asynchronously after startup
+                // to avoid blocking the UI. Searches fall back to SQLite
+                // keyword / brute-force vector scan until the index is ready.
+                // See MemoryManager::build_bm25() and build_hnsw().
 
                 Some(Arc::new(Mutex::new(m)))
             }
@@ -186,46 +165,6 @@ impl Brain {
                 None
             }
         }
-    }
-
-    /// Build BM25 index from existing recall records.
-    fn build_bm25_index(mgr: &MemoryManager) -> anyhow::Result<crate::memory::bm25::BM25Index> {
-        use crate::memory::bm25::BM25Index;
-        let db = mgr.recall().storage_conn();
-        let mut stmt = db.prepare("SELECT id, content FROM recall_memory")?;
-        let records: Vec<(String, String)> = stmt
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-        drop(stmt);
-        drop(db);
-        BM25Index::from_records(&records)
-    }
-
-    /// Build HNSW index from existing recall records with embeddings.
-    fn build_hnsw_index(mgr: &MemoryManager) -> anyhow::Result<crate::memory::hnsw::HNSWIndex> {
-        use crate::memory::hnsw::{HNSWIndex, normalize_embedding};
-        use crate::memory::embedding::bytes_to_embedding;
-        let db = mgr.recall().storage_conn();
-        let mut stmt = db
-            .prepare("SELECT id, embedding FROM recall_memory WHERE embedding IS NOT NULL AND length(embedding) > 0")?;
-        let records: Vec<(String, Vec<f32>)> = stmt
-            .query_map([], |row| {
-                let id: String = row.get(0)?;
-                let emb_bytes: Vec<u8> = row.get(1)?;
-                Ok((id, emb_bytes))
-            })?
-            .filter_map(|r| r.ok())
-            .map(|(id, bytes)| {
-                let emb = bytes_to_embedding(&bytes);
-                (id, normalize_embedding(&emb))
-            })
-            .collect();
-        drop(stmt);
-        drop(db);
-        HNSWIndex::from_records(records)
     }
 
     fn build_reflection_daemon(

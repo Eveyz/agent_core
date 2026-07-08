@@ -34,7 +34,7 @@ impl McpChannel {
 
     /// Call a tool on this server.
     pub async fn invoke(&self, tool_name: &str, args: &Value) -> Result<String> {
-        let mgr = self.manager.lock().await;
+        let mut mgr = self.manager.lock().await;
         mgr.call_tool(&self.server, tool_name, args.clone()).await
     }
 

@@ -79,7 +79,7 @@ impl Tool for McpTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String> {
-        let mgr = self.manager.lock().await;
+        let mut mgr = self.manager.lock().await;
         mgr.call_tool(&self.server, &self.tool_name, args).await
     }
 }
