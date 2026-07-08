@@ -15,22 +15,24 @@ export function useAutoSaveSession({
 }: AutoSaveParams): void {
   const saveSession = useSaveSession();
 
-  const isProcessing = useAppSelector((state) => state.chat.isProcessing);
-  const resumedFromBackend = useAppSelector((state) => state.chat._resumedFromBackend);
+  const isProcessing = useAppSelector((state) => (
+    activeSessionId ? !!state.chat.processing[activeSessionId] : false
+  ));
 
-  const lastAgentEndRef = useRef(false);
+  const prevSessionIdRef = useRef(activeSessionId);
+  const prevIsProcessingRef = useRef(isProcessing);
 
   useEffect(() => {
-    if (isProcessing) {
-      lastAgentEndRef.current = false;
-      return;
-    }
-
-    if (resumedFromBackend) return;
-
-    if (!lastAgentEndRef.current) {
-      lastAgentEndRef.current = true;
+    // Only auto-save if the session has not changed, and the agent's run
+    // transitioned from processing (true) to idle (false) (i.e. run finished).
+    if (
+      prevSessionIdRef.current === activeSessionId &&
+      prevIsProcessingRef.current &&
+      !isProcessing
+    ) {
       saveSession({ activeSessionId, activeProjectPath, defaultModel });
     }
-  }, [isProcessing, resumedFromBackend, activeSessionId, activeProjectPath, defaultModel, saveSession]);
+    prevSessionIdRef.current = activeSessionId;
+    prevIsProcessingRef.current = isProcessing;
+  }, [isProcessing, activeSessionId, activeProjectPath, defaultModel, saveSession]);
 }

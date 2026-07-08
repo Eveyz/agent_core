@@ -437,6 +437,12 @@
   background: var(--danger-bg);
 }
 
+.context-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+}
+
 .sidebar-bottom {
   margin-top: auto;
   padding: 16px 8px;

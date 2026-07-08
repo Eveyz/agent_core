@@ -122,8 +122,13 @@ impl Run {
                             .map(|model| model.embed_single(&text).unwrap_or_default())
                     };
                     let m = mem.lock();
-                    let _ =
-                        m.store_conversation_precomputed("assistant", &text, embedding.as_deref());
+                    let memory_session_id = self.session_id.as_deref().unwrap_or_else(|| m.session_id());
+                    let _ = m.store_conversation_for_session_precomputed(
+                        memory_session_id,
+                        "assistant",
+                        &text,
+                        embedding.as_deref(),
+                    );
                 }
             }
 
@@ -212,6 +217,7 @@ impl Run {
             let tx = self.event_tx.clone();
             let seq = self.seq.clone();
             let run_id = self.id.clone();
+            let session_id = self.session_id.clone();
             let turn_id = self.current_turn_id.clone();
             let cid = call_id.clone();
             tool_guards.push(EventGuard::new(move || {
@@ -219,6 +225,7 @@ impl Run {
                     seq: seq.fetch_add(1, Ordering::Relaxed),
                     event_id: uuid::Uuid::new_v4().to_string(),
                     run_id: run_id.clone(),
+                    session_id: session_id.clone(),
                     turn_id: turn_id.clone(),
                     parent_call_id: None,
                     ts: chrono::Utc::now(),
@@ -236,6 +243,7 @@ impl Run {
         let event_tx = self.event_tx.clone();
         let run_id = self.id.clone();
         let seq = self.seq.clone();
+        let session_id = self.session_id.clone();
         let turn_id = self.current_turn_id.clone();
         // Clone the approval resolver before constructing the orchestrator to
         // avoid borrowing conflicts with `&mut self.permission_policy` etc.
@@ -251,6 +259,7 @@ impl Run {
                 cancel_token: self.cancel.clone(),
                 approval_resolver: Some(approval_resolver),
                 session_id: self.session_id.clone(),
+                working_dir: self.working_dir.clone(),
             };
             orchestrator
                 .execute_tools(&tool_calls, &move |ev, parent_call_id: &str| {
@@ -259,6 +268,7 @@ impl Run {
                             seq: seq.fetch_add(1, Ordering::Relaxed),
                             event_id: uuid::Uuid::new_v4().to_string(),
                             run_id: run_id.clone(),
+                            session_id: session_id.clone(),
                             turn_id: turn_id.clone(),
                             parent_call_id: Some(parent_call_id.to_string()),
                             ts: chrono::Utc::now(),
@@ -268,6 +278,9 @@ impl Run {
                 })
                 .await
         };
+        if self.cancel.is_cancelled() {
+            return Err(RunError::Cancelled);
+        }
 
         // Stage: Observe
         for (call, result) in tool_calls.iter().zip(&tool_results) {
@@ -605,7 +618,11 @@ impl Run {
                 if let Some(parent) = path.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
-                if let Err(e) = std::fs::write(path, &json) {
+                let tmp_path = path.with_extension("tmp.snapshot");
+                if let Err(e) = std::fs::write(&tmp_path, &json)
+                    .and_then(|_| std::fs::rename(&tmp_path, path))
+                {
+                    let _ = std::fs::remove_file(&tmp_path);
                     tracing::warn!(path = %path.display(), error = %e, "failed to write session snapshot");
                 }
             }

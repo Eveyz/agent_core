@@ -67,3 +67,21 @@ pub fn redirect_if_artifact(path: &str, session_id: &str) -> PathBuf {
         PathBuf::from(path)
     }
 }
+
+/// Resolve a tool path under an optional working directory while preserving
+/// the session artifact redirect behavior for generated plans/media.
+pub fn resolve_tool_path(path: &str, session_id: Option<&str>, working_dir: Option<&str>) -> PathBuf {
+    let redirected = if let Some(sid) = session_id {
+        redirect_if_artifact(path, sid)
+    } else {
+        PathBuf::from(path)
+    };
+
+    if redirected.is_absolute() {
+        redirected
+    } else if let Some(wd) = working_dir {
+        PathBuf::from(wd).join(redirected)
+    } else {
+        redirected
+    }
+}

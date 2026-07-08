@@ -23,6 +23,7 @@ impl DiffPreferenceEngine {
                             seq: seq.fetch_add(1, Ordering::Relaxed),
                             event_id: uuid::Uuid::new_v4().to_string(),
                             run_id: run_id.clone(),
+                            session_id: None,
                             turn_id: None,
                             parent_call_id: None,
                             ts: chrono::Utc::now(),

@@ -31,11 +31,11 @@ export function ChatArea({
   const dispatch = useDispatch();
   const btwEntries = useSelector((state: RootState) => state.chat.btwEntries);
   const learnEntries = useSelector((state: RootState) => state.chat.learnEntries);
-  const goal = useSelector((state: RootState) => state.chat.goal);
-  const goalCompleted = useSelector((state: RootState) => state.chat.goalCompleted);
+  const goal = useSelector((state: RootState) => state.chat.goal[state.chat.activeSessionId ?? '']);
+  const goalCompleted = useSelector((state: RootState) => state.chat.goalCompleted[state.chat.activeSessionId ?? '']);
 
-  const allPrompts = useSelector((state: RootState) => state.chat.allPrompts);
-  const visiblePromptsCount = useSelector((state: RootState) => state.chat.visiblePromptsCount);
+  const allPrompts = useSelector((state: RootState) => state.chat.allPrompts[state.chat.activeSessionId ?? '']);
+  const visiblePromptsCount = useSelector((state: RootState) => state.chat.visiblePromptsCount[state.chat.activeSessionId ?? '']);
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
 
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
@@ -67,9 +67,9 @@ export function ChatArea({
   };
 
   return (
-    <>
+    <div className="chat-container">
       <div className="chat-history" ref={scrollRef} onScroll={handleScroll}>
-        <div ref={contentRef} style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+        <div ref={contentRef} className="chat-history-content">
           {isLoadingOlder && (
             <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '16px 0' }}>
               <div className="loader-spinner" />
@@ -136,6 +136,6 @@ export function ChatArea({
           <ChevronDownIcon size={18} />
         </button>
       )}
-    </>
+    </div>
   );
 }

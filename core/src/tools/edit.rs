@@ -39,11 +39,8 @@ impl Tool for EditTool {
             .ok_or_else(|| anyhow::anyhow!("missing 'new_string'"))?;
 
         let session_id = args.get("_session_id").and_then(|v| v.as_str());
-        let resolved_path = if let Some(sid) = session_id {
-            crate::paths::redirect_if_artifact(file_path, sid)
-        } else {
-            std::path::PathBuf::from(file_path)
-        };
+        let working_dir = args.get("_working_dir").and_then(|v| v.as_str());
+        let resolved_path = crate::paths::resolve_tool_path(file_path, session_id, working_dir);
         let resolved_path_str = resolved_path.to_string_lossy().to_string();
 
         let old_content = tokio::fs::read_to_string(&resolved_path)

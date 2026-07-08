@@ -1,0 +1,113 @@
+- generic [ref=e4]:
+  - generic [ref=e5]:
+    - generic "收起侧边栏" [ref=e7] [cursor=pointer]:
+      - img [ref=e8]
+    - complementary [ref=e10]:
+      - generic [ref=e11]:
+        - button "Code" [ref=e12] [cursor=pointer]:
+          - img [ref=e13]
+          - text: Code
+        - button "Write" [ref=e16] [cursor=pointer]:
+          - img [ref=e17]
+          - text: Write
+      - generic [ref=e19]:
+        - generic [ref=e20] [cursor=pointer]:
+          - img [ref=e21]
+          - text: Agents
+        - generic [ref=e24] [cursor=pointer]:
+          - img [ref=e25]
+          - text: Workflows
+        - generic [ref=e29] [cursor=pointer]:
+          - img [ref=e30]
+          - text: Schedule Task
+        - generic "Coming soon" [ref=e33]:
+          - img [ref=e34]
+          - text: New requirement
+      - generic [ref=e36]:
+        - generic [ref=e37]:
+          - button "Projects" [expanded] [ref=e38] [cursor=pointer]:
+            - generic [ref=e39]:
+              - img [ref=e40]
+              - text: Projects
+            - button "Import project" [ref=e42]:
+              - img [ref=e43]
+          - generic [ref=e45]: No projects yet. Click the folder icon above to add one.
+        - generic [ref=e46]:
+          - button "Chat" [expanded] [ref=e47] [cursor=pointer]:
+            - generic [ref=e48]:
+              - img [ref=e49]
+              - text: Chat
+            - button "New chat" [ref=e51]:
+              - img [ref=e52]
+          - generic [ref=e55]: No chats yet. Click the plus icon above to start one.
+      - generic [ref=e56]:
+        - generic [ref=e57] [cursor=pointer]:
+          - img [ref=e58]
+          - text: Connect phone
+        - button "Settings" [ref=e60] [cursor=pointer]:
+          - img [ref=e61]
+          - text: Settings
+  - main [ref=e65]:
+    - generic [ref=e66]:
+      - generic [ref=e68]:
+        - generic [ref=e69]: New Session
+        - button "Edit session title" [ref=e70] [cursor=pointer]:
+          - img [ref=e71]
+      - button "展开右侧栏" [ref=e75] [cursor=pointer]:
+        - img [ref=e76]
+    - generic [ref=e80]:
+      - heading "What can I help you build?" [level=1] [ref=e89]
+      - paragraph [ref=e90]: Spawn subagents, analyze code, and orchestrate complex tasks.
+      - generic [ref=e91]:
+        - button "Search for TODO comments and FIXME notes across the codebase" [ref=e92] [cursor=pointer]:
+          - img [ref=e94]
+          - generic [ref=e98]: Search for TODO comments and FIXME notes across the codebase
+        - button "Refactor error handling to use thiserror and anyhow consistently" [ref=e99] [cursor=pointer]:
+          - img [ref=e101]
+          - generic [ref=e106]: Refactor error handling to use thiserror and anyhow consistently
+        - button "Explain how subagents are spawned and how they share the tool registry" [ref=e107] [cursor=pointer]:
+          - img [ref=e109]
+          - generic [ref=e112]: Explain how subagents are spawned and how they share the tool registry
+        - button "Write comprehensive unit tests for the permission module" [ref=e113] [cursor=pointer]:
+          - img [ref=e115]
+          - generic [ref=e118]: Write comprehensive unit tests for the permission module
+    - generic [ref=e120]:
+      - generic [ref=e121]:
+        - textbox "Ask the agent... Type @ for files, / for commands" [active] [ref=e122]:
+          - /placeholder: Ask the agent...  Type @ for files, / for commands
+        - generic [ref=e123]:
+          - generic [ref=e124]:
+            - button "Build" [ref=e126] [cursor=pointer]:
+              - img [ref=e127]
+              - generic [ref=e129]: Build
+              - img [ref=e130]
+            - button "Select model" [ref=e133] [cursor=pointer]:
+              - generic [ref=e135]: Select model
+              - img [ref=e136]
+            - button [ref=e138] [cursor=pointer]:
+              - img [ref=e139]
+            - button "Select skill" [ref=e141] [cursor=pointer]:
+              - img [ref=e142]
+          - button [disabled] [ref=e146]:
+            - img [ref=e147]
+      - generic [ref=e150]:
+        - generic [ref=e151]:
+          - generic [ref=e153] [cursor=pointer]:
+            - img [ref=e154]
+            - text: No project
+            - img [ref=e158]
+          - generic [ref=e160]: 0 tokens
+          - generic [ref=e161]: 0 turns
+        - generic [ref=e162]: Type @ for files, / for commands
+  - complementary:
+    - generic [ref=e163]:
+      - generic:
+        - button "Overview" [ref=e164] [cursor=pointer]:
+          - img [ref=e165]
+          - text: Overview
+        - button "Review" [ref=e166] [cursor=pointer]:
+          - img [ref=e167]
+          - text: Review
+      - button "收起右侧栏" [ref=e170] [cursor=pointer]:
+        - img [ref=e171]
+    - generic [ref=e174]: No active project

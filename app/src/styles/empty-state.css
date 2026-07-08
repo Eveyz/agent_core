@@ -11,6 +11,14 @@
 
 /* Background glows — distant nebulae & gravity wells */
 /* PERF-8: Reduced blur from 70px to 30px — visually similar, ~5x cheaper GPU compositing */
+.cosmic-background-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
 .cosmic-glow {
   position: absolute;
   border-radius: var(--radius-full);

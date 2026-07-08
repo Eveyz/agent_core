@@ -189,11 +189,16 @@
 
 /* ── Session processing spinner ───────────────────────────────────── */
 .session-processing-spinner {
-  color: var(--text-muted);
-  animation: session-spin 1s linear infinite;
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--text-muted);
+  border-top-color: transparent;
+  border-radius: 50%;
   flex-shrink: 0;
-  opacity: 1 !important;
   margin-right: 4px;
+  vertical-align: middle;
+  animation: session-spin 0.8s linear infinite;
 }
 
 @keyframes session-spin {

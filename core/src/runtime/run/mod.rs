@@ -399,6 +399,7 @@ impl Run {
             seq,
             event_id: uuid::Uuid::new_v4().to_string(),
             run_id: self.id.clone(),
+            session_id: self.session_id.clone(),
             turn_id: self.current_turn_id.clone(),
             parent_call_id: None,
             event,

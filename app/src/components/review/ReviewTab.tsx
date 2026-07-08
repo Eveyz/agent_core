@@ -7,6 +7,7 @@ import ChevronRightIcon from 'lucide-react/dist/esm/icons/chevron-right.mjs';
 import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
 import { invoke } from '@tauri-apps/api/core';
 import { RootState } from '../../store';
+import { selectActiveSessionEntries } from '../../features/chat/selectors';
 import { basename, parseUnifiedDiff, parseEditSummary } from '../chat/turnHelpers';
 import { getFileIcon } from '../layout/FileTree';
 
@@ -271,7 +272,7 @@ export function ReviewTab() {
   const activeProjectId = useSelector((state: RootState) => state.project.activeProjectId);
   const projects = useSelector((state: RootState) => state.project.projects);
   const activeProject = projects.find((p) => p.id === activeProjectId);
-  const entries = useSelector((state: RootState) => state.chat.entries);
+  const entries = useSelector(selectActiveSessionEntries);
 
   const fetchFileContent = async (path: string) => {
     try {

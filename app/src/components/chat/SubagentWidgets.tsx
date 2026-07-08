@@ -54,7 +54,7 @@ const SubagentSpawnWidget = memo(function SubagentSpawnWidget({
 const SubagentCard = memo(function SubagentCard({ subagentId }: { subagentId: string }) {
   const { t } = useTranslation();
   const dispatch = useAppDispatch();
-  const subagent = useSelector((state: RootState) => state.chat.subagents[subagentId]);
+  const subagent = useSelector((state: RootState) => (state.chat.subagents[state.chat.activeSessionId ?? ''] ?? {})[subagentId]);
 
   const [now, setNow] = useState(Date.now());
   useEffect(() => {

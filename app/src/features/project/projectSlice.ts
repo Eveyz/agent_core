@@ -77,6 +77,9 @@ const SESSION_KEY = 'agent_core_active_session';
 const savedActiveId = localStorage.getItem(STORAGE_KEY);
 const savedActiveSessionId = localStorage.getItem(SESSION_KEY);
 
+const saveQueueBySession: Record<string, Promise<unknown>> = {};
+const saveGenerationBySession: Record<string, number> = {};
+
 const initialState: ProjectState = {
   projects: [],
   sessions: {},
@@ -185,17 +188,30 @@ export const saveSessionMessages = createAsyncThunk(
     processTimeMs?: number;
     thoughtTimeMs?: number;
   }, { rejectWithValue }) => {
+    const generation = (saveGenerationBySession[sessionId] ?? 0) + 1;
+    saveGenerationBySession[sessionId] = generation;
+    const previous = saveQueueBySession[sessionId] ?? Promise.resolve();
     try {
-      await invoke('save_session_messages', {
-        sessionId,
-        messagesJson: JSON.stringify(messages),
-        cwd,
-        modelUsed,
-        processTimeMs: processTimeMs ?? null,
-        thoughtTimeMs: thoughtTimeMs ?? null,
-      });
-      return { sessionId, messageCount: messages.length };
+      const task = previous
+        .catch(() => undefined)
+        .then(() => invoke<{ updated_at: string }>('save_session_messages', {
+          sessionId,
+          messagesJson: JSON.stringify(messages),
+          cwd,
+          modelUsed,
+          processTimeMs: processTimeMs ?? null,
+          thoughtTimeMs: thoughtTimeMs ?? null,
+        }));
+      saveQueueBySession[sessionId] = task;
+      const result = await task;
+      if (saveQueueBySession[sessionId] === task) {
+        delete saveQueueBySession[sessionId];
+      }
+      return { sessionId, messageCount: messages.length, updated_at: result.updated_at, generation };
     } catch (e) {
+      if (saveGenerationBySession[sessionId] === generation) {
+        delete saveQueueBySession[sessionId];
+      }
       return rejectWithValue(String(e));
     }
   }
@@ -383,21 +399,15 @@ export const projectSlice = createSlice({
           const s = state.sessions[projectId].find((s) => s.id === sessionId);
           if (s) {
             s.title = newTitle;
-            s.updated_at = new Date().toISOString();
           }
         }
       })
       .addCase(saveSessionMessages.fulfilled, (state, action) => {
-        const sessionId = action.payload.sessionId;
-        for (const [projectId, list] of Object.entries(state.sessions)) {
+        const { sessionId, messageCount } = action.payload;
+        for (const [, list] of Object.entries(state.sessions)) {
           const s = list.find((s) => s.id === sessionId);
           if (s) {
-            s.message_count = action.payload.messageCount;
-            s.updated_at = new Date().toISOString();
-            // Re-sort sessions by updated_at to move active session to top
-            state.sessions[projectId] = list.sort(
-              (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-            );
+            s.message_count = messageCount;
             break;
           }
         }

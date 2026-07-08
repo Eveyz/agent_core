@@ -24,6 +24,7 @@ pub struct ToolOrchestrator<'a> {
     /// (for backward compat with the old Agent path).
     pub approval_resolver: Option<ApprovalResolver>,
     pub session_id: Option<String>,
+    pub working_dir: Option<String>,
 }
 
 impl<'a> ToolOrchestrator<'a> {
@@ -344,7 +345,8 @@ impl<'a> ToolOrchestrator<'a> {
             let output = results[*i].clone();
             let is_error = output.starts_with("Error")
                 || output.starts_with("Permission denied")
-                || output.starts_with("Hook vetoed");
+                || output.starts_with("Hook vetoed")
+                || output == "Aborted";
 
             if !is_error {
                 let final_output =
@@ -406,6 +408,11 @@ impl<'a> ToolOrchestrator<'a> {
         if let Some(ref sid) = self.session_id {
             if let Some(obj) = modified_args.as_object_mut() {
                 obj.insert("_session_id".to_string(), serde_json::Value::String(sid.clone()));
+            }
+        }
+        if let Some(ref wd) = self.working_dir {
+            if let Some(obj) = modified_args.as_object_mut() {
+                obj.insert("_working_dir".to_string(), serde_json::Value::String(wd.clone()));
             }
         }
 

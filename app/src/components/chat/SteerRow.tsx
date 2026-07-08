@@ -10,7 +10,7 @@ import XIcon from 'lucide-react/dist/esm/icons/x.mjs';
 export const SteerRow = memo(function SteerRow({ entry }: {
   entry: ChatEntry;
 }) {
-  const runId = useSelector((state: RootState) => state.chat.runId);
+  const runId = useSelector((state: RootState) => state.chat.runId[state.chat.activeSessionId ?? '']);
   const isPending = entry.steerStatus === 'pending';
 
   const handleCancel = async () => {

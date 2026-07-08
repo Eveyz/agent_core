@@ -3,9 +3,10 @@ import { invoke } from '@tauri-apps/api/core';
 import { useSelector, useStore, shallowEqual } from 'react-redux';
 import { RootState } from './store';
 import {
-  agentEventReceived,
   userMessageSent,
   agentAborted,
+  retryFromEntry,
+  sendFailed,
   runIdSet,
   selectEntryIds,
   selectPendingApprovalCount,
@@ -23,6 +24,7 @@ import {
   fetchProjects,
   createSession,
   renameSession,
+  setActiveSession,
 } from './features/project/projectSlice';
 import { useAppDispatch } from './hooks/useAppDispatch';
 import { useAgentEventListener } from './hooks/useAgentEventListener';
@@ -88,9 +90,16 @@ function App() {
   const dispatch = useAppDispatch();
   const store = useStore<RootState>();
 
+
   const entryIds = useSelector(selectEntryIds);
-  const entriesLength = useSelector((state: RootState) => state.chat.entries.length);
-  const isProcessing = useSelector((state: RootState) => state.chat.isProcessing);
+  const entriesLength = useSelector((state: RootState) => {
+    const sid = state.chat.activeSessionId;
+    return sid ? (state.chat.entries[sid]?.length ?? 0) : 0;
+  });
+  const isProcessing = useSelector((state: RootState) => {
+    const sid = state.chat.activeSessionId;
+    return sid ? !!state.chat.processing[sid] : false;
+  });
   const isResuming = useSelector((state: RootState) => state.chat.isResuming);
   const defaultModel = useSelector((state: RootState) => state.settings.config?.default_model || '');
   const appearance = useSelector((state: RootState) => state.settings.appearance);
@@ -141,7 +150,10 @@ function App() {
 
   useThemeEffect(appearance);
 
-  const runId = useSelector((state: RootState) => state.chat.runId);
+  const runId = useSelector((state: RootState) => {
+    const sid = state.chat.activeSessionId;
+    return sid ? (state.chat.runId[sid] ?? null) : null;
+  });
   
   useKeyboardShortcuts({ isProcessing, runId });
   useWindowShow();
@@ -158,7 +170,10 @@ function App() {
   // Track pending approvals — scroll to bottom when a new one appears
   const pendingApprovalCount = useSelector(selectPendingApprovalCount);
   const activePendingApproval = useSelector(selectActivePendingApproval);
-  const pendingSteerCount = useSelector((state: RootState) => state.chat.steerQueue.filter((s) => s.status === 'pending').length);
+  const pendingSteerCount = useSelector((state: RootState) => {
+    const sid = state.chat.activeSessionId;
+    return sid ? (state.chat.steerQueue[sid]?.filter((s) => s.status === 'pending').length ?? 0) : 0;
+  });
   const viewingSubagentPath = useSelector((state: RootState) => state.chat.viewingSubagentPath, shallowEqual);
 
   const activeSubagentId = viewingSubagentPath.length > 0 ? viewingSubagentPath[viewingSubagentPath.length - 1].id : null;
@@ -264,7 +279,11 @@ function App() {
         }
       }
 
-      dispatch(userMessageSent({ text: msg, model: defaultModel }));
+      if (store.getState().chat.activeSessionId !== sessionId) {
+        dispatch(setActiveSession(sessionId));
+      }
+
+      dispatch(userMessageSent({ text: msg, model: defaultModel, sessionId }));
       scrollToBottom();
 
       const shouldRename = isNewSession || sessionTitle === 'New Session' || sessionTitle === '';
@@ -275,32 +294,36 @@ function App() {
 
       try {
         const id = await invoke<string>('send_message', { message: msg, sessionId, model: defaultModel });
-        dispatch(runIdSet(id));
+        dispatch(runIdSet({ runId: id, sessionId }));
       } catch (e) {
         console.error('Invoke error:', e);
-        dispatch(agentEventReceived({ Error: String(e) }));
+        dispatch(sendFailed({ sessionId, error: String(e) }));
       }
     },
-    [dispatch, activeProjectId, activeSessionId, sessionTitle, scrollToBottom, defaultModel]
+    [dispatch, activeProjectId, activeSessionId, sessionTitle, scrollToBottom, defaultModel, store]
   );
 
   const handleRetry = useCallback(
     async (entryId: string, editedText?: string) => {
-      const entries = store.getState().chat.entries;
+      const entries = store.getState().chat.entries[activeSessionId ?? ''] ?? [];
       const entry = entries.find((e) => e.id === entryId);
       if (!entry) return;
       const msg = editedText ?? entry.text ?? '';
       if (!msg.trim() || !activeSessionId) return;
 
-      dispatch(userMessageSent({ text: msg, model: defaultModel }));
+      if (store.getState().chat.activeSessionId !== activeSessionId) {
+        dispatch(setActiveSession(activeSessionId));
+      }
+
+      dispatch(retryFromEntry({ id: entryId, text: msg }));
       scrollToBottom();
 
       try {
         const id = await invoke<string>('send_message', { message: msg, sessionId: activeSessionId, model: defaultModel });
-        dispatch(runIdSet(id));
+        dispatch(runIdSet({ runId: id, sessionId: activeSessionId }));
       } catch (e) {
         console.error('Retry invoke error:', e);
-        dispatch(agentEventReceived({ Error: String(e) }));
+        dispatch(sendFailed({ sessionId: activeSessionId, error: String(e) }));
       }
     },
     [dispatch, activeSessionId, store, scrollToBottom, defaultModel]
@@ -360,7 +383,7 @@ function App() {
               isProcessing={isProcessing}
               defaultModel={defaultModel}
             />
-          ) : isResuming ? (
+          ) : isResuming && entriesLength === 0 ? (
             <SessionLoader />
           ) : entriesLength === 0 ? (
             <EmptyState onSend={handleSend} />

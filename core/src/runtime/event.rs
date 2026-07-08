@@ -272,7 +272,7 @@ impl CacheMetrics {
 /// `event_id` is a UUID stable across transport, log, and replay.
 ///
 /// Serialization flattens the [`RunEvent`] so the on-the-wire JSON is
-/// `{ "seq": 0, "event_id": "...", "run_id": "...", "event": "run_started", ... }`
+/// `{ "seq": 0, "event_id": "...", "run_id": "...", "session_id": "...", "event": "run_started", ... }`
 /// — the `RunEvent` tag and fields sit alongside the envelope fields. This
 /// keeps the existing frontend `raw.event` string check working while
 /// exposing `seq` / `event_id` / `run_id`.
@@ -284,6 +284,10 @@ pub struct Envelope {
     pub event_id: String,
     /// The Run this event belongs to.
     pub run_id: RunId,
+    /// The frontend session this event belongs to. Present for normal chat
+    /// runs; absent for ad-hoc/system runs that are not attached to a session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     /// The turn this event belongs to (R7). `None` for lifecycle events that
     /// are not scoped to a turn (e.g. RunCreated, RunStarted, RunCompleted).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -584,6 +588,7 @@ mod tests {
             seq: 7,
             event_id: "evt-1".to_string(),
             run_id: "run-1".to_string(),
+            session_id: Some("session-1".to_string()),
             turn_id: None,
             parent_call_id: None,
             ts: chrono::Utc::now(),
@@ -593,6 +598,7 @@ mod tests {
         assert_eq!(json["seq"], 7);
         assert_eq!(json["event_id"], "evt-1");
         assert_eq!(json["run_id"], "run-1");
+        assert_eq!(json["session_id"], "session-1");
         assert_eq!(json["event"], "run_started");
     }
 
@@ -603,6 +609,7 @@ mod tests {
             seq: 1,
             event_id: "e".to_string(),
             run_id: "r".to_string(),
+            session_id: Some("s".to_string()),
             turn_id: Some("turn-1".to_string()),
             parent_call_id: None,
             ts: chrono::Utc::now(),

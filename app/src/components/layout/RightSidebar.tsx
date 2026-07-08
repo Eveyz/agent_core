@@ -9,6 +9,7 @@ import { ReviewTab } from '../review/ReviewTab';
 import { OverviewTab } from '../review/OverviewTab';
 import { DocumentTab } from '../review/DocumentTab';
 import { RootState } from '../../store';
+import { selectActiveSessionEntries } from '../../features/chat/selectors';
 
 interface RightSidebarProps {
   sidebarRef: React.RefObject<HTMLDivElement | null>;
@@ -22,7 +23,7 @@ export function RightSidebar({ sidebarRef, isExpanded, onToggle }: RightSidebarP
   const activeProjectId = useSelector((state: RootState) => state.project.activeProjectId);
   const projects = useSelector((state: RootState) => state.project.projects);
   const activeProject = projects.find((p) => p.id === activeProjectId);
-  const entries = useSelector((state: RootState) => state.chat.entries);
+  const entries = useSelector(selectActiveSessionEntries);
 
   // Determine if the session artifacts include PLAN.md or walkthrough.md
   const artifacts = useMemo(() => {

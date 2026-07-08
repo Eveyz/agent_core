@@ -97,7 +97,7 @@ pub const META_SELECT: &str = "SELECT id, title, summary, start_time, end_time, 
     created_at, updated_at FROM sessions";
 
 pub fn row_to_meta(row: &rusqlite::Row) -> rusqlite::Result<SessionMeta> {
-    let tags_str: String = row.get(8)?;
+    let tags_str: String = row.get(9)?;
     let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
     let parent: String = row.get(11)?;
     let stype: String = row.get(12)?;
@@ -342,6 +342,11 @@ impl SessionManager {
         tx.execute(
             "UPDATE sessions SET prompt_count = ?1 WHERE id = ?2",
             rusqlite::params![prompt_count, id],
+        )?;
+
+        tx.execute(
+            "DELETE FROM prompts WHERE session_id = ?1 AND turn_index >= ?2",
+            rusqlite::params![id, prompt_count as i64],
         )?;
 
         // Upsert prompts (preserve lifecycle status for existing ones)
@@ -1454,9 +1459,14 @@ mod tests {
         let plan_file = chat_dir.join("plan.md");
         std::fs::write(&plan_file, "plan content").unwrap();
 
+        // Drop db lock before calling mgr methods (parking_lot::Mutex is NOT reentrant)
+        drop(db);
+
         // Verify everything exists before deletion
         assert!(mgr.get_meta(&parent_id).unwrap().is_some());
         assert!(mgr.get_meta(&child_id).unwrap().is_some());
+
+        let db = mgr.storage.conn();
         assert_eq!(db.query_row::<i64, _, _>("SELECT COUNT(*) FROM recall_memory WHERE session_id = ?1", rusqlite::params![parent_id], |r| r.get(0)).unwrap(), 1);
         assert_eq!(db.query_row::<i64, _, _>("SELECT COUNT(*) FROM conversation_summaries WHERE session_id = ?1", rusqlite::params![parent_id], |r| r.get(0)).unwrap(), 1);
         assert_eq!(db.query_row::<i64, _, _>("SELECT COUNT(*) FROM agent_history WHERE session_id = ?1", rusqlite::params![parent_id], |r| r.get(0)).unwrap(), 1);
@@ -1465,6 +1475,9 @@ mod tests {
         assert!(snapshot_file.exists());
         assert!(chat_dir.exists());
 
+        // Drop db lock before calling mgr.delete (parking_lot::Mutex is NOT reentrant)
+        drop(db);
+
         // 4. Perform Delete
         let deleted = mgr.delete(&parent_id).unwrap();
         assert!(deleted);
@@ -1472,6 +1485,8 @@ mod tests {
         // Verify everything is deleted
         assert!(mgr.get_meta(&parent_id).unwrap().is_none());
         assert!(mgr.get_meta(&child_id).unwrap().is_none()); // child deleted recursively!
+
+        let db = mgr.storage.conn();
         assert_eq!(db.query_row::<i64, _, _>("SELECT COUNT(*) FROM recall_memory WHERE session_id = ?1", rusqlite::params![parent_id], |r| r.get(0)).unwrap(), 0);
         assert_eq!(db.query_row::<i64, _, _>("SELECT COUNT(*) FROM conversation_summaries WHERE session_id = ?1", rusqlite::params![parent_id], |r| r.get(0)).unwrap(), 0);
         assert_eq!(db.query_row::<i64, _, _>("SELECT COUNT(*) FROM agent_history WHERE session_id = ?1", rusqlite::params![parent_id], |r| r.get(0)).unwrap(), 0);

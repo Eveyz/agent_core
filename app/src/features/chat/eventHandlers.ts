@@ -59,22 +59,22 @@ function pushMessageStart(blocks: AnyBlock[], messageId: string | undefined): vo
 }
 
 function applyMessageUpdate(
-  state: ChatState,
+  thinkBuffers: Record<string, string>,
   blocks: AnyBlock[],
   thinkKey: string,
   messageId: string | undefined,
   delta: DeltaPayload
 ): void {
-  const processed = processThinkBuffer(state._thinkBuffers, thinkKey, delta);
+  const processed = processThinkBuffer(thinkBuffers, thinkKey, delta);
   appendDeltaToBlocks(blocks, processed, messageId);
 }
 
 function applyMessageEnd(
-  state: ChatState,
+  thinkBuffers: Record<string, string>,
   blocks: AnyBlock[],
   messageId?: string
 ): void {
-  if (messageId) delete state._thinkBuffers[messageId];
+  if (messageId) delete thinkBuffers[messageId];
   closeStreamingBlock(blocks, messageId);
 }
 
@@ -131,15 +131,17 @@ function pushApproval(
 
 // ── Turn lookup ──────────────────────────────────────────────────────
 
-export function getActiveTurn(state: ChatState): ChatEntry | undefined {
+export function getActiveTurn(state: ChatState, sessionId: string): ChatEntry | undefined {
+  const entries = state.entries[sessionId];
+  if (!entries) return undefined;
   if (state._pendingTurnId) {
-    const byId = state.entries.find(
+    const byId = entries.find(
       (e) => e.type === 'turn' && (e.turnId === state._pendingTurnId || e.turnIds?.includes(state._pendingTurnId!))
     );
     if (byId && byId.type === 'turn') return byId;
   }
-  for (let i = state.entries.length - 1; i >= 0; i--) {
-    const entry = state.entries[i];
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
     if (entry.type === 'turn' && !entry.endTime) {
       return entry;
     }
@@ -148,13 +150,13 @@ export function getActiveTurn(state: ChatState): ChatEntry | undefined {
 }
 
 function getOrCreateSubagent(
-  state: ChatState,
+  subagents: Record<string, SubagentEntry>,
   subagentId: string,
   roleName: string,
   task: string
 ): SubagentEntry {
-  if (!state.subagents[subagentId]) {
-    state.subagents[subagentId] = {
+  if (!subagents[subagentId]) {
+    subagents[subagentId] = {
       id: subagentId,
       role_name: roleName,
       task,
@@ -163,14 +165,15 @@ function getOrCreateSubagent(
       startTime: Date.now(),
     };
   }
-  return state.subagents[subagentId];
+  return subagents[subagentId];
 }
 
 // ── Main agent event handlers ────────────────────────────────────────
 
-export function handleTurnStart(state: ChatState, turnIndex: number, turnId?: string): void {
+export function handleTurnStart(state: ChatState, sessionId: string, turnIndex: number, turnId?: string): void {
+  const entries = state.entries[sessionId];
   if (turnId) {
-    const existing = state.entries.find(
+    const existing = entries.find(
       (e) => e.type === 'turn' && (e.turnId === turnId || e.turnIds?.includes(turnId))
     );
     if (existing && existing.type === 'turn') {
@@ -178,7 +181,7 @@ export function handleTurnStart(state: ChatState, turnIndex: number, turnId?: st
       return;
     }
   }
-  const last = state.entries[state.entries.length - 1];
+  const last = entries[entries.length - 1];
   if (last && last.type === 'turn' && !last.endTime) {
     last.turnIndex = turnIndex;
     if (turnId) {
@@ -188,15 +191,16 @@ export function handleTurnStart(state: ChatState, turnIndex: number, turnId?: st
     }
   } else {
     // Close any previous open turns since we are starting a new turn block
-    for (const entry of state.entries) {
+    for (const entry of entries) {
       if (entry.type === 'turn' && !entry.endTime) {
         entry.endTime = Date.now();
-        stopDanglingSubagents(state, entry);
+        stopDanglingSubagents(state.subagents[sessionId], entry);
       }
     }
-    state.entries.push({
+    entries.push({
       id: turnId ? `turn-${turnId}` : `turn-${turnIndex}-${Date.now()}`,
       type: 'turn',
+      promptId: state.runId[sessionId] || undefined,
       turnId,
       turnIds: turnId ? [turnId] : [],
       turnIndex,
@@ -206,12 +210,12 @@ export function handleTurnStart(state: ChatState, turnIndex: number, turnId?: st
   }
 }
 
-export function handleCacheInfo(state: ChatState, hitRate: number): void {
-  let turn = getActiveTurn(state);
+export function handleCacheInfo(state: ChatState, sessionId: string, hitRate: number): void {
+  let turn = getActiveTurn(state, sessionId);
   if (!turn) {
-    for (let i = state.entries.length - 1; i >= 0; i--) {
-      if (state.entries[i].type === 'turn') {
-        turn = state.entries[i];
+    for (let i = state.entries[sessionId].length - 1; i >= 0; i--) {
+      if (state.entries[sessionId][i].type === 'turn') {
+        turn = state.entries[sessionId][i];
         break;
       }
     }
@@ -241,41 +245,42 @@ export function handleCacheSummary(
   };
 }
 
-export function handleMessageStart(state: ChatState, messageId: string | undefined): void {
-  const turn = getActiveTurn(state);
+export function handleMessageStart(state: ChatState, sessionId: string, messageId: string | undefined): void {
+  const turn = getActiveTurn(state, sessionId);
   if (turn && turn.type === 'turn' && turn.blocks) {
     pushMessageStart(turn.blocks, messageId);
   }
 }
 
-export function handleMessageUpdate(state: ChatState, messageId: string | undefined, delta: DeltaPayload): void {
-  const turn = getActiveTurn(state);
+export function handleMessageUpdate(state: ChatState, sessionId: string, messageId: string | undefined, delta: DeltaPayload): void {
+  const turn = getActiveTurn(state, sessionId);
   if (turn && turn.type === 'turn' && turn.blocks) {
-    applyMessageUpdate(state, turn.blocks, messageId ?? '_nomsg', messageId, delta);
+    applyMessageUpdate(state._thinkBuffers[sessionId], turn.blocks, messageId ?? '_nomsg', messageId, delta);
   }
 }
 
-export function handleMessageEnd(state: ChatState, messageId?: string): void {
-  const turn = getActiveTurn(state);
+export function handleMessageEnd(state: ChatState, sessionId: string, messageId?: string): void {
+  const turn = getActiveTurn(state, sessionId);
   if (turn && turn.type === 'turn' && turn.blocks) {
-    applyMessageEnd(state, turn.blocks, messageId);
+    applyMessageEnd(state._thinkBuffers[sessionId], turn.blocks, messageId);
   }
 }
 
 export function handleToolStart(
   state: ChatState,
+  sessionId: string,
   toolCallId: string,
   toolName: string,
   args?: unknown
 ): void {
-  const turn = getActiveTurn(state);
+  const turn = getActiveTurn(state, sessionId);
   if (turn && turn.type === 'turn' && turn.blocks) {
     pushToolStart(turn.blocks, toolCallId, toolName, args);
   }
 }
 
-export function handleToolUpdate(state: ChatState, toolCallId: string, partialResult: unknown): void {
-  const turn = getActiveTurn(state);
+export function handleToolUpdate(state: ChatState, sessionId: string, toolCallId: string, partialResult: unknown): void {
+  const turn = getActiveTurn(state, sessionId);
   if (turn && turn.type === 'turn' && turn.blocks) {
     applyToolUpdate(turn.blocks, toolCallId, partialResult);
   }
@@ -283,11 +288,12 @@ export function handleToolUpdate(state: ChatState, toolCallId: string, partialRe
 
 export function handleToolEnd(
   state: ChatState,
+  sessionId: string,
   toolCallId: string,
   result: unknown,
   isError: boolean
 ): void {
-  const turn = getActiveTurn(state);
+  const turn = getActiveTurn(state, sessionId);
   if (turn && turn.type === 'turn' && turn.blocks) {
     applyToolEnd(turn.blocks, toolCallId, result, isError);
   }
@@ -295,34 +301,35 @@ export function handleToolEnd(
 
 export function handleApprovalRequired(
   state: ChatState,
+  sessionId: string,
   promptId: string,
   toolName: string,
   toolInput: unknown,
   dangerLevel: string,
   explanation: string
 ): void {
-  const turn = getActiveTurn(state);
+  const turn = getActiveTurn(state, sessionId);
   if (turn && turn.type === 'turn' && turn.blocks) {
     pushApproval(turn.blocks, promptId, toolName, toolInput, dangerLevel, explanation);
   }
 }
 
-export function handleAgentEnd(state: ChatState): void {
-  state.isProcessing = false;
-  for (const entry of state.entries) {
+export function handleAgentEnd(state: ChatState, sessionId: string): void {
+  state.processing[sessionId] = false;
+  for (const entry of state.entries[sessionId]) {
     if (entry.type === 'turn' && !entry.endTime) {
       entry.endTime = Date.now();
-      stopDanglingSubagents(state, entry);
+      stopDanglingSubagents(state.subagents[sessionId], entry);
     }
   }
 }
 
-export function handleError(state: ChatState, errorText: string): void {
-  state.isProcessing = false;
-  const turn = getActiveTurn(state);
+export function handleError(state: ChatState, sessionId: string, errorText: string): void {
+  state.processing[sessionId] = false;
+  const turn = getActiveTurn(state, sessionId);
   if (turn && turn.type === 'turn' && turn.blocks) {
     closeStreamingBlock(turn.blocks);
-    stopDanglingSubagents(state, turn);
+    stopDanglingSubagents(state.subagents[sessionId], turn);
     const lastBlock = turn.blocks[turn.blocks.length - 1];
     if (lastBlock && lastBlock.type === 'error') {
       lastBlock.text = errorText;
@@ -330,9 +337,10 @@ export function handleError(state: ChatState, errorText: string): void {
     }
     turn.blocks.push({ type: 'error', text: errorText });
   } else {
-    state.entries.push({
+    state.entries[sessionId].push({
       id: `error-${Date.now()}`,
       type: 'turn',
+      promptId: state.runId[sessionId] || undefined,
       turnIndex: 0,
       blocks: [{ type: 'error', text: errorText }],
       startTime: Date.now(),
@@ -341,8 +349,8 @@ export function handleError(state: ChatState, errorText: string): void {
   }
 }
 
-export function handleTurnEnded(state: ChatState): void {
-  const turn = getActiveTurn(state);
+export function handleTurnEnded(state: ChatState, sessionId: string): void {
+  const turn = getActiveTurn(state, sessionId);
   if (turn && turn.type === 'turn' && turn.blocks) {
     closeStreamingBlock(turn.blocks);
     for (const b of turn.blocks) {
@@ -359,6 +367,7 @@ export function handleTurnEnded(state: ChatState): void {
 
 export function handleSubagentStart(
   state: ChatState,
+  sessionId: string,
   subagentId: string,
   parentCallId: string | undefined,
   roleName: string | undefined,
@@ -366,9 +375,9 @@ export function handleSubagentStart(
 ): void {
   const safeTask = typeof task === 'string' ? task : JSON.stringify(task);
   const safeRoleName = typeof roleName === 'string' ? roleName : String(subagentId);
-  const turn = getActiveTurn(state);
+  const turn = getActiveTurn(state, sessionId);
   if (turn) {
-    getOrCreateSubagent(state, subagentId, safeRoleName, safeTask);
+    getOrCreateSubagent(state.subagents[sessionId], subagentId, safeRoleName, safeTask);
     if (!turn.subagentIds) turn.subagentIds = [];
     if (!turn.subagentIds.includes(subagentId)) turn.subagentIds.push(subagentId);
     if (turn.blocks) {
@@ -379,10 +388,11 @@ export function handleSubagentStart(
 
 export function handleSubagentMessageStart(
   state: ChatState,
+  sessionId: string,
   subagentId: string,
   messageId: string | undefined
 ): void {
-  const sa = state.subagents[subagentId];
+  const sa = state.subagents[sessionId][subagentId];
   if (sa) {
     if (!sa.blocks) sa.blocks = [];
     pushMessageStart(sa.blocks, messageId);
@@ -391,38 +401,40 @@ export function handleSubagentMessageStart(
 
 export function handleSubagentMessageUpdate(
   state: ChatState,
+  sessionId: string,
   subagentId: string,
   messageId: string | undefined,
   delta: DeltaPayload
 ): void {
-  const sa = state.subagents[subagentId];
+  const sa = state.subagents[sessionId][subagentId];
   if (sa) {
-    applyMessageUpdate(state, sa.blocks, messageId ?? `_sa_${subagentId}`, messageId, delta);
+    applyMessageUpdate(state._thinkBuffers[sessionId], sa.blocks, messageId ?? `_sa_${subagentId}`, messageId, delta);
   }
 }
 
-export function handleSubagentMessageEnd(state: ChatState, subagentId: string, messageId?: string): void {
-  const sa = state.subagents[subagentId];
+export function handleSubagentMessageEnd(state: ChatState, sessionId: string, subagentId: string, messageId?: string): void {
+  const sa = state.subagents[sessionId][subagentId];
   if (sa) {
-    applyMessageEnd(state, sa.blocks, messageId);
+    applyMessageEnd(state._thinkBuffers[sessionId], sa.blocks, messageId);
   }
 }
 
 export function handleSubagentToolStart(
   state: ChatState,
+  sessionId: string,
   subagentId: string,
   toolCallId: string,
   toolName: string,
   args?: unknown
 ): void {
-  const sa = state.subagents[subagentId];
+  const sa = state.subagents[sessionId][subagentId];
   if (sa) {
     pushToolStart(sa.blocks, toolCallId, toolName, args);
   }
 }
 
-export function handleSubagentToolUpdate(state: ChatState, subagentId: string, toolCallId: string, partialResult: unknown): void {
-  const sa = state.subagents[subagentId];
+export function handleSubagentToolUpdate(state: ChatState, sessionId: string, subagentId: string, toolCallId: string, partialResult: unknown): void {
+  const sa = state.subagents[sessionId][subagentId];
   if (sa) {
     applyToolUpdate(sa.blocks, toolCallId, partialResult);
   }
@@ -430,12 +442,13 @@ export function handleSubagentToolUpdate(state: ChatState, subagentId: string, t
 
 export function handleSubagentToolEnd(
   state: ChatState,
+  sessionId: string,
   subagentId: string,
   toolCallId: string,
   result: unknown,
   isError: boolean
 ): void {
-  const sa = state.subagents[subagentId];
+  const sa = state.subagents[sessionId][subagentId];
   if (sa) {
     applyToolEnd(sa.blocks, toolCallId, result, isError);
   }
@@ -443,6 +456,7 @@ export function handleSubagentToolEnd(
 
 export function handleSubagentApprovalRequired(
   state: ChatState,
+  sessionId: string,
   subagentId: string,
   promptId: string,
   toolName: string,
@@ -450,7 +464,7 @@ export function handleSubagentApprovalRequired(
   dangerLevel: string,
   explanation: string
 ): void {
-  const sa = state.subagents[subagentId];
+  const sa = state.subagents[sessionId][subagentId];
   if (sa) {
     pushApproval(sa.blocks, promptId, toolName, toolInput, dangerLevel, explanation);
   }
@@ -458,11 +472,12 @@ export function handleSubagentApprovalRequired(
 
 export function handleSubagentEnd(
   state: ChatState,
+  sessionId: string,
   subagentId: string,
   success: boolean,
   iterationsUsed?: number
 ): void {
-  const sa = state.subagents[subagentId];
+  const sa = state.subagents[sessionId][subagentId];
   if (sa) {
     sa.status = success ? 'done' : 'error';
     sa.iterations_used = iterationsUsed;
@@ -473,11 +488,11 @@ export function handleSubagentEnd(
 
 // ── Shared utilities ─────────────────────────────────────────────────
 
-export function stopDanglingSubagents(state: ChatState, turn: ChatEntry): void {
+export function stopDanglingSubagents(subagents: Record<string, SubagentEntry>, turn: ChatEntry): void {
   const ids = turn.subagentIds;
   if (!ids) return;
   for (const id of ids) {
-    const sa = state.subagents[id];
+    const sa = subagents[id];
     if (sa && sa.status === 'working') {
       sa.status = 'error';
       sa.endTime = Date.now();
@@ -486,11 +501,11 @@ export function stopDanglingSubagents(state: ChatState, turn: ChatEntry): void {
   }
 }
 
-export function resolveApprovalBlock(state: ChatState, promptId: string, choice?: string): void {
+export function resolveApprovalBlock(state: ChatState, sessionId: string, promptId: string, choice?: string): void {
   if (!promptId) return;
   const choiceStr = typeof choice === 'string' ? choice : '';
   const approved = !choiceStr.toLowerCase().includes('deny');
-  for (const entry of state.entries) {
+  for (const entry of state.entries[sessionId]) {
     if (entry.type !== 'turn' || !entry.blocks) continue;
     for (const b of entry.blocks) {
       if (b.type === 'approval' && b.prompt_id === promptId) {
@@ -499,7 +514,7 @@ export function resolveApprovalBlock(state: ChatState, promptId: string, choice?
       }
     }
   }
-  for (const sa of Object.values(state.subagents)) {
+  for (const sa of Object.values(state.subagents[sessionId] ?? {})) {
     for (const b of sa.blocks) {
       if (b.type === 'approval' && b.prompt_id === promptId) {
         b.status = approved ? 'approved' : 'denied';
@@ -511,266 +526,210 @@ export function resolveApprovalBlock(state: ChatState, promptId: string, choice?
 
 // ── Core event processing ────────────────────────────────────────────
 
-export function processSingleEvent(state: ChatState, payload: string | Record<string, unknown>): void {
+export function processSingleEvent(state: ChatState, payload: string | Record<string, unknown>): string | null {
   let raw: Record<string, unknown>;
   if (typeof payload === 'string') {
     try {
       raw = JSON.parse(payload);
     } catch {
-      return;
+      return null;
     }
   } else {
     raw = payload as Record<string, unknown>;
   }
 
-  if (!raw || typeof raw.event !== 'string') return;
+  if (!raw || typeof raw.event !== 'string') return null;
   const ev = raw as unknown as RunEventPayload;
-  if (!ev.run_id) return;
+  if (!ev.run_id) return null;
 
   // Track runId to sessionId mapping
   if (ev.event === 'run_created') {
     if (ev.session_id) {
-      if (!state.runIdToSessionId) {
-        state.runIdToSessionId = {};
-      }
-      state.runIdToSessionId[ev.run_id] = ev.session_id;
-      state.runIdBySession[ev.session_id] = ev.run_id;
-      if (ev.session_id === state.activeSessionId) {
-        state.runId = ev.run_id;
+      (state.runIdToSessionId ??= {})[ev.run_id] = ev.session_id;
+      state.runId[ev.session_id] = ev.run_id;
+    }
+  }
+
+  // Resolve sessionId. Most runtime events are Envelope-scoped by run_id only;
+  // the run_created bootstrap event can be missed because the frontend subscribes
+  // after create_run returns, so keep a client-side runId -> sessionId map too.
+  let sessionId = ev.session_id ?? state.runIdToSessionId?.[ev.run_id] ?? null;
+  if (!sessionId && state.activeSessionId && state.runId[state.activeSessionId] === ev.run_id) {
+    sessionId = state.activeSessionId;
+    state.runIdToSessionId[ev.run_id] = sessionId;
+  }
+  if (!sessionId) {
+    return null;
+  }
+
+  // Ensure per-session maps have defaults for this sessionId
+  (state.entries ??= {})[sessionId] ??= [];
+  (state.subagents ??= {})[sessionId] ??= {};
+  (state._thinkBuffers ??= {})[sessionId] ??= {};
+  (state.todo ??= {})[sessionId] ??= [];
+  (state.steerQueue ??= {})[sessionId] ??= [];
+  (state.processing ??= {})[sessionId] ??= false;
+  (state.runId ??= {})[sessionId] ??= null;
+  (state.runState ??= {})[sessionId] ??= null;
+  (state.goal ??= {})[sessionId] ??= null;
+  (state.goalCompleted ??= {})[sessionId] ??= false;
+
+  // Set _pendingTurnId BEFORE lifecycle handlers that may call handleError/getActiveTurn
+  state._pendingTurnId = ev.turn_id;
+
+  // Seq gap detection
+  if (typeof ev.seq === 'number' && typeof ev.run_id === 'string') {
+    const prev = state.lastSeqByRun[ev.run_id];
+    if (prev !== undefined && ev.seq > prev + 1) {
+      console.warn(
+        `[agent-event] gap detected for run ${ev.run_id}: expected ${prev + 1}, got ${ev.seq} (${ev.seq - prev - 1} missing); triggering resync`
+      );
+      state._pendingGap = { runId: ev.run_id, fromSeq: prev };
+    }
+    state.lastSeqByRun[ev.run_id] = ev.seq;
+  }
+
+  // Run lifecycle events
+  if (ev.event === 'state_changed' && ev.to) {
+    state.runState[sessionId] = ev.to as RunState;
+    if (ev.to === 'completed' || ev.to === 'cancelled' || ev.to === 'failed') {
+      handleAgentEnd(state, sessionId);
+    }
+  } else if (ev.event === 'run_started') {
+    state.runState[sessionId] = 'running';
+    state.todo[sessionId] = [];
+  } else if (ev.event === 'run_paused') {
+    state.runState[sessionId] = 'paused';
+  } else if (ev.event === 'run_resumed') {
+    state.runState[sessionId] = 'running';
+  } else if (ev.event === 'run_completed' || ev.event === 'run_cancelled') {
+    state.processing[sessionId] = false;
+    state.runId[sessionId] = null;
+    handleAgentEnd(state, sessionId);
+  } else if (ev.event === 'run_failed') {
+    state.processing[sessionId] = false;
+    state.runId[sessionId] = null;
+    handleError(state, sessionId, ev.error ?? 'run failed');
+    for (const entry of state.entries[sessionId]) {
+      if (entry.type === 'turn' && !entry.endTime) {
+        entry.endTime = Date.now();
+        stopDanglingSubagents(state.subagents[sessionId], entry);
       }
     }
   }
 
-  const targetSessionId = ev.session_id || (state.runIdToSessionId && state.runIdToSessionId[ev.run_id]);
-  if (!targetSessionId) {
-    if (ev.run_id !== state.runId) {
-      return;
+  // Event-specific dispatch
+  switch (ev.event) {
+    case 'turn_started':
+      handleTurnStart(state, sessionId, ev.index ?? 0, ev.turn_id);
+      break;
+    case 'cache_info':
+      handleCacheInfo(state, sessionId, ev.hit_rate ?? -1.0);
+      break;
+    case 'cache_summary':
+      handleCacheSummary(state, {
+        total_turns: ev.total_turns ?? 0,
+        total_hit_tokens: ev.total_hit_tokens ?? 0,
+        total_miss_tokens: ev.total_miss_tokens ?? 0,
+        turns_with_hits: ev.turns_with_hits ?? 0,
+        cumulative_hit_rate: ev.cumulative_hit_rate ?? 0,
+      });
+      break;
+    case 'turn_ended':
+      handleTurnEnded(state, sessionId);
+      break;
+    case 'message_start':
+      if (ev.subagent_id) handleSubagentMessageStart(state, sessionId, ev.subagent_id, ev.message_id);
+      else handleMessageStart(state, sessionId, ev.message_id);
+      break;
+    case 'message_update':
+    case 'model_streaming':
+      if (ev.subagent_id) handleSubagentMessageUpdate(state, sessionId, ev.subagent_id, ev.message_id, ev.delta ?? {});
+      else handleMessageUpdate(state, sessionId, ev.message_id, ev.delta ?? {});
+      break;
+    case 'message_end':
+      if (ev.subagent_id) handleSubagentMessageEnd(state, sessionId, ev.subagent_id, ev.message_id);
+      else handleMessageEnd(state, sessionId, ev.message_id);
+      break;
+    case 'tool_started':
+      if (ev.subagent_id) handleSubagentToolStart(state, sessionId, ev.subagent_id, ev.call_id ?? '', ev.name ?? '', ev.args);
+      else handleToolStart(state, sessionId, ev.call_id ?? '', ev.name ?? '', ev.args);
+      break;
+    case 'tool_update':
+      if (ev.subagent_id) handleSubagentToolUpdate(state, sessionId, ev.subagent_id, ev.call_id ?? '', ev.partial ?? '');
+      else handleToolUpdate(state, sessionId, ev.call_id ?? '', ev.partial ?? '');
+      break;
+    case 'tool_ended':
+      if (ev.subagent_id) handleSubagentToolEnd(state, sessionId, ev.subagent_id, ev.call_id ?? '', ev.result ?? '', ev.is_error ?? false);
+      else handleToolEnd(state, sessionId, ev.call_id ?? '', ev.result ?? '', ev.is_error ?? false);
+      break;
+    case 'approval_required':
+      if (ev.subagent_id) handleSubagentApprovalRequired(state, sessionId, ev.subagent_id, ev.prompt_id ?? '', ev.tool_name ?? '', ev.tool_input, ev.danger_level ?? '', ev.explanation ?? '');
+      else handleApprovalRequired(state, sessionId, ev.prompt_id ?? '', ev.tool_name ?? '', ev.tool_input, ev.danger_level ?? '', ev.explanation ?? '');
+      break;
+    case 'approval_resolved':
+      resolveApprovalBlock(state, sessionId, ev.prompt_id ?? '', ev.choice);
+      break;
+    case 'error':
+      handleError(state, sessionId, ((ev as unknown as Record<string, unknown>).message as string | undefined) ?? 'unknown error');
+      break;
+    case 'subagent_started':
+      handleSubagentStart(state, sessionId, ev.subagent_id ?? '', ev.parent_call_id, ev.role_name, ev.task ?? '');
+      break;
+    case 'subagent_ended':
+      handleSubagentEnd(state, sessionId, ev.subagent_id ?? '', ev.success ?? false, ev.iterations_used);
+      break;
+    case 'todo_updated':
+      state.todo[sessionId] = (ev.items as TodoItem[]) ?? [];
+      break;
+    case 'goal_set':
+      state.goal[sessionId] = ev.goal ?? null;
+      state.goalCompleted[sessionId] = false;
+      break;
+    case 'goal_completed':
+      state.goalCompleted[sessionId] = true;
+      break;
+    case 'steer_queued': {
+      const steerId = ev.steer_id ?? '';
+      const msg = typeof ev.message === 'string' ? ev.message : '';
+      if (!state.steerQueue[sessionId].some((s) => s.steerId === steerId)) {
+        state.steerQueue[sessionId].push({
+          steerId,
+          text: msg,
+          status: 'pending',
+          timestamp: Date.now(),
+        });
+      }
+      break;
     }
-  }
-
-  const isBackground = targetSessionId && targetSessionId !== state.activeSessionId;
-
-  // Temporarily swap references if it's a background session event
-  const originalEntries = state.entries;
-  const originalIsProcessing = state.isProcessing;
-  const originalSubagents = state.subagents;
-  const originalRunId = state.runId;
-  const originalTodo = state.todo;
-  const originalSteerQueue = state.steerQueue;
-
-  if (isBackground) {
-    state.entries = state.entriesBySession[targetSessionId] || [];
-    state.isProcessing = state.processingBySession[targetSessionId] ?? false;
-    state.subagents = state.subagentsBySession[targetSessionId] ?? {};
-    state.runId = state.runIdBySession[targetSessionId] ?? null;
-    state.todo = state.todoBySession?.[targetSessionId] || [];
-    state.steerQueue = state.steerQueueBySession?.[targetSessionId] || [];
-  }
-
-  try {
-    // Set _pendingTurnId BEFORE lifecycle handlers that may call handleError/getActiveTurn
-    state._pendingTurnId = ev.turn_id;
-
-    // Seq gap detection
-    if (typeof ev.seq === 'number' && typeof ev.run_id === 'string') {
-      const prev = state.lastSeqByRun[ev.run_id];
-      if (prev !== undefined && ev.seq > prev + 1) {
-        console.warn(
-          `[agent-event] gap detected for run ${ev.run_id}: expected ${prev + 1}, got ${ev.seq} (${ev.seq - prev - 1} missing); triggering resync`
-        );
-        state._pendingGap = { runId: ev.run_id, fromSeq: prev };
+    case 'steer_injected': {
+      const steerId = ev.steer_id ?? '';
+      const sq = state.steerQueue[sessionId].find((s) => s.steerId === steerId);
+      if (sq) sq.status = 'injected';
+      for (const entry of state.entries[sessionId]) {
+        if (entry.type === 'user' && entry.isSteer && entry.steerId === steerId) {
+          entry.steerStatus = 'injected';
+        }
       }
-      state.lastSeqByRun[ev.run_id] = ev.seq;
-    }
-
-    // Run lifecycle events
-    if (ev.event === 'state_changed' && ev.to) {
-      state.runState = ev.to as RunState;
-      if (ev.to === 'completed' || ev.to === 'cancelled' || ev.to === 'failed') {
-        handleAgentEnd(state);
-      }
-    } else if (ev.event === 'run_started') {
-      state.runState = 'running';
-      if (!isBackground) {
-        state.todo = [];
-      }
-    } else if (ev.event === 'run_paused') {
-      state.runState = 'paused';
-    } else if (ev.event === 'run_resumed') {
-      state.runState = 'running';
-    } else if (ev.event === 'run_completed' || ev.event === 'run_cancelled') {
-      state.isProcessing = false;
-      state.runId = null;
-      handleAgentEnd(state);
-    } else if (ev.event === 'run_failed') {
-      state.isProcessing = false;
-      state.runId = null;
-      handleError(state, ev.error ?? 'run failed');
-      for (const entry of state.entries) {
+      for (const entry of state.entries[sessionId]) {
         if (entry.type === 'turn' && !entry.endTime) {
           entry.endTime = Date.now();
-          stopDanglingSubagents(state, entry);
+          stopDanglingSubagents(state.subagents[sessionId], entry);
         }
       }
+      break;
     }
-
-    // Event-specific dispatch
-    switch (ev.event) {
-      case 'turn_started':
-        handleTurnStart(state, ev.index ?? 0, ev.turn_id);
-        break;
-      case 'cache_info':
-        handleCacheInfo(state, ev.hit_rate ?? -1.0);
-        break;
-      case 'cache_summary':
-        handleCacheSummary(state, {
-          total_turns: ev.total_turns ?? 0,
-          total_hit_tokens: ev.total_hit_tokens ?? 0,
-          total_miss_tokens: ev.total_miss_tokens ?? 0,
-          turns_with_hits: ev.turns_with_hits ?? 0,
-          cumulative_hit_rate: ev.cumulative_hit_rate ?? 0,
-        });
-        break;
-      case 'turn_ended':
-        handleTurnEnded(state);
-        break;
-      case 'message_start':
-        if (ev.subagent_id) handleSubagentMessageStart(state, ev.subagent_id, ev.message_id);
-        else handleMessageStart(state, ev.message_id);
-        break;
-      case 'message_update':
-      case 'model_streaming':
-        if (ev.subagent_id) handleSubagentMessageUpdate(state, ev.subagent_id, ev.message_id, ev.delta ?? {});
-        else handleMessageUpdate(state, ev.message_id, ev.delta ?? {});
-        break;
-      case 'message_end':
-        if (ev.subagent_id) handleSubagentMessageEnd(state, ev.subagent_id, ev.message_id);
-        else handleMessageEnd(state, ev.message_id);
-        break;
-      case 'tool_started':
-        if (ev.subagent_id) handleSubagentToolStart(state, ev.subagent_id, ev.call_id ?? '', ev.name ?? '', ev.args);
-        else handleToolStart(state, ev.call_id ?? '', ev.name ?? '', ev.args);
-        break;
-      case 'tool_update':
-        if (ev.subagent_id) handleSubagentToolUpdate(state, ev.subagent_id, ev.call_id ?? '', ev.partial ?? '');
-        else handleToolUpdate(state, ev.call_id ?? '', ev.partial ?? '');
-        break;
-      case 'tool_ended':
-        if (ev.subagent_id) handleSubagentToolEnd(state, ev.subagent_id, ev.call_id ?? '', ev.result ?? '', ev.is_error ?? false);
-        else handleToolEnd(state, ev.call_id ?? '', ev.result ?? '', ev.is_error ?? false);
-        break;
-      case 'approval_required':
-        if (ev.subagent_id) handleSubagentApprovalRequired(state, ev.subagent_id, ev.prompt_id ?? '', ev.tool_name ?? '', ev.tool_input, ev.danger_level ?? '', ev.explanation ?? '');
-        else handleApprovalRequired(state, ev.prompt_id ?? '', ev.tool_name ?? '', ev.tool_input, ev.danger_level ?? '', ev.explanation ?? '');
-        break;
-      case 'approval_resolved':
-        resolveApprovalBlock(state, ev.prompt_id ?? '', ev.choice);
-        break;
-      case 'error':
-        handleError(state, ((ev as unknown as Record<string, unknown>).message as string | undefined) ?? 'unknown error');
-        break;
-      case 'subagent_started':
-        handleSubagentStart(state, ev.subagent_id ?? '', ev.parent_call_id, ev.role_name, ev.task ?? '');
-        break;
-      case 'subagent_ended':
-        handleSubagentEnd(state, ev.subagent_id ?? '', ev.success ?? false, ev.iterations_used);
-        break;
-      case 'todo_updated':
-        state.todo = (ev.items as TodoItem[]) ?? [];
-        break;
-      case 'goal_set':
-        if (!isBackground) {
-          state.goal = ev.goal ?? null;
-          state.goalCompleted = false;
-        }
-        break;
-      case 'goal_completed':
-        if (!isBackground) {
-          state.goalCompleted = true;
-        }
-        break;
-      case 'steer_queued': {
-        const steerId = ev.steer_id ?? '';
-        const msg = typeof ev.message === 'string' ? ev.message : '';
-        // Only add to steerQueue if not already present (dedup — the frontend
-        // may have already added it optimistically via steerMessageQueued).
-        if (!state.steerQueue.some((s) => s.steerId === steerId)) {
-          state.steerQueue.push({
-            steerId,
-            text: msg,
-            status: 'pending',
-            timestamp: Date.now(),
-          });
-        }
-        break;
-      }
-      case 'steer_injected': {
-        const steerId = ev.steer_id ?? '';
-        const sq = state.steerQueue.find((s) => s.steerId === steerId);
-        if (sq) sq.status = 'injected';
-        for (const entry of state.entries) {
-          if (entry.type === 'user' && entry.isSteer && entry.steerId === steerId) {
-            entry.steerStatus = 'injected';
-          }
-        }
-        // Close any previous open turns since steer message is now injected and a new turn is starting
-        for (const entry of state.entries) {
-          if (entry.type === 'turn' && !entry.endTime) {
-            entry.endTime = Date.now();
-            stopDanglingSubagents(state, entry);
-          }
-        }
-        break;
-      }
-      case 'steer_cancelled':
-      case 'steer_failed': {
-        const steerId = ev.steer_id ?? '';
-        state.steerQueue = state.steerQueue.filter((s) => s.steerId !== steerId);
-        // Remove the steer entry from chat history (it was never injected)
-        state.entries = state.entries.filter(
-          (e) => !(e.type === 'user' && e.isSteer && e.steerId === steerId)
-        );
-        break;
-      }
-      default:
-        break;
+    case 'steer_cancelled':
+    case 'steer_failed': {
+      const steerId = ev.steer_id ?? '';
+      state.steerQueue[sessionId] = state.steerQueue[sessionId].filter((s) => s.steerId !== steerId);
+      state.entries[sessionId] = state.entries[sessionId].filter(
+        (e) => !(e.type === 'user' && e.isSteer && e.steerId === steerId)
+      );
+      break;
     }
-  } finally {
-    if (isBackground) {
-      state.entriesBySession[targetSessionId] = state.entries;
-      state.processingBySession[targetSessionId] = state.isProcessing;
-      state.subagentsBySession[targetSessionId] = state.subagents;
-      state.runIdBySession[targetSessionId] = state.runId;
-      if (!state.todoBySession) {
-        state.todoBySession = {};
-      }
-      state.todoBySession[targetSessionId] = state.todo;
-      if (!state.steerQueueBySession) {
-        state.steerQueueBySession = {};
-      }
-      state.steerQueueBySession[targetSessionId] = state.steerQueue;
-
-      state.entries = originalEntries;
-      state.isProcessing = originalIsProcessing;
-      state.subagents = originalSubagents;
-      state.runId = originalRunId;
-      state.todo = originalTodo;
-      state.steerQueue = originalSteerQueue;
-    }
+    default:
+      break;
   }
-
-  if (!isBackground && state.activeSessionId) {
-    state.entriesBySession[state.activeSessionId] = state.entries;
-    state.processingBySession[state.activeSessionId] = state.isProcessing;
-    state.subagentsBySession[state.activeSessionId] = state.subagents;
-    state.runIdBySession[state.activeSessionId] = state.runId;
-    if (!state.todoBySession) {
-      state.todoBySession = {};
-    }
-    state.todoBySession[state.activeSessionId] = state.todo;
-    if (!state.steerQueueBySession) {
-      state.steerQueueBySession = {};
-    }
-    state.steerQueueBySession[state.activeSessionId] = state.steerQueue;
-  }
+  return sessionId;
 }

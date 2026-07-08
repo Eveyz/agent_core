@@ -1,11 +1,10 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { useAppDispatch } from './useAppDispatch';
 import {
-  fetchProjectSessions,
   resumeSession,
   setActiveSession,
 } from '../features/project/projectSlice';
-import { clearChat, restoreOrClearSession } from '../features/chat/chatSlice';
+import { clearChat } from '../features/chat/chatSlice';
 import { setDefaultModel } from '../features/settings/settingsSlice';
 
 interface UseSessionLoaderProps {
@@ -22,6 +21,7 @@ export function useSessionLoader({
   scrollToBottom,
 }: UseSessionLoaderProps) {
   const dispatch = useAppDispatch();
+  const requestSeqRef = useRef(0);
 
   useEffect(() => {
     if (!projectsLoaded || !activeProjectId) return;
@@ -31,9 +31,10 @@ export function useSessionLoader({
       return;
     }
 
-    dispatch(fetchProjectSessions(activeProjectId));
-    dispatch(restoreOrClearSession(activeSessionId));
-    dispatch(resumeSession(activeSessionId)).then((result) => {
+    const requestSeq = ++requestSeqRef.current;
+    const requestedSessionId = activeSessionId;
+    dispatch(resumeSession(requestedSessionId)).then((result) => {
+      if (requestSeq !== requestSeqRef.current) return;
       if (!resumeSession.fulfilled.match(result)) {
         dispatch(setActiveSession(null));
       } else {

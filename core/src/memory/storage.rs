@@ -30,9 +30,10 @@ impl Storage {
 
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
 
-        // ── Scheme B Schema Migration Auto-Reset ──
-        // Detect if the existing database is using the old schema (missing metadata column in session_messages).
-        // If so, drop the affected tables so they can be re-created cleanly by init_tables.
+        // ── Scheme B Schema Migration ────────────────────────────────
+        // Older databases may lack the prompt/model/metadata columns on
+        // session_messages. Migrate in place; never drop user session tables
+        // during startup.
         let table_exists: bool = conn.query_row(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_messages'",
             [],
@@ -40,17 +41,25 @@ impl Storage {
         ).unwrap_or(false);
 
         if table_exists {
-            let has_metadata: bool = conn.query_row(
-                "SELECT 1 FROM pragma_table_info('session_messages') WHERE name = 'metadata'",
-                [],
-                |_| Ok(true),
-            ).unwrap_or(false);
+            let mut stmt = conn.prepare("PRAGMA table_info(session_messages)")?;
+            let existing: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .collect();
+            drop(stmt);
 
-            if !has_metadata {
-                conn.execute("DROP TABLE IF EXISTS session_messages", [])?;
-                conn.execute("DROP TABLE IF EXISTS prompts", [])?;
-                conn.execute("DROP TABLE IF EXISTS sessions", [])?;
-                conn.execute("DROP TABLE IF EXISTS session_event_log", [])?;
+            for (column, definition) in [
+                ("prompt_id", "TEXT NOT NULL DEFAULT ''"),
+                ("model", "TEXT DEFAULT ''"),
+                ("metadata", "TEXT DEFAULT '{}'"),
+            ] {
+                if !existing.iter().any(|c| c == column) {
+                    conn.execute(
+                        &format!("ALTER TABLE session_messages ADD COLUMN {column} {definition}"),
+                        [],
+                    )
+                    .with_context(|| format!("failed to add {column} to session_messages"))?;
+                }
             }
         }
 
@@ -431,5 +440,81 @@ impl Storage {
             })?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scheme_b_migration_preserves_existing_session_messages() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("legacy.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                r#"
+                CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL DEFAULT 'Untitled',
+                    summary TEXT NOT NULL DEFAULT '',
+                    start_time TEXT NOT NULL,
+                    end_time TEXT,
+                    message_count INTEGER DEFAULT 0,
+                    prompt_count INTEGER DEFAULT 0,
+                    cwd TEXT DEFAULT '',
+                    model_used TEXT DEFAULT '',
+                    tags TEXT DEFAULT '[]',
+                    archived INTEGER DEFAULT 0,
+                    parent_session_id TEXT DEFAULT '',
+                    session_type TEXT DEFAULT 'main',
+                    project_id TEXT DEFAULT '',
+                    process_time_ms INTEGER DEFAULT 0,
+                    thought_time_ms INTEGER DEFAULT 0,
+                    mode TEXT NOT NULL DEFAULT 'build',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE session_messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    msg_index INTEGER NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT DEFAULT '',
+                    tool_calls TEXT DEFAULT '[]',
+                    tool_call_id TEXT DEFAULT '',
+                    name TEXT DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    UNIQUE(session_id, msg_index)
+                );
+                INSERT INTO sessions (id, title, start_time, created_at, updated_at)
+                VALUES ('s1', 'legacy', 'now', 'now', 'now');
+                INSERT INTO session_messages (session_id, msg_index, role, content, created_at)
+                VALUES ('s1', 0, 'user', 'hello', 'now');
+                "#,
+            )
+            .unwrap();
+        }
+
+        let _storage = Storage::new(db_path.to_str().unwrap()).unwrap();
+        let conn = Connection::open(&db_path).unwrap();
+        let content: String = conn
+            .query_row(
+                "SELECT content FROM session_messages WHERE session_id = 's1' AND msg_index = 0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let has_metadata: bool = conn
+            .query_row(
+                "SELECT 1 FROM pragma_table_info('session_messages') WHERE name = 'metadata'",
+                [],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+
+        assert_eq!(content, "hello");
+        assert!(has_metadata);
     }
 }

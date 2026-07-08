@@ -62,8 +62,13 @@ impl Run {
                         .map(|model| model.embed_single(user_input).unwrap_or_default())
                 };
                 let m = mem.lock();
-                let _ =
-                    m.store_conversation_precomputed("user", user_input, embedding.as_deref());
+                let memory_session_id = self.session_id.as_deref().unwrap_or_else(|| m.session_id());
+                let _ = m.store_conversation_for_session_precomputed(
+                    memory_session_id,
+                    "user",
+                    user_input,
+                    embedding.as_deref(),
+                );
             }
         }
 

@@ -77,11 +77,8 @@ line-numbered view). Refuses files larger than 1 MB and detects binary files."
         }
 
         let session_id = args.get("_session_id").and_then(|v| v.as_str());
-        let resolved_path = if let Some(sid) = session_id {
-            crate::paths::redirect_if_artifact(path, sid)
-        } else {
-            std::path::PathBuf::from(path)
-        };
+        let working_dir = args.get("_working_dir").and_then(|v| v.as_str());
+        let resolved_path = crate::paths::resolve_tool_path(path, session_id, working_dir);
         let resolved_path_str = resolved_path.to_string_lossy().to_string();
 
         // 1. Size guard before opening — use tokio::fs for async I/O.

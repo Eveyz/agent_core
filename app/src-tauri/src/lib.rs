@@ -4,6 +4,7 @@ use agent_core::{
     permission::ApprovalChoice,
     McpClientManager, McpTool,
 };
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use std::sync::Arc;
 use parking_lot::Mutex;
@@ -771,6 +772,11 @@ async fn rename_session(
     .map_err(|e| format!("rename_session task failed: {e}"))?
 }
 
+#[derive(Serialize)]
+struct SaveResult {
+    updated_at: String,
+}
+
 #[tauri::command]
 async fn save_session_messages(
     state: State<'_, AppState>,
@@ -780,7 +786,7 @@ async fn save_session_messages(
     model_used: String,
     process_time_ms: Option<u64>,
     thought_time_ms: Option<u64>,
-) -> Result<(), String> {
+) -> Result<SaveResult, String> {
     let sm = state.session_manager.clone();
     tokio::task::spawn_blocking(move || {
         let frontend_msgs: Vec<FrontendMessage> = serde_json::from_str(&messages_json)
@@ -798,11 +804,16 @@ async fn save_session_messages(
         };
         sm.save(Some(&session_id), &messages, &final_cwd, &model_used)
             .map_err(|e| e.to_string())?;
-        if let (Some(pt), Some(tt)) = (process_time_ms, thought_time_ms) {
-            sm.save_timing(&session_id, pt, tt)
+        if process_time_ms.is_some() || thought_time_ms.is_some() {
+            sm.save_timing(&session_id, process_time_ms.unwrap_or(0), thought_time_ms.unwrap_or(0))
                 .map_err(|e| e.to_string())?;
         }
-        Ok(())
+        let updated_at = sm.get_meta(&session_id)
+            .ok()
+            .flatten()
+            .map(|m| m.updated_at)
+            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+        Ok(SaveResult { updated_at })
     })
     .await
     .map_err(|e| format!("save_session_messages task failed: {e}"))?
@@ -1996,33 +2007,29 @@ pub fn run() {
 
             // Deferred index building: build BM25 + HNSW in background so
             // the UI isn't blocked. Searches fall back to SQLite until done.
+            //
+            // We clone the Storage handle (brief lock) so the CPU-heavy build
+            // runs on a dedicated OS thread WITHOUT holding the MemoryManager
+            // lock — UI operations like chat / search / memory store can
+            // proceed concurrently.
             if let Some(mm) = memory_mgr {
-                let mm_build = mm.clone();
-                tauri::async_runtime::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    eprintln!("[index] building search indexes (BM25 + HNSW)...");
-                    let start = std::time::Instant::now();
-                    let result = tokio::task::spawn_blocking(move || {
-                        let locked = mm_build.lock();
-                        let bm25 = locked.build_bm25().ok();
-                        let hnsw = locked.build_hnsw().ok();
-                        (bm25, hnsw)
-                    }).await;
-                    match result {
-                        Ok((bm25, hnsw)) => {
-                            let mut locked = mm.lock();
-                            if let Some(b) = bm25 {
-                                locked.set_bm25(b);
-                            }
-                            if let Some(h) = hnsw {
-                                locked.set_hnsw(h);
-                            }
-                            drop(locked);
-                            eprintln!("[index] BM25 + HNSW ready in {:?}", start.elapsed());
-                        }
-                        Err(e) => eprintln!("[index] build panicked: {e}"),
-                    }
-                });
+                let storage = mm.lock().recall().storage();
+                // mm (Arc) is kept alive and moved into the thread below
+                std::thread::Builder::new()
+                    .name("index-builder".into())
+                    .spawn(move || {
+                        eprintln!("[index] building search indexes (BM25 + HNSW)...");
+                        let start = std::time::Instant::now();
+                        let bm25 = agent_core::memory::MemoryManager::build_bm25_from(&storage).ok();
+                        let hnsw = agent_core::memory::MemoryManager::build_hnsw_from(&storage).ok();
+                        eprintln!("[index] BM25 + HNSW ready in {:?}", start.elapsed());
+
+                        // Brief lock to inject built indexes
+                        let mut mm = mm.lock();
+                        if let Some(b) = bm25 { mm.set_bm25(b); }
+                        if let Some(h) = hnsw { mm.set_hnsw(h); }
+                    })
+                    .expect("failed to spawn index builder thread");
             }
 
             Ok(())

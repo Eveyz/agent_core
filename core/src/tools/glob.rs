@@ -41,10 +41,12 @@ impl Tool for GlobTool {
     async fn execute(&self, args: Value) -> Result<String> {
         let pattern = args["pattern"].as_str().context("missing 'pattern'")?.to_string();
         let base_path = args["path"].as_str().unwrap_or(".").to_string();
+        let working_dir = args.get("_working_dir").and_then(|v| v.as_str()).map(str::to_string);
         let max_results = args["max_results"].as_u64().unwrap_or(100) as usize;
 
         // glob::glob is synchronous and blocking — run it on a blocking thread.
         let results = tokio::task::spawn_blocking(move || -> Result<Vec<String>> {
+            let base_path = crate::paths::resolve_tool_path(&base_path, None, working_dir.as_deref());
             let base = Path::new(&base_path);
 
             let full_pattern_str = if Path::new(&pattern).is_absolute() {

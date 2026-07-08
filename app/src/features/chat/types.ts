@@ -82,6 +82,7 @@ export interface ChatEntry {
   turnId?: string;
   turnIds?: string[];
   turnIndex?: number;
+  promptId?: string;
   text?: string;
   /** Model that was active when this prompt was submitted. Per-prompt, not
    * the global currently-selected model. Falls back to the global model for
@@ -131,46 +132,37 @@ export interface LearnEntry {
 }
 
 export interface ChatState {
-  isDirty: boolean;
-  isDirtyBySession: Record<string, boolean>;
-  entries: ChatEntry[];
-  isProcessing: boolean;
-  runId: string | null;
-  runState: RunState | null;
-  lastSeqByRun: Record<string, number>;
-  subagents: Record<string, SubagentEntry>;
-  viewingSubagentPath: { id: string; name: string }[];
-  resyncing: boolean;
-  _pendingTurnId?: string;
-  entriesBySession: Record<string, ChatEntry[]>;
-  processingBySession: Record<string, boolean>;
-  subagentsBySession: Record<string, Record<string, SubagentEntry>>;
-  runIdBySession: Record<string, string | null>;
-  runIdToSessionId: Record<string, string>;
+  // ── Per-session state (maps keyed by sessionId) ──
+  entries: Record<string, ChatEntry[]>;
+  processing: Record<string, boolean>;
+  subagents: Record<string, Record<string, SubagentEntry>>;
+  runId: Record<string, string | null>;
+  runState: Record<string, RunState | null>;
+  todo: Record<string, TodoItem[]>;
+  steerQueue: Record<string, SteerMessage[]>;
+  allPrompts: Record<string, FrontendPrompt[]>;
+  visiblePromptsCount: Record<string, number>;
+  isDirty: Record<string, boolean>;
+  _resumedFromBackend: Record<string, boolean>;
+  _thinkBuffers: Record<string, Record<string, string>>;
+  goal: Record<string, string | null>;
+  goalCompleted: Record<string, boolean>;
+
+  // ── Global state ──
   activeSessionId: string | null;
-  isResuming: boolean;
-  _resumedFromBackend: boolean;
-  _thinkBuffers: Record<string, string>;
-  _pendingGap: { runId: string; fromSeq: number } | null;
-  todo: TodoItem[];
-  todoBySession: Record<string, TodoItem[]>;
-  steerQueue: SteerMessage[];
-  steerQueueBySession: Record<string, SteerMessage[]>;
+  runIdToSessionId: Record<string, string>;
+  lastSeqByRun: Record<string, number>;
+  viewingSubagentPath: { id: string; name: string }[];
+  btwEntries: BtwEntry[];
+  learnEntries: LearnEntry[];
   skillsCache: {
     skills: SkillManifest[];
     loadedAt: number;
   } | null;
-  // /btw & /learn side-channel bubbles (ephemeral, current session)
-  btwEntries: BtwEntry[];
-  learnEntries: LearnEntry[];
-  // /goal pinned goal (per-active-session, driven by goal_set/goal_completed events)
-  goal: string | null;
-  goalCompleted: boolean;
-  allPrompts: FrontendPrompt[];
-  visiblePromptsCount: number;
-  allPromptsBySession: Record<string, FrontendPrompt[]>;
-  visiblePromptsCountBySession: Record<string, number>;
-  // Cumulative cache metrics from CacheSummary events
+  resyncing: boolean;
+  isResuming: boolean;
+  _pendingGap: { runId: string; fromSeq: number } | null;
+  _pendingTurnId?: string;
   cacheMetrics: CacheMetrics | null;
 }
 

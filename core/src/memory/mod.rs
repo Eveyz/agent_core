@@ -181,7 +181,14 @@ impl MemoryManager {
     /// Call this in a background task after startup — searches fall back
     /// to SQLite keyword matching until the index is ready.
     pub fn build_bm25(&self) -> Result<BM25Index> {
-        let db = self.recall.storage_conn();
+        Self::build_bm25_from(&self.recall.storage())
+    }
+
+    /// Same as `build_bm25` but takes a `&Storage` directly — use this when
+    /// you have a Storage handle and want to build without holding the
+    /// `MemoryManager` lock.
+    pub fn build_bm25_from(storage: &Storage) -> Result<BM25Index> {
+        let db = storage.conn();
         let mut stmt = db.prepare("SELECT id, content FROM recall_memory")?;
         let records: Vec<(String, String)> = stmt
             .query_map([], |row| {
@@ -198,9 +205,16 @@ impl MemoryManager {
     /// Call this in a background task after startup — searches fall back
     /// to brute-force vector scan until the index is ready.
     pub fn build_hnsw(&self) -> Result<HNSWIndex> {
+        Self::build_hnsw_from(&self.recall.storage())
+    }
+
+    /// Same as `build_hnsw` but takes a `&Storage` directly — use this when
+    /// you have a Storage handle and want to build without holding the
+    /// `MemoryManager` lock.
+    pub fn build_hnsw_from(storage: &Storage) -> Result<HNSWIndex> {
         use crate::memory::embedding::bytes_to_embedding;
         use crate::memory::hnsw::normalize_embedding;
-        let db = self.recall.storage_conn();
+        let db = storage.conn();
         let mut stmt = db.prepare(
             "SELECT id, embedding FROM recall_memory \
              WHERE embedding IS NOT NULL AND length(embedding) > 0",
@@ -293,8 +307,18 @@ impl MemoryManager {
         content: &str,
         precomputed: Option<&[f32]>,
     ) -> Result<String> {
+        self.store_conversation_for_session_precomputed(&self.session_id, role, content, precomputed)
+    }
+
+    pub fn store_conversation_for_session_precomputed(
+        &self,
+        session_id: &str,
+        role: &str,
+        content: &str,
+        precomputed: Option<&[f32]>,
+    ) -> Result<String> {
         // Use auto-rating (None = let the scorer decide)
-        let id = self.recall.store(&self.session_id, role, content, None)?;
+        let id = self.recall.store(session_id, role, content, None)?;
 
         // Sync to BM25 index if enabled
         if let Some(ref bm25) = self.bm25 {

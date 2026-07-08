@@ -67,7 +67,7 @@ export const ChatInput = memo(function ChatInput({
   const activeSessionId = useSelector((state: RootState) => state.project.activeSessionId);
   const projects = useSelector((state: RootState) => state.project.projects);
   const activeProject = projects.find((p) => p.id === activeProjectId);
-  const steerQueue = useSelector((state: RootState) => state.chat.steerQueue);
+  const steerQueue = useSelector((state: RootState) => state.chat.steerQueue[state.chat.activeSessionId ?? '']);
 
   const {
     showAutocomplete,

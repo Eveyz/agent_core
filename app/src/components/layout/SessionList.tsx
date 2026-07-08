@@ -1,7 +1,6 @@
-import { useState, useRef, useEffect } from "react";
+import { useState } from "react";
 import { SessionMeta } from "../../features/project/projectSlice";
 import { formatTimeAgo } from "../../utils/time";
-import LoaderIcon from "lucide-react/dist/esm/icons/loader.mjs";
 import TrashIcon from "lucide-react/dist/esm/icons/trash.mjs";
 import MoreHorizontalIcon from "lucide-react/dist/esm/icons/more-horizontal.mjs";
 
@@ -10,21 +9,8 @@ import MoreHorizontalIcon from "lucide-react/dist/esm/icons/more-horizontal.mjs"
 function useContextMenu() {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState({ x: 0, y: 0 });
-  const menuRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    }
-    if (open) {
-      document.addEventListener("mousedown", handleClick);
-      return () => document.removeEventListener("mousedown", handleClick);
-    }
-  }, [open]);
-
-  return { open, setOpen, pos, setPos, menuRef };
+  return { open, setOpen, pos, setPos };
 }
 
 // ── Session context menu ─────────────────────────────────────────────
@@ -36,7 +22,7 @@ function SessionContextMenu({
   sessionId: string;
   onDelete: (sessionId: string) => void;
 }) {
-  const { open, setOpen, pos, setPos, menuRef } = useContextMenu();
+  const { open, setOpen, pos, setPos } = useContextMenu();
 
   return (
     <>
@@ -51,24 +37,73 @@ function SessionContextMenu({
         <MoreHorizontalIcon size={12} />
       </button>
       {open && (
-        <div
-          ref={menuRef}
-          className="context-menu"
-          style={{ left: pos.x, top: pos.y }}
-        >
+        <>
+          <div className="context-menu-backdrop" onClick={() => setOpen(false)} />
           <div
-            className="context-menu-item context-menu-danger"
-            onClick={(e) => {
-              e.stopPropagation();
-              setOpen(false);
-              onDelete(sessionId);
-            }}
+            className="context-menu"
+            style={{ left: pos.x, top: pos.y }}
+            onClick={(e) => e.stopPropagation()}
           >
-            <TrashIcon size={13} /> Delete
+            <div
+              className="context-menu-item context-menu-danger"
+              onClick={(e) => {
+                e.stopPropagation();
+                setOpen(false);
+                onDelete(sessionId);
+              }}
+            >
+              <TrashIcon size={13} /> Delete
+            </div>
           </div>
-        </div>
+        </>
       )}
     </>
+  );
+}
+
+// ── Session row ──────────────────────────────────────────────────────
+
+interface SessionRowProps {
+  session: SessionMeta;
+  isActive: boolean;
+  isProcessing: boolean;
+  onSelect: (sessionId: string) => void;
+  onDelete: (sessionId: string) => void;
+}
+
+function SessionRow({ session, isActive, isProcessing, onSelect, onDelete }: SessionRowProps) {
+  return (
+    <div
+      className={`session-row ${isActive ? "session-row-active" : ""}`}
+      onClick={() => onSelect(session.id)}
+    >
+      <span className="session-row-text">
+        {session.title || "Untitled"}
+      </span>
+      <span className="session-row-time">
+        {isProcessing ? (
+          <span className="session-processing-spinner" />
+        ) : (
+          formatTimeAgo(session.updated_at)
+        )}
+      </span>
+      <span className="session-row-actions">
+        <SessionContextMenu
+          sessionId={session.id}
+          onDelete={onDelete}
+        />
+        <button
+          className="sidebar-context-trigger session-delete-btn"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete(session.id);
+          }}
+          title="Delete session"
+        >
+          <TrashIcon size={12} />
+        </button>
+      </span>
+    </div>
   );
 }
 
@@ -80,7 +115,7 @@ interface SessionListProps {
   onSelectSession: (sessionId: string) => void;
   title: string;
   emptyMessage: string;
-  isProcessing: boolean;
+  processingBySession: Record<string, boolean>;
   onDeleteSession: (sessionId: string) => void;
   paddingLeft?: string;
 }
@@ -90,7 +125,7 @@ export function SessionList({
   activeSessionId,
   onSelectSession,
   emptyMessage,
-  isProcessing,
+  processingBySession,
   onDeleteSession,
   paddingLeft,
 }: SessionListProps) {
@@ -114,48 +149,16 @@ export function SessionList({
 
   return (
     <>
-      {visibleSessions.map((session) => {
-        const isActive = activeSessionId === session.id;
-        return (
-          <div
-            key={session.id}
-            className={`session-row ${isActive ? "session-row-active" : ""}`}
-            style={paddingLeft ? { paddingLeft } : undefined}
-            onClick={() => onSelectSession(session.id)}
-          >
-            <span className="session-row-text">
-              {session.title || "Untitled"}
-            </span>
-            <span className="session-row-time">
-              {isActive && isProcessing ? (
-                <LoaderIcon
-                  size={12}
-                  className="session-processing-spinner"
-                  style={{ marginRight: 0 }}
-                />
-              ) : (
-                formatTimeAgo(session.updated_at)
-              )}
-            </span>
-            <span className="session-row-actions">
-              <SessionContextMenu
-                sessionId={session.id}
-                onDelete={onDeleteSession}
-              />
-              <button
-                className="sidebar-context-trigger session-delete-btn"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDeleteSession(session.id);
-                }}
-                title="Delete session"
-              >
-                <TrashIcon size={12} />
-              </button>
-            </span>
-          </div>
-        );
-      })}
+      {visibleSessions.map((session) => (
+        <SessionRow
+          key={session.id}
+          session={session}
+          isActive={activeSessionId === session.id}
+          isProcessing={processingBySession[session.id] ?? false}
+          onSelect={onSelectSession}
+          onDelete={onDeleteSession}
+        />
+      ))}
       {!fullyExpanded && hiddenCount > 0 && (
         <div
           className="session-expand-toggle"

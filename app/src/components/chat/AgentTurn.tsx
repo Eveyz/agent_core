@@ -327,10 +327,16 @@ export const AgentTurnUI = memo(function AgentTurnUI({
           <React.Fragment key={item.type === 'iteration' ? item.data.id : `block-${idx}`}>
             {item.type === 'assistant' ? (
               (lastIterIdx === -1 || idx > lastIterIdx) && (
-                <MarkdownContent
-                  content={item.data.text}
-                  className="assistant-msg"
-                />
+                item.data.isStreaming ? (
+                  <div className="assistant-msg" style={{ whiteSpace: 'pre-wrap' }}>
+                    {item.data.text}
+                  </div>
+                ) : (
+                  <MarkdownContent
+                    content={item.data.text}
+                    className="assistant-msg"
+                  />
+                )
               )
             ) : item.type === 'error' ? (
               (() => {

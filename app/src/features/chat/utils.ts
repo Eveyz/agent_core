@@ -101,18 +101,18 @@ export function appendDeltaToBlocks(
   if (typeof delta.Text === 'string') {
     let textChunk = delta.Text;
 
-    while (textChunk.includes('<think>') || textChunk.includes('</think>')) {
-      const thinkStartIdx = textChunk.indexOf('<think>');
-      const thinkEndIdx = textChunk.indexOf('</think>');
+    while (textChunk.includes(THINK_OPEN) || textChunk.includes(THINK_CLOSE)) {
+      const thinkStartIdx = textChunk.indexOf(THINK_OPEN);
+      const thinkEndIdx = textChunk.indexOf(THINK_CLOSE);
 
       if (thinkStartIdx !== -1 && (thinkEndIdx === -1 || thinkStartIdx < thinkEndIdx)) {
         const before = textChunk.substring(0, thinkStartIdx);
         if (before) appendToType(before, 'assistant');
-        textChunk = textChunk.substring(thinkStartIdx + 7);
+        textChunk = textChunk.substring(thinkStartIdx + THINK_OPEN.length);
       } else if (thinkEndIdx !== -1) {
         const before = textChunk.substring(0, thinkEndIdx);
         if (before) appendToType(before, 'thinking');
-        textChunk = textChunk.substring(thinkEndIdx + 8);
+        textChunk = textChunk.substring(thinkEndIdx + THINK_CLOSE.length);
       }
     }
 
@@ -156,8 +156,10 @@ export function entriesToMessages(
 ): FrontendMessage[] {
   const msgs: FrontendMessage[] = [];
   for (const entry of entries) {
+    const prompt_id = entry.promptId!;
+
     if (entry.type === 'user' && entry.text) {
-      msgs.push({ role: 'user', content: entry.text, model: entry.model });
+      msgs.push({ role: 'user', content: entry.text, model: entry.model, prompt_id });
     } else if (entry.type === 'turn' && entry.blocks) {
       let thinkingText = '';
       let assistantText = '';
@@ -208,7 +210,8 @@ export function entriesToMessages(
           content: content || '',
           model: entry.model,
           tool_calls,
-          metadata
+          metadata,
+          prompt_id
         });
 
         for (const tb of toolBlocks) {
@@ -217,7 +220,8 @@ export function entriesToMessages(
             content: tb.result || '',
             tool_call_id: tb.call_id,
             name: tb.name,
-            model: entry.model
+            model: entry.model,
+            prompt_id
           });
         }
       } else {
@@ -225,7 +229,8 @@ export function entriesToMessages(
           role: 'assistant',
           content: content || '',
           model: entry.model,
-          metadata
+          metadata,
+          prompt_id
         });
       }
     }
@@ -234,19 +239,33 @@ export function entriesToMessages(
 }
 
 export function getFullMessages(chatState: ChatState): FrontendMessage[] {
-  const invisibleCount = chatState.allPrompts.length - chatState.visiblePromptsCount;
+  const sessionId = chatState.activeSessionId;
+  if (!sessionId) return [];
+  return getFullMessagesForSession(chatState, sessionId);
+}
+
+export function getFullMessagesForSession(
+  chatState: ChatState,
+  sessionId: string
+): FrontendMessage[] {
+  const allPrompts = chatState.allPrompts[sessionId] || [];
+  const visiblePromptsCount = chatState.visiblePromptsCount[sessionId] ?? 1;
+  const entries = chatState.entries[sessionId] || [];
+  const subagents = chatState.subagents[sessionId] || {};
+
+  const invisibleCount = allPrompts.length - visiblePromptsCount;
   const msgs: FrontendMessage[] = [];
 
-  // 1. Add messages from invisible prompts (read directly from prompt.messages)
+  // 1. Add messages from invisible prompts
   for (let i = 0; i < invisibleCount; i++) {
-    const prompt = chatState.allPrompts[i];
+    const prompt = allPrompts[i];
     if (prompt && prompt.messages) {
       msgs.push(...prompt.messages);
     }
   }
 
-  // 2. Add messages from visible prompts/entries (serialized using entriesToMessages)
-  msgs.push(...entriesToMessages(chatState.entries, chatState.subagents));
+  // 2. Add messages from visible prompts/entries
+  msgs.push(...entriesToMessages(entries, subagents));
 
   return msgs;
 }

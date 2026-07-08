@@ -1,6 +1,6 @@
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
 import { invoke } from '@tauri-apps/api/core';
-import { resumeSession, deleteSession, saveSessionMessages } from '../project/projectSlice';
+import { resumeSession, deleteSession, saveSessionMessages, setActiveSession, createSession } from '../project/projectSlice';
 
 import type {
   TurnBlock, SubagentEntry, ChatState, RunState, ChatEntry, FrontendPrompt,
@@ -16,44 +16,54 @@ export {
   selectEntryIds, selectEntryById, selectSubagentById,
   selectPendingApprovalCount, selectActivePendingApproval,
 } from './selectors';
-export { entriesToMessages, stringifyResult, getFullMessages, getTimingMetrics } from './utils';
+export { entriesToMessages, stringifyResult, getFullMessages, getFullMessagesForSession, getTimingMetrics } from './utils';
+
+// ── Helper ──────────────────────────────────────────────────────────
+
+function ensureSession(state: ChatState, sessionId: string) {
+  if (state.entries[sessionId] === undefined) state.entries[sessionId] = [];
+  if (state.subagents[sessionId] === undefined) state.subagents[sessionId] = {};
+  if (state._thinkBuffers[sessionId] === undefined) state._thinkBuffers[sessionId] = {};
+  if (state.processing[sessionId] === undefined) state.processing[sessionId] = false;
+  if (state.runId[sessionId] === undefined) state.runId[sessionId] = null;
+  if (state.runState[sessionId] === undefined) state.runState[sessionId] = null;
+  if (state.todo[sessionId] === undefined) state.todo[sessionId] = [];
+  if (state.steerQueue[sessionId] === undefined) state.steerQueue[sessionId] = [];
+  if (state.allPrompts[sessionId] === undefined) state.allPrompts[sessionId] = [];
+  if (state.visiblePromptsCount[sessionId] === undefined) state.visiblePromptsCount[sessionId] = 1;
+  if (state.isDirty[sessionId] === undefined) state.isDirty[sessionId] = false;
+  if (state._resumedFromBackend[sessionId] === undefined) state._resumedFromBackend[sessionId] = false;
+  if (state.goal[sessionId] === undefined) state.goal[sessionId] = null;
+  if (state.goalCompleted[sessionId] === undefined) state.goalCompleted[sessionId] = false;
+}
 
 // ── Initial state ────────────────────────────────────────────────────
 
 const initialState: ChatState = {
-  isDirty: false,
-  isDirtyBySession: {},
-  entries: [],
-  isProcessing: false,
-  runId: null,
-  runState: null,
-  lastSeqByRun: {},
+  entries: {},
+  processing: {},
   subagents: {},
-  viewingSubagentPath: [],
-  resyncing: false,
-  entriesBySession: {},
-  processingBySession: {},
-  subagentsBySession: {},
-  runIdBySession: {},
-  runIdToSessionId: {},
-  activeSessionId: null,
-  isResuming: false,
-  _resumedFromBackend: false,
+  runId: {},
+  runState: {},
+  todo: {},
+  steerQueue: {},
+  allPrompts: {},
+  visiblePromptsCount: {},
+  isDirty: {},
+  _resumedFromBackend: {},
   _thinkBuffers: {},
-  _pendingGap: null,
-  todo: [],
-  todoBySession: {},
-  steerQueue: [],
-  steerQueueBySession: {},
-  skillsCache: null,
+  goal: {},
+  goalCompleted: {},
+  activeSessionId: null,
+  runIdToSessionId: {},
+  lastSeqByRun: {},
+  viewingSubagentPath: [],
   btwEntries: [],
   learnEntries: [],
-  goal: null,
-  goalCompleted: false,
-  allPrompts: [],
-  visiblePromptsCount: 1,
-  allPromptsBySession: {},
-  visiblePromptsCountBySession: {},
+  skillsCache: null,
+  resyncing: false,
+  isResuming: false,
+  _pendingGap: null,
   cacheMetrics: null,
 };
 
@@ -92,7 +102,7 @@ export const fetchSkills = createAsyncThunk(
     const state = getState() as { chat: ChatState };
     const cached = state.chat.skillsCache;
     if (cached && Date.now() - cached.loadedAt < 25000) {
-      return cached.skills; // skip fetch if cache fresh
+      return cached.skills;
     }
     const skills = await invoke<import('./types').SkillManifest[]>('get_skills');
     dispatch(cacheSkills(skills));
@@ -107,35 +117,38 @@ export const invalidateSkillsCache = createAsyncThunk(
   }
 );
 
-function rebuildEntries(state: ChatState) {
-  if (!state.allPrompts || state.allPrompts.length === 0) {
-    state.entries = [];
+// ── rebuildEntries ────────────────────────────────────────────────────
+
+function rebuildEntries(state: ChatState, sessionId: string) {
+  const prompts = state.allPrompts[sessionId];
+  if (!prompts || prompts.length === 0) {
+    state.entries[sessionId] = state.entries[sessionId] ?? [];
     return;
   }
 
   // 1. Rebuild prompt status map by turn_index for zombie detection.
   const promptStatusByTurn = new Map<number, string>();
-  for (const p of state.allPrompts) {
+  for (const p of prompts) {
     promptStatusByTurn.set(p.turn_index, p.status);
   }
 
   // 2. Clear and rebuild subagents from all prompts
-  state.subagents = {};
-  for (const prompt of state.allPrompts) {
+  state.subagents[sessionId] = {};
+  for (const prompt of prompts) {
     for (const msg of prompt.messages) {
       if (msg.role === 'assistant' && msg.metadata && msg.metadata.subagents) {
         const subMap = msg.metadata.subagents as Record<string, SubagentEntry>;
         for (const [subId, subEntry] of Object.entries(subMap)) {
-          state.subagents[subId] = subEntry;
+          state.subagents[sessionId][subId] = subEntry;
         }
       }
     }
   }
 
   // 3. Get the visible prompts slice (last visiblePromptsCount prompts)
-  const count = state.visiblePromptsCount;
-  const startIdx = Math.max(0, state.allPrompts.length - count);
-  const visiblePrompts = state.allPrompts.slice(startIdx);
+  const count = state.visiblePromptsCount[sessionId];
+  const startIdx = Math.max(0, prompts.length - count);
+  const visiblePrompts = prompts.slice(startIdx);
 
   const newEntries: ChatEntry[] = [];
 
@@ -147,6 +160,7 @@ function rebuildEntries(state: ChatState) {
     newEntries.push({
       id: `user-${prompt.id}`,
       type: 'user',
+      promptId: prompt.id,
       text: userMsg,
       model: prompt.model,
     });
@@ -235,8 +249,9 @@ function rebuildEntries(state: ChatState) {
 
     const pStatus = promptStatusByTurn.get(turnIdx);
     newEntries.push({
-      id: `turn-${turnIdx}-${prompt.id}`,
+      id: `turn-${prompt.id}`,
       type: 'turn',
+      promptId: prompt.id,
       turnIndex: turnIdx,
       blocks,
       subagentIds: subagentIds.length > 0 ? subagentIds : undefined,
@@ -248,7 +263,31 @@ function rebuildEntries(state: ChatState) {
     });
   }
 
-  state.entries = newEntries;
+  const existingEntries = state.entries[sessionId] ?? [];
+  const mergedEntries = newEntries.map((entry) => {
+    if (!entry.promptId) return entry;
+    const existing = existingEntries.find((e) => e.type === entry.type && e.promptId === entry.promptId);
+    if (!existing) return entry;
+    if (entry.type === 'turn' && existing.type === 'turn') {
+      const existingBlocks = existing.blocks?.length ?? 0;
+      const rebuiltBlocks = entry.blocks?.length ?? 0;
+      return existingBlocks >= rebuiltBlocks ? existing : entry;
+    }
+    if (entry.type === 'user' && existing.type === 'user') {
+      return existing.text ? existing : entry;
+    }
+    return entry;
+  });
+
+  const rebuiltKeys = new Set(mergedEntries.map((e) => `${e.type}:${e.promptId ?? e.id}`));
+  for (const existing of existingEntries) {
+    const key = `${existing.type}:${existing.promptId ?? existing.id}`;
+    if (!rebuiltKeys.has(key)) {
+      mergedEntries.push(existing);
+    }
+  }
+
+  state.entries[sessionId] = mergedEntries;
 }
 
 // ── Slice ────────────────────────────────────────────────────────────
@@ -257,71 +296,32 @@ export const chatSlice = createSlice({
   name: 'chat',
   initialState,
   reducers: {
-    cacheCurrentSession: (state, action: PayloadAction<string>) => {
-      const sessionId = action.payload;
-      state.entriesBySession[sessionId] = state.entries;
-      state.processingBySession[sessionId] = state.isProcessing;
-      state.subagentsBySession[sessionId] = state.subagents;
-      state.runIdBySession[sessionId] = state.runId;
-      if (!state.todoBySession) {
-        state.todoBySession = {};
-      }
-      state.todoBySession[sessionId] = state.todo;
-      if (!state.steerQueueBySession) {
-        state.steerQueueBySession = {};
-      }
-      state.steerQueueBySession[sessionId] = state.steerQueue;
-      state.allPromptsBySession[sessionId] = state.allPrompts;
-      state.visiblePromptsCountBySession[sessionId] = state.visiblePromptsCount;
-      state.isDirtyBySession[sessionId] = state.isDirty;
-    },
-    restoreOrClearSession: (state, action: PayloadAction<string>) => {
-      const sessionId = action.payload;
-      state.activeSessionId = sessionId;
-      const cached = state.entriesBySession[sessionId];
-      if (cached) {
-        state.entries = cached;
-        state.isProcessing = state.processingBySession[sessionId] ?? false;
-        state.subagents = state.subagentsBySession[sessionId] ?? {};
-        state.runId = state.runIdBySession[sessionId] ?? null;
-        state.todo = state.todoBySession?.[sessionId] ?? [];
-        state.steerQueue = state.steerQueueBySession?.[sessionId] ?? [];
-        state.allPrompts = state.allPromptsBySession[sessionId] ?? [];
-        state.visiblePromptsCount = state.visiblePromptsCountBySession[sessionId] ?? 1;
-        state.isDirty = state.isDirtyBySession[sessionId] ?? false;
-      } else {
-        state.entries = [];
-        state.isProcessing = false;
-        state.subagents = {};
-        state.runId = null;
-        state.todo = [];
-        state.steerQueue = [];
-        state.allPrompts = [];
-        state.visiblePromptsCount = 1;
-        state.isDirty = false;
-      }
-      state.viewingSubagentPath = [];
-      state._resumedFromBackend = false;
-      state.btwEntries = [];
-      state.learnEntries = [];
-      state.goal = null;
-      state.goalCompleted = false;
-    },
     loadMorePrompts: (state) => {
-      state.visiblePromptsCount += 2;
-      rebuildEntries(state);
+      const sid = state.activeSessionId;
+      if (!sid) return;
+      ensureSession(state, sid);
+      state.visiblePromptsCount[sid] += 2;
+      rebuildEntries(state, sid);
     },
-    userMessageSent: (state, action: PayloadAction<{ text: string; model?: string }>) => {
-      state.entries.push({
+    userMessageSent: (state, action: PayloadAction<{ text: string; model?: string; sessionId?: string }>) => {
+      const sid = action.payload.sessionId ?? state.activeSessionId;
+      if (!sid) return;
+      if (action.payload.sessionId) {
+        state.activeSessionId = action.payload.sessionId;
+      }
+      ensureSession(state, sid);
+
+      state.entries[sid].push({
         id: `user-${Date.now()}`,
         type: 'user',
+        promptId: Date.now().toString(),
         text: action.payload.text,
         model: action.payload.model,
       });
       const newPrompt: FrontendPrompt = {
         id: `user-prompt-${Date.now()}-${Math.random()}`,
-        session_id: state.activeSessionId ?? '',
-        turn_index: state.allPrompts.length,
+        session_id: sid,
+        turn_index: state.allPrompts[sid].length,
         model: action.payload.model ?? '',
         status: 'running',
         token_usage: {},
@@ -334,43 +334,92 @@ export const chatSlice = createSlice({
           model: action.payload.model,
         }],
       };
-      state.allPrompts.push(newPrompt);
-      state.visiblePromptsCount = Math.max(state.visiblePromptsCount, state.allPrompts.length);
+      state.allPrompts[sid].push(newPrompt);
+      state.visiblePromptsCount[sid] = Math.max(state.visiblePromptsCount[sid], state.allPrompts[sid].length);
 
-      state.isProcessing = true;
-      state._resumedFromBackend = false;
-      state.isDirty = true;
-      state.todo = [];
-      if (state.activeSessionId) {
-        if (!state.todoBySession) {
-          state.todoBySession = {};
+      state.processing[sid] = true;
+      state._resumedFromBackend[sid] = false;
+      state.isDirty[sid] = true;
+      state.todo[sid] = [];
+    },
+    runIdSet: (state, action: PayloadAction<string | { runId: string; sessionId?: string }>) => {
+      const runId = typeof action.payload === 'string' ? action.payload : action.payload.runId;
+      const sid = typeof action.payload === 'string'
+        ? state.activeSessionId
+        : action.payload.sessionId ?? state.activeSessionId;
+      if (!sid) return;
+      ensureSession(state, sid);
+
+      state.activeSessionId = sid;
+      state.runId[sid] = runId;
+      state.runIdToSessionId[runId] = sid;
+      state.runState[sid] = 'running';
+
+      // Update the ID of the latest user entry to use the new runId
+      const entries = state.entries[sid];
+      let lastUserIndex = -1;
+      for (let i = entries.length - 1; i >= 0; i--) {
+        if (entries[i].type === 'user') {
+          lastUserIndex = i;
+          break;
         }
-        state.todoBySession[state.activeSessionId] = [];
+      }
+      if (lastUserIndex !== -1) {
+        entries[lastUserIndex].id = `user-${runId}`;
+        entries[lastUserIndex].promptId = runId;
+      }
+
+      // Update the ID of the latest turn entry if it exists
+      let lastTurnIndex = -1;
+      for (let i = entries.length - 1; i >= 0; i--) {
+        if (entries[i].type === 'turn') {
+          lastTurnIndex = i;
+          break;
+        }
+      }
+      if (lastTurnIndex !== -1 && lastTurnIndex > lastUserIndex) {
+        entries[lastTurnIndex].id = `turn-${runId}`;
+        entries[lastTurnIndex].promptId = runId;
+      }
+
+      // Update the ID of the last prompt in allPrompts
+      const prompts = state.allPrompts[sid];
+      if (prompts.length > 0) {
+        const lastPrompt = prompts[prompts.length - 1];
+        if (lastPrompt.status === 'running' || lastPrompt.id.startsWith('user-prompt-')) {
+          lastPrompt.id = runId;
+        }
       }
     },
-    runIdSet: (state, action: PayloadAction<string>) => {
-      state.runId = action.payload;
-      state.runState = 'running';
-    },
     runStateChanged: (state, action: PayloadAction<RunState>) => {
-      state.runState = action.payload;
+      const sid = state.activeSessionId;
+      if (!sid) return;
+      ensureSession(state, sid);
+
+      state.runState[sid] = action.payload;
       if (action.payload === 'completed' || action.payload === 'cancelled' || action.payload === 'failed') {
-        state.isProcessing = false;
+        state.processing[sid] = false;
       }
     },
     agentEventReceived: (state, action: PayloadAction<string | Record<string, unknown>>) => {
-      processSingleEvent(state, action.payload);
-      state.isDirty = true;
+      const sid = processSingleEvent(state, action.payload);
+      if (sid) state.isDirty[sid] = true;
     },
     agentEventsBatch: (state, action: PayloadAction<Array<string | Record<string, unknown>>>) => {
+      const dirtySessionIds = new Set<string>();
       for (const payload of action.payload) {
-        processSingleEvent(state, payload);
+        const sid = processSingleEvent(state, payload);
+        if (sid) dirtySessionIds.add(sid);
       }
-      state.isDirty = true;
+      for (const sid of dirtySessionIds) state.isDirty[sid] = true;
     },
     toolApprovalResponded: (state, action: PayloadAction<{ promptId: string; approved: boolean }>) => {
-      state.isDirty = true;
-      for (const entry of state.entries) {
+      const sid = state.activeSessionId;
+      if (!sid) return;
+      ensureSession(state, sid);
+
+      state.isDirty[sid] = true;
+      for (const entry of state.entries[sid]) {
         if (entry.type !== 'turn' || !entry.blocks) continue;
         const block = entry.blocks.find((b) => b.type === 'approval' && b.prompt_id === action.payload.promptId);
         if (block && block.type === 'approval') {
@@ -378,7 +427,7 @@ export const chatSlice = createSlice({
           return;
         }
       }
-      for (const sa of Object.values(state.subagents)) {
+      for (const sa of Object.values(state.subagents[sid])) {
         if (!sa.blocks) continue;
         const saBlock = sa.blocks.find((b) => b.type === 'approval' && b.prompt_id === action.payload.promptId);
         if (saBlock && saBlock.type === 'approval') {
@@ -387,44 +436,105 @@ export const chatSlice = createSlice({
         }
       }
     },
-    clearChat: (state) => {
-      state.entries = [];
-      state.subagents = {};
+    clearChat: (state, action: PayloadAction<string | undefined>) => {
+      const sid = action.payload ?? state.activeSessionId;
+      if (!sid) return;
+      state.entries[sid] = [];
+      state.subagents[sid] = {};
+      state.processing[sid] = false;
+      state.goal[sid] = null;
+      state.goalCompleted[sid] = false;
+      state.isDirty[sid] = false;
+      state._resumedFromBackend[sid] = false;
+      state.todo[sid] = [];
+      state.steerQueue[sid] = [];
+      state.allPrompts[sid] = [];
+      state.visiblePromptsCount[sid] = 1;
+      state._thinkBuffers[sid] = {};
       state.viewingSubagentPath = [];
-      state.isProcessing = false;
       state.btwEntries = [];
       state.learnEntries = [];
-      state.goal = null;
-      state.goalCompleted = false;
-      state.isDirty = false;
     },
     agentAborted: (state) => {
-      state.isProcessing = false;
-      state.isDirty = true;
-      const last = state.entries[state.entries.length - 1];
+      const sid = state.activeSessionId;
+      if (!sid) return;
+      ensureSession(state, sid);
+
+      state.processing[sid] = false;
+      state.isDirty[sid] = true;
+      const entries = state.entries[sid];
+      const last = entries[entries.length - 1];
       if (last && last.type === 'turn' && !last.endTime) {
         last.endTime = Date.now();
-        stopDanglingSubagents(state, last);
+        stopDanglingSubagents(state.subagents[sid] ?? {}, last);
         if (last.blocks) {
           last.blocks.push({ type: 'error', text: '— Interrupted —' });
         }
       }
     },
     retryFromEntry: (state, action: PayloadAction<{ id: string; text?: string }>) => {
+      const sid = state.activeSessionId;
+      if (!sid) return;
+      ensureSession(state, sid);
+
+      const entries = state.entries[sid];
       const entryId = action.payload.id;
-      const idx = state.entries.findIndex((e) => e.id === entryId);
+      const idx = entries.findIndex((e) => e.id === entryId);
       if (idx === -1) return;
-      const userText = action.payload.text ?? state.entries[idx].text ?? '';
-      state.entries.splice(idx);
-      state.entries.push({
+      const original = entries[idx];
+      const userText = action.payload.text ?? original.text ?? '';
+      const originalModel = original.model;
+      const originalPromptId = original.promptId;
+      entries.splice(idx);
+      if (originalPromptId) {
+        const promptIdx = state.allPrompts[sid].findIndex((p) => p.id === originalPromptId);
+        if (promptIdx !== -1) {
+          state.allPrompts[sid].splice(promptIdx);
+        }
+      }
+      const promptId = `retry-prompt-${Date.now()}-${Math.random()}`;
+      entries.push({
         id: `user-${Date.now()}`,
         type: 'user',
+        promptId,
         text: userText,
-        model: state.entries[idx]?.model,
+        model: originalModel,
       });
-      state.isProcessing = true;
-      state._resumedFromBackend = false;
-      state.isDirty = true;
+      state.allPrompts[sid].push({
+        id: promptId,
+        session_id: sid,
+        turn_index: state.allPrompts[sid].length,
+        model: originalModel ?? '',
+        status: 'running',
+        token_usage: {},
+        started_at: new Date().toISOString(),
+        ended_at: null,
+        created_at: new Date().toISOString(),
+        messages: [{
+          role: 'user',
+          content: userText,
+          model: originalModel,
+        }],
+      });
+      state.visiblePromptsCount[sid] = Math.max(state.visiblePromptsCount[sid], state.allPrompts[sid].length);
+      state.processing[sid] = true;
+      state._resumedFromBackend[sid] = false;
+      state.isDirty[sid] = true;
+    },
+    sendFailed: (state, action: PayloadAction<{ sessionId?: string; error: string }>) => {
+      const sid = action.payload.sessionId ?? state.activeSessionId;
+      if (!sid) return;
+      ensureSession(state, sid);
+      state.processing[sid] = false;
+      state.runState[sid] = 'failed';
+      state.isDirty[sid] = true;
+      state.entries[sid].push({
+        id: `error-${Date.now()}`,
+        type: 'turn',
+        blocks: [{ type: 'error', text: action.payload.error }],
+        startTime: Date.now(),
+        endTime: Date.now(),
+      });
     },
     viewSubagent: (state, action: PayloadAction<{ id: string; name: string }>) => {
       state.viewingSubagentPath.push(action.payload);
@@ -451,14 +561,18 @@ export const chatSlice = createSlice({
       state.skillsCache = null;
     },
     steerMessageQueued: (state, action: PayloadAction<{ steerId: string; text: string }>) => {
+      const sid = state.activeSessionId;
+      if (!sid) return;
+      ensureSession(state, sid);
+
       const { steerId, text } = action.payload;
-      state.steerQueue.push({
+      state.steerQueue[sid].push({
         steerId,
         text,
         status: 'pending',
         timestamp: Date.now(),
       });
-      state.entries.push({
+      state.entries[sid].push({
         id: `steer-${steerId}`,
         type: 'user',
         text,
@@ -466,26 +580,34 @@ export const chatSlice = createSlice({
         steerId,
         steerStatus: 'pending',
       });
-      state.isDirty = true;
+      state.isDirty[sid] = true;
     },
     steerMessageInjected: (state, action: PayloadAction<string>) => {
+      const sid = state.activeSessionId;
+      if (!sid) return;
+      ensureSession(state, sid);
+
       const steerId = action.payload;
-      const sq = state.steerQueue.find((s) => s.steerId === steerId);
+      const sq = state.steerQueue[sid].find((s) => s.steerId === steerId);
       if (sq) sq.status = 'injected';
-      for (const entry of state.entries) {
+      for (const entry of state.entries[sid]) {
         if (entry.type === 'user' && entry.isSteer && entry.steerId === steerId) {
           entry.steerStatus = 'injected';
         }
       }
-      state.isDirty = true;
+      state.isDirty[sid] = true;
     },
     steerMessageCancelled: (state, action: PayloadAction<string>) => {
+      const sid = state.activeSessionId;
+      if (!sid) return;
+      ensureSession(state, sid);
+
       const steerId = action.payload;
-      state.steerQueue = state.steerQueue.filter((s) => s.steerId !== steerId);
-      state.entries = state.entries.filter(
+      state.steerQueue[sid] = state.steerQueue[sid].filter((s) => s.steerId !== steerId);
+      state.entries[sid] = state.entries[sid].filter(
         (e) => !(e.type === 'user' && e.isSteer && e.steerId === steerId)
       );
-      state.isDirty = true;
+      state.isDirty[sid] = true;
     },
     // ── /btw side-channel ──────────────────────────────────────────
     btwAsked: (state, action: PayloadAction<{ id: string; question: string }>) => {
@@ -517,6 +639,12 @@ export const chatSlice = createSlice({
     },
   },
   extraReducers: (builder) => {
+    builder.addCase(setActiveSession, (state, action) => {
+      state.activeSessionId = action.payload;
+    });
+    builder.addCase(createSession.fulfilled, (state, action) => {
+      state.activeSessionId = action.payload.session.id;
+    });
     builder.addCase(resumeSession.pending, (state) => {
       state.isResuming = true;
     });
@@ -525,42 +653,39 @@ export const chatSlice = createSlice({
     });
     builder.addCase(resumeSession.fulfilled, (state, action) => {
       state.isResuming = false;
-      if (state.entries.length > 0) return;
+      const sessionId = action.payload.meta.id;
+      state.activeSessionId = sessionId;
+      if (state.entries[sessionId]?.length > 0) return;
       const { prompts } = action.payload;
-      state.entries = [];
-
-      state.allPrompts = prompts ?? [];
-      state.isProcessing = state.allPrompts.some(p => p.status === 'running');
+      state.entries[sessionId] = [];
+      state.allPrompts[sessionId] = prompts ?? [];
+      state.processing[sessionId] = state.allPrompts[sessionId].some(p => p.status === 'running');
       // Initially render only the last 2 prompts (or 1 if only 1 exists)
-      state.visiblePromptsCount = Math.min(2, state.allPrompts.length);
-
-      rebuildEntries(state);
-      state._resumedFromBackend = true;
-      state.isDirty = false;
-      state.isDirtyBySession[action.payload.meta.id] = false;
+      state.visiblePromptsCount[sessionId] = Math.min(2, state.allPrompts[sessionId].length);
+      rebuildEntries(state, sessionId);
+      state._resumedFromBackend[sessionId] = true;
+      state.isDirty[sessionId] = false;
     });
     builder.addCase(deleteSession.fulfilled, (state, action) => {
       const { sessionId } = action.payload;
-      delete state.entriesBySession[sessionId];
-      delete state.processingBySession[sessionId];
-      delete state.subagentsBySession[sessionId];
-      delete state.runIdBySession[sessionId];
-      delete state.allPromptsBySession[sessionId];
-      delete state.visiblePromptsCountBySession[sessionId];
-      delete state.isDirtyBySession[sessionId];
-      if (state.todoBySession) {
-        delete state.todoBySession[sessionId];
-      }
-      if (state.steerQueueBySession) {
-        delete state.steerQueueBySession[sessionId];
-      }
+      delete state.entries[sessionId];
+      delete state.processing[sessionId];
+      delete state.subagents[sessionId];
+      delete state.runId[sessionId];
+      delete state.runState[sessionId];
+      delete state.todo[sessionId];
+      delete state.steerQueue[sessionId];
+      delete state.allPrompts[sessionId];
+      delete state.visiblePromptsCount[sessionId];
+      delete state.isDirty[sessionId];
+      delete state._resumedFromBackend[sessionId];
+      delete state._thinkBuffers[sessionId];
+      delete state.goal[sessionId];
+      delete state.goalCompleted[sessionId];
     });
     builder.addCase(saveSessionMessages.fulfilled, (state, action) => {
       const sessionId = action.payload.sessionId;
-      state.isDirtyBySession[sessionId] = false;
-      if (state.activeSessionId === sessionId) {
-        state.isDirty = false;
-      }
+      state.isDirty[sessionId] = false;
     });
   },
 });
@@ -574,10 +699,9 @@ export const {
   toolApprovalResponded,
   clearChat,
   agentAborted,
-  cacheCurrentSession,
-  restoreOrClearSession,
   loadMorePrompts,
   retryFromEntry,
+  sendFailed,
   runIdSet,
   runStateChanged,
   viewSubagent,

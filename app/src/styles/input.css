@@ -67,6 +67,13 @@
   align-items: center;
   position: relative;
   z-index: 1;
+  flex-shrink: 0;
+}
+
+.chat-input-wrapper-relative {
+  flex-shrink: 0;
+  position: relative;
+  z-index: 1;
 }
 
 .input-container {

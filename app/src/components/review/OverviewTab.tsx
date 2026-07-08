@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import { useSelector } from 'react-redux';
 import { RootState } from '../../store';
+import { selectActiveSessionEntries, selectActiveSessionTodos } from '../../features/chat/selectors';
 import ChevronRightIcon from 'lucide-react/dist/esm/icons/chevron-right.mjs';
 import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
 import BotIcon from 'lucide-react/dist/esm/icons/bot.mjs';
@@ -18,10 +19,10 @@ export function OverviewTab() {
   const activeProjectId = useSelector((state: RootState) => state.project.activeProjectId);
   const projects = useSelector((state: RootState) => state.project.projects);
   const activeProject = projects.find((p) => p.id === activeProjectId);
-  const entries = useSelector((state: RootState) => state.chat.entries);
-  const todo = useSelector((state: RootState) => state.chat.todo);
-  const subagentsBySession = useSelector((state: RootState) => state.chat.subagentsBySession);
-  const activeSessionId = useSelector((state: RootState) => state.project.activeSessionId);
+  const entries = useSelector(selectActiveSessionEntries);
+  const todo = useSelector(selectActiveSessionTodos);
+  const subagentsMap = useSelector((state: RootState) => state.chat.subagents);
+  const activeSessionId = useSelector((state: RootState) => state.chat.activeSessionId);
 
   const [expanded, setExpanded] = useState<Set<SectionKey>>(
     new Set(['files_changed', 'background_tasks'])
@@ -40,8 +41,8 @@ export function OverviewTab() {
   // Extract active subagents
   const subagents = useMemo(() => {
     if (!activeSessionId) return [];
-    return Object.values(subagentsBySession[activeSessionId] || {});
-  }, [subagentsBySession, activeSessionId]);
+    return Object.values(subagentsMap[activeSessionId] || {});
+  }, [subagentsMap, activeSessionId]);
 
   // Extract modified files
   const modifiedFiles = useMemo(() => {

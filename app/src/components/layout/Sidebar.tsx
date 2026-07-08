@@ -168,8 +168,8 @@ export const Sidebar = memo(function Sidebar({
   const activeSessionId = useSelector(
     (state: RootState) => state.project.activeSessionId,
   );
-  const isProcessing = useSelector(
-    (state: RootState) => state.chat.isProcessing,
+  const processingBySession = useSelector(
+    (state: RootState) => state.chat.processing,
   );
   const isResuming = useSelector(
     (state: RootState) => state.chat.isResuming,
@@ -269,7 +269,6 @@ export const Sidebar = memo(function Sidebar({
       activeSessionId,
       activeProjectPath: project?.path ?? null,
       defaultModel,
-      cacheAfter: true,
     });
   }, [saveSession, activeSessionId, activeProjectId, projects, defaultModel]);
 
@@ -458,7 +457,7 @@ export const Sidebar = memo(function Sidebar({
                       }
                       title={project.name}
                       emptyMessage={t("sidebar.projectsSection.emptySessions")}
-                      isProcessing={isProcessing}
+                      processingBySession={processingBySession}
                       onDeleteSession={(sessionId) =>
                         handleDeleteSession(sessionId, project.id)
                       }
@@ -510,7 +509,7 @@ export const Sidebar = memo(function Sidebar({
                 }
                 title={t("sidebar.chat")}
                 emptyMessage={t("sidebar.projectsSection.noChats")}
-                isProcessing={isProcessing}
+                processingBySession={processingBySession}
                 onDeleteSession={(sessionId) =>
                   handleDeleteSession(sessionId, '__adhoc_chat__')
                 }

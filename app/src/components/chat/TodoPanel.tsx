@@ -24,7 +24,7 @@ function statusIcon(status: string) {
 
 function TodoPanel() {
   const { t } = useTranslation();
-  const todo = useSelector((state: RootState) => state.chat.todo);
+  const todo = useSelector((state: RootState) => state.chat.todo[state.chat.activeSessionId ?? '']);
   const [collapsed, setCollapsed] = useState(true);
 
   if (!todo || todo.length === 0) return null;

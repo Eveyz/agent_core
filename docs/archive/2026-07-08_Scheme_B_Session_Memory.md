@@ -43,7 +43,8 @@ This plan has been fully implemented, verified, and tested to simplify and unify
   - Reconstruct turn entries, blocks, timings, and cache metrics directly from the assistant message's `metadata` block.
   - Implement robust fallback logic for legacy messages (no metadata) by parsing `<think>` tags and tool calls from raw message lists.
 - Updated `resumeSession.fulfilled` in `app/src/features/chat/chatSlice.ts` to set `state.isProcessing = state.allPrompts.some(p => p.status === 'running')` to fix the stop button state on resume.
-- Updated `useSaveSession.ts` hook to remove the `getFullEventLog` call, read `isDirty` to skip redundant saves, and compute timings using `getTimingMetrics` and pass them to `saveSessionMessages`. Removed unused parameter from call-sites in `Sidebar.tsx` and `useAutoSaveSession.ts`.
+- Updated `useSaveSession.ts` hook to compare target `activeSessionId` against `chatState.activeSessionId` to block stale transition saves, read `isDirty` to skip redundant saves, and compute timings using `getTimingMetrics`. Removed unused parameter from call-sites.
+- Rewrote `useAutoSaveSession.ts` to rely on strict `isProcessing` (true -> false) transitions for the same session ID via refs, preventing any auto-save triggers during session switching.
 - Updated `agentEventsBatch` listener in `app/src/store.ts` to compute timing metrics using `getTimingMetrics` and remove `eventLog` from `saveSessionMessages` call.
 
 ## Verification & Testing

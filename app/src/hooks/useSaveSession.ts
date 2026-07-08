@@ -2,7 +2,7 @@ import { useCallback } from 'react';
 import { useStore } from 'react-redux';
 import type { RootState } from '../store';
 import { useAppDispatch } from './useAppDispatch';
-import { getFullMessages, getTimingMetrics, cacheCurrentSession } from '../features/chat/chatSlice';
+import { getFullMessages, getTimingMetrics } from '../features/chat/chatSlice';
 import { saveSessionMessages } from '../features/project/projectSlice';
 
 /**
@@ -21,23 +21,25 @@ export function useSaveSession() {
       activeProjectPath: string | null;
       defaultModel: string;
       cacheAfter?: boolean;
+      cacheOnly?: boolean;
     }) => {
-      const { activeSessionId, activeProjectPath, defaultModel, cacheAfter } = params;
+      const { activeSessionId, activeProjectPath, defaultModel, cacheAfter, cacheOnly } = params;
       if (!activeSessionId || !activeProjectPath) return;
 
       const chatState = store.getState().chat;
-      if (!chatState.isDirty) {
-        if (cacheAfter) dispatch(cacheCurrentSession(activeSessionId));
+      if (chatState.activeSessionId !== activeSessionId) {
         return;
       }
+
+      if (cacheOnly) return;
+
+      if (!chatState.isDirty[activeSessionId]) return;
 
       const msgs = getFullMessages(chatState);
-      if (msgs.length === 0) {
-        if (cacheAfter) dispatch(cacheCurrentSession(activeSessionId));
-        return;
-      }
+      if (msgs.length === 0) return;
 
-      const { processTimeMs, thoughtTimeMs } = getTimingMetrics(chatState.entries);
+      const entries = chatState.entries[activeSessionId] ?? [];
+      const { processTimeMs, thoughtTimeMs } = getTimingMetrics(entries);
       dispatch(
         saveSessionMessages({
           sessionId: activeSessionId,
@@ -48,7 +50,9 @@ export function useSaveSession() {
           thoughtTimeMs: thoughtTimeMs || undefined,
         })
       );
-      if (cacheAfter) dispatch(cacheCurrentSession(activeSessionId));
+      if (cacheAfter) {
+        // No need to cache — data persists in session maps
+      }
     },
     [dispatch, store]
   );

@@ -188,10 +188,15 @@ impl Subagent {
     /// Replace the BashTool in the registry with a supervised version.
     fn wire_supervisor_to_registry(&mut self, supervisor: &Arc<Mutex<ProcessSupervisor>>) {
         if self.registry.has("bash") {
+            let working_dir = self
+                .config
+                .working_dir
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string());
             self.registry.register(Box::new(
                 crate::tools::bash::BashTool::with_supervisor(
                     supervisor.clone(),
-                    None,
+                    working_dir,
                 ),
             ));
         }
@@ -313,6 +318,9 @@ impl Subagent {
         let mut tool_call_count = 0;
 
         for iteration in 0..self.config.max_iterations {
+            if self.cancel_token.as_ref().is_some_and(|t| t.is_cancelled()) {
+                anyhow::bail!("subagent cancelled");
+            }
             // Emit SubagentTurnStart
             if let Some(ref tx) = event_sender {
                 let _ = tx.send(AgentEvent::SubagentTurnStart {
@@ -343,7 +351,14 @@ impl Subagent {
                             let delay = std::time::Duration::from_millis(500 * 2u64.pow(attempt));
                             tracing::warn!(attempt, delay_ms = delay.as_millis(), error = %e,
                                 "subagent: stream request failed, retrying");
-                            tokio::time::sleep(delay).await;
+                            if let Some(cancel) = &self.cancel_token {
+                                tokio::select! {
+                                    _ = tokio::time::sleep(delay) => {}
+                                    _ = cancel.cancelled() => anyhow::bail!("subagent cancelled"),
+                                }
+                            } else {
+                                tokio::time::sleep(delay).await;
+                            }
                             continue;
                         }
                         stream_error = Some(e);
@@ -363,7 +378,14 @@ impl Subagent {
                             let delay = std::time::Duration::from_millis(1000 * 2u64.pow(attempt));
                             tracing::warn!(attempt, delay_ms = delay.as_millis(), error = %e,
                                 "subagent: SSE stream dropped mid-response, retrying");
-                            tokio::time::sleep(delay).await;
+                            if let Some(cancel) = &self.cancel_token {
+                                tokio::select! {
+                                    _ = tokio::time::sleep(delay) => {}
+                                    _ = cancel.cancelled() => anyhow::bail!("subagent cancelled"),
+                                }
+                            } else {
+                                tokio::time::sleep(delay).await;
+                            }
                             continue;
                         }
                         stream_error = Some(e);
@@ -422,6 +444,7 @@ impl Subagent {
                     cancel_token: cancel,
                     approval_resolver: None,
                     session_id: self.session_id.clone(),
+                    working_dir: self.config.working_dir.as_ref().map(|p| p.to_string_lossy().to_string()),
                 };
 
                 let sender_clone = event_sender.clone();
@@ -581,6 +604,9 @@ impl Subagent {
 
         tokio::pin!(stream);
         while let Some(event) = stream.next().await {
+            if self.cancel_token.as_ref().is_some_and(|t| t.is_cancelled()) {
+                anyhow::bail!("subagent cancelled");
+            }
             let event = event?;
             match event {
                 StreamEvent::TextDelta(delta) => {

@@ -1,13 +1,11 @@
 import { createSelector } from '@reduxjs/toolkit';
 import { useState, useEffect, useRef } from 'react';
-import type { RootState } from '../store';
 import { useAppSelector } from './useAppDispatch';
 import { roughTokenCount } from '../utils/tokens';
-
-const selectEntries = (state: RootState) => state.chat.entries;
+import { selectActiveSessionEntries } from '../features/chat/selectors';
 
 const selectTokenCount = createSelector(
-  [selectEntries],
+  [selectActiveSessionEntries],
   (entries) => {
     return entries.reduce((sum, e) => {
       if (e.type === 'user' && e.text) return sum + roughTokenCount(e.text);
@@ -70,7 +68,7 @@ function estimateModelCalls(blocks: any[]): number {
 }
 
 const selectTurnCount = createSelector(
-  [selectEntries],
+  [selectActiveSessionEntries],
   (entries) => {
     return entries.reduce((sum, e) => {
       if (e.type === 'turn') {
@@ -89,7 +87,7 @@ export function useTurnCount(): number {
 }
 
 const selectLatestCacheHitRate = createSelector(
-  [selectEntries],
+  [selectActiveSessionEntries],
   (entries) => {
     for (let i = entries.length - 1; i >= 0; i--) {
       const entry = entries[i];

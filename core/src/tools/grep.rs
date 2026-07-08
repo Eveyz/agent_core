@@ -44,6 +44,7 @@ impl Tool for GrepTool {
     async fn execute(&self, args: Value) -> Result<String> {
         let pattern = args["pattern"].as_str().context("missing 'pattern'")?;
         let path = args["path"].as_str().unwrap_or(".");
+        let working_dir = args.get("_working_dir").and_then(|v| v.as_str());
         let include = args["include"].as_str();
         let max_results = args["max_results"].as_u64().unwrap_or(50) as usize;
 
@@ -51,8 +52,9 @@ impl Tool for GrepTool {
             .with_context(|| format!("invalid regex pattern: {pattern}"))?;
 
         let mut results: Vec<String> = Vec::new();
+        let search_root = crate::paths::resolve_tool_path(path, None, working_dir);
         search_path(
-            std::path::Path::new(path),
+            &search_root,
             &regex,
             include,
             &mut results,

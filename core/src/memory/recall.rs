@@ -59,6 +59,11 @@ impl RecallMemory {
         self.embedding_model.as_ref()
     }
 
+    /// Clone the underlying storage handle (for background index building).
+    pub fn storage(&self) -> super::Storage {
+        self.storage.clone()
+    }
+
     /// Access the DB connection (for hybrid search reads).
     pub fn storage_conn(&self) -> parking_lot::MutexGuard<'_, rusqlite::Connection> {
         self.storage.conn()

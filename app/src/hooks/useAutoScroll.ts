@@ -30,7 +30,7 @@ export function useAutoScroll<
   // 暴露给外部强制贴底（切换会话、新消息时调用）
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     const el = scrollRef.current;
-    if (!el) return;
+    if (!el || el.clientHeight === 0) return;
 
     // 根据传入的 behavior 执行滚动
     el.scrollTo({
@@ -53,7 +53,7 @@ export function useAutoScroll<
   //    注意：处理中时不执行此逻辑，避免与 rAF 循环冲突
   useLayoutEffect(() => {
     const el = scrollRef.current;
-    if (!el) return;
+    if (!el || el.clientHeight === 0) return;
     if (isAutoScrollEnabled.current && !isProcessing) {
       el.scrollTop = el.scrollHeight;
     }
@@ -110,7 +110,7 @@ export function useAutoScroll<
         }
 
         // 只有在启用自动滚动且不在底部时才滚动
-        if (isAutoScrollEnabled.current && currentScrollTop < maxScroll - 1) {
+        if (isAutoScrollEnabled.current && el.clientHeight > 0 && currentScrollTop < maxScroll - 1) {
           // 流式输出时使用 instant 滚动，避免 smooth 滚动在 rAF 循环中造成抖动
           el.scrollTop = maxScroll;
         }
