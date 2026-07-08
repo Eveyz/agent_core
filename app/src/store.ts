@@ -5,7 +5,7 @@ import projectReducer from './features/project/projectSlice';
 import agentReducer from './features/agents/agentSlice';
 import workflowReducer from './features/workflow/workflowSlice';
 
-import { getFullMessages, getFullEventLog } from './features/chat/chatSlice';
+import { getFullMessages, getTimingMetrics } from './features/chat/chatSlice';
 import { saveSessionMessages } from './features/project/projectSlice';
 
 // ── Listener middleware (P2-1) ────────────────────────────────────────
@@ -44,7 +44,7 @@ listenerMiddleware.startListening({
 
       if (activeSessionId && activeProjectPath) {
         const msgs = getFullMessages(chatState);
-        const { eventLog, processTimeMs, thoughtTimeMs } = getFullEventLog(chatState);
+        const { processTimeMs, thoughtTimeMs } = getTimingMetrics(chatState.entries);
         if (msgs.length > 0) {
           listenerApi.dispatch(
             saveSessionMessages({
@@ -54,7 +54,6 @@ listenerMiddleware.startListening({
               modelUsed: defaultModel,
               processTimeMs: processTimeMs || undefined,
               thoughtTimeMs: thoughtTimeMs || undefined,
-              eventLog,
             })
           );
         }
@@ -63,14 +62,17 @@ listenerMiddleware.startListening({
   },
 });
 
-import { upsertProvider, deleteProvider, updateProvider, setAppearance, saveConfig } from './features/settings/settingsSlice';
+import { upsertProvider, deleteProvider, updateProvider, setAppearance, saveConfig, upsertMcpServer, deleteMcpServer, toggleMcpServer } from './features/settings/settingsSlice';
 
 listenerMiddleware.startListening({
   predicate: (action) => 
     upsertProvider.match(action) || 
     deleteProvider.match(action) || 
     updateProvider.match(action) ||
-    setAppearance.match(action),
+    setAppearance.match(action) ||
+    upsertMcpServer.match(action) ||
+    deleteMcpServer.match(action) ||
+    toggleMcpServer.match(action),
   effect: async (_, listenerApi) => {
     const state = listenerApi.getState() as RootState;
     if (state.settings.config) {

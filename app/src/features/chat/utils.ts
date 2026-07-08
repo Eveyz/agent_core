@@ -150,7 +150,10 @@ export function stringifyResult(result: unknown): string {
 
 // ── Serialization helpers (used by useSaveSession) ───────────────────
 
-export function entriesToMessages(entries: ChatEntry[]): FrontendMessage[] {
+export function entriesToMessages(
+  entries: ChatEntry[],
+  subagents: Record<string, SubagentEntry>
+): FrontendMessage[] {
   const msgs: FrontendMessage[] = [];
   for (const entry of entries) {
     if (entry.type === 'user' && entry.text) {
@@ -159,6 +162,7 @@ export function entriesToMessages(entries: ChatEntry[]): FrontendMessage[] {
       let thinkingText = '';
       let assistantText = '';
       const toolBlocks: Extract<TurnBlock, { type: 'tool' }>[] = [];
+      const subagentMap: Record<string, SubagentEntry> = {};
 
       for (const block of entry.blocks) {
         if (block.type === 'thinking') {
@@ -167,6 +171,11 @@ export function entriesToMessages(entries: ChatEntry[]): FrontendMessage[] {
           assistantText += block.text;
         } else if (block.type === 'tool') {
           toolBlocks.push(block);
+        } else if (block.type === 'subagent_ref') {
+          const sa = subagents[block.subagent_id];
+          if (sa) {
+            subagentMap[block.subagent_id] = sa;
+          }
         }
       }
 
@@ -174,6 +183,15 @@ export function entriesToMessages(entries: ChatEntry[]): FrontendMessage[] {
       if (thinkingText.trim()) {
         content = `<think>${thinkingText.trim()}</think>${content ? '\n' + content : ''}`;
       }
+
+      const metadata = {
+        blocks: entry.blocks,
+        startTime: entry.startTime,
+        endTime: entry.endTime,
+        cacheHitRate: entry.cacheHitRate,
+        turnIds: entry.turnIds,
+        subagents: subagentMap,
+      };
 
       if (toolBlocks.length > 0) {
         const tool_calls = toolBlocks.map(tb => ({
@@ -189,7 +207,8 @@ export function entriesToMessages(entries: ChatEntry[]): FrontendMessage[] {
           role: 'assistant',
           content: content || '',
           model: entry.model,
-          tool_calls
+          tool_calls,
+          metadata
         });
 
         for (const tb of toolBlocks) {
@@ -202,85 +221,16 @@ export function entriesToMessages(entries: ChatEntry[]): FrontendMessage[] {
           });
         }
       } else {
-        if (content) {
-          msgs.push({ role: 'assistant', content, model: entry.model });
-        }
+        msgs.push({
+          role: 'assistant',
+          content: content || '',
+          model: entry.model,
+          metadata
+        });
       }
     }
   }
   return msgs;
-}
-
-export function entriesToEventLog(
-  entries: ChatEntry[],
-  subagents: Record<string, SubagentEntry>
-): {
-  eventLog: unknown[];
-  processTimeMs: number;
-  thoughtTimeMs: number;
-} {
-  const eventLog: unknown[] = [];
-  let processTimeMs = 0;
-  let thoughtTimeMs = 0;
-  let assistantIdx = 0;
-
-  for (const entry of entries) {
-    if (entry.type === 'turn' && entry.blocks) {
-      if (entry.blocks.length === 0) continue;
-
-      if (entry.startTime && entry.endTime) {
-        processTimeMs += entry.endTime - entry.startTime;
-      }
-
-      if (entry.startTime || entry.endTime || entry.cacheHitRate !== undefined || entry.turnIds) {
-        eventLog.push({
-          turn_index: assistantIdx,
-          event_type: 'turn_meta',
-          payload: { 
-            startTime: entry.startTime, 
-            endTime: entry.endTime, 
-            cacheHitRate: entry.cacheHitRate,
-            turnIds: entry.turnIds,
-          },
-        });
-      }
-
-      for (const b of entry.blocks) {
-        if (b.type === 'thinking') {
-          if (b.startTime && b.endTime) thoughtTimeMs += b.endTime - b.startTime;
-          eventLog.push({
-            turn_index: assistantIdx,
-            event_type: 'thinking',
-            payload: { text: b.text, startTime: b.startTime, endTime: b.endTime },
-          });
-        } else if (b.type === 'tool') {
-          eventLog.push({
-            turn_index: assistantIdx,
-            event_type: 'tool_call',
-            payload: { name: b.name, args: b.args, args_summary: b.result?.slice(0, 1000), is_error: b.is_error },
-          });
-        } else if (b.type === 'subagent_ref') {
-          const sa = subagents[b.subagent_id];
-          if (sa) {
-            eventLog.push({
-              turn_index: assistantIdx,
-              event_type: 'subagent',
-              payload: sa,
-            });
-          }
-        } else if (b.type === 'assistant') {
-          eventLog.push({
-            turn_index: assistantIdx,
-            event_type: 'assistant',
-            payload: { text: b.text },
-          });
-        }
-      }
-      assistantIdx++;
-    }
-  }
-
-  return { eventLog, processTimeMs, thoughtTimeMs };
 }
 
 export function getFullMessages(chatState: ChatState): FrontendMessage[] {
@@ -296,39 +246,30 @@ export function getFullMessages(chatState: ChatState): FrontendMessage[] {
   }
 
   // 2. Add messages from visible prompts/entries (serialized using entriesToMessages)
-  msgs.push(...entriesToMessages(chatState.entries));
+  msgs.push(...entriesToMessages(chatState.entries, chatState.subagents));
 
   return msgs;
 }
 
-export function getFullEventLog(chatState: ChatState): {
-  eventLog: unknown[];
+export function getTimingMetrics(entries: ChatEntry[]): {
   processTimeMs: number;
   thoughtTimeMs: number;
 } {
-  // 1. Get event log for visible entries
-  const { eventLog: visibleLog, processTimeMs, thoughtTimeMs } = entriesToEventLog(
-    chatState.entries,
-    chatState.subagents
-  );
-
-  // 2. Filter out any events in allEventLog that correspond to visible turns
-  const visibleTurnIndexes = new Set(
-    chatState.entries
-      .filter((e) => e.type === 'turn')
-      .map((e) => e.turnIndex)
-      .filter((x) => x !== undefined) as number[]
-  );
-  const filteredInvisibleLog = chatState.allEventLog.filter(
-    (ev) => !visibleTurnIndexes.has(ev.turn_index)
-  );
-
-  // 3. Combine them
-  const combinedLog = [...filteredInvisibleLog, ...visibleLog];
-
-  return {
-    eventLog: combinedLog,
-    processTimeMs,
-    thoughtTimeMs,
-  };
+  let processTimeMs = 0;
+  let thoughtTimeMs = 0;
+  for (const entry of entries) {
+    if (entry.type === 'turn') {
+      if (entry.startTime && entry.endTime) {
+        processTimeMs += entry.endTime - entry.startTime;
+      }
+      if (entry.blocks) {
+        for (const b of entry.blocks) {
+          if (b.type === 'thinking' && b.startTime && b.endTime) {
+            thoughtTimeMs += b.endTime - b.startTime;
+          }
+        }
+      }
+    }
+  }
+  return { processTimeMs, thoughtTimeMs };
 }

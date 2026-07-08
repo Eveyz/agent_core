@@ -30,6 +30,30 @@ impl Storage {
 
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
 
+        // ── Scheme B Schema Migration Auto-Reset ──
+        // Detect if the existing database is using the old schema (missing metadata column in session_messages).
+        // If so, drop the affected tables so they can be re-created cleanly by init_tables.
+        let table_exists: bool = conn.query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_messages'",
+            [],
+            |_| Ok(true),
+        ).unwrap_or(false);
+
+        if table_exists {
+            let has_metadata: bool = conn.query_row(
+                "SELECT 1 FROM pragma_table_info('session_messages') WHERE name = 'metadata'",
+                [],
+                |_| Ok(true),
+            ).unwrap_or(false);
+
+            if !has_metadata {
+                conn.execute("DROP TABLE IF EXISTS session_messages", [])?;
+                conn.execute("DROP TABLE IF EXISTS prompts", [])?;
+                conn.execute("DROP TABLE IF EXISTS sessions", [])?;
+                conn.execute("DROP TABLE IF EXISTS session_event_log", [])?;
+            }
+        }
+
         let storage = Self {
             db: Arc::new(Mutex::new(conn)),
         };
@@ -101,6 +125,7 @@ impl Storage {
                 start_time TEXT NOT NULL,
                 end_time TEXT,
                 message_count INTEGER DEFAULT 0,
+                prompt_count INTEGER DEFAULT 0,
                 cwd TEXT DEFAULT '',
                 model_used TEXT DEFAULT '',
                 tags TEXT DEFAULT '[]',
@@ -108,6 +133,8 @@ impl Storage {
                 parent_session_id TEXT DEFAULT '',
                 session_type TEXT DEFAULT 'main',
                 project_id TEXT DEFAULT '',
+                process_time_ms INTEGER DEFAULT 0,
+                thought_time_ms INTEGER DEFAULT 0,
                 mode TEXT NOT NULL DEFAULT 'build',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -121,7 +148,6 @@ impl Storage {
                 id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
                 turn_index INTEGER NOT NULL,
-                user_message TEXT NOT NULL DEFAULT '',
                 model TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'completed',
                 token_usage TEXT NOT NULL DEFAULT '{}',
@@ -143,24 +169,13 @@ impl Storage {
                 tool_calls TEXT DEFAULT '[]',
                 tool_call_id TEXT DEFAULT '',
                 name TEXT DEFAULT '',
+                model TEXT DEFAULT '',
+                metadata TEXT DEFAULT '{}',
                 created_at TEXT NOT NULL,
                 UNIQUE(session_id, msg_index)
             );
 
             CREATE INDEX IF NOT EXISTS idx_session_msgs ON session_messages(session_id);
-
-            CREATE TABLE IF NOT EXISTS session_event_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-                turn_index INTEGER NOT NULL,
-                event_type TEXT NOT NULL,
-                payload TEXT DEFAULT '{}',
-                started_at TEXT,
-                ended_at TEXT,
-                created_at TEXT NOT NULL
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_session_events ON session_event_log(session_id);
 
             CREATE TABLE IF NOT EXISTS cronjobs (
                 id TEXT PRIMARY KEY,
@@ -381,27 +396,6 @@ impl Storage {
             INSERT OR IGNORE INTO agent_memory_fts(rowid, content) SELECT rowid, content FROM agent_memory;
             ",
         )?;
-
-        // Migrate existing databases: add columns if missing (idempotent)
-        let migrations = &[
-            "ALTER TABLE recall_memory ADD COLUMN memory_strength REAL DEFAULT 1.0",
-            "ALTER TABLE recall_memory ADD COLUMN access_count INTEGER DEFAULT 0",
-            "ALTER TABLE recall_memory ADD COLUMN last_accessed_at TEXT",
-            "ALTER TABLE recall_memory ADD COLUMN category TEXT DEFAULT 'Conversation'",
-            "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT DEFAULT ''",
-            "ALTER TABLE sessions ADD COLUMN session_type TEXT DEFAULT 'main'",
-            "ALTER TABLE sessions ADD COLUMN project_id TEXT DEFAULT ''",
-            "ALTER TABLE sessions ADD COLUMN process_time_ms INTEGER DEFAULT 0",
-            "ALTER TABLE sessions ADD COLUMN thought_time_ms INTEGER DEFAULT 0",
-            "ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'build'",
-            "ALTER TABLE cronjobs ADD COLUMN model TEXT DEFAULT ''",
-            "ALTER TABLE session_messages ADD COLUMN model TEXT DEFAULT ''",
-            "ALTER TABLE session_messages ADD COLUMN prompt_id TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE sessions ADD COLUMN prompt_count INTEGER DEFAULT 0",
-        ];
-        for migration in migrations {
-            let _ = db.execute_batch(migration);
-        }
 
         Ok(())
     }

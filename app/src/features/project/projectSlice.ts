@@ -39,13 +39,13 @@ export interface FrontendMessage {
   name?: string;
   /** Prompt this message belongs to (from backend prompts table). */
   prompt_id?: string;
+  metadata?: Record<string, any>;
 }
 
 export interface FrontendPrompt {
   id: string;
   session_id: string;
   turn_index: number;
-  user_message: string;
   model: string;
   status: string;
   token_usage: Record<string, unknown>;
@@ -55,19 +55,10 @@ export interface FrontendPrompt {
   messages: FrontendMessage[];
 }
 
-export interface EventLogEntry {
-  turn_index: number;
-  event_type: string;
-  payload: unknown;
-  started_at: string | null;
-  ended_at: string | null;
-}
-
 export interface ResumeSessionResult {
   meta: SessionMeta;
   messages: FrontendMessage[];
   prompts: FrontendPrompt[];
-  event_log: EventLogEntry[];
 }
 
 interface ProjectState {
@@ -186,14 +177,13 @@ export const renameSession = createAsyncThunk(
 
 export const saveSessionMessages = createAsyncThunk(
   'project/saveSessionMessages',
-  async ({ sessionId, messages, cwd, modelUsed, processTimeMs, thoughtTimeMs, eventLog }: {
+  async ({ sessionId, messages, cwd, modelUsed, processTimeMs, thoughtTimeMs }: {
     sessionId: string;
     messages: FrontendMessage[];
     cwd: string;
     modelUsed: string;
     processTimeMs?: number;
     thoughtTimeMs?: number;
-    eventLog?: unknown[];
   }, { rejectWithValue }) => {
     try {
       await invoke('save_session_messages', {
@@ -203,7 +193,6 @@ export const saveSessionMessages = createAsyncThunk(
         modelUsed,
         processTimeMs: processTimeMs ?? null,
         thoughtTimeMs: thoughtTimeMs ?? null,
-        eventLogJson: eventLog ? JSON.stringify(eventLog) : null,
       });
       return { sessionId, messageCount: messages.length };
     } catch (e) {

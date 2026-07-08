@@ -7,13 +7,13 @@ export interface FrontendMessage {
   tool_call_id?: string;
   name?: string;
   prompt_id?: string;
+  metadata?: Record<string, any>;
 }
 
 export interface FrontendPrompt {
   id: string;
   session_id: string;
   turn_index: number;
-  user_message: string;
   model: string;
   status: string;
   token_usage: Record<string, unknown>;
@@ -168,8 +168,6 @@ export interface ChatState {
   visiblePromptsCount: number;
   allPromptsBySession: Record<string, FrontendPrompt[]>;
   visiblePromptsCountBySession: Record<string, number>;
-  allEventLog: EventLogEntry[];
-  eventLogBySession: Record<string, EventLogEntry[]>;
   // Cumulative cache metrics from CacheSummary events
   cacheMetrics: CacheMetrics | null;
 }
@@ -264,11 +262,3 @@ export interface RunEventPayload {
 }
 
 export type RunState = 'created' | 'running' | 'awaiting_approval' | 'awaiting_input' | 'paused' | 'completed' | 'cancelled' | 'failed';
-
-export interface EventLogEntry {
-  turn_index: number;
-  event_type: string;
-  payload: unknown;
-  started_at: string | null;
-  ended_at: string | null;
-}

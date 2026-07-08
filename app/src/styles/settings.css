@@ -578,6 +578,144 @@
   color: var(--text-dim);
 }
 
+/* ── MCP Server list & controls ──────────────────────────────── */
+.mcp-server-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.mcp-server-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mcp-switch {
+  position: relative;
+  width: 34px;
+  height: 18px;
+  border-radius: 999px;
+  border: none;
+  background: var(--overlay-0_14);
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.15s ease;
+  flex-shrink: 0;
+}
+
+.mcp-switch.on {
+  background: var(--success);
+}
+
+.mcp-switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s ease;
+}
+
+.mcp-switch.on .mcp-switch-knob {
+  transform: translateX(16px);
+}
+
+.mcp-switch-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+/* ── MCP empty state & presets ───────────────────────────────── */
+.mcp-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-start;
+  margin-top: 12px;
+}
+
+.mcp-empty-text {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.mcp-empty-text code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--overlay-0_05);
+  padding: 1px 5px;
+  border-radius: var(--radius-xs);
+  color: var(--text-main);
+}
+
+.mcp-presets {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.mcp-presets-label {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.mcp-preset-chip {
+  border: 1px dashed var(--border-color);
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.mcp-preset-chip:hover {
+  border-color: var(--accent);
+  color: var(--text-main);
+}
+
+/* ── MCP form (env editor & args) ────────────────────────────── */
+.mcp-args-input {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  resize: vertical;
+}
+
+.mcp-env-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.mcp-env-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.mcp-env-row .settings-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.mcp-env-eq {
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
 /* Responsive */
 @media (max-width: 640px) {
   .settings-modal {

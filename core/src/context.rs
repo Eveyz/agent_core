@@ -50,16 +50,38 @@ pub struct CacheHint {
     /// - "partial": only the first N segments are stable
     /// - "none": system prompt changes every turn
     pub strategy: &'static str,
+    /// The number of tokens that actually form a cacheable prefix across
+    /// turns: frozen system prompt + conversation history (everything
+    /// before the per-turn context injection message). This is the value
+    /// that a KV cache engine should use for prefix reuse, as it excludes
+    /// the dynamic injection that changes every turn.
+    pub cacheable_prefix_tokens: usize,
+    /// Milliseconds since the last turn. 0 if this is the first turn.
+    /// When this exceeds the provider's idle KV-cache TTL (commonly
+    /// 300-600 s for DeepSeek), the next request will be a cold miss.
+    pub last_turn_elapsed_ms: u64,
+    /// True when the idle gap between turns likely exceeds the provider's
+    /// KV cache TTL, meaning the next request will probably be a cold miss
+    /// even though the prefix is structurally cacheable.
+    pub expected_cold_miss: bool,
 }
 
 impl CacheHint {
     pub fn summary(&self) -> String {
+        let cold = if self.expected_cold_miss {
+            " (likely cold miss)"
+        } else {
+            ""
+        };
         format!(
-            "KV Cache: {} tokens stable prefix ({}), {} tokens system, strategy={}",
+            "KV Cache: {} tokens stable prefix ({}), {} tokens system, {} tokens cacheable total, strategy={}, idle={}ms{}",
             self.stable_prefix_tokens,
             self.stable_segment_names.join(", "),
             self.system_prompt_tokens,
+            self.cacheable_prefix_tokens,
             self.strategy,
+            self.last_turn_elapsed_ms,
+            cold,
         )
     }
 }
@@ -197,10 +219,15 @@ pub struct ContextEngine {
     system_prefix_budget: usize,
 
     /// 5-stage compression pipeline.
-    compressor: Compressor,
+    pub(crate) compressor: Compressor,
 
     /// Track which segments belong to the stable prefix.
     stable_segment_names: Vec<String>,
+
+    /// Timestamp of the last turn, used to detect KV cache TTL expiry.
+    /// When the elapsed time exceeds the provider's idle TTL (e.g.
+    /// DeepSeek ~5 min), the next request will be a cold miss.
+    last_turn_timestamp: Option<std::time::Instant>,
 }
 
 impl ContextEngine {
@@ -215,6 +242,7 @@ impl ContextEngine {
             system_prefix_budget: (max_tokens as f64 * 0.08) as usize,
             stable_segment_names: Vec::new(),
             compressor: Compressor::new(),
+            last_turn_timestamp: None,
         };
         engine.init_segments(system_prompt);
         engine
@@ -256,7 +284,6 @@ impl ContextEngine {
             RefreshPolicy::PerTurn,
             Stability::SemiStable,
         );
-        self.stable_segment_names.push("environment".to_string());
         self.segments.insert("environment".to_string(), env);
 
         // Segment 4: TOOL CATALOG — available tools
@@ -339,6 +366,9 @@ impl ContextEngine {
             if seg.content == text {
                 return;
             }
+            // Apply the tool catalog token budget: large catalogs get
+            // truncated via the segment's existing assemble() logic.
+            seg.max_tokens = self.compressor.max_tool_catalog_tokens;
             seg.set_content(text);
         }
     }
@@ -514,17 +544,50 @@ impl ContextEngine {
             "partial"
         };
 
+        // cacheable_prefix_tokens = system (frozen) + history messages
+        // (everything before the per-turn context injection). This is the
+        // prefix that remains byte-stable across turns and can be reused
+        // by a KV cache engine.
+        let injection_tokens = rough_token_count(&self.assemble_context_injection());
+        let cacheable_prefix_tokens =
+            self.current_token_count().saturating_sub(injection_tokens);
+
+        // TTL probe: measure idle gap between turns. Providers like
+        // DeepSeek expire KV cache after ~5-10 min of inactivity.
+        const COLD_MISS_THRESHOLD_MS: u64 = 300_000; // 5 minutes
+        let (last_turn_elapsed_ms, expected_cold_miss) = match self.last_turn_timestamp {
+            Some(ts) => {
+                let elapsed = ts.elapsed().as_millis() as u64;
+                (elapsed, elapsed >= COLD_MISS_THRESHOLD_MS)
+            }
+            None => (0, false), // first turn, no cold-miss risk
+        };
+
         CacheHint {
             stable_prefix_tokens: stable_tokens,
             can_reuse_cache: stable_tokens > 0,
             system_prompt_tokens: system_tokens,
             stable_segment_names: self.stable_segment_names.clone(),
             strategy,
+            cacheable_prefix_tokens,
+            last_turn_elapsed_ms,
+            expected_cold_miss,
         }
     }
 
+    /// Record that a turn just completed, resetting the KV cache TTL timer.
+    /// Call this after every LLM request so `cache_hint()` can detect
+    /// idle gaps that would cause a cold cache miss.
+    pub fn record_turn_timestamp(&mut self) {
+        self.last_turn_timestamp = Some(std::time::Instant::now());
+    }
+
     /// Get the raw text of the stable prefix, suitable for KV cache priming.
-    /// Only includes segments marked as Stable or SemiStable.
+    /// Only includes `Stability::Stable` segments — this MUST match exactly
+    /// what `assemble_system_prompt()` actually sends as the frozen system
+    /// message. Including `SemiStable` segments (e.g. ENVIRONMENT, which
+    /// changes every turn) here would make the priming text diverge from the
+    /// real prefix and cause a KV cache miss on local models.
     pub fn stable_prefix_text(&self) -> String {
         let mut segments: Vec<&ContextSegment> = self
             .segments
@@ -532,7 +595,7 @@ impl ContextEngine {
             .filter(|s| {
                 s.enabled
                     && !s.content.is_empty()
-                    && matches!(s.stability, Stability::Stable | Stability::SemiStable)
+                    && s.stability == Stability::Stable
             })
             .collect();
         segments.sort_by_key(|s| s.priority);
@@ -773,13 +836,32 @@ impl ContextEngine {
     /// compaction but adds 2-5 seconds of latency, risks hallucinated
     /// summaries, and produces non-deterministic content that may
     /// destabilize subsequent cache prefixes.
+    /// Drop the oldest portion of the conversation to stay within budget.
+    ///
+    /// Cuts at a `User` message boundary (so whole turns — including
+    /// assistant↔tool pairs — stay together) and keeps the most recent
+    /// `keep_recent` messages. The kept region always begins on a real user
+    /// turn, which guarantees no orphaned `tool` message: a bare `tool`
+    /// result with no preceding assistant `tool_calls` makes the API reject
+    /// the request with a 400.
+    ///
+    /// If no `User` boundary exists in the droppable range (e.g. a single
+    /// long ReAct episode with only one user turn), we only fall back to a
+    /// cut at `max_split_idx` when the first kept message would be a safe
+    /// head (never a bare `Tool`). Otherwise we leave the history untouched
+    /// rather than risk stranding a tool pair.
+    ///
+    /// Returns the number of messages removed from the front.
     pub fn chunked_drop(&mut self, keep_recent: usize) -> usize {
-        if self.messages.len() <= keep_recent {
+        let original_len = self.messages.len();
+        if original_len <= keep_recent {
             return 0;
         }
-        let max_split_idx = self.messages.len() - keep_recent;
-        let mut drop_count = 0;
+        let max_split_idx = original_len - keep_recent;
 
+        // Preferred: cut at the last User message at or before max_split_idx
+        // so entire conversation turns remain intact.
+        let mut drop_count = 0;
         for i in (0..=max_split_idx).rev() {
             if self.messages[i].role == crate::types::Role::User {
                 drop_count = i;
@@ -787,10 +869,37 @@ impl ContextEngine {
             }
         }
 
+        // Fallback: no User boundary in range. Only cut if the first kept
+        // message would be a valid head — never a bare Tool (orphan → 400).
+        if drop_count == 0 {
+            if self
+                .messages
+                .get(max_split_idx)
+                .map_or(true, |m| m.role == crate::types::Role::Tool)
+            {
+                return 0; // unsafe to cut here — leave history intact
+            }
+            drop_count = max_split_idx;
+        }
+
         if drop_count > 0 {
             self.messages.drain(..drop_count);
         }
-        drop_count
+
+        // Defensive: never let the kept region begin with a dangling Tool
+        // message (guards against upstream compaction/summary producing a
+        // structure where a tool result lost its owning assistant).
+        let mut removed_extra = 0;
+        while self
+            .messages
+            .first()
+            .map_or(false, |m| m.role == crate::types::Role::Tool)
+        {
+            self.messages.remove(0);
+            removed_extra += 1;
+        }
+
+        drop_count + removed_extra
     }
 
     pub fn should_auto_compact(&self) -> bool {
@@ -1102,6 +1211,7 @@ mod tests {
             tool_call_id: Some("call_1".to_string()),
             name: Some("test_tool".to_string()),
             model: None,
+            metadata: None,
         });
 
         let msgs = engine.messages();
@@ -1224,6 +1334,7 @@ mod tests {
             tool_call_id: Some("call_1".to_string()),
             name: Some("test_tool".to_string()),
             model: None,
+            metadata: None,
         });
 
         // Use compressor directly to test snipCompact
@@ -1324,6 +1435,7 @@ mod tests {
             tool_call_id: Some("call_1".to_string()),
             name: Some("write_file".to_string()),
             model: None,
+            metadata: None,
         };
         engine.add(tool_msg);
         
@@ -1383,5 +1495,215 @@ mod tests {
         let raw = engine.raw_messages();
         assert_eq!(raw.len(), 2);
         assert_eq!(raw[0].role, Role::User);
+    }
+
+    #[test]
+    fn test_chunked_drop_never_leaves_orphan_tool() {
+        // Build a history with two tool-call turns, then drop the oldest
+        // half. The kept region must never begin with a bare `tool` message
+        // (which would make the API reject the request with a 400), and tool
+        // pairs must stay together.
+        use crate::types::{FunctionCall, ToolCall};
+
+        let mut engine = ContextEngine::new("test", 128000);
+        engine.add(Message::user("task A"));
+        engine.add(Message::assistant_with_tools(
+            "run",
+            vec![ToolCall {
+                id: "c1".into(),
+                call_type: "function".into(),
+                function: FunctionCall {
+                    name: "exec".into(),
+                    arguments: "{}".into(),
+                },
+            }],
+        ));
+        engine.add(Message::tool("c1".into(), "out".into(), Some("exec".into())));
+        engine.add(Message::assistant("reply"));
+        engine.add(Message::user("task B"));
+        engine.add(Message::assistant_with_tools(
+            "run2",
+            vec![ToolCall {
+                id: "c2".into(),
+                call_type: "function".into(),
+                function: FunctionCall {
+                    name: "exec".into(),
+                    arguments: "{}".into(),
+                },
+            }],
+        ));
+        engine.add(Message::tool("c2".into(), "out2".into(), Some("exec".into())));
+        engine.add(Message::assistant("done"));
+
+        // 8 messages, keep 4 → cut at User "task B" (index 4), removing the
+        // entire first tool turn wholesale.
+        let dropped = engine.chunked_drop(4);
+        assert_eq!(dropped, 4);
+        assert_eq!(engine.len(), 4);
+        // Kept region starts on the user turn.
+        assert_eq!(engine.messages[0].content.as_deref().unwrap(), "task B");
+        // The first tool turn (assistant-with-toolcalls + its tool result)
+        // was removed together, so no orphaned tool message remains.
+        assert!(!engine
+            .messages
+            .iter()
+            .any(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("c1")));
+        // The second tool pair is fully intact in the kept region.
+        assert!(engine
+            .messages
+            .iter()
+            .any(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("c2")));
+    }
+
+    #[test]
+    fn test_stable_prefix_consistency_excludes_environment() {
+        // P0-2: stable_prefix_text / stable_prefix_token_count must reflect
+        // exactly the frozen system prompt (Stable segments only) and must
+        // NOT include ENVIRONMENT (SemiStable), which lives in the injection.
+        let mut engine = ContextEngine::new("I am Bot", 128000);
+        engine.set_principles("Be safe.");
+        engine.set_environment("CWD: /tmp | OS: Linux | Git Branch: main");
+        engine.set_tool_catalog("read_file");
+
+        let prompt = engine.assemble_system_prompt();
+        let prefix_text = engine.stable_prefix_text();
+
+        // Both must contain the Stable segments...
+        assert!(prompt.contains("I am Bot"));
+        assert!(prompt.contains("Be safe."));
+        assert!(prefix_text.contains("I am Bot"));
+        assert!(prefix_text.contains("Be safe."));
+
+        // ...and NEITHER must contain the SemiStable environment.
+        assert!(!prompt.contains("/tmp"));
+        assert!(!prefix_text.contains("/tmp"));
+
+        // The two must agree on whether a prefix exists (no divergence that
+        // would cause a local KV cache miss on the wrong text).
+        assert_eq!(
+            engine.stable_prefix_token_count() > 0,
+            !prefix_text.is_empty()
+        );
+    }
+
+    // ── P2-9: cache_hint & fingerprint tests ─────────────────────────
+
+    #[test]
+    fn test_cache_hint_computes_all_fields() {
+        let mut engine = ContextEngine::new("I am Bot", 128000);
+        engine.set_principles("Be concise.");
+        engine.set_tool_catalog("read_file");
+
+        let hint = engine.cache_hint();
+        assert!(hint.stable_prefix_tokens > 0, "must have stable prefix");
+        assert!(hint.can_reuse_cache);
+        // strategy is "full" or "partial" depending on stable-segment
+        // token ratio; both are valid when there are Stable segments.
+        assert!(hint.strategy == "full" || hint.strategy == "partial");
+        assert!(hint.system_prompt_tokens > 0);
+        assert!(hint.cacheable_prefix_tokens > 0);
+        assert!(!hint.stable_segment_names.is_empty());
+        // First turn: no idle gap.
+        assert_eq!(hint.last_turn_elapsed_ms, 0);
+        assert!(!hint.expected_cold_miss);
+    }
+
+    #[test]
+    fn test_cache_hint_no_stable_prefix() {
+        // Empty engine: only identity (which may be minimal), no principles/tools.
+        let engine = ContextEngine::new("", 128000);
+        let hint = engine.cache_hint();
+        // May or may not have stable prefix depending on identity content.
+        // But the hint must be well-formed regardless.
+        assert!(hint.summary().contains("KV Cache"));
+    }
+
+    #[test]
+    fn test_cache_hint_cold_miss_on_idle() {
+        let mut engine = ContextEngine::new("I am Bot", 128000);
+        // First turn — no cold miss.
+        let h1 = engine.cache_hint();
+        assert!(!h1.expected_cold_miss);
+
+        // Simulate an idle gap by artificially setting the last turn
+        // timestamp far in the past.
+        engine.last_turn_timestamp =
+            Some(std::time::Instant::now() - std::time::Duration::from_secs(600));
+
+        let h2 = engine.cache_hint();
+        assert!(h2.expected_cold_miss);
+        assert!(h2.last_turn_elapsed_ms >= 300_000);
+    }
+
+    #[test]
+    fn test_record_turn_timestamp_resets_cold_miss() {
+        let mut engine = ContextEngine::new("I am Bot", 128000);
+
+        // First turn
+        engine.record_turn_timestamp();
+        let h1 = engine.cache_hint();
+        assert!(!h1.expected_cold_miss);
+
+        // Simulate idle gap
+        engine.last_turn_timestamp =
+            Some(std::time::Instant::now() - std::time::Duration::from_secs(600));
+        let h2 = engine.cache_hint();
+        assert!(h2.expected_cold_miss);
+
+        // New turn resets
+        engine.record_turn_timestamp();
+        let h3 = engine.cache_hint();
+        assert!(!h3.expected_cold_miss);
+    }
+
+    #[test]
+    fn test_stable_prefix_fingerprint_consistent() {
+        let mut engine = ContextEngine::new("I am Bot", 128000);
+        engine.set_principles("Be safe.");
+        engine.set_tool_catalog("toolA");
+
+        let fp1 = engine.stable_prefix_fingerprint();
+        let fp2 = engine.stable_prefix_fingerprint();
+        assert_eq!(fp1, fp2, "fingerprint must be deterministic");
+    }
+
+    #[test]
+    fn test_stable_prefix_fingerprint_changes_on_catalog() {
+        let mut engine = ContextEngine::new("I am Bot", 128000);
+        engine.set_tool_catalog("toolA");
+        let fp1 = engine.stable_prefix_fingerprint();
+
+        engine.set_tool_catalog("toolA\ntoolB");
+        let fp2 = engine.stable_prefix_fingerprint();
+        assert_ne!(fp1, fp2, "fingerprint must change when stable content changes");
+    }
+
+    #[test]
+    fn test_verify_prefix_stability_detects_drift() {
+        let mut engine = ContextEngine::new("I am Bot", 128000);
+        engine.set_tool_catalog("toolA");
+        let fp = engine.stable_prefix_fingerprint();
+
+        // Same state → no drift
+        assert!(engine.verify_prefix_stability(&fp).is_ok());
+
+        // Different state → drift detected
+        engine.set_tool_catalog("toolB");
+        assert!(engine.verify_prefix_stability(&fp).is_err());
+    }
+
+    #[test]
+    fn test_cache_hint_cacheable_prefix_gt_stable_prefix() {
+        let mut engine = ContextEngine::new("I am Bot", 128000);
+        engine.set_tool_catalog("toolA");
+        engine.add(Message::user("hello"));
+        engine.add(Message::assistant("hi there"));
+
+        let hint = engine.cache_hint();
+        // cacheable_prefix (system + history) > stable_prefix (system only)
+        assert!(
+            hint.cacheable_prefix_tokens > hint.stable_prefix_tokens,
+            "cacheable_prefix (system+history) must be larger than stable_prefix (segments only)"
+        );
     }
 }

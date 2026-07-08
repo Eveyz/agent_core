@@ -165,6 +165,11 @@ pub struct Compressor {
     pub gradient_keep_recent: usize,
     /// How many semi-recent messages get snipCompact in gradientCompact.
     pub gradient_snip_range: usize,
+    /// Max token budget for the tool catalog segment in the frozen system
+    /// prompt. Large tool catalogs inflate the stable prefix and increase
+    /// the constant attention overhead. When set (>0), tool descriptions
+    /// beyond this budget are truncated from the catalog.
+    pub max_tool_catalog_tokens: usize,
 }
 
 impl Default for Compressor {
@@ -175,6 +180,7 @@ impl Default for Compressor {
             target_ratio: 0.6,
             gradient_keep_recent: 6,
             gradient_snip_range: 6,
+            max_tool_catalog_tokens: 2000,
         }
     }
 }
@@ -523,6 +529,7 @@ mod tests {
             tool_call_id: None,
             name: None,
             model: None,
+            metadata: None,
         }
     }
 
@@ -534,6 +541,7 @@ mod tests {
             tool_call_id: Some(id.to_string()),
             name: Some(name.to_string()),
             model: None,
+            metadata: None,
         }
     }
 

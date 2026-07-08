@@ -197,6 +197,12 @@ export const AgentTurnUI = memo(function AgentTurnUI({
   // Check if there are any intermediate blocks at all
   const hasIntermediateSteps = toolCount > 0 || thoughtCount > 0;
 
+  const hasInterruptedBlock = useMemo(() => {
+    return entry.blocks?.some(
+      (b) => b.type === 'error' && b.text.toLowerCase().includes('interrupted')
+    ) ?? false;
+  }, [entry.blocks]);
+
   const renderItems = useMemo(() => groupBlocksIntoItems(entry.blocks || []), [entry.blocks]);
   const lastIterIdx = useMemo(() => {
     for (let i = renderItems.length - 1; i >= 0; i--) {
@@ -403,6 +409,18 @@ export const AgentTurnUI = memo(function AgentTurnUI({
           </React.Fragment>
         );
       })}
+
+      {entry.interrupted && !hasInterruptedBlock && (
+        <div className="interrupted-block-style">
+          <div className="interrupted-content">
+            <BanIcon size={14} className="interrupted-icon" style={{ flexShrink: 0 }} />
+            <div className="interrupted-text-wrapper">
+              <span className="interrupted-title">{t('chat.turn.interruptedTitle')}</span>
+              <span className="interrupted-subtitle">{t('chat.turn.interruptedSubtitle')}</span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {isDone && turnFilesChanged.length > 0 && (
         <FilesChangedCard files={turnFilesChanged} />

@@ -88,6 +88,7 @@ mod tests {
             tool_call_id: Some("t1".into()),
             name: Some("test_tool".into()),
             model: None,
+            metadata: None,
         }
     }
 
@@ -106,6 +107,7 @@ mod tests {
             tool_call_id: None,
             name: None,
             model: None,
+            metadata: None,
         }
     }
 
@@ -187,6 +189,7 @@ mod tests {
             tool_call_id: Some("t1".into()),
             name: Some("skill_load".into()),
             model: None,
+            metadata: None,
         };
         assert!(!truncate_tool_result(&mut msg));
         assert_eq!(msg.content.unwrap(), big);
@@ -202,6 +205,7 @@ mod tests {
             tool_call_id: Some("t1".into()),
             name: Some("skill_load".into()),
             model: None,
+            metadata: None,
         };
         let normal_msg = make_tool_msg(&big); // name: "test_tool" → Incidental → truncated
         let mut msgs = vec![skill_msg, normal_msg];
@@ -222,6 +226,7 @@ mod tests {
             tool_call_id: Some("t1".into()),
             name: Some("read_file".into()),
             model: None,
+            metadata: None,
         };
         assert!(truncate_tool_result(&mut msg));
         let c = msg.content.unwrap();

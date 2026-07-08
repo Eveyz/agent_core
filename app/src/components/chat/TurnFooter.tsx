@@ -1,5 +1,4 @@
 import { useState, useMemo, useCallback, useEffect, memo } from 'react';
-import AlertTriangleIcon from 'lucide-react/dist/esm/icons/alert-triangle.mjs';
 import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
 import CopyIcon from 'lucide-react/dist/esm/icons/copy.mjs';
 import type { ChatEntry, TurnBlock } from '../../features/chat/chatSlice';
@@ -39,14 +38,7 @@ const TurnFooter = memo(function TurnFooter({ entry }: { entry: ChatEntry }) {
     return () => clearTimeout(timer);
   }, [copied]);
 
-  if (entry.interrupted) {
-    return (
-      <div className="turn-footer turn-footer-interrupted">
-        <AlertTriangleIcon size={12} color="var(--warning)" />
-        <span className="turn-end-time">Interrupted</span>
-      </div>
-    );
-  }
+
 
   const isProcessing = !entry.endTime;
 

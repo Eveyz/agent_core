@@ -2,6 +2,7 @@
 use agent_core::{
     AgentMode, Brain, RunCommand, RunEvent, RunManager, RunState,
     permission::ApprovalChoice,
+    McpClientManager, McpTool,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 use std::sync::Arc;
@@ -20,6 +21,12 @@ struct AppState {
     agent_registry: agent_core::agent_registry::AgentRegistry,
     /// PLAN-0009: active workflow run cancel tokens (run_id -> token).
     workflow_cancels: Arc<AsyncMutex<std::collections::HashMap<String, agent_core::CancellationToken>>>,
+    /// MCP client manager — connects to configured MCP servers.
+    mcp_manager: Arc<AsyncMutex<McpClientManager>>,
+    /// Snapshot of discovered MCP tool definitions, updated after every
+    /// connect/reconnect.  Read synchronously by the per-Run registration
+    /// callback so `build_tool_registry` never races with `connect_all`.
+    mcp_tool_defs: Arc<parking_lot::RwLock<Vec<agent_core::McpToolDef>>>,
 }
 
 // ── Frontend message type for session save/load ──────────────────────
@@ -36,6 +43,8 @@ struct FrontendMessage {
     tool_call_id: Option<String>,
     #[serde(default)]
     name: Option<String>,
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
 }
 
 impl FrontendMessage {
@@ -60,6 +69,7 @@ impl FrontendMessage {
             tool_call_id: self.tool_call_id.clone(),
             name: self.name.clone(),
             model: self.model.clone(),
+            metadata: self.metadata.clone(),
         }
     }
 }
@@ -69,7 +79,6 @@ struct FrontendSession {
     meta: agent_core::SessionMeta,
     messages: Vec<FrontendMessage>,
     prompts: Vec<agent_core::Prompt>,
-    event_log: Vec<agent_core::EventLogEntry>,
 }
 
 // ── Run lifecycle commands ───────────────────────────────────────────
@@ -107,11 +116,10 @@ async fn send_message(
     // frontend stuck on "Working...".
     let prompt_id: Option<String> = if let Some(ref sid) = session_id {
         let sm = state.session_manager.clone();
-        let msg = message.clone();
         let m = model.clone().unwrap_or_else(|| "unknown".to_string());
         let sid_owned = sid.clone();
         match tokio::task::spawn_blocking(move || {
-            sm.create_prompt(&sid_owned, &msg, &m)
+            sm.create_prompt(&sid_owned, &m)
         }).await {
             Ok(Ok((pid, _turn))) => Some(pid),
             Ok(Err(e)) => {
@@ -651,6 +659,23 @@ async fn save_config(state: State<'_, AppState>, mut config: agent_core::config:
     config.rebuild_models();
     let mut manager = state.run_manager.lock().await;
     manager.update_config(config.clone()).map_err(|e| e.to_string())?;
+
+    // Reconnect MCP servers with the new config (if MCP servers changed).
+    // Tools from the old manager are still in-flight; new Runs will pick
+    // up the new manager via the register_tool_fn callback.
+    {
+        let mut mcp_mgr = state.mcp_manager.lock().await;
+        let mut new_mgr = McpClientManager::from_config(&config.mcp);
+        let errors = new_mgr.connect_all().await;
+        for (name, errs) in &errors {
+            for err in errs {
+                eprintln!("[MCP] Server '{}' connection failed: {}", name, err);
+            }
+        }
+        *state.mcp_tool_defs.write() = new_mgr.all_tools();
+        *mcp_mgr = new_mgr;
+    }
+
     config.save(&state.config_path).map_err(|e| e.to_string())
 }
 
@@ -755,7 +780,6 @@ async fn save_session_messages(
     model_used: String,
     process_time_ms: Option<u64>,
     thought_time_ms: Option<u64>,
-    event_log_json: Option<String>,
 ) -> Result<(), String> {
     let sm = state.session_manager.clone();
     tokio::task::spawn_blocking(move || {
@@ -777,23 +801,6 @@ async fn save_session_messages(
         if let (Some(pt), Some(tt)) = (process_time_ms, thought_time_ms) {
             sm.save_timing(&session_id, pt, tt)
                 .map_err(|e| e.to_string())?;
-        }
-        if let Some(log_json) = event_log_json {
-            sm.clear_event_log(&session_id)
-                .map_err(|e| e.to_string())?;
-            let events: Vec<serde_json::Value> = serde_json::from_str(&log_json)
-                .map_err(|e| format!("Invalid event log JSON: {}", e))?;
-            for event in &events {
-                let turn_index = event["turn_index"].as_u64().unwrap_or(0) as usize;
-                let event_type = event["event_type"].as_str().unwrap_or("unknown");
-                let payload = event.get("payload").cloned().unwrap_or(serde_json::json!({}));
-                let started_at = event["started_at"].as_str();
-                let ended_at = event["ended_at"].as_str();
-                sm.log_event(
-                    &session_id, turn_index, event_type, &payload, started_at, ended_at,
-                )
-                .map_err(|e| e.to_string())?;
-            }
         }
         Ok(())
     })
@@ -821,13 +828,13 @@ async fn resume_session(state: State<'_, AppState>, session_id: String) -> Resul
             tool_calls: m.tool_calls.as_ref().and_then(|v| serde_json::to_value(v).ok()),
             tool_call_id: m.tool_call_id.clone(),
             name: m.name.clone(),
+            metadata: m.metadata.clone(),
         })
         .collect();
     Ok(FrontendSession {
         meta: session.meta,
         messages,
         prompts: session.prompts,
-        event_log: session.event_log,
     })
 }
 
@@ -1889,6 +1896,64 @@ pub fn run() {
             // Build the RunManager
             let run_manager = RunManager::new(brain);
 
+            // ── MCP: connect to configured servers and register tools ─
+            // Tool definitions live in a parking_lot RwLock so the
+            // per-Run registration callback (which runs synchronously
+            // inside build_tool_registry) can always read them without
+            // racing against the async connect_all task.
+            let mcp_config = run_manager.brain().config.mcp.clone();
+            let mcp_tool_defs: Arc<parking_lot::RwLock<Vec<agent_core::McpToolDef>>> =
+                Arc::new(parking_lot::RwLock::new(Vec::new()));
+            let mcp_manager = Arc::new(AsyncMutex::new(
+                McpClientManager::from_config(&mcp_config),
+            ));
+
+            // Initial connect + populate defs (runs async, does not block setup).
+            {
+                let mgr = mcp_manager.clone();
+                let defs = mcp_tool_defs.clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut g = mgr.lock().await;
+                    let errors = g.connect_all().await;
+                    for (name, errs) in &errors {
+                        for err in errs {
+                            eprintln!("[MCP] Server '{}' connection failed: {}", name, err);
+                        }
+                    }
+                    let count = g.tool_count();
+                    *defs.write() = g.all_tools();
+                    if count > 0 {
+                        eprintln!(
+                            "[MCP] {} tools from {} servers",
+                            count,
+                            g.connected_servers().len()
+                        );
+                    }
+                });
+            }
+
+            // Per-Run callback: reads the tool-defs snapshot (always succeeds,
+            // no try_lock) and registers McpTool wrappers into the fresh
+            // ToolRegistry for this Run.
+            {
+                let defs = mcp_tool_defs.clone();
+                let mgr = mcp_manager.clone();
+                run_manager
+                    .brain()
+                    .register_tool_fn(Box::new(move |registry| {
+                        for tool_def in defs.read().iter() {
+                            let t = McpTool::new(
+                                tool_def.server.clone(),
+                                tool_def.name.clone(),
+                                tool_def.description.clone(),
+                                tool_def.parameters.clone(),
+                                mgr.clone(),
+                            );
+                            registry.register(Box::new(t));
+                        }
+                    }));
+            }
+
             // Background warmup: preload the embedding model so the first
             // real embed() call doesn't stall. Runs on a tokio worker thread,
             // never blocks setup() or the UI.
@@ -1920,6 +1985,8 @@ pub fn run() {
                 storage: storage.clone(),
                 agent_registry: agent_core::agent_registry::AgentRegistry::new(storage.clone()),
                 workflow_cancels: Arc::new(AsyncMutex::new(std::collections::HashMap::new())),
+                mcp_manager,
+                mcp_tool_defs,
             });
             Ok(())
         })

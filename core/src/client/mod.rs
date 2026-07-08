@@ -10,6 +10,25 @@ use serde_json::Value;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Cache hints handed to the client so it can (a) emit cache telemetry for
+/// verification and (b) attach provider-specific cache markers
+/// (e.g. Anthropic `cache_control`). Computed by `ContextEngine::cache_hint()`
+/// and copied into this lightweight, dependency-free struct to avoid coupling
+/// the client module to the context module.
+#[derive(Clone, Copy)]
+pub struct ClientCacheHint {
+    pub stable_prefix_tokens: usize,
+    pub can_reuse_cache: bool,
+    pub strategy: &'static str,
+    /// System + conversation history tokens that form a stable prefix
+    /// (excludes the per-turn context injection that changes every turn).
+    pub cacheable_prefix_tokens: usize,
+    /// Milliseconds since the last turn (0 = first turn).
+    pub last_turn_elapsed_ms: u64,
+    /// True when the idle gap likely exceeds the provider's KV cache TTL.
+    pub expected_cold_miss: bool,
+}
+
 pub struct OpenAIClient {
     http: reqwest::Client,
     pub(crate) model: ModelConfig,
@@ -84,6 +103,7 @@ impl OpenAIClient {
         messages: &[Message],
         tools: &[ToolDefinition],
         stream: bool,
+        cache_hint: Option<ClientCacheHint>,
     ) -> Value {
         let mut body = serde_json::json!({
             "model": self.model.model_id,
@@ -135,6 +155,45 @@ impl OpenAIClient {
             body["tool_choice"] = serde_json::json!("auto");
         }
 
+        // ── KV cache hint wiring ────────────────────────────────────
+        // `cache_hint` is computed by ContextEngine from the 7-segment layout.
+        // Here it (1) produces verification telemetry for every backend and
+        // (2) for Anthropic, marks the stable system message(s) with an
+        // ephemeral cache breakpoint so the provider actually reuses the KV.
+        if let Some(hint) = cache_hint {
+            tracing::info!(
+                target: "kv_cache",
+                provider = %self.model.base_url,
+                stable_prefix_tokens = hint.stable_prefix_tokens,
+                cacheable_prefix_tokens = hint.cacheable_prefix_tokens,
+                last_turn_elapsed_ms = hint.last_turn_elapsed_ms,
+                expected_cold_miss = hint.expected_cold_miss,
+                strategy = hint.strategy,
+                can_reuse = hint.can_reuse_cache,
+                "KV cache hint for this request"
+            );
+
+            let is_anthropic =
+                self.model.base_url.contains("anthropic.com") || self.model.base_url.contains("api.anthropic");
+            if is_anthropic && hint.can_reuse_cache && hint.strategy != "none" {
+                if let Some(msgs) = body.get_mut("messages").and_then(|m| m.as_array_mut()) {
+                    for m in msgs.iter_mut() {
+                        if m.get("role").and_then(|r| r.as_str()) == Some("system") {
+                            if let Some(text) = m.get("content").and_then(|c| c.as_str()) {
+                                m["content"] = serde_json::json!([
+                                    {
+                                        "type": "text",
+                                        "text": text,
+                                        "cache_control": { "type": "ephemeral" }
+                                    }
+                                ]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         body
     }
 
@@ -143,7 +202,19 @@ impl OpenAIClient {
         messages: &[Message],
         tools: &[ToolDefinition],
     ) -> Result<(String, Vec<crate::types::ToolCall>)> {
-        let body = self.build_request_body(messages, tools, false);
+        self.chat_completion_with_hint(messages, tools, None).await
+    }
+
+    /// Like [`chat_completion`](Self::chat_completion) but carries the KV cache
+    /// hint so the client can emit cache telemetry and attach provider-specific
+    /// cache markers.
+    pub async fn chat_completion_with_hint(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        cache_hint: Option<ClientCacheHint>,
+    ) -> Result<(String, Vec<crate::types::ToolCall>)> {
+        let body = self.build_request_body(messages, tools, false, cache_hint);
         let resp = self.send_with_retry(&body).await?;
         let data: Value = resp.json().await?;
 
@@ -178,7 +249,18 @@ impl OpenAIClient {
         messages: &[Message],
         tools: &[ToolDefinition],
     ) -> Result<impl futures::Stream<Item = Result<StreamEvent>>> {
-        let body = self.build_request_body(messages, tools, true);
+        self.chat_completion_stream_with_hint(messages, tools, None).await
+    }
+
+    /// Like [`chat_completion_stream`](Self::chat_completion_stream) but carries
+    /// the KV cache hint (see [`chat_completion_with_hint`]).
+    pub async fn chat_completion_stream_with_hint(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        cache_hint: Option<ClientCacheHint>,
+    ) -> Result<impl futures::Stream<Item = Result<StreamEvent>>> {
+        let body = self.build_request_body(messages, tools, true, cache_hint);
         let resp = self.send_with_retry(&body).await?;
         let status = resp.status();
         let ct = resp

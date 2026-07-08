@@ -3,10 +3,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { resumeSession, deleteSession } from '../project/projectSlice';
 
 import type {
-  TurnBlock, SubagentEntry, ChatState, RunState, EventLogEntry, ChatEntry, FrontendPrompt,
+  TurnBlock, SubagentEntry, ChatState, RunState, ChatEntry, FrontendPrompt,
 } from './types';
 import { processSingleEvent, stopDanglingSubagents } from './eventHandlers';
-import { entriesToEventLog } from './utils';
 
 // ── Re-export types, selectors, and utils for backward compatibility ─
 export type {
@@ -17,7 +16,7 @@ export {
   selectEntryIds, selectEntryById, selectSubagentById,
   selectPendingApprovalCount, selectActivePendingApproval,
 } from './selectors';
-export { entriesToMessages, entriesToEventLog, stringifyResult, getFullMessages, getFullEventLog } from './utils';
+export { entriesToMessages, stringifyResult, getFullMessages, getTimingMetrics } from './utils';
 
 // ── Initial state ────────────────────────────────────────────────────
 
@@ -53,8 +52,6 @@ const initialState: ChatState = {
   visiblePromptsCount: 1,
   allPromptsBySession: {},
   visiblePromptsCountBySession: {},
-  allEventLog: [],
-  eventLogBySession: {},
   cacheMetrics: null,
 };
 
@@ -108,7 +105,7 @@ export const invalidateSkillsCache = createAsyncThunk(
   }
 );
 
-function rebuildEntries(state: ChatState, eventLog: EventLogEntry[]) {
+function rebuildEntries(state: ChatState) {
   if (!state.allPrompts || state.allPrompts.length === 0) {
     state.entries = [];
     return;
@@ -120,35 +117,20 @@ function rebuildEntries(state: ChatState, eventLog: EventLogEntry[]) {
     promptStatusByTurn.set(p.turn_index, p.status);
   }
 
-  // 2. Group the event log by turn_index
-  const eventsByTurn = new Map<number, EventLogEntry[]>();
-  if (eventLog && Array.isArray(eventLog)) {
-    for (const ev of eventLog) {
-      const arr = eventsByTurn.get(ev.turn_index);
-      if (arr) arr.push(ev);
-      else eventsByTurn.set(ev.turn_index, [ev]);
-    }
-  }
-
-  // 3. Make sure all subagents are populated in state.subagents
-  if (eventLog && Array.isArray(eventLog)) {
-    for (const ev of eventLog) {
-      if (ev.event_type === 'subagent' && ev.payload) {
-        const payload = ev.payload as Record<string, unknown>;
-        const subId = payload.id as string | undefined;
-        if (subId) {
-          state.subagents[subId] = payload as unknown as SubagentEntry;
+  // 2. Clear and rebuild subagents from all prompts
+  state.subagents = {};
+  for (const prompt of state.allPrompts) {
+    for (const msg of prompt.messages) {
+      if (msg.role === 'assistant' && msg.metadata && msg.metadata.subagents) {
+        const subMap = msg.metadata.subagents as Record<string, SubagentEntry>;
+        for (const [subId, subEntry] of Object.entries(subMap)) {
+          state.subagents[subId] = subEntry;
         }
       }
     }
   }
 
-  const toPayload = (ev: EventLogEntry): Record<string, unknown> =>
-    ev.payload && typeof ev.payload === 'object' && !Array.isArray(ev.payload)
-      ? (ev.payload as Record<string, unknown>)
-      : {};
-
-  // 4. Get the visible prompts slice (last visiblePromptsCount prompts)
+  // 3. Get the visible prompts slice (last visiblePromptsCount prompts)
   const count = state.visiblePromptsCount;
   const startIdx = Math.max(0, state.allPrompts.length - count);
   const visiblePrompts = state.allPrompts.slice(startIdx);
@@ -156,111 +138,73 @@ function rebuildEntries(state: ChatState, eventLog: EventLogEntry[]) {
   const newEntries: ChatEntry[] = [];
 
   for (const prompt of visiblePrompts) {
+    // Find user message text from prompt messages
+    const userMsg = prompt.messages.find((m) => m.role === 'user')?.content || '';
+
     // A. Push the user entry
     newEntries.push({
       id: `user-${prompt.id}`,
       type: 'user',
-      text: prompt.user_message,
+      text: userMsg,
       model: prompt.model,
     });
 
-    // B. Reconstruct the turn entry if it has messages/events or is running
+    // B. Reconstruct the turn entry
     const turnIdx = prompt.turn_index;
-    const blocks: TurnBlock[] = [];
-    const turnEvents = eventsByTurn.get(turnIdx) ?? [];
-
-    for (const ev of turnEvents) {
-      if (
-        ev.event_type !== 'tool_call' &&
-        ev.event_type !== 'subagent' &&
-        ev.event_type !== 'thinking' &&
-        ev.event_type !== 'assistant'
-      ) {
-        continue;
-      }
-      const payload = toPayload(ev);
-      if (ev.event_type === 'tool_call') {
-        blocks.push({
-          type: 'tool',
-          call_id: `restored-${Math.random()}`,
-          name: (payload.name as string) ?? 'unknown',
-          args: payload.args ?? undefined,
-          result: (payload.args_summary as string) ?? '',
-          active: false,
-          is_error: !!payload.is_error,
-        });
-      } else if (ev.event_type === 'subagent') {
-        const subId = payload.id as string | undefined;
-        if (subId) {
-          blocks.push({
-            type: 'subagent_ref',
-            subagent_id: subId,
-          });
-        }
-      } else if (ev.event_type === 'thinking') {
-        const payload = ev.payload as Record<string, unknown>;
-        blocks.push({
-          type: 'thinking',
-          text: (payload.text as string) ?? '',
-          isStreaming: false,
-          startTime: payload.startTime as number | undefined,
-          endTime: payload.endTime as number | undefined,
-        });
-      } else if (ev.event_type === 'assistant') {
-        const payload = ev.payload as Record<string, unknown>;
-        blocks.push({
-          type: 'assistant',
-          text: (payload.text as string) ?? '',
-          isStreaming: false,
-        });
-      }
-    }
-
-    // Parse prompt assistant messages
-    const asstMsg = prompt.messages.find((m) => m.role === 'assistant');
-    if (asstMsg) {
-      const hasThinkTag = asstMsg.content?.match(/<think>([\s\S]*?)<\/think>/);
-      if (hasThinkTag) {
-        const thinkContent = hasThinkTag[1];
-        const restContent = asstMsg.content!.replace(/<think>[\s\S]*?<\/think>/, '').trim();
-        const thinkBlock = blocks.find((b) => b.type === 'thinking');
-        if (thinkBlock) {
-          thinkBlock.text = thinkContent;
-        } else {
-          blocks.push({ type: 'thinking', text: thinkContent, isStreaming: false });
-        }
-        const asstBlock = blocks.find((b) => b.type === 'assistant');
-        if (asstBlock) {
-          asstBlock.text = restContent;
-        } else if (restContent) {
-          blocks.push({ type: 'assistant', text: restContent, isStreaming: false });
-        }
-      } else {
-        const assistantBlock = blocks.find((b) => b.type === 'assistant');
-        if (assistantBlock && asstMsg.content) {
-          assistantBlock.text = asstMsg.content;
-        } else if (!assistantBlock && asstMsg.content) {
-          blocks.push({ type: 'assistant', text: asstMsg.content, isStreaming: false });
-        }
-      }
-    }
-
+    let blocks: TurnBlock[] = [];
     let startTime: number | undefined = undefined;
     let endTime: number | undefined = undefined;
     let cacheHitRate: number | undefined = undefined;
     let turnIds: string[] | undefined = undefined;
-    for (const ev of turnEvents) {
-      if (ev.event_type === 'turn_meta' && ev.payload) {
-        const meta = ev.payload as Record<string, unknown>;
-        startTime = meta.startTime as number | undefined;
-        endTime = meta.endTime as number | undefined;
-        cacheHitRate = meta.cacheHitRate as number | undefined;
-        turnIds = meta.turnIds as string[] | undefined;
-        break;
+
+    // Find the assistant message in the prompt
+    const assistantMsg = prompt.messages.find((m) => m.role === 'assistant');
+    if (assistantMsg && assistantMsg.metadata) {
+      const meta = assistantMsg.metadata;
+      if (Array.isArray(meta.blocks)) {
+        blocks = [...meta.blocks];
+      }
+      startTime = meta.startTime;
+      endTime = meta.endTime;
+      cacheHitRate = meta.cacheHitRate;
+      turnIds = meta.turnIds;
+    }
+
+    // Fallback: If metadata/blocks is missing (e.g. legacy session), reconstruct blocks from messages
+    if (blocks.length === 0) {
+      // 1. Thinking block from <think> tags in assistant message content
+      if (assistantMsg && assistantMsg.content) {
+        const hasThinkTag = assistantMsg.content.match(/<think>([\s\S]*?)<\/think>/);
+        if (hasThinkTag) {
+          const thinkContent = hasThinkTag[1];
+          const restContent = assistantMsg.content.replace(/<think>[\s\S]*?<\/think>/, '').trim();
+          blocks.push({ type: 'thinking', text: thinkContent, isStreaming: false });
+          if (restContent) {
+            blocks.push({ type: 'assistant', text: restContent, isStreaming: false });
+          }
+        } else {
+          blocks.push({ type: 'assistant', text: assistantMsg.content, isStreaming: false });
+        }
+      }
+
+      // 2. Tool blocks from tool messages or tool_calls
+      if (assistantMsg && assistantMsg.tool_calls) {
+        for (const tc of assistantMsg.tool_calls) {
+          const toolMsg = prompt.messages.find(m => m.role === 'tool' && m.tool_call_id === tc.id);
+          blocks.push({
+            type: 'tool',
+            call_id: tc.id,
+            name: tc.function.name,
+            args: tc.function.arguments,
+            result: toolMsg?.content || '',
+            active: false,
+            is_error: false,
+          });
+        }
       }
     }
 
-    // Fallback to database prompt timestamps if event_log's turn_meta is missing/incomplete
+    // Fallback timing
     if (!startTime && prompt.started_at) {
       const parsed = new Date(prompt.started_at).getTime();
       if (!isNaN(parsed)) startTime = parsed;
@@ -276,23 +220,16 @@ function rebuildEntries(state: ChatState, eventLog: EventLogEntry[]) {
         if (!isNaN(parsed)) endTime = parsed;
       }
       if (!endTime && startTime) {
-        endTime = startTime + 5000; // default to 5s execution
+        endTime = startTime + 5000;
       }
       if (!endTime) {
         endTime = Date.now();
       }
     }
 
-    let subagentIds: string[] | undefined = undefined;
-    for (const ev of turnEvents) {
-      if (ev.event_type !== 'subagent') continue;
-      const payload = toPayload(ev);
-      const subId = payload.id as string | undefined;
-      if (subId) {
-        if (!subagentIds) subagentIds = [];
-        subagentIds.push(subId);
-      }
-    }
+    const subagentIds = blocks
+      .filter((b) => b.type === 'subagent_ref')
+      .map((b) => (b as Extract<TurnBlock, { type: 'subagent_ref' }>).subagent_id);
 
     const pStatus = promptStatusByTurn.get(turnIdx);
     newEntries.push({
@@ -300,7 +237,7 @@ function rebuildEntries(state: ChatState, eventLog: EventLogEntry[]) {
       type: 'turn',
       turnIndex: turnIdx,
       blocks,
-      subagentIds,
+      subagentIds: subagentIds.length > 0 ? subagentIds : undefined,
       startTime,
       endTime,
       cacheHitRate,
@@ -334,7 +271,6 @@ export const chatSlice = createSlice({
       state.steerQueueBySession[sessionId] = state.steerQueue;
       state.allPromptsBySession[sessionId] = state.allPrompts;
       state.visiblePromptsCountBySession[sessionId] = state.visiblePromptsCount;
-      state.eventLogBySession[sessionId] = state.allEventLog;
     },
     restoreOrClearSession: (state, action: PayloadAction<string>) => {
       const sessionId = action.payload;
@@ -349,7 +285,6 @@ export const chatSlice = createSlice({
         state.steerQueue = state.steerQueueBySession?.[sessionId] ?? [];
         state.allPrompts = state.allPromptsBySession[sessionId] ?? [];
         state.visiblePromptsCount = state.visiblePromptsCountBySession[sessionId] ?? 1;
-        state.allEventLog = state.eventLogBySession[sessionId] ?? [];
       } else {
         state.entries = [];
         state.isProcessing = false;
@@ -359,7 +294,6 @@ export const chatSlice = createSlice({
         state.steerQueue = [];
         state.allPrompts = [];
         state.visiblePromptsCount = 1;
-        state.allEventLog = [];
       }
       state.viewingSubagentPath = [];
       state._resumedFromBackend = false;
@@ -369,20 +303,8 @@ export const chatSlice = createSlice({
       state.goalCompleted = false;
     },
     loadMorePrompts: (state) => {
-      const { eventLog } = entriesToEventLog(state.entries, state.subagents);
-      const visibleTurnIndexes = new Set(
-        state.entries
-          .filter((e) => e.type === 'turn')
-          .map((e) => e.turnIndex)
-          .filter((x) => x !== undefined) as number[]
-      );
-      const filteredOldEventLog = state.allEventLog.filter(
-        (ev) => !visibleTurnIndexes.has(ev.turn_index)
-      );
-      state.allEventLog = [...filteredOldEventLog, ...(eventLog as EventLogEntry[])];
-
       state.visiblePromptsCount += 2;
-      rebuildEntries(state, state.allEventLog);
+      rebuildEntries(state);
     },
     userMessageSent: (state, action: PayloadAction<{ text: string; model?: string }>) => {
       state.entries.push({
@@ -395,7 +317,6 @@ export const chatSlice = createSlice({
         id: `user-prompt-${Date.now()}-${Math.random()}`,
         session_id: state.activeSessionId ?? '',
         turn_index: state.allPrompts.length,
-        user_message: action.payload.text,
         model: action.payload.model ?? '',
         status: 'running',
         token_usage: {},
@@ -590,16 +511,15 @@ export const chatSlice = createSlice({
     builder.addCase(resumeSession.fulfilled, (state, action) => {
       state.isResuming = false;
       if (state.entries.length > 0) return;
-      const { event_log, prompts } = action.payload;
+      const { prompts } = action.payload;
       state.entries = [];
-      state.isProcessing = false;
 
       state.allPrompts = prompts ?? [];
-      state.allEventLog = event_log ?? [];
+      state.isProcessing = state.allPrompts.some(p => p.status === 'running');
       // Initially render only the last 2 prompts (or 1 if only 1 exists)
       state.visiblePromptsCount = Math.min(2, state.allPrompts.length);
 
-      rebuildEntries(state, state.allEventLog);
+      rebuildEntries(state);
       state._resumedFromBackend = true;
     });
     builder.addCase(deleteSession.fulfilled, (state, action) => {
@@ -610,7 +530,6 @@ export const chatSlice = createSlice({
       delete state.runIdBySession[sessionId];
       delete state.allPromptsBySession[sessionId];
       delete state.visiblePromptsCountBySession[sessionId];
-      delete state.eventLogBySession[sessionId];
       if (state.todoBySession) {
         delete state.todoBySession[sessionId];
       }

@@ -67,7 +67,7 @@ pub use runtime::{
     RunCommand, RunEvent, RunHandle, RunId, RunManager, RunState, SteerEntry, SupervisedChild,
 };
 pub use session::{
-    EventLogEntry, Prompt, Session, SessionCounts, SessionManager, SessionMeta, SubagentResultLike,
+    Prompt, Session, SessionCounts, SessionManager, SessionMeta, SubagentResultLike,
 };
 pub use skills::{SkillLoader, SkillManager, SkillManifest};
 pub use subagent::{Subagent, SubagentConfig, SubagentManager, SubagentResult};

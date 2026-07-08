@@ -2,14 +2,14 @@ import { useCallback } from 'react';
 import { useStore } from 'react-redux';
 import type { RootState } from '../store';
 import { useAppDispatch } from './useAppDispatch';
-import { getFullMessages, getFullEventLog, cacheCurrentSession } from '../features/chat/chatSlice';
+import { getFullMessages, getTimingMetrics, cacheCurrentSession } from '../features/chat/chatSlice';
 import { saveSessionMessages } from '../features/project/projectSlice';
 
 /**
  * Shared session-save logic (P2-3).
  *
  * Encapsulates the common pattern: read entries/subagents from state,
- * convert to full messages + full event log, and dispatch saveSessionMessages.
+ * convert to full messages, and dispatch saveSessionMessages.
  */
 export function useSaveSession() {
   const dispatch = useAppDispatch();
@@ -35,7 +35,7 @@ export function useSaveSession() {
         return;
       }
 
-      const { eventLog, processTimeMs, thoughtTimeMs } = getFullEventLog(chatState);
+      const { processTimeMs, thoughtTimeMs } = getTimingMetrics(chatState.entries);
       dispatch(
         saveSessionMessages({
           sessionId: activeSessionId,
@@ -44,7 +44,6 @@ export function useSaveSession() {
           modelUsed: defaultModel,
           processTimeMs: processTimeMs || undefined,
           thoughtTimeMs: thoughtTimeMs || undefined,
-          eventLog,
         })
       );
       if (cacheAfter) dispatch(cacheCurrentSession(activeSessionId));

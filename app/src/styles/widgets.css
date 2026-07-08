@@ -372,26 +372,15 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 18px 12px 20px;
-  background: linear-gradient(90deg, rgba(212, 164, 74, 0.04) 0%, rgba(212, 164, 74, 0.01) 100%);
-  border: 1px solid rgba(212, 164, 74, 0.12);
+  padding: 10px 14px;
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
   border-radius: var(--radius-md);
-  margin-top: 14px;
-  margin-bottom: 14px;
+  margin-top: 12px;
+  margin-bottom: 12px;
   overflow: hidden;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  box-shadow: none;
   animation: interruptedFadeIn 0.3s ease-out;
-}
-
-.interrupted-block-style::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: var(--warning);
-  opacity: 0.65;
 }
 
 .interrupted-content {

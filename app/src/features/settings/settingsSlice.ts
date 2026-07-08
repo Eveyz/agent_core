@@ -277,6 +277,30 @@ export const settingsSlice = createSlice({
       }
       state.config.providers[newKey] = provider;
     },
+    upsertMcpServer: (state, action: PayloadAction<{ oldName?: string; server: McpServerConfig }>) => {
+      if (!state.config) return;
+      const { oldName, server } = action.payload;
+      const servers = state.config.mcp.servers;
+      const idx = oldName
+        ? servers.findIndex((s) => s.name === oldName)
+        : servers.findIndex((s) => s.name === server.name);
+      if (idx >= 0) {
+        servers[idx] = { ...server };
+      } else {
+        servers.push({ ...server });
+      }
+    },
+    deleteMcpServer: (state, action: PayloadAction<string>) => {
+      if (!state.config) return;
+      state.config.mcp.servers = state.config.mcp.servers.filter((s) => s.name !== action.payload);
+    },
+    toggleMcpServer: (state, action: PayloadAction<string>) => {
+      if (!state.config) return;
+      const server = state.config.mcp.servers.find((s) => s.name === action.payload);
+      if (server) {
+        server.enabled = server.enabled === false ? true : false;
+      }
+    },
   },
   extraReducers: (builder) => {
     builder
@@ -310,5 +334,5 @@ export const settingsSlice = createSlice({
   },
 });
 
-export const { setAppearance, openSettings, closeSettings, setActiveTab, upsertProvider, deleteProvider, setDefaultModel, updateProvider } = settingsSlice.actions;
+export const { setAppearance, openSettings, closeSettings, setActiveTab, upsertProvider, deleteProvider, setDefaultModel, updateProvider, upsertMcpServer, deleteMcpServer, toggleMcpServer } = settingsSlice.actions;
 export default settingsSlice.reducer;

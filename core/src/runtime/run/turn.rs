@@ -7,6 +7,7 @@ use tokio::sync::broadcast;
 
 use crate::runtime::tool_orchestrator::ToolOrchestrator;
 use crate::client::streaming::{TokenAccumulator, ToolCallAccumulator};
+use crate::client::ClientCacheHint;
 use crate::runtime::event::{Envelope, RunEvent, TodoItemPayload};
 use crate::runtime::guard::EventGuard;
 use crate::types::{CacheUsage, Message, MessageDelta, StreamEvent, ToolCall};
@@ -79,6 +80,11 @@ impl Run {
                 return Ok(TurnOutcome::Stop(friendly_err));
             }
         };
+
+        // Record the turn timestamp for KV-cache TTL tracking.
+        // This lets the next turn's cache_hint() detect idle gaps
+        // that would expire provider-side KV caches.
+        self.context.record_turn_timestamp();
 
         // Emit cache telemetry and update cumulative metrics
         if cache_usage.total() > 0 {
@@ -351,6 +357,21 @@ impl Run {
             // Apply hygiene: truncate oversized tool results, replace long args
             crate::hygiene::sanitize(&mut messages);
 
+            // KV cache hint: derived from the 7-segment context layout. Carried
+            // into the request so the client can emit cache telemetry and
+            // (for Anthropic) attach a cache breakpoint on the stable prefix.
+            let cache_hint = {
+                let h = self.context.cache_hint();
+                ClientCacheHint {
+                    stable_prefix_tokens: h.stable_prefix_tokens,
+                    cacheable_prefix_tokens: h.cacheable_prefix_tokens,
+                    can_reuse_cache: h.can_reuse_cache,
+                    strategy: h.strategy,
+                    last_turn_elapsed_ms: h.last_turn_elapsed_ms,
+                    expected_cold_miss: h.expected_cold_miss,
+                }
+            };
+
             // BeforeModel hook: SkipModel short-circuit
             let snapshot = self.snapshot_messages_for_hook(&messages);
             if let Some(preset) = self.hook_registry.lock().fire_before_model(&snapshot) {
@@ -377,7 +398,7 @@ impl Run {
                 let step_res = {
                     let stream_res = self
                         .client
-                        .chat_completion_stream(&messages, &tools)
+                        .chat_completion_stream_with_hint(&messages, &tools, Some(cache_hint))
                         .await;
 
                     match stream_res {

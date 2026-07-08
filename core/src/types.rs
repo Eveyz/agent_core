@@ -63,6 +63,8 @@ pub struct Message {
     /// sessions show each message's own model.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -319,6 +321,7 @@ impl Message {
             tool_call_id: None,
             name: None,
             model: None,
+            metadata: None,
         }
     }
 
@@ -330,6 +333,7 @@ impl Message {
             tool_call_id: None,
             name: None,
             model: None,
+            metadata: None,
         }
     }
 
@@ -341,6 +345,7 @@ impl Message {
             tool_call_id: None,
             name: None,
             model: Some(model.to_string()),
+            metadata: None,
         }
     }
 
@@ -352,6 +357,7 @@ impl Message {
             tool_call_id: None,
             name: None,
             model: None,
+            metadata: None,
         }
     }
 
@@ -363,6 +369,7 @@ impl Message {
             tool_call_id: None,
             name: None,
             model: None,
+            metadata: None,
         }
     }
 
@@ -374,6 +381,7 @@ impl Message {
             tool_call_id: Some(tool_call_id),
             name: tool_name,
             model: None,
+            metadata: None,
         }
     }
 

@@ -21,6 +21,7 @@
 //! Tool names are prefixed: `mcp__<server>__<tool>` to avoid conflicts.
 
 pub mod channel;
+pub mod http;
 pub mod protocol;
 pub mod sse;
 pub mod tool;
@@ -34,6 +35,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
+use self::http::StreamableHttpTransport;
 use self::protocol::{
     ClientCapabilities, ClientInfo, ContentItem, InitializeParams, InitializeResult,
     JsonRpcResponse, ToolCallParams, ToolCallResult, ToolsCapability, ToolsListResult,
@@ -120,6 +122,7 @@ impl McpToolDef {
 enum Transport {
     Stdio(StdioTransport),
     Sse(SseTransport),
+    Http(StreamableHttpTransport),
 }
 
 struct McpConnection {
@@ -206,6 +209,11 @@ impl McpClientManager {
                 let sse = SseTransport::new(&config.url);
                 sse.connect().await?;
                 Transport::Sse(sse)
+            }
+            "http" | "https" | "streamable" | "streamable-http" | "streamable_http" => {
+                let http = StreamableHttpTransport::new(&config.url);
+                http.connect().await?;
+                Transport::Http(http)
             }
             _ => {
                 let stdio = StdioTransport::spawn(&config.command, &config.args).await?;
@@ -354,6 +362,7 @@ async fn transport_request(
     match transport {
         Transport::Stdio(t) => t.request(method, params).await,
         Transport::Sse(t) => t.request(method, params).await,
+        Transport::Http(t) => t.request(method, params).await,
     }
 }
 
@@ -361,6 +370,7 @@ async fn transport_notify(transport: &Transport, method: &str, params: Value) ->
     match transport {
         Transport::Stdio(t) => t.notify(method, params).await,
         Transport::Sse(t) => t.notify(method, params).await,
+        Transport::Http(t) => t.notify(method, params).await,
     }
 }
 
@@ -368,6 +378,7 @@ async fn transport_is_alive(transport: &Transport) -> bool {
     match transport {
         Transport::Stdio(t) => t.is_alive().await,
         Transport::Sse(t) => t.is_connected().await,
+        Transport::Http(t) => t.is_connected().await,
     }
 }
 
@@ -375,6 +386,7 @@ async fn transport_shutdown(transport: Transport) -> Result<()> {
     match transport {
         Transport::Stdio(t) => t.shutdown().await,
         Transport::Sse(t) => t.shutdown().await,
+        Transport::Http(t) => t.shutdown().await,
     }
 }
 

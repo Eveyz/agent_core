@@ -46,7 +46,6 @@ pub struct Prompt {
     pub id: String,
     pub session_id: String,
     pub turn_index: u32,
-    pub user_message: String,
     pub model: String,
     pub status: String,
     pub token_usage: serde_json::Value,
@@ -79,13 +78,12 @@ impl SessionMeta {
     }
 }
 
-/// A full session with all messages, prompts, and event log loaded.
+/// A full session with all messages and prompts loaded.
 #[derive(Debug, Clone)]
 pub struct Session {
     pub meta: SessionMeta,
     pub messages: Vec<Message>,
     pub prompts: Vec<Prompt>,
-    pub event_log: Vec<EventLogEntry>,
 }
 
 // ── Session Manager ──────────────────────────────────────────────────
@@ -152,7 +150,6 @@ impl SessionManager {
     pub fn create_prompt(
         &self,
         session_id: &str,
-        user_message: &str,
         model: &str,
     ) -> Result<(String, u32)> {
         let db = self.storage.conn();
@@ -169,9 +166,9 @@ impl SessionManager {
             .unwrap_or(0);
 
         db.execute(
-            "INSERT INTO prompts (id, session_id, turn_index, user_message, model, status, started_at, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, 'running', ?6, ?6)",
-            rusqlite::params![prompt_id, session_id, turn_index, user_message, model, now],
+            "INSERT INTO prompts (id, session_id, turn_index, model, status, started_at, created_at) \
+             VALUES (?1, ?2, ?3, ?4, 'running', ?5, ?5)",
+            rusqlite::params![prompt_id, session_id, turn_index, model, now],
         )?;
 
         Ok((prompt_id, turn_index))
@@ -349,11 +346,9 @@ impl SessionManager {
 
         // Upsert prompts (preserve lifecycle status for existing ones)
         // and insert their messages.
+        let mut global_msg_idx = 0;
         for (prompt_idx, group) in prompt_groups.iter().enumerate() {
             let turn_idx = prompt_idx as i64;
-            let user_msg = group.first()
-                .and_then(|m| m.content.as_deref())
-                .unwrap_or("");
             let prompt_model = group.iter()
                 .find_map(|m| m.model.as_deref())
                 .unwrap_or(model_used);
@@ -368,22 +363,22 @@ impl SessionManager {
             let prompt_id = if let Some(pid) = existing_id {
                 // Update existing prompt (keep its lifecycle status + timestamps).
                 tx.execute(
-                    "UPDATE prompts SET user_message = ?1, model = ?2 WHERE id = ?3",
-                    rusqlite::params![user_msg, prompt_model, pid],
+                    "UPDATE prompts SET model = ?1 WHERE id = ?2",
+                    rusqlite::params![prompt_model, pid],
                 )?;
                 pid
             } else {
                 // New prompt (legacy or fresh session without pre-created prompts).
                 let pid = uuid::Uuid::new_v4().to_string();
                 tx.execute(
-                    "INSERT INTO prompts (id, session_id, turn_index, user_message, model, status, started_at, created_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, 'completed', ?6, ?6)",
-                    rusqlite::params![pid, id, turn_idx, user_msg, prompt_model, now],
+                    "INSERT INTO prompts (id, session_id, turn_index, model, status, started_at, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, 'completed', ?5, ?5)",
+                    rusqlite::params![pid, id, turn_idx, prompt_model, now],
                 )?;
                 pid
             };
 
-            for (msg_idx, msg) in group.iter().enumerate() {
+            for msg in group {
                 let role = msg.role.to_string();
                 let content = msg.content.as_deref().unwrap_or("");
                 let tool_calls =
@@ -391,12 +386,15 @@ impl SessionManager {
                 let tool_call_id = msg.tool_call_id.as_deref().unwrap_or("");
                 let name = msg.name.as_deref().unwrap_or("");
                 let model = msg.model.as_deref().unwrap_or("");
+                let metadata =
+                    serde_json::to_string(&msg.metadata).unwrap_or_else(|_| "{}".to_string());
 
                 tx.execute(
-                    "INSERT OR REPLACE INTO session_messages (session_id, prompt_id, msg_index, role, content, tool_calls, tool_call_id, name, model, created_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                    rusqlite::params![id, prompt_id, msg_idx as i64, role, content, tool_calls, tool_call_id, name, model, now],
+                    "INSERT OR REPLACE INTO session_messages (session_id, prompt_id, msg_index, role, content, tool_calls, tool_call_id, name, model, metadata, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    rusqlite::params![id, prompt_id, global_msg_idx, role, content, tool_calls, tool_call_id, name, model, metadata, now],
                 )?;
+                global_msg_idx += 1;
             }
         }
 
@@ -496,28 +494,23 @@ impl SessionManager {
         }
     }
 
-    // ── Resume ──────────────────────────────────────────────────────
-
-    /// Load a session's messages, prompts, and event log for resume.
+    /// Load a session's messages and prompts for resume.
     pub fn resume(&self, session_id: &str) -> Result<Option<Session>> {
         let meta = match self.get_meta(session_id)? {
             Some(m) => m,
             None => return Ok(None),
         };
 
-        // Scope the db lock so it's released before get_event_log tries to acquire it.
-        // Mutex is NOT reentrant — holding the lock and calling
-        // get_event_log (which also calls storage.conn()) would deadlock.
         let (messages, prompts) = {
             let db = self.storage.conn();
 
             // Load messages with prompt_id
             let mut stmt = db.prepare(
-                "SELECT role, content, tool_calls, tool_call_id, name, model, msg_index, prompt_id \
+                "SELECT role, content, tool_calls, tool_call_id, name, model, msg_index, prompt_id, metadata \
                  FROM session_messages WHERE session_id = ?1 ORDER BY msg_index ASC",
             )?;
 
-             let rows = stmt.query_map(rusqlite::params![session_id], |row| {
+            let rows = stmt.query_map(rusqlite::params![session_id], |row| {
                 let role_str: String = row.get(0)?;
                 let content: String = row.get(1)?;
                 let tool_calls_json: String = row.get(2)?;
@@ -526,6 +519,7 @@ impl SessionManager {
                 let model: String = row.get(5)?;
                 let idx: i64 = row.get(6)?;
                 let prompt_id: String = row.get(7)?;
+                let metadata_json: String = row.get(8)?;
 
                 let tool_calls: Option<Vec<crate::types::ToolCall>> =
                     serde_json::from_str(&tool_calls_json)
@@ -537,6 +531,9 @@ impl SessionManager {
                                 None
                             }
                         });
+
+                let metadata: Option<serde_json::Value> =
+                    serde_json::from_str(&metadata_json).ok();
 
                 Ok((
                     idx,
@@ -555,6 +552,7 @@ impl SessionManager {
                         },
                         name: if name.is_empty() { None } else { Some(name) },
                         model: if model.is_empty() { None } else { Some(model) },
+                        metadata,
                     },
                     prompt_id,
                 ))
@@ -573,22 +571,21 @@ impl SessionManager {
 
             // Load prompts
             let mut prompt_stmt = db.prepare(
-                "SELECT id, session_id, turn_index, user_message, model, status, token_usage, \
+                "SELECT id, session_id, turn_index, model, status, token_usage, \
                  started_at, ended_at, created_at FROM prompts WHERE session_id = ?1 ORDER BY turn_index ASC",
             )?;
             let prompt_rows = prompt_stmt.query_map(rusqlite::params![session_id], |row| {
-                let token_str: String = row.get(6)?;
+                let token_str: String = row.get(5)?;
                 Ok(Prompt {
                     id: row.get(0)?,
                     session_id: row.get(1)?,
                     turn_index: row.get::<_, i64>(2)? as u32,
-                    user_message: row.get(3)?,
-                    model: row.get(4)?,
-                    status: row.get(5)?,
+                    model: row.get(3)?,
+                    status: row.get(4)?,
                     token_usage: serde_json::from_str(&token_str).unwrap_or(serde_json::json!({})),
-                    started_at: row.get(7)?,
-                    ended_at: row.get(8)?,
-                    created_at: row.get(9)?,
+                    started_at: row.get(6)?,
+                    ended_at: row.get(7)?,
+                    created_at: row.get(8)?,
                     messages: Vec::new(), // populated below
                 })
             })?;
@@ -616,6 +613,7 @@ impl SessionManager {
                                 tool_call_id: None,
                                 name: None,
                                 model: None,
+                                metadata: None,
                             });
                         }
                     }
@@ -638,9 +636,6 @@ impl SessionManager {
             if prompts.is_empty() && !flat_messages.is_empty() {
                 let groups = Self::split_into_prompts(&flat_messages);
                 for (idx, group) in groups.iter().enumerate() {
-                    let user_msg = group.first()
-                        .and_then(|m| m.content.as_deref())
-                        .unwrap_or("");
                     let model = group.iter()
                         .find_map(|m| m.model.as_deref())
                         .unwrap_or("");
@@ -648,7 +643,6 @@ impl SessionManager {
                         id: format!("legacy-prompt-{}", idx),
                         session_id: session_id.to_string(),
                         turn_index: idx as u32,
-                        user_message: user_msg.to_string(),
                         model: model.to_string(),
                         status: "completed".to_string(),
                         token_usage: serde_json::json!({}),
@@ -663,13 +657,10 @@ impl SessionManager {
             (flat_messages, prompts)
         }; // db lock released here
 
-        let event_log = self.get_event_log(session_id).unwrap_or_default();
-
         Ok(Some(Session {
             meta,
             messages,
             prompts,
-            event_log,
         }))
     }
 
@@ -691,102 +682,7 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Clear all event log entries for a session.
-    pub fn clear_event_log(&self, session_id: &str) -> Result<()> {
-        let db = self.storage.conn();
-        db.execute(
-            "DELETE FROM session_event_log WHERE session_id = ?1",
-            rusqlite::params![session_id],
-        )?;
-        Ok(())
-    }
 
-    /// Save a single event to the session event log.
-    pub fn log_event(
-        &self,
-        session_id: &str,
-        turn_index: usize,
-        event_type: &str,
-        payload: &serde_json::Value,
-        started_at: Option<&str>,
-        ended_at: Option<&str>,
-    ) -> Result<()> {
-        let db = self.storage.conn();
-        let now = Utc::now().to_rfc3339();
-        // Truncate payload values to keep storage small but allow subagent metadata.
-        // Skip truncation for assistant text — the full response is needed for
-        // session restore to avoid garbled / truncated display text.
-        let truncated = if event_type == "assistant" {
-            payload.clone()
-        } else {
-            Self::truncate_payload(payload, 2000)
-        };
-        let payload_str = serde_json::to_string(&truncated)?;
-        db.execute(
-            "INSERT INTO session_event_log (session_id, turn_index, event_type, payload, started_at, ended_at, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![session_id, turn_index as i64, event_type, payload_str, started_at, ended_at, now],
-        )?;
-        Ok(())
-    }
-
-    /// Get event log for a session.
-    pub fn get_event_log(&self, session_id: &str) -> Result<Vec<EventLogEntry>> {
-        let db = self.storage.conn();
-        let mut stmt = db.prepare(
-            "SELECT turn_index, event_type, payload, started_at, ended_at \
-             FROM session_event_log WHERE session_id = ?1 ORDER BY id ASC",
-        )?;
-        let rows = stmt.query_map(rusqlite::params![session_id], |row| {
-            let payload_str: String = row.get(2)?;
-            Ok(EventLogEntry {
-                turn_index: row.get::<_, i64>(0)? as usize,
-                event_type: row.get(1)?,
-                payload: serde_json::from_str(&payload_str).unwrap_or(serde_json::json!({})),
-                started_at: row.get(3)?,
-                ended_at: row.get(4)?,
-            })
-        })?;
-        let mut entries = Vec::new();
-        for row in rows {
-            entries.push(row?);
-        }
-        Ok(entries)
-    }
-
-    /// Truncate string values in a JSON payload to max_len chars.
-    fn truncate_payload(val: &serde_json::Value, max_len: usize) -> serde_json::Value {
-        match val {
-            serde_json::Value::String(s) => {
-                if s.len() > max_len {
-                    serde_json::Value::String(format!(
-                        "{}...(truncated)",
-                        &s[..s
-                            .char_indices()
-                            .take(max_len)
-                            .last()
-                            .map(|(i, c)| i + c.len_utf8())
-                            .unwrap_or(s.len())]
-                    ))
-                } else {
-                    val.clone()
-                }
-            }
-            serde_json::Value::Object(map) => {
-                let new_map: serde_json::Map<String, serde_json::Value> = map
-                    .iter()
-                    .map(|(k, v)| (k.clone(), Self::truncate_payload(v, max_len)))
-                    .collect();
-                serde_json::Value::Object(new_map)
-            }
-            serde_json::Value::Array(arr) => serde_json::Value::Array(
-                arr.iter()
-                    .map(|v| Self::truncate_payload(v, max_len))
-                    .collect(),
-            ),
-            _ => val.clone(),
-        }
-    }
 
     /// Rename a session.
     pub fn rename(&self, session_id: &str, new_title: &str) -> Result<bool> {
@@ -1017,15 +913,7 @@ pub struct SessionCounts {
     pub archived: usize,
 }
 
-/// A single entry in the session event log.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EventLogEntry {
-    pub turn_index: usize,
-    pub event_type: String,
-    pub payload: serde_json::Value,
-    pub started_at: Option<String>,
-    pub ended_at: Option<String>,
-}
+
 
 // ── Trait for subagent result compatibility ──────────────────────────
 
@@ -1067,14 +955,16 @@ mod tests {
                 tool_call_id: None,
                 name: None,
                 model: None,
+                metadata: None,
             },
             Message {
                 role: Role::Assistant,
-                content: Some("让我先看看代码".to_string()),
+                content: Some("let me check".to_string()),
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
                 model: None,
+                metadata: None,
             },
             Message {
                 role: Role::Assistant,
@@ -1090,6 +980,7 @@ mod tests {
                 tool_call_id: None,
                 name: None,
                 model: None,
+                metadata: None,
             },
             Message {
                 role: Role::Tool,
@@ -1098,6 +989,7 @@ mod tests {
                 tool_call_id: Some("call_1".to_string()),
                 name: Some("read_file".to_string()),
                 model: None,
+                metadata: None,
             },
         ]
     }
