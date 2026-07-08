@@ -20,14 +20,16 @@ export function useSaveSession() {
       activeSessionId: string | null;
       activeProjectPath: string | null;
       defaultModel: string;
-      skipIfResumed?: boolean;
       cacheAfter?: boolean;
     }) => {
-      const { activeSessionId, activeProjectPath, defaultModel, skipIfResumed, cacheAfter } = params;
+      const { activeSessionId, activeProjectPath, defaultModel, cacheAfter } = params;
       if (!activeSessionId || !activeProjectPath) return;
 
       const chatState = store.getState().chat;
-      if (skipIfResumed && chatState._resumedFromBackend) return;
+      if (!chatState.isDirty) {
+        if (cacheAfter) dispatch(cacheCurrentSession(activeSessionId));
+        return;
+      }
 
       const msgs = getFullMessages(chatState);
       if (msgs.length === 0) {

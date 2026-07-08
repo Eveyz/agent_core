@@ -30,7 +30,7 @@ export function useAutoSaveSession({
 
     if (!lastAgentEndRef.current) {
       lastAgentEndRef.current = true;
-      saveSession({ activeSessionId, activeProjectPath, defaultModel, skipIfResumed: true });
+      saveSession({ activeSessionId, activeProjectPath, defaultModel });
     }
   }, [isProcessing, resumedFromBackend, activeSessionId, activeProjectPath, defaultModel, saveSession]);
 }

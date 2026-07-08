@@ -1,6 +1,6 @@
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
 import { invoke } from '@tauri-apps/api/core';
-import { resumeSession, deleteSession } from '../project/projectSlice';
+import { resumeSession, deleteSession, saveSessionMessages } from '../project/projectSlice';
 
 import type {
   TurnBlock, SubagentEntry, ChatState, RunState, ChatEntry, FrontendPrompt,
@@ -21,6 +21,8 @@ export { entriesToMessages, stringifyResult, getFullMessages, getTimingMetrics }
 // ── Initial state ────────────────────────────────────────────────────
 
 const initialState: ChatState = {
+  isDirty: false,
+  isDirtyBySession: {},
   entries: [],
   isProcessing: false,
   runId: null,
@@ -271,6 +273,7 @@ export const chatSlice = createSlice({
       state.steerQueueBySession[sessionId] = state.steerQueue;
       state.allPromptsBySession[sessionId] = state.allPrompts;
       state.visiblePromptsCountBySession[sessionId] = state.visiblePromptsCount;
+      state.isDirtyBySession[sessionId] = state.isDirty;
     },
     restoreOrClearSession: (state, action: PayloadAction<string>) => {
       const sessionId = action.payload;
@@ -285,6 +288,7 @@ export const chatSlice = createSlice({
         state.steerQueue = state.steerQueueBySession?.[sessionId] ?? [];
         state.allPrompts = state.allPromptsBySession[sessionId] ?? [];
         state.visiblePromptsCount = state.visiblePromptsCountBySession[sessionId] ?? 1;
+        state.isDirty = state.isDirtyBySession[sessionId] ?? false;
       } else {
         state.entries = [];
         state.isProcessing = false;
@@ -294,6 +298,7 @@ export const chatSlice = createSlice({
         state.steerQueue = [];
         state.allPrompts = [];
         state.visiblePromptsCount = 1;
+        state.isDirty = false;
       }
       state.viewingSubagentPath = [];
       state._resumedFromBackend = false;
@@ -334,6 +339,7 @@ export const chatSlice = createSlice({
 
       state.isProcessing = true;
       state._resumedFromBackend = false;
+      state.isDirty = true;
       state.todo = [];
       if (state.activeSessionId) {
         if (!state.todoBySession) {
@@ -354,13 +360,16 @@ export const chatSlice = createSlice({
     },
     agentEventReceived: (state, action: PayloadAction<string | Record<string, unknown>>) => {
       processSingleEvent(state, action.payload);
+      state.isDirty = true;
     },
     agentEventsBatch: (state, action: PayloadAction<Array<string | Record<string, unknown>>>) => {
       for (const payload of action.payload) {
         processSingleEvent(state, payload);
       }
+      state.isDirty = true;
     },
     toolApprovalResponded: (state, action: PayloadAction<{ promptId: string; approved: boolean }>) => {
+      state.isDirty = true;
       for (const entry of state.entries) {
         if (entry.type !== 'turn' || !entry.blocks) continue;
         const block = entry.blocks.find((b) => b.type === 'approval' && b.prompt_id === action.payload.promptId);
@@ -387,9 +396,11 @@ export const chatSlice = createSlice({
       state.learnEntries = [];
       state.goal = null;
       state.goalCompleted = false;
+      state.isDirty = false;
     },
     agentAborted: (state) => {
       state.isProcessing = false;
+      state.isDirty = true;
       const last = state.entries[state.entries.length - 1];
       if (last && last.type === 'turn' && !last.endTime) {
         last.endTime = Date.now();
@@ -413,6 +424,7 @@ export const chatSlice = createSlice({
       });
       state.isProcessing = true;
       state._resumedFromBackend = false;
+      state.isDirty = true;
     },
     viewSubagent: (state, action: PayloadAction<{ id: string; name: string }>) => {
       state.viewingSubagentPath.push(action.payload);
@@ -454,6 +466,7 @@ export const chatSlice = createSlice({
         steerId,
         steerStatus: 'pending',
       });
+      state.isDirty = true;
     },
     steerMessageInjected: (state, action: PayloadAction<string>) => {
       const steerId = action.payload;
@@ -464,6 +477,7 @@ export const chatSlice = createSlice({
           entry.steerStatus = 'injected';
         }
       }
+      state.isDirty = true;
     },
     steerMessageCancelled: (state, action: PayloadAction<string>) => {
       const steerId = action.payload;
@@ -471,6 +485,7 @@ export const chatSlice = createSlice({
       state.entries = state.entries.filter(
         (e) => !(e.type === 'user' && e.isSteer && e.steerId === steerId)
       );
+      state.isDirty = true;
     },
     // ── /btw side-channel ──────────────────────────────────────────
     btwAsked: (state, action: PayloadAction<{ id: string; question: string }>) => {
@@ -521,6 +536,8 @@ export const chatSlice = createSlice({
 
       rebuildEntries(state);
       state._resumedFromBackend = true;
+      state.isDirty = false;
+      state.isDirtyBySession[action.payload.meta.id] = false;
     });
     builder.addCase(deleteSession.fulfilled, (state, action) => {
       const { sessionId } = action.payload;
@@ -530,11 +547,19 @@ export const chatSlice = createSlice({
       delete state.runIdBySession[sessionId];
       delete state.allPromptsBySession[sessionId];
       delete state.visiblePromptsCountBySession[sessionId];
+      delete state.isDirtyBySession[sessionId];
       if (state.todoBySession) {
         delete state.todoBySession[sessionId];
       }
       if (state.steerQueueBySession) {
         delete state.steerQueueBySession[sessionId];
+      }
+    });
+    builder.addCase(saveSessionMessages.fulfilled, (state, action) => {
+      const sessionId = action.payload.sessionId;
+      state.isDirtyBySession[sessionId] = false;
+      if (state.activeSessionId === sessionId) {
+        state.isDirty = false;
       }
     });
   },

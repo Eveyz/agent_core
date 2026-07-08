@@ -34,6 +34,7 @@ This plan has been fully implemented, verified, and tested to simplify and unify
 - Removed `entriesToEventLog` and `getFullEventLog` from `app/src/features/chat/utils.ts`.
 - Added `getTimingMetrics(entries: ChatEntry[])` in `app/src/features/chat/utils.ts` to calculate timing from visible turn entries.
 - Removed `allEventLog` and `eventLogBySession` from `initialState` and slice actions (`cacheCurrentSession`, `restoreOrClearSession`, `deleteSession`) in `app/src/features/chat/chatSlice.ts`.
+- Added `isDirty` and `isDirtyBySession` state tracking to `initialState`, reducers (`cacheCurrentSession`, `restoreOrClearSession`, `userMessageSent`, `agentEventReceived`, `clearChat`, `steerMessageQueued`), and extraReducers (`saveSessionMessages.fulfilled`, `deleteSession.fulfilled`, `resumeSession.fulfilled`) in `chatSlice.ts`.
 - Simplify `loadMorePrompts` to just increment `visiblePromptsCount` and call `rebuildEntries(state)`.
 - Rewrote `rebuildEntries(state)` to:
   - Reconstruct `subagents` from prompts' assistant messages metadata.
@@ -41,7 +42,7 @@ This plan has been fully implemented, verified, and tested to simplify and unify
   - Reconstruct turn entries, blocks, timings, and cache metrics directly from the assistant message's `metadata` block.
   - Implement robust fallback logic for legacy messages (no metadata) by parsing `<think>` tags and tool calls from raw message lists.
 - Updated `resumeSession.fulfilled` in `app/src/features/chat/chatSlice.ts` to set `state.isProcessing = state.allPrompts.some(p => p.status === 'running')` to fix the stop button state on resume.
-- Updated `useSaveSession.ts` hook to remove the `getFullEventLog` call and compute timings using `getTimingMetrics` and pass them to `saveSessionMessages`.
+- Updated `useSaveSession.ts` hook to remove the `getFullEventLog` call, read `isDirty` to skip redundant saves, and compute timings using `getTimingMetrics` and pass them to `saveSessionMessages`. Removed unused parameter from call-sites in `Sidebar.tsx` and `useAutoSaveSession.ts`.
 - Updated `agentEventsBatch` listener in `app/src/store.ts` to compute timing metrics using `getTimingMetrics` and remove `eventLog` from `saveSessionMessages` call.
 
 ## Verification & Testing

@@ -131,6 +131,8 @@ export interface LearnEntry {
 }
 
 export interface ChatState {
+  isDirty: boolean;
+  isDirtyBySession: Record<string, boolean>;
   entries: ChatEntry[];
   isProcessing: boolean;
   runId: string | null;

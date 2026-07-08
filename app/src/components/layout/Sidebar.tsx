@@ -269,7 +269,6 @@ export const Sidebar = memo(function Sidebar({
       activeSessionId,
       activeProjectPath: project?.path ?? null,
       defaultModel,
-      skipIfResumed: true,
       cacheAfter: true,
     });
   }, [saveSession, activeSessionId, activeProjectId, projects, defaultModel]);
