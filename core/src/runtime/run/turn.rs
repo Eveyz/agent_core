@@ -343,7 +343,7 @@ impl Run {
     pub(super) async fn model_turn(&mut self) -> Result<(String, Vec<ToolCall>, String, CacheUsage), String> {
         const MAX_RECOVERY_ATTEMPTS: u32 = 3;
         /// How many times we restart a dropped SSE stream before escalating to recovery.
-        const MAX_STREAM_RETRIES: u32 = 2;
+        const MAX_STREAM_RETRIES: u32 = 10;
 
         for _attempt in 0..MAX_RECOVERY_ATTEMPTS {
             tracing::info!(attempt = _attempt, "TURN: model_turn recovery attempt");

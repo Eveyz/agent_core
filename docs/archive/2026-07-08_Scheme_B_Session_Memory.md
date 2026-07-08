@@ -24,6 +24,7 @@ This plan has been fully implemented, verified, and tested to simplify and unify
 - Updated `save_session_messages` parameters to remove `event_log_json` and do not invoke `clear_event_log` or `log_event`.
 - Updated `send_message` call to `create_prompt` to remove the user message content argument.
 - Updated `DEFAULT_IDENTITY` in `core/src/prompt.rs` to explicitly explain MCP tool prefix conventions (`mcp__<server>__<tool>`), allowing models to understand and reference them correctly when queried about available MCP resources.
+- Updated `MAX_STREAM_RETRIES` to 10 in `core/src/runtime/run/turn.rs` to align mid-stream connection drop recovery attempts with the general HTTP client network retry budget of 10.
 
 ## Frontend (React & Redux) Modifications
 - Added `metadata?: Record<string, any>` to `FrontendMessage` and removed `user_message` from `FrontendPrompt` in both `app/src/features/chat/types.ts` and `app/src/features/project/projectSlice.ts`.
