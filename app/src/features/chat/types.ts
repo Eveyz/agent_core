@@ -1,4 +1,28 @@
 
+export interface FrontendMessage {
+  role: string;
+  content: string;
+  model?: string;
+  tool_calls?: any[];
+  tool_call_id?: string;
+  name?: string;
+  prompt_id?: string;
+}
+
+export interface FrontendPrompt {
+  id: string;
+  session_id: string;
+  turn_index: number;
+  user_message: string;
+  model: string;
+  status: string;
+  token_usage: Record<string, unknown>;
+  started_at: string | null;
+  ended_at: string | null;
+  created_at: string;
+  messages: FrontendMessage[];
+}
+
 export interface SteerMessage {
   steerId: string;
   text: string;
@@ -74,6 +98,8 @@ export interface ChatEntry {
   steerId?: string;
   /** Lifecycle status of a steer entry. */
   steerStatus?: 'pending' | 'injected';
+  /** True when the prompt that spawned this turn was interrupted by a crash / restart. */
+  interrupted?: boolean;
 }
 
 export interface SkillManifest {
@@ -138,6 +164,12 @@ export interface ChatState {
   // /goal pinned goal (per-active-session, driven by goal_set/goal_completed events)
   goal: string | null;
   goalCompleted: boolean;
+  allPrompts: FrontendPrompt[];
+  visiblePromptsCount: number;
+  allPromptsBySession: Record<string, FrontendPrompt[]>;
+  visiblePromptsCountBySession: Record<string, number>;
+  allEventLog: EventLogEntry[];
+  eventLogBySession: Record<string, EventLogEntry[]>;
   // Cumulative cache metrics from CacheSummary events
   cacheMetrics: CacheMetrics | null;
 }

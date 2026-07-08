@@ -2,16 +2,14 @@ import { useCallback } from 'react';
 import { useStore } from 'react-redux';
 import type { RootState } from '../store';
 import { useAppDispatch } from './useAppDispatch';
-import { entriesToMessages, entriesToEventLog, cacheCurrentSession } from '../features/chat/chatSlice';
+import { getFullMessages, getFullEventLog, cacheCurrentSession } from '../features/chat/chatSlice';
 import { saveSessionMessages } from '../features/project/projectSlice';
 
 /**
  * Shared session-save logic (P2-3).
  *
- * Previously duplicated between Sidebar.tsx (saveAndCacheCurrent) and
- * useAutoSaveSession.ts. This hook encapsulates the common pattern: read
- * entries/subagents from state, convert to messages + event log, and dispatch
- * saveSessionMessages.
+ * Encapsulates the common pattern: read entries/subagents from state,
+ * convert to full messages + full event log, and dispatch saveSessionMessages.
  */
 export function useSaveSession() {
   const dispatch = useAppDispatch();
@@ -31,16 +29,13 @@ export function useSaveSession() {
       const chatState = store.getState().chat;
       if (skipIfResumed && chatState._resumedFromBackend) return;
 
-      const msgs = entriesToMessages(chatState.entries);
+      const msgs = getFullMessages(chatState);
       if (msgs.length === 0) {
         if (cacheAfter) dispatch(cacheCurrentSession(activeSessionId));
         return;
       }
 
-      const { eventLog, processTimeMs, thoughtTimeMs } = entriesToEventLog(
-        chatState.entries,
-        chatState.subagents
-      );
+      const { eventLog, processTimeMs, thoughtTimeMs } = getFullEventLog(chatState);
       dispatch(
         saveSessionMessages({
           sessionId: activeSessionId,

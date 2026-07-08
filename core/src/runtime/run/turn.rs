@@ -74,10 +74,9 @@ impl Run {
                     return Err(RunError::Cancelled);
                 }
                 tracing::warn!(error = %e, "TURN: model_turn failed");
-                self.emit(RunEvent::Error { message: e.clone() });
-                return Ok(TurnOutcome::Stop(format!(
-                    "Error communicating with the model: {e}"
-                )));
+                let friendly_err = format_user_friendly_error(&e);
+                self.emit(RunEvent::Error { message: friendly_err.clone() });
+                return Ok(TurnOutcome::Stop(friendly_err));
             }
         };
 
@@ -368,96 +367,83 @@ impl Run {
             // reset / the proxy timed out / the gateway dropped us.
             // Because LLM APIs are stateless, reapplying the same
             // messages+tools is safe — the model restarts from scratch.
-            let mut stream_error: Option<String> = None;
-            for stream_attempt in 0..=MAX_STREAM_RETRIES {
+            let mut stream_attempt = 0;
+
+            let stream_result = 'stream_loop: loop {
                 if self.cancel.is_cancelled() {
                     return Err("aborted".to_string());
                 }
 
-                let stream = self
-                    .client
-                    .chat_completion_stream(&messages, &tools)
-                    .await
-                    // The client already retried with exponential backoff and surfaced a
-                    // user-friendly message, so just propagate it (no raw "503" leak).
-                    .map_err(|e| e.to_string())?;
+                let step_res = {
+                    let stream_res = self
+                        .client
+                        .chat_completion_stream(&messages, &tools)
+                        .await;
 
-                let cancel = self.cancel.clone();
-                let event_tx = self.event_tx.clone();
-                let res = self.collect_stream(stream, &event_tx).await;
-                match res {
-                    Ok(r) => {
-                        // Treat empty responses (no text, no tool calls) as stream errors.
-                        // The SSE parser got zero useful events — likely the API returned
-                        // a non-SSE response (e.g. JSON error) that was silently eaten.
-                        if r.0.is_empty() && r.1.is_empty() {
-                            let msg = "empty response from model — SSE stream had no useful events".to_string();
-                            tracing::warn!(attempt = stream_attempt, "{}", msg);
-                            if stream_attempt < MAX_STREAM_RETRIES {
-                                let delay_ms = 1000u64 * 2u64.pow(stream_attempt);
-                                tracing::warn!(
-                                    attempt = stream_attempt + 1,
-                                    delay_ms,
-                                    "retrying after empty response",
-                                );
-                                self.emit(RunEvent::Error {
-                                    message: format!(
-                                        "Model returned empty response, retrying in {}s (attempt {}/{})",
-                                        delay_ms / 1000,
-                                        stream_attempt + 1,
-                                        MAX_STREAM_RETRIES,
-                                    ),
-                                });
-                                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                                stream_error = Some(msg);
-                                continue;
+                    match stream_res {
+                        Ok(s) => {
+                            let cancel = self.cancel.clone();
+                            let event_tx = self.event_tx.clone();
+                            let res = self.collect_stream(s, &event_tx).await;
+                            match res {
+                                Ok(r) => {
+                                    if r.0.is_empty() && r.1.is_empty() {
+                                        Err("empty response from model — SSE stream had no useful events".to_string())
+                                    } else {
+                                        Ok(r)
+                                    }
+                                }
+                                Err(e) if cancel.is_cancelled() => return Err("aborted".to_string()),
+                                Err(e) => Err(format!("Stream error: {e}")),
                             }
-                            stream_error = Some(msg);
-                            break;
                         }
-                        self.recovery_ctx.record_success();
-                        self.hook_registry.lock().fire_after_model(&r.0, r.1.len());
-                        return Ok(r);
+                        Err(e) => Err(e.to_string()),
                     }
-                    Err(e) if cancel.is_cancelled() => return Err("aborted".to_string()),
-                    Err(e) => {
-                        let msg = format!("Stream error: {e}");
+                };
+
+                match step_res {
+                    Ok(r) => {
+                        break 'stream_loop Ok(r);
+                    }
+                    Err(err_msg) => {
+                        tracing::warn!(attempt = stream_attempt, error = %err_msg, "stream attempt failed");
                         if stream_attempt < MAX_STREAM_RETRIES {
-                            let delay_ms = 1000u64 * 2u64.pow(stream_attempt);
-                            tracing::warn!(
-                                attempt = stream_attempt + 1,
-                                delay_ms,
-                                error = %e,
-                                "SSE stream dropped mid-response — retrying",
-                            );
+                            let delay_ms = 1000u64 * 2u64.pow(stream_attempt as u32);
                             self.emit(RunEvent::Error {
                                 message: format!(
-                                    "Stream interrupted, retrying in {}s (attempt {}/{})",
+                                    "LLM stream request failed, retrying in {}s (attempt {}/{})",
                                     delay_ms / 1000,
                                     stream_attempt + 1,
                                     MAX_STREAM_RETRIES,
                                 ),
                             });
                             tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                            stream_error = Some(msg);
+                            stream_attempt += 1;
                             continue;
                         }
-                        stream_error = Some(msg);
-                        break;
+
+                        break 'stream_loop Err(err_msg);
                     }
                 }
-            }
+            };
 
-            // Stream retries exhausted — escalate to recovery engine.
-            let msg = stream_error.unwrap_or_else(|| "unknown stream error".to_string());
-            self.recovery_ctx.record_error(&msg);
-            match self.try_recover(&msg).await {
-                RecoveryOutcome::Retry => {
-                    tracing::info!("recovery engine retrying after stream errors");
-                    continue;
+            let r = match stream_result {
+                Ok(res_val) => res_val,
+                Err(msg) => {
+                    self.recovery_ctx.record_error(&msg);
+                    match self.try_recover(&msg).await {
+                        RecoveryOutcome::Retry => {
+                            tracing::info!("recovery engine retrying after stream errors");
+                            continue;
+                        }
+                        RecoveryOutcome::GiveUp => return Err(msg),
+                    }
                 }
-                RecoveryOutcome::GiveUp => return Err(msg),
-            }
+            };
+
+            self.recovery_ctx.record_success();
+            self.hook_registry.lock().fire_after_model(&r.0, r.1.len());
+            return Ok(r);
         }
 
         Err("exhausted recovery attempts".to_string())
@@ -606,5 +592,16 @@ impl Run {
                 tracing::warn!(error = %e, "failed to serialize session snapshot");
             }
         }
+    }
+}
+
+fn format_user_friendly_error(err: &str) -> String {
+    let lower = err.to_lowercase();
+    if lower.contains("503") || lower.contains("service unavailable") || lower.contains("502") || lower.contains("bad gateway") || lower.contains("504") || lower.contains("gateway timeout") {
+        "The AI model service is temporarily unavailable or overloaded (returned a server 503/502 error). I tried to connect several times but it is still not responding. Please try again in a minute; this is usually a brief issue on the provider's side.".to_string()
+    } else if lower.contains("429") || lower.contains("rate limit") {
+        "The AI model service is currently rate-limiting requests (HTTP 429). I retried several times but it is still busy — please wait a moment and try again.".to_string()
+    } else {
+        err.to_string()
     }
 }

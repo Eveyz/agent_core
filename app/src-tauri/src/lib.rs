@@ -101,6 +101,32 @@ async fn send_message(
         }
     }
 
+    // ── Prompt lifecycle: create prompt with 'running' status ──────
+    // This way, if the app crashes mid-run, startup repair will mark
+    // the orphaned prompt as 'interrupted' instead of leaving the
+    // frontend stuck on "Working...".
+    let prompt_id: Option<String> = if let Some(ref sid) = session_id {
+        let sm = state.session_manager.clone();
+        let msg = message.clone();
+        let m = model.clone().unwrap_or_else(|| "unknown".to_string());
+        let sid_owned = sid.clone();
+        match tokio::task::spawn_blocking(move || {
+            sm.create_prompt(&sid_owned, &msg, &m)
+        }).await {
+            Ok(Ok((pid, _turn))) => Some(pid),
+            Ok(Err(e)) => {
+                eprintln!("[prompt] failed to create prompt: {e}");
+                None
+            }
+            Err(e) => {
+                eprintln!("[prompt] create_prompt task panicked: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Create the Run
     let run_id = manager
         .create_run_with_workdir(&message, session_id.clone(), working_dir, history)
@@ -124,6 +150,8 @@ async fn send_message(
 
     // Spawn a task to forward events to the frontend.
     let app_handle_clone = app_handle.clone();
+    let sm_for_task = state.session_manager.clone();
+    let pid_for_task = prompt_id.clone();
     tokio::spawn(async move {
         loop {
             match event_rx.recv().await {
@@ -133,14 +161,30 @@ async fn send_message(
                     }
                     // Prevent WKWebView IPC flood which can drop the first events of a burst
                     tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
-                    
+
                     // Check if this is a terminal event
-                    if matches!(
-                        event.event,
-                        RunEvent::RunCompleted { .. }
-                            | RunEvent::RunCancelled { .. }
-                            | RunEvent::RunFailed { .. }
-                    ) {
+                    let maybe_terminal = match &event.event {
+                        RunEvent::RunCompleted { .. } => Some("completed"),
+                        RunEvent::RunCancelled { .. } => Some("cancelled"),
+                        RunEvent::RunFailed { .. } => Some("failed"),
+                        _ => None,
+                    };
+
+                    if let Some(status) = maybe_terminal {
+                        // ── Prompt lifecycle: mark prompt as finished ──
+                        if let Some(ref pid) = pid_for_task {
+                            let sm = sm_for_task.clone();
+                            let pid_owned = pid.clone();
+                            let status_owned = status.to_string();
+                            let _ = tokio::task::spawn_blocking(move || {
+                                if let Err(e) = sm.finish_prompt(
+                                    &pid_owned, &status_owned,
+                                    &serde_json::json!({}),
+                                ) {
+                                    eprintln!("[prompt] failed to finish prompt: {e}");
+                                }
+                            }).await;
+                        }
                         break;
                     }
                 }
@@ -1802,6 +1846,40 @@ pub fn run() {
                     "UPDATE sessions SET project_id = '__adhoc_chat__' WHERE project_id IS NULL OR project_id = ''",
                     [],
                 );
+            }
+
+            // ── Startup zombie repair ─────────────────────────────────
+            // If the app crashed / was killed / lost power, any prompt
+            // still in 'running' state is an orphan. Mark them as
+            // 'interrupted' so the frontend doesn't show "Working..."
+            // forever. The ended_at timestamp uses the last saved message
+            // time (most accurate), falling back to started_at, then now.
+            // Same for workflow runs.
+            {
+                let db = storage.conn();
+                let now = chrono::Utc::now().to_rfc3339();
+
+                let zombie_prompts = db.execute(
+                    "UPDATE prompts SET status = 'interrupted', ended_at = COALESCE( \
+                     (SELECT sm.created_at FROM session_messages sm \
+                      WHERE sm.session_id = prompts.session_id \
+                      ORDER BY sm.msg_index DESC LIMIT 1), \
+                     prompts.started_at, ?1) \
+                     WHERE status = 'running'",
+                    agent_core::rusqlite::params![now],
+                ).unwrap_or(0);
+
+                let zombie_workflows = db.execute(
+                    "UPDATE workflow_runs SET status = 'interrupted', finished_at = ?1, error = 'App restarted — run was interrupted' WHERE status = 'running'",
+                    agent_core::rusqlite::params![now],
+                ).unwrap_or(0);
+
+                if zombie_prompts > 0 || zombie_workflows > 0 {
+                    eprintln!(
+                        "[startup] zombie repair: {} prompts, {} workflow runs interrupted",
+                        zombie_prompts, zombie_workflows
+                    );
+                }
             }
 
             let session_manager = Arc::new(

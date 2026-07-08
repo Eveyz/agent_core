@@ -1,8 +1,9 @@
-import { RefObject } from 'react';
-import { useSelector } from 'react-redux';
+import { RefObject, useState } from 'react';
+import { useSelector, useDispatch } from 'react-redux';
 import { RootState } from '../../store';
 import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
 import { LazyEntry } from '../chat/LazyEntry';
+import { loadMorePrompts } from '../../features/chat/chatSlice';
 
 interface ChatAreaProps {
   entryIds: string[];
@@ -27,15 +28,53 @@ export function ChatArea({
   handleRetry,
   onSend,
 }: ChatAreaProps) {
+  const dispatch = useDispatch();
   const btwEntries = useSelector((state: RootState) => state.chat.btwEntries);
   const learnEntries = useSelector((state: RootState) => state.chat.learnEntries);
   const goal = useSelector((state: RootState) => state.chat.goal);
   const goalCompleted = useSelector((state: RootState) => state.chat.goalCompleted);
 
+  const allPrompts = useSelector((state: RootState) => state.chat.allPrompts);
+  const visiblePromptsCount = useSelector((state: RootState) => state.chat.visiblePromptsCount);
+  const [isLoadingOlder, setIsLoadingOlder] = useState(false);
+
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const target = e.currentTarget;
+    if (
+      target.scrollTop < 30 &&
+      visiblePromptsCount < allPrompts.length &&
+      !isLoadingOlder &&
+      !isProcessing
+    ) {
+      setIsLoadingOlder(true);
+
+      const oldScrollHeight = target.scrollHeight;
+      const oldScrollTop = target.scrollTop;
+
+      setTimeout(() => {
+        dispatch(loadMorePrompts());
+
+        requestAnimationFrame(() => {
+          if (scrollRef.current) {
+            const newScrollHeight = scrollRef.current.scrollHeight;
+            const deltaHeight = newScrollHeight - oldScrollHeight;
+            scrollRef.current.scrollTop = oldScrollTop + deltaHeight;
+          }
+          setIsLoadingOlder(false);
+        });
+      }, 400); // Natural loading delay
+    }
+  };
+
   return (
     <>
-      <div className="chat-history" ref={scrollRef}>
+      <div className="chat-history" ref={scrollRef} onScroll={handleScroll}>
         <div ref={contentRef} style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+          {isLoadingOlder && (
+            <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '16px 0' }}>
+              <div className="loader-spinner" />
+            </div>
+          )}
           {goal && (
             <div style={{
               padding: '8px 12px',

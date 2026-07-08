@@ -115,7 +115,7 @@ impl RecoveryEngine {
             // infrastructure may need more time to stabilize.
             if ["timeout", "stream error", "connection", "reset",
                 "broken pipe", "connection refused", "eof",
-                "unexpected eof", "dns"].iter()
+                "unexpected eof", "dns", "empty response", "no useful events", "sse stream", "stream"].iter()
                 .any(|kw| error.contains(kw))
             {
                 if let Some(ref fallback) = self.fallback_model

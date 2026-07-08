@@ -1,4 +1,4 @@
-import type { ChatEntry, SubagentEntry, TurnBlock, SubagentBlock, DeltaPayload } from './types';
+import type { ChatEntry, SubagentEntry, TurnBlock, SubagentBlock, DeltaPayload, ChatState } from './types';
 import type { FrontendMessage } from '../project/projectSlice';
 
 // ── Block helpers (shared between main agent + subagent) ─────────────
@@ -226,11 +226,7 @@ export function entriesToEventLog(
 
   for (const entry of entries) {
     if (entry.type === 'turn' && entry.blocks) {
-      let assistantText = '';
-      for (const b of entry.blocks) {
-        if (b.type === 'assistant') assistantText += b.text;
-      }
-      if (!assistantText.trim()) continue;
+      if (entry.blocks.length === 0) continue;
 
       if (entry.startTime && entry.endTime) {
         processTimeMs += entry.endTime - entry.startTime;
@@ -285,4 +281,54 @@ export function entriesToEventLog(
   }
 
   return { eventLog, processTimeMs, thoughtTimeMs };
+}
+
+export function getFullMessages(chatState: ChatState): FrontendMessage[] {
+  const invisibleCount = chatState.allPrompts.length - chatState.visiblePromptsCount;
+  const msgs: FrontendMessage[] = [];
+
+  // 1. Add messages from invisible prompts (read directly from prompt.messages)
+  for (let i = 0; i < invisibleCount; i++) {
+    const prompt = chatState.allPrompts[i];
+    if (prompt && prompt.messages) {
+      msgs.push(...prompt.messages);
+    }
+  }
+
+  // 2. Add messages from visible prompts/entries (serialized using entriesToMessages)
+  msgs.push(...entriesToMessages(chatState.entries));
+
+  return msgs;
+}
+
+export function getFullEventLog(chatState: ChatState): {
+  eventLog: unknown[];
+  processTimeMs: number;
+  thoughtTimeMs: number;
+} {
+  // 1. Get event log for visible entries
+  const { eventLog: visibleLog, processTimeMs, thoughtTimeMs } = entriesToEventLog(
+    chatState.entries,
+    chatState.subagents
+  );
+
+  // 2. Filter out any events in allEventLog that correspond to visible turns
+  const visibleTurnIndexes = new Set(
+    chatState.entries
+      .filter((e) => e.type === 'turn')
+      .map((e) => e.turnIndex)
+      .filter((x) => x !== undefined) as number[]
+  );
+  const filteredInvisibleLog = chatState.allEventLog.filter(
+    (ev) => !visibleTurnIndexes.has(ev.turn_index)
+  );
+
+  // 3. Combine them
+  const combinedLog = [...filteredInvisibleLog, ...visibleLog];
+
+  return {
+    eventLog: combinedLog,
+    processTimeMs,
+    thoughtTimeMs,
+  };
 }

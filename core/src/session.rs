@@ -141,6 +141,80 @@ impl SessionManager {
         Self { storage }
     }
 
+    // ── Prompt lifecycle ────────────────────────────────────────────
+
+    /// Create a prompt record with status='running' when a Run starts.
+    /// Returns (prompt_id, turn_index).
+    ///
+    /// The prompt is later updated via [`finish_prompt`] when the Run
+    /// completes / is cancelled / fails. On startup, any prompt still
+    /// in 'running' state is repaired to 'interrupted' (zombie recovery).
+    pub fn create_prompt(
+        &self,
+        session_id: &str,
+        user_message: &str,
+        model: &str,
+    ) -> Result<(String, u32)> {
+        let db = self.storage.conn();
+        let now = chrono::Utc::now().to_rfc3339();
+        let prompt_id = uuid::Uuid::new_v4().to_string();
+
+        // Compute the next turn_index atomically.
+        let turn_index: u32 = db
+            .query_row(
+                "SELECT COALESCE(MAX(turn_index), -1) + 1 FROM prompts WHERE session_id = ?1",
+                rusqlite::params![session_id],
+                |row| row.get::<_, i64>(0).map(|v| v as u32),
+            )
+            .unwrap_or(0);
+
+        db.execute(
+            "INSERT INTO prompts (id, session_id, turn_index, user_message, model, status, started_at, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, 'running', ?6, ?6)",
+            rusqlite::params![prompt_id, session_id, turn_index, user_message, model, now],
+        )?;
+
+        Ok((prompt_id, turn_index))
+    }
+
+    /// Update a prompt's status and ended_at when a Run finishes.
+    pub fn finish_prompt(
+        &self,
+        prompt_id: &str,
+        status: &str,
+        token_usage: &serde_json::Value,
+    ) -> Result<()> {
+        let db = self.storage.conn();
+        let now = chrono::Utc::now().to_rfc3339();
+        let token_str = serde_json::to_string(token_usage).unwrap_or_else(|_| "{}".to_string());
+        db.execute(
+            "UPDATE prompts SET status = ?1, ended_at = ?2, token_usage = ?3 WHERE id = ?4",
+            rusqlite::params![status, now, token_str, prompt_id],
+        )?;
+        Ok(())
+    }
+
+    /// Repair zombie prompts: any prompt still in 'running' state on
+    /// startup was interrupted by a crash / restart / power loss.
+    ///
+    /// The `ended_at` timestamp is derived from the last session message
+    /// (if any were saved before the crash), falling back to the prompt's
+    /// `started_at`, then to the current time.
+    pub fn repair_zombie_prompts(&self) -> Result<usize> {
+        let db = self.storage.conn();
+        let now = chrono::Utc::now().to_rfc3339();
+        let count = db.execute(
+            "UPDATE prompts SET status = 'interrupted', ended_at = COALESCE( \
+             (SELECT sm.created_at FROM session_messages sm \
+              WHERE sm.session_id = prompts.session_id \
+              ORDER BY sm.msg_index DESC LIMIT 1), \
+             prompts.started_at, ?1) \
+             WHERE status = 'running'",
+            rusqlite::params![now],
+        )?;
+        Ok(count)
+    }
+
     // ── Save ────────────────────────────────────────────────────────
 
     /// Save the current conversation as a session.
@@ -243,11 +317,7 @@ impl SessionManager {
                 "UPDATE sessions SET message_count = ?1, prompt_count = ?2, updated_at = ?3, end_time = ?4, cwd = ?5, model_used = ?6 WHERE id = ?7",
                 rusqlite::params![msg_count, 0, now, now, cwd, model_used, id],
             )?;
-            // Delete old prompts + messages (cascade)
-            tx.execute(
-                "DELETE FROM prompts WHERE session_id = ?1",
-                rusqlite::params![id],
-            )?;
+            // Delete old messages (prompts are kept — they track lifecycle independently)
             tx.execute(
                 "DELETE FROM session_messages WHERE session_id = ?1",
                 rusqlite::params![id],
@@ -277,9 +347,10 @@ impl SessionManager {
             rusqlite::params![prompt_count, id],
         )?;
 
-        // Insert prompts and their messages
+        // Upsert prompts (preserve lifecycle status for existing ones)
+        // and insert their messages.
         for (prompt_idx, group) in prompt_groups.iter().enumerate() {
-            let prompt_id = uuid::Uuid::new_v4().to_string();
+            let turn_idx = prompt_idx as i64;
             let user_msg = group.first()
                 .and_then(|m| m.content.as_deref())
                 .unwrap_or("");
@@ -287,11 +358,30 @@ impl SessionManager {
                 .find_map(|m| m.model.as_deref())
                 .unwrap_or(model_used);
 
-            tx.execute(
-                "INSERT INTO prompts (id, session_id, turn_index, user_message, model, status, started_at, created_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, 'completed', ?6, ?6)",
-                rusqlite::params![prompt_id, id, prompt_idx as i64, user_msg, prompt_model, now],
-            )?;
+            // Check if a prompt already exists at this (session_id, turn_index).
+            let existing_id: Option<String> = tx.query_row(
+                "SELECT id FROM prompts WHERE session_id = ?1 AND turn_index = ?2",
+                rusqlite::params![id, turn_idx],
+                |row| row.get(0),
+            ).ok();
+
+            let prompt_id = if let Some(pid) = existing_id {
+                // Update existing prompt (keep its lifecycle status + timestamps).
+                tx.execute(
+                    "UPDATE prompts SET user_message = ?1, model = ?2 WHERE id = ?3",
+                    rusqlite::params![user_msg, prompt_model, pid],
+                )?;
+                pid
+            } else {
+                // New prompt (legacy or fresh session without pre-created prompts).
+                let pid = uuid::Uuid::new_v4().to_string();
+                tx.execute(
+                    "INSERT INTO prompts (id, session_id, turn_index, user_message, model, status, started_at, created_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, 'completed', ?6, ?6)",
+                    rusqlite::params![pid, id, turn_idx, user_msg, prompt_model, now],
+                )?;
+                pid
+            };
 
             for (msg_idx, msg) in group.iter().enumerate() {
                 let role = msg.role.to_string();
@@ -427,8 +517,7 @@ impl SessionManager {
                  FROM session_messages WHERE session_id = ?1 ORDER BY msg_index ASC",
             )?;
 
-            let mut messages: Vec<(i64, Message)> = Vec::new();
-            let rows = stmt.query_map(rusqlite::params![session_id], |row| {
+             let rows = stmt.query_map(rusqlite::params![session_id], |row| {
                 let role_str: String = row.get(0)?;
                 let content: String = row.get(1)?;
                 let tool_calls_json: String = row.get(2)?;
@@ -471,15 +560,16 @@ impl SessionManager {
                 ))
             })?;
 
+            let mut messages_by_prompt: std::collections::HashMap<String, Vec<(i64, Message)>> = std::collections::HashMap::new();
+            let mut legacy_messages = Vec::new();
             for row in rows {
-                let (idx, msg, _pid) = row?;
-                messages.push((idx, msg));
+                let (idx, msg, pid) = row?;
+                if !pid.is_empty() {
+                    messages_by_prompt.entry(pid).or_default().push((idx, msg));
+                } else {
+                    legacy_messages.push((idx, msg));
+                }
             }
-            messages.sort_by_key(|(idx, _)| *idx);
-            let flat_messages: Vec<Message> = messages
-                .into_iter()
-                .map(|(_, m)| m)
-                .collect();
 
             // Load prompts
             let mut prompt_stmt = db.prepare(
@@ -504,7 +594,44 @@ impl SessionManager {
             })?;
             let mut prompts: Vec<Prompt> = Vec::new();
             for row in prompt_rows {
-                prompts.push(row?);
+                let mut prompt = row?;
+                if let Some(mut msgs) = messages_by_prompt.remove(&prompt.id) {
+                    msgs.sort_by_key(|(idx, _)| *idx);
+                    let mut cleaned_msgs: Vec<Message> = msgs.into_iter().map(|(_, m)| m).collect();
+
+                    // Clean up interrupted prompts to prevent dangling tool calls from confusing LLMs.
+                    if prompt.status != "completed" {
+                        cleaned_msgs.retain(|msg| msg.role != crate::types::Role::Tool);
+                        for msg in &mut cleaned_msgs {
+                            if msg.role == crate::types::Role::Assistant {
+                                msg.tool_calls = None;
+                            }
+                        }
+                        let has_assistant = cleaned_msgs.iter().any(|msg| msg.role == crate::types::Role::Assistant);
+                        if !has_assistant {
+                            cleaned_msgs.push(Message {
+                                role: crate::types::Role::Assistant,
+                                content: Some("[Execution Interrupted]".to_string()),
+                                tool_calls: None,
+                                tool_call_id: None,
+                                name: None,
+                                model: None,
+                            });
+                        }
+                    }
+                    prompt.messages = cleaned_msgs;
+                }
+                prompts.push(prompt);
+            }
+
+            // Reconstruct clean flat history list from cleaned prompts
+            let mut flat_messages = Vec::new();
+            for p in &prompts {
+                flat_messages.extend(p.messages.clone());
+            }
+            if !legacy_messages.is_empty() {
+                legacy_messages.sort_by_key(|(idx, _)| *idx);
+                flat_messages.extend(legacy_messages.into_iter().map(|(_, m)| m));
             }
 
             // If no prompts exist (legacy data), build them by scanning User boundaries
@@ -730,57 +857,63 @@ impl SessionManager {
 
     /// Permanently delete a session and all its associated data (messages, recall memory, summaries, runs, agent history, subagent sessions, and files).
     pub fn delete(&self, session_id: &str) -> Result<bool> {
-        let db = self.storage.conn();
+        // 1. Find child sessions. Drop the lock before recursing —
+        //    parking_lot::Mutex is NOT reentrant, so holding it while
+        //    calling self.delete() would deadlock.
+        let child_ids: Vec<String> = {
+            let db = self.storage.conn();
+            let mut stmt = db.prepare("SELECT id FROM sessions WHERE parent_session_id = ?1")?;
+            stmt.query_map(rusqlite::params![session_id], |row| row.get(0))?
+                .filter_map(|r| r.ok())
+                .collect()
+        }; // lock released here
 
-        // 1. Find and delete child/subagent sessions recursively to clean their files and database entries
-        let mut stmt = db.prepare("SELECT id FROM sessions WHERE parent_session_id = ?1")?;
-        let child_ids: Vec<String> = stmt
-            .query_map(rusqlite::params![session_id], |row| row.get(0))?
-            .filter_map(|r| r.ok())
-            .collect();
-        for child_id in child_ids {
-            let _ = self.delete(&child_id);
+        // Recurse into children (each gets its own transaction)
+        for child_id in &child_ids {
+            let _ = self.delete(child_id);
         }
 
-        // 2. Clean up associated database tables referencing session_id
-        db.execute(
+        // 2. Delete all DB data for this session in a single transaction
+        let mut db = self.storage.conn();
+        let tx = db.transaction()?;
+
+        tx.execute(
             "DELETE FROM recall_memory WHERE session_id = ?1",
             rusqlite::params![session_id],
         )?;
-        db.execute(
+        tx.execute(
             "DELETE FROM conversation_summaries WHERE session_id = ?1",
             rusqlite::params![session_id],
         )?;
-        db.execute(
+        tx.execute(
             "DELETE FROM agent_history WHERE session_id = ?1",
             rusqlite::params![session_id],
         )?;
-        db.execute(
+        tx.execute(
             "DELETE FROM workflow_runs WHERE session_id = ?1",
             rusqlite::params![session_id],
         )?;
-        db.execute(
+        tx.execute(
             "DELETE FROM cronjob_runs WHERE session_id = ?1",
             rusqlite::params![session_id],
         )?;
-
-        // 3. Delete prompts and messages first (foreign key cascade should handle this, but do it explicitly)
-        db.execute(
+        tx.execute(
             "DELETE FROM prompts WHERE session_id = ?1",
             rusqlite::params![session_id],
         )?;
-        db.execute(
+        tx.execute(
             "DELETE FROM session_messages WHERE session_id = ?1",
             rusqlite::params![session_id],
         )?;
 
-        // 4. Delete the main session row
-        let changed = db.execute(
+        let changed = tx.execute(
             "DELETE FROM sessions WHERE id = ?1",
             rusqlite::params![session_id],
         )?;
 
-        // 5. Clean up associated files from the filesystem
+        tx.commit()?;
+
+        // 3. Clean up associated files from the filesystem (best-effort)
         let agverse_dir = crate::paths::get_agverse_dir();
 
         // Delete mid-turn session snapshot file

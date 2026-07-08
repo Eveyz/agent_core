@@ -3,9 +3,10 @@ import { invoke } from '@tauri-apps/api/core';
 import { resumeSession, deleteSession } from '../project/projectSlice';
 
 import type {
-  TurnBlock, SubagentEntry, ChatState, RunState, EventLogEntry,
+  TurnBlock, SubagentEntry, ChatState, RunState, EventLogEntry, ChatEntry, FrontendPrompt,
 } from './types';
 import { processSingleEvent, stopDanglingSubagents } from './eventHandlers';
+import { entriesToEventLog } from './utils';
 
 // ── Re-export types, selectors, and utils for backward compatibility ─
 export type {
@@ -16,7 +17,7 @@ export {
   selectEntryIds, selectEntryById, selectSubagentById,
   selectPendingApprovalCount, selectActivePendingApproval,
 } from './selectors';
-export { entriesToMessages, entriesToEventLog, stringifyResult } from './utils';
+export { entriesToMessages, entriesToEventLog, stringifyResult, getFullMessages, getFullEventLog } from './utils';
 
 // ── Initial state ────────────────────────────────────────────────────
 
@@ -48,6 +49,12 @@ const initialState: ChatState = {
   learnEntries: [],
   goal: null,
   goalCompleted: false,
+  allPrompts: [],
+  visiblePromptsCount: 1,
+  allPromptsBySession: {},
+  visiblePromptsCountBySession: {},
+  allEventLog: [],
+  eventLogBySession: {},
   cacheMetrics: null,
 };
 
@@ -101,6 +108,210 @@ export const invalidateSkillsCache = createAsyncThunk(
   }
 );
 
+function rebuildEntries(state: ChatState, eventLog: EventLogEntry[]) {
+  if (!state.allPrompts || state.allPrompts.length === 0) {
+    state.entries = [];
+    return;
+  }
+
+  // 1. Rebuild prompt status map by turn_index for zombie detection.
+  const promptStatusByTurn = new Map<number, string>();
+  for (const p of state.allPrompts) {
+    promptStatusByTurn.set(p.turn_index, p.status);
+  }
+
+  // 2. Group the event log by turn_index
+  const eventsByTurn = new Map<number, EventLogEntry[]>();
+  if (eventLog && Array.isArray(eventLog)) {
+    for (const ev of eventLog) {
+      const arr = eventsByTurn.get(ev.turn_index);
+      if (arr) arr.push(ev);
+      else eventsByTurn.set(ev.turn_index, [ev]);
+    }
+  }
+
+  // 3. Make sure all subagents are populated in state.subagents
+  if (eventLog && Array.isArray(eventLog)) {
+    for (const ev of eventLog) {
+      if (ev.event_type === 'subagent' && ev.payload) {
+        const payload = ev.payload as Record<string, unknown>;
+        const subId = payload.id as string | undefined;
+        if (subId) {
+          state.subagents[subId] = payload as unknown as SubagentEntry;
+        }
+      }
+    }
+  }
+
+  const toPayload = (ev: EventLogEntry): Record<string, unknown> =>
+    ev.payload && typeof ev.payload === 'object' && !Array.isArray(ev.payload)
+      ? (ev.payload as Record<string, unknown>)
+      : {};
+
+  // 4. Get the visible prompts slice (last visiblePromptsCount prompts)
+  const count = state.visiblePromptsCount;
+  const startIdx = Math.max(0, state.allPrompts.length - count);
+  const visiblePrompts = state.allPrompts.slice(startIdx);
+
+  const newEntries: ChatEntry[] = [];
+
+  for (const prompt of visiblePrompts) {
+    // A. Push the user entry
+    newEntries.push({
+      id: `user-${prompt.id}`,
+      type: 'user',
+      text: prompt.user_message,
+      model: prompt.model,
+    });
+
+    // B. Reconstruct the turn entry if it has messages/events or is running
+    const turnIdx = prompt.turn_index;
+    const blocks: TurnBlock[] = [];
+    const turnEvents = eventsByTurn.get(turnIdx) ?? [];
+
+    for (const ev of turnEvents) {
+      if (
+        ev.event_type !== 'tool_call' &&
+        ev.event_type !== 'subagent' &&
+        ev.event_type !== 'thinking' &&
+        ev.event_type !== 'assistant'
+      ) {
+        continue;
+      }
+      const payload = toPayload(ev);
+      if (ev.event_type === 'tool_call') {
+        blocks.push({
+          type: 'tool',
+          call_id: `restored-${Math.random()}`,
+          name: (payload.name as string) ?? 'unknown',
+          args: payload.args ?? undefined,
+          result: (payload.args_summary as string) ?? '',
+          active: false,
+          is_error: !!payload.is_error,
+        });
+      } else if (ev.event_type === 'subagent') {
+        const subId = payload.id as string | undefined;
+        if (subId) {
+          blocks.push({
+            type: 'subagent_ref',
+            subagent_id: subId,
+          });
+        }
+      } else if (ev.event_type === 'thinking') {
+        const payload = ev.payload as Record<string, unknown>;
+        blocks.push({
+          type: 'thinking',
+          text: (payload.text as string) ?? '',
+          isStreaming: false,
+          startTime: payload.startTime as number | undefined,
+          endTime: payload.endTime as number | undefined,
+        });
+      } else if (ev.event_type === 'assistant') {
+        const payload = ev.payload as Record<string, unknown>;
+        blocks.push({
+          type: 'assistant',
+          text: (payload.text as string) ?? '',
+          isStreaming: false,
+        });
+      }
+    }
+
+    // Parse prompt assistant messages
+    const asstMsg = prompt.messages.find((m) => m.role === 'assistant');
+    if (asstMsg) {
+      const hasThinkTag = asstMsg.content?.match(/<think>([\s\S]*?)<\/think>/);
+      if (hasThinkTag) {
+        const thinkContent = hasThinkTag[1];
+        const restContent = asstMsg.content!.replace(/<think>[\s\S]*?<\/think>/, '').trim();
+        const thinkBlock = blocks.find((b) => b.type === 'thinking');
+        if (thinkBlock) {
+          thinkBlock.text = thinkContent;
+        } else {
+          blocks.push({ type: 'thinking', text: thinkContent, isStreaming: false });
+        }
+        const asstBlock = blocks.find((b) => b.type === 'assistant');
+        if (asstBlock) {
+          asstBlock.text = restContent;
+        } else if (restContent) {
+          blocks.push({ type: 'assistant', text: restContent, isStreaming: false });
+        }
+      } else {
+        const assistantBlock = blocks.find((b) => b.type === 'assistant');
+        if (assistantBlock && asstMsg.content) {
+          assistantBlock.text = asstMsg.content;
+        } else if (!assistantBlock && asstMsg.content) {
+          blocks.push({ type: 'assistant', text: asstMsg.content, isStreaming: false });
+        }
+      }
+    }
+
+    let startTime: number | undefined = undefined;
+    let endTime: number | undefined = undefined;
+    let cacheHitRate: number | undefined = undefined;
+    let turnIds: string[] | undefined = undefined;
+    for (const ev of turnEvents) {
+      if (ev.event_type === 'turn_meta' && ev.payload) {
+        const meta = ev.payload as Record<string, unknown>;
+        startTime = meta.startTime as number | undefined;
+        endTime = meta.endTime as number | undefined;
+        cacheHitRate = meta.cacheHitRate as number | undefined;
+        turnIds = meta.turnIds as string[] | undefined;
+        break;
+      }
+    }
+
+    // Fallback to database prompt timestamps if event_log's turn_meta is missing/incomplete
+    if (!startTime && prompt.started_at) {
+      const parsed = new Date(prompt.started_at).getTime();
+      if (!isNaN(parsed)) startTime = parsed;
+    }
+    const isCompletedStatus =
+      prompt.status === 'completed' ||
+      prompt.status === 'cancelled' ||
+      prompt.status === 'failed' ||
+      prompt.status === 'interrupted';
+    if (isCompletedStatus && !endTime) {
+      if (prompt.ended_at) {
+        const parsed = new Date(prompt.ended_at).getTime();
+        if (!isNaN(parsed)) endTime = parsed;
+      }
+      if (!endTime && startTime) {
+        endTime = startTime + 5000; // default to 5s execution
+      }
+      if (!endTime) {
+        endTime = Date.now();
+      }
+    }
+
+    let subagentIds: string[] | undefined = undefined;
+    for (const ev of turnEvents) {
+      if (ev.event_type !== 'subagent') continue;
+      const payload = toPayload(ev);
+      const subId = payload.id as string | undefined;
+      if (subId) {
+        if (!subagentIds) subagentIds = [];
+        subagentIds.push(subId);
+      }
+    }
+
+    const pStatus = promptStatusByTurn.get(turnIdx);
+    newEntries.push({
+      id: `turn-${turnIdx}-${prompt.id}`,
+      type: 'turn',
+      turnIndex: turnIdx,
+      blocks,
+      subagentIds,
+      startTime,
+      endTime,
+      cacheHitRate,
+      turnIds,
+      interrupted: pStatus === 'interrupted' || pStatus === 'cancelled',
+    });
+  }
+
+  state.entries = newEntries;
+}
+
 // ── Slice ────────────────────────────────────────────────────────────
 
 export const chatSlice = createSlice({
@@ -121,6 +332,9 @@ export const chatSlice = createSlice({
         state.steerQueueBySession = {};
       }
       state.steerQueueBySession[sessionId] = state.steerQueue;
+      state.allPromptsBySession[sessionId] = state.allPrompts;
+      state.visiblePromptsCountBySession[sessionId] = state.visiblePromptsCount;
+      state.eventLogBySession[sessionId] = state.allEventLog;
     },
     restoreOrClearSession: (state, action: PayloadAction<string>) => {
       const sessionId = action.payload;
@@ -133,6 +347,9 @@ export const chatSlice = createSlice({
         state.runId = state.runIdBySession[sessionId] ?? null;
         state.todo = state.todoBySession?.[sessionId] ?? [];
         state.steerQueue = state.steerQueueBySession?.[sessionId] ?? [];
+        state.allPrompts = state.allPromptsBySession[sessionId] ?? [];
+        state.visiblePromptsCount = state.visiblePromptsCountBySession[sessionId] ?? 1;
+        state.allEventLog = state.eventLogBySession[sessionId] ?? [];
       } else {
         state.entries = [];
         state.isProcessing = false;
@@ -140,6 +357,9 @@ export const chatSlice = createSlice({
         state.runId = null;
         state.todo = [];
         state.steerQueue = [];
+        state.allPrompts = [];
+        state.visiblePromptsCount = 1;
+        state.allEventLog = [];
       }
       state.viewingSubagentPath = [];
       state._resumedFromBackend = false;
@@ -148,6 +368,22 @@ export const chatSlice = createSlice({
       state.goal = null;
       state.goalCompleted = false;
     },
+    loadMorePrompts: (state) => {
+      const { eventLog } = entriesToEventLog(state.entries, state.subagents);
+      const visibleTurnIndexes = new Set(
+        state.entries
+          .filter((e) => e.type === 'turn')
+          .map((e) => e.turnIndex)
+          .filter((x) => x !== undefined) as number[]
+      );
+      const filteredOldEventLog = state.allEventLog.filter(
+        (ev) => !visibleTurnIndexes.has(ev.turn_index)
+      );
+      state.allEventLog = [...filteredOldEventLog, ...(eventLog as EventLogEntry[])];
+
+      state.visiblePromptsCount += 2;
+      rebuildEntries(state, state.allEventLog);
+    },
     userMessageSent: (state, action: PayloadAction<{ text: string; model?: string }>) => {
       state.entries.push({
         id: `user-${Date.now()}`,
@@ -155,6 +391,26 @@ export const chatSlice = createSlice({
         text: action.payload.text,
         model: action.payload.model,
       });
+      const newPrompt: FrontendPrompt = {
+        id: `user-prompt-${Date.now()}-${Math.random()}`,
+        session_id: state.activeSessionId ?? '',
+        turn_index: state.allPrompts.length,
+        user_message: action.payload.text,
+        model: action.payload.model ?? '',
+        status: 'running',
+        token_usage: {},
+        started_at: new Date().toISOString(),
+        ended_at: null,
+        created_at: new Date().toISOString(),
+        messages: [{
+          role: 'user',
+          content: action.payload.text,
+          model: action.payload.model,
+        }],
+      };
+      state.allPrompts.push(newPrompt);
+      state.visiblePromptsCount = Math.max(state.visiblePromptsCount, state.allPrompts.length);
+
       state.isProcessing = true;
       state._resumedFromBackend = false;
       state.todo = [];
@@ -334,165 +590,16 @@ export const chatSlice = createSlice({
     builder.addCase(resumeSession.fulfilled, (state, action) => {
       state.isResuming = false;
       if (state.entries.length > 0) return;
-      const { messages, event_log } = action.payload;
+      const { event_log, prompts } = action.payload;
       state.entries = [];
       state.isProcessing = false;
 
-      // Group the event log by turn_index once, instead of scanning the
-      // full array three times per assistant turn (O(turns x events)).
-      const eventsByTurn = new Map<number, EventLogEntry[]>();
-      if (event_log && Array.isArray(event_log)) {
-        for (const ev of event_log) {
-          const arr = eventsByTurn.get(ev.turn_index);
-          if (arr) arr.push(ev);
-          else eventsByTurn.set(ev.turn_index, [ev]);
-        }
-      }
+      state.allPrompts = prompts ?? [];
+      state.allEventLog = event_log ?? [];
+      // Initially render only the last 2 prompts (or 1 if only 1 exists)
+      state.visiblePromptsCount = Math.min(2, state.allPrompts.length);
 
-      const toPayload = (ev: EventLogEntry): Record<string, unknown> =>
-        ev.payload && typeof ev.payload === 'object' && !Array.isArray(ev.payload)
-          ? (ev.payload as Record<string, unknown>)
-          : {};
-
-      let assistantIdx = 0;
-      for (const msg of messages) {
-        if (msg.role === 'user') {
-          const msgModel = (msg as { model?: string }).model;
-          state.entries.push({
-            id: `user-${Date.now()}-${Math.random()}`,
-            type: 'user',
-            text: msg.content,
-            model: msgModel,
-          });
-        } else if (msg.role === 'assistant') {
-          const turnIdx = assistantIdx;
-          assistantIdx++;
-          const blocks: TurnBlock[] = [];
-
-          const turnEvents = eventsByTurn.get(turnIdx) ?? [];
-          for (const ev of turnEvents) {
-            if (
-              ev.event_type !== 'tool_call' &&
-              ev.event_type !== 'subagent' &&
-              ev.event_type !== 'thinking' &&
-              ev.event_type !== 'assistant'
-            ) {
-              continue;
-            }
-            const payload = toPayload(ev);
-            if (ev.event_type === 'tool_call') {
-              blocks.push({
-                type: 'tool',
-                call_id: `restored-${Math.random()}`,
-                name: (payload.name as string) ?? 'unknown',
-                args: payload.args ?? undefined,
-                result: (payload.args_summary as string) ?? '',
-                active: false,
-                is_error: !!payload.is_error,
-              });
-            } else if (ev.event_type === 'subagent') {
-              const subId = payload.id as string | undefined;
-              if (subId) {
-                blocks.push({
-                  type: 'subagent_ref',
-                  subagent_id: subId,
-                });
-              }
-            } else if (ev.event_type === 'thinking') {
-              const payload = ev.payload as Record<string, unknown>;
-              blocks.push({
-                type: 'thinking',
-                text: (payload.text as string) ?? '',
-                isStreaming: false,
-                startTime: payload.startTime as number | undefined,
-                endTime: payload.endTime as number | undefined,
-              });
-            } else if (ev.event_type === 'assistant') {
-              const payload = ev.payload as Record<string, unknown>;
-              blocks.push({
-                type: 'assistant',
-                text: (payload.text as string) ?? '',
-                isStreaming: false,
-              });
-            }
-          }
-
-          // Prefer full message content over event_log (which may be truncated).
-          // The event_log assistant block serves as a fallback — if msg.content
-          // is available, use it for a complete restore.
-          //
-          // If the content contains <think>...</think> tags (written by
-          // entriesToMessages for session persistence), extract the thinking
-          // portion into a separate block so the UI renders it correctly.
-          const hasThinkTag = msg.content?.match(/<think>([\s\S]*?)<\/think>/);
-          if (hasThinkTag) {
-            const thinkContent = hasThinkTag[1];
-            const restContent = msg.content!.replace(/<think>[\s\S]*?<\/think>/, '').trim();
-            // Replace or create thinking block
-            const thinkBlock = blocks.find((b) => b.type === 'thinking');
-            if (thinkBlock) {
-              thinkBlock.text = thinkContent;
-            } else {
-              blocks.push({ type: 'thinking', text: thinkContent, isStreaming: false });
-            }
-            // Update assistant block with content after the think tag
-            const asstBlock = blocks.find((b) => b.type === 'assistant');
-            if (asstBlock) {
-              asstBlock.text = restContent;
-            } else if (restContent) {
-              blocks.push({ type: 'assistant', text: restContent, isStreaming: false });
-            }
-          } else {
-            // Legacy: no think tags, just use msg.content as-is
-            const assistantBlock = blocks.find((b) => b.type === 'assistant');
-            if (assistantBlock && msg.content) {
-              assistantBlock.text = msg.content;
-            } else if (!assistantBlock) {
-              blocks.push({ type: 'assistant', text: msg.content, isStreaming: false });
-            }
-          }
-
-          let startTime: number | undefined = undefined;
-          let endTime: number | undefined = undefined;
-          let cacheHitRate: number | undefined = undefined;
-          let turnIds: string[] | undefined = undefined;
-          for (const ev of turnEvents) {
-            if (ev.event_type === 'turn_meta' && ev.payload) {
-              const meta = ev.payload as Record<string, unknown>;
-              startTime = meta.startTime as number | undefined;
-              endTime = meta.endTime as number | undefined;
-              cacheHitRate = meta.cacheHitRate as number | undefined;
-              turnIds = meta.turnIds as string[] | undefined;
-              break;
-            }
-          }
-
-          let subagentIds: string[] | undefined = undefined;
-          for (const ev of turnEvents) {
-            if (ev.event_type !== 'subagent') continue;
-            const payload = toPayload(ev);
-            const subId = payload.id as string | undefined;
-            if (subId) {
-              if (!subagentIds) subagentIds = [];
-              subagentIds.push(subId);
-              state.subagents[subId] = payload as unknown as SubagentEntry;
-            }
-          }
-
-          state.entries.push({
-            id: `turn-${turnIdx}-${Date.now()}`,
-            type: 'turn',
-            turnIndex: turnIdx,
-            blocks,
-            subagentIds,
-            startTime,
-            endTime,
-            cacheHitRate,
-            turnIds,
-          });
-        }
-      }
-
+      rebuildEntries(state, state.allEventLog);
       state._resumedFromBackend = true;
     });
     builder.addCase(deleteSession.fulfilled, (state, action) => {
@@ -501,6 +608,9 @@ export const chatSlice = createSlice({
       delete state.processingBySession[sessionId];
       delete state.subagentsBySession[sessionId];
       delete state.runIdBySession[sessionId];
+      delete state.allPromptsBySession[sessionId];
+      delete state.visiblePromptsCountBySession[sessionId];
+      delete state.eventLogBySession[sessionId];
       if (state.todoBySession) {
         delete state.todoBySession[sessionId];
       }
@@ -522,6 +632,7 @@ export const {
   agentAborted,
   cacheCurrentSession,
   restoreOrClearSession,
+  loadMorePrompts,
   retryFromEntry,
   runIdSet,
   runStateChanged,
