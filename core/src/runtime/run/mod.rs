@@ -181,6 +181,11 @@ pub struct Run {
     /// Written after each assistant message to prevent data loss on disconnect.
     session_snapshot_path: Option<std::path::PathBuf>,
 
+    /// Monotonic generation for background snapshot writes. A newer save
+    /// bumps this so an in-flight older write can skip its disk I/O and
+    /// avoid clobbering a fresher snapshot.
+    session_snapshot_gen: Arc<AtomicU64>,
+
     /// Shared, read-only context snapshot for side-channel `/btw` queries.
     /// Refreshed at turn boundaries; read via `RunHandle::context_snapshot()`.
     context_snapshot: Arc<RwLock<Vec<Message>>>,
@@ -329,6 +334,7 @@ impl Run {
             tool_catalog_cache: None,
             registered_script_tools: Vec::new(),
             session_snapshot_path,
+            session_snapshot_gen: Arc::new(AtomicU64::new(0)),
             context_snapshot,
             goal: None,
             goal_completed: false,

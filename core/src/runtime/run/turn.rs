@@ -605,31 +605,59 @@ impl Run {
         Ok((text_buffer, tool_calls, message_id, cache_usage))
     }
 
-    /// Write the current context messages to the per-session snapshot file.
-    /// This is a best-effort mid-turn persistence — failures are logged but
-    /// never propagated (session save should not block the primary loop).
-    pub(super) fn save_session_snapshot(&self) {
-        let Some(ref path) = self.session_snapshot_path else {
+    /// Queue a best-effort mid-turn context snapshot write on the blocking
+    /// pool. Serialization + disk I/O never stall the turn loop (e.g. before
+    /// emitting `ApprovalRequired`). A generation counter drops superseded
+    /// in-flight writes so an older snapshot cannot overwrite a newer one.
+    pub(super) fn save_session_snapshot(&mut self) {
+        let Some(path) = self.session_snapshot_path.clone() else {
             return;
         };
         let messages = self.context.messages();
-        match serde_json::to_string(&messages) {
-            Ok(json) => {
+        let generation = self
+            .session_snapshot_gen
+            .fetch_add(1, Ordering::Relaxed)
+            + 1;
+        let gen_arc = self.session_snapshot_gen.clone();
+
+        self.join_set.spawn(async move {
+            let write_result = tokio::task::spawn_blocking(move || {
+                // Another save was queued after us — skip this write.
+                if gen_arc.load(Ordering::Relaxed) != generation {
+                    return Ok(());
+                }
+                let json = serde_json::to_string(&messages).map_err(|e| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
+                })?;
+                // Re-check after serialize: a newer save may have started.
+                if gen_arc.load(Ordering::Relaxed) != generation {
+                    return Ok(());
+                }
                 if let Some(parent) = path.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
                 let tmp_path = path.with_extension("tmp.snapshot");
-                if let Err(e) = std::fs::write(&tmp_path, &json)
-                    .and_then(|_| std::fs::rename(&tmp_path, path))
+                match std::fs::write(&tmp_path, &json).and_then(|_| std::fs::rename(&tmp_path, &path))
                 {
-                    let _ = std::fs::remove_file(&tmp_path);
-                    tracing::warn!(path = %path.display(), error = %e, "failed to write session snapshot");
+                    Ok(()) => Ok(()),
+                    Err(e) => {
+                        let _ = std::fs::remove_file(&tmp_path);
+                        Err(e)
+                    }
+                }
+            })
+            .await;
+
+            match write_result {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "failed to write session snapshot");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "session snapshot task panicked or cancelled");
                 }
             }
-            Err(e) => {
-                tracing::warn!(error = %e, "failed to serialize session snapshot");
-            }
-        }
+        });
     }
 }
 
