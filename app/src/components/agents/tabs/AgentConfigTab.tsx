@@ -7,7 +7,7 @@ import { PERMISSION_MODES, MEMORY_MODES, type AgentDef } from "../../../features
 import { updateAgent } from "../../../features/agents/agentSlice";
 import XIcon from "lucide-react/dist/esm/icons/x.mjs";
 import ChevronDownIcon from "lucide-react/dist/esm/icons/chevron-down.mjs";
-import WandIcon from "lucide-react/dist/esm/icons/wand-2.mjs";
+import ZapIcon from "lucide-react/dist/esm/icons/zap.mjs";
 
 interface SkillInfo {
   name: string;
@@ -159,7 +159,7 @@ export function AgentConfigTab({ agent }: AgentConfigTabProps) {
               {selectedSkills.length > 0 && (
                 <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", padding: "12px 12px 0 12px", background: "var(--bg-secondary)" }}>
                   {selectedSkills.map(s => (
-                    <div key={s} style={{ display: "flex", alignItems: "center", gap: "4px", background: "var(--accent-subtle)", color: "var(--accent)", padding: "4px 8px", borderRadius: "6px", fontSize: "12px", userSelect: "none" }}>
+                    <div key={s} style={{ display: "flex", alignItems: "center", gap: "4px", background: "rgba(139, 92, 246, 0.12)", color: "var(--violet-500)", border: "1px solid rgba(139, 92, 246, 0.25)", padding: "4px 8px", borderRadius: "6px", fontSize: "12px", userSelect: "none" }}>
                       <span style={{ fontWeight: 500 }}>{s}</span>
                       <XIcon size={14} style={{ cursor: "pointer", opacity: 0.7 }} onClick={() => setSelectedSkills(selectedSkills.filter(sk => sk !== s))} />
                     </div>
@@ -229,7 +229,7 @@ export function AgentConfigTab({ agent }: AgentConfigTabProps) {
                       onClick={() => setShowSkillDropdown(!showSkillDropdown)}
                       title="Attach skills"
                     >
-                      <WandIcon size={16} />
+                      <ZapIcon size={16} style={{ color: 'var(--violet-500)' }} />
                     </button>
 
                     {showSkillDropdown && (

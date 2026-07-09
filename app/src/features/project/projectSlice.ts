@@ -66,7 +66,6 @@ interface ProjectState {
   sessions: Record<string, SessionMeta[]>; // project_id -> sessions
   activeProjectId: string | null;
   activeSessionId: string | null;
-  sessionMessages: FrontendMessage[];  // messages of current session
   loading: boolean;
   error: string | null;
 }
@@ -79,13 +78,55 @@ const savedActiveSessionId = localStorage.getItem(SESSION_KEY);
 
 const saveQueueBySession: Record<string, Promise<unknown>> = {};
 const saveGenerationBySession: Record<string, number> = {};
+const lastAppliedSaveGenerationBySession: Record<string, number> = {};
+
+/** Sort sessions by last activity (newest first), stable tie-breaker on id. */
+export function sortSessionsByActivity(sessions: SessionMeta[]): SessionMeta[] {
+  return [...sessions].sort((a, b) => {
+    const diff = new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+    if (diff !== 0) return diff;
+    return b.id.localeCompare(a.id);
+  });
+}
+
+/** Find which project owns a session in the loaded sidebar cache. */
+export function findProjectIdForSession(
+  sessions: Record<string, SessionMeta[]>,
+  sessionId: string,
+): string | null {
+  for (const [projectId, list] of Object.entries(sessions)) {
+    if (list.some((s) => s.id === sessionId)) return projectId;
+  }
+  return null;
+}
+
+function patchSessionActivity(
+  state: ProjectState,
+  sessionId: string,
+  updatedAt: string,
+  messageCount?: number,
+): void {
+  for (const [projectId, list] of Object.entries(state.sessions)) {
+    const session = list.find((s) => s.id === sessionId);
+    if (!session) continue;
+    const incoming = new Date(updatedAt).getTime();
+    const current = new Date(session.updated_at).getTime();
+    if (incoming >= current) {
+      session.updated_at = updatedAt;
+    }
+    if (messageCount !== undefined) {
+      session.message_count = messageCount;
+    }
+    state.sessions[projectId] = sortSessionsByActivity(list);
+    return;
+  }
+}
 
 const initialState: ProjectState = {
   projects: [],
   sessions: {},
   activeProjectId: savedActiveId,
   activeSessionId: savedActiveSessionId,
-  sessionMessages: [],
   loading: false,
   error: null,
 };
@@ -273,7 +314,6 @@ export const projectSlice = createSlice({
       state.activeProjectId = action.payload;
       // Clear session when switching projects
       state.activeSessionId = null;
-      state.sessionMessages = [];
       if (action.payload) {
         localStorage.setItem(STORAGE_KEY, action.payload);
         localStorage.removeItem(SESSION_KEY);
@@ -290,11 +330,9 @@ export const projectSlice = createSlice({
         localStorage.removeItem(SESSION_KEY);
       }
     },
-    clearSessionMessages: (state) => {
-      state.sessionMessages = [];
-    },
-    setSessionMessages: (state, action: PayloadAction<FrontendMessage[]>) => {
-      state.sessionMessages = action.payload;
+    /** Optimistic sidebar bump when the user sends a message (before DB save). */
+    touchSessionActivity: (state, action: PayloadAction<{ sessionId: string; updatedAt?: string }>) => {
+      patchSessionActivity(state, action.payload.sessionId, action.payload.updatedAt ?? new Date().toISOString());
     },
   },
   extraReducers: (builder) => {
@@ -313,7 +351,6 @@ export const projectSlice = createSlice({
             const nextProject = state.projects.find((p) => p.id !== '__adhoc_chat__') || state.projects[0];
             state.activeProjectId = nextProject?.id ?? null;
             state.activeSessionId = null;
-            state.sessionMessages = [];
             if (state.activeProjectId) {
               localStorage.setItem(STORAGE_KEY, state.activeProjectId);
             } else {
@@ -335,7 +372,6 @@ export const projectSlice = createSlice({
         state.projects.unshift(action.payload);
         state.activeProjectId = action.payload.id;
         state.activeSessionId = null;
-        state.sessionMessages = [];
         localStorage.setItem(STORAGE_KEY, action.payload.id);
         localStorage.removeItem(SESSION_KEY);
       })
@@ -345,7 +381,6 @@ export const projectSlice = createSlice({
         if (state.activeProjectId === action.payload) {
           state.activeProjectId = state.projects[0]?.id ?? null;
           state.activeSessionId = null;
-          state.sessionMessages = [];
           if (state.activeProjectId) {
             localStorage.setItem(STORAGE_KEY, state.activeProjectId);
           } else {
@@ -361,9 +396,7 @@ export const projectSlice = createSlice({
       })
       // ── Sessions listing ──
       .addCase(fetchProjectSessions.fulfilled, (state, action) => {
-        state.sessions[action.payload.projectId] = action.payload.sessions.sort(
-          (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-        );
+        state.sessions[action.payload.projectId] = sortSessionsByActivity(action.payload.sessions);
       })
       // ── Session CRUD ──
       .addCase(createSession.fulfilled, (state, action) => {
@@ -374,7 +407,6 @@ export const projectSlice = createSlice({
         state.sessions[projectId].unshift(session);
         state.activeProjectId = projectId;
         state.activeSessionId = session.id;
-        state.sessionMessages = [];
         localStorage.setItem(STORAGE_KEY, projectId);
         localStorage.setItem(SESSION_KEY, session.id);
       })
@@ -385,7 +417,6 @@ export const projectSlice = createSlice({
         }
         if (state.activeSessionId === sessionId) {
           state.activeSessionId = state.sessions[projectId]?.[0]?.id ?? null;
-          state.sessionMessages = [];
           if (state.activeSessionId) {
             localStorage.setItem(SESSION_KEY, state.activeSessionId);
           } else {
@@ -403,20 +434,22 @@ export const projectSlice = createSlice({
         }
       })
       .addCase(saveSessionMessages.fulfilled, (state, action) => {
-        const { sessionId, messageCount } = action.payload;
-        for (const [, list] of Object.entries(state.sessions)) {
-          const s = list.find((s) => s.id === sessionId);
-          if (s) {
-            s.message_count = messageCount;
-            break;
-          }
-        }
-      })
-      .addCase(resumeSession.fulfilled, (state, action) => {
-        state.sessionMessages = action.payload.messages;
+        const { sessionId, messageCount, updated_at, generation } = action.payload;
+        const latestGeneration = saveGenerationBySession[sessionId] ?? 0;
+        if (generation < latestGeneration) return;
+        lastAppliedSaveGenerationBySession[sessionId] = generation;
+        patchSessionActivity(state, sessionId, updated_at, messageCount);
       });
   },
 });
 
-export const { setActiveProject, setActiveSession, clearSessionMessages, setSessionMessages } = projectSlice.actions;
+export function __testSetSaveGeneration(sessionId: string, generation: number): void {
+  saveGenerationBySession[sessionId] = generation;
+}
+
+export const {
+  setActiveProject,
+  setActiveSession,
+  touchSessionActivity,
+} = projectSlice.actions;
 export default projectSlice.reducer;

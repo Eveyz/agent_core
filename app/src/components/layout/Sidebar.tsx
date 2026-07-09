@@ -14,9 +14,7 @@ import {
   createSession,
   deleteSession,
 } from "../../features/project/projectSlice";
-import {
-  clearChat,
-} from "../../features/chat/chatSlice";
+import { selectIsResumingActive } from "../../features/chat/chatSlice";
 import { useAppDispatch } from "../../hooks/useAppDispatch";
 import { useSaveSession } from "../../hooks/useSaveSession";
 import { useConfirmDialog } from "../ui/DialogManager";
@@ -171,9 +169,7 @@ export const Sidebar = memo(function Sidebar({
   const processingBySession = useSelector(
     (state: RootState) => state.chat.processing,
   );
-  const isResuming = useSelector(
-    (state: RootState) => state.chat.isResuming,
-  );
+  const isResuming = useSelector(selectIsResumingActive);
   const defaultModel = useSelector(
     (state: RootState) => state.settings.config?.default_model || "",
   );
@@ -262,7 +258,7 @@ export const Sidebar = memo(function Sidebar({
   );
 
   // Save current session to backend + memory cache (P2-3: uses shared useSaveSession hook)
-  const saveSession = useSaveSession();
+  const { saveSession } = useSaveSession();
   const saveAndCacheCurrent = useCallback(() => {
     const project = projects.find((p) => p.id === activeProjectId);
     saveSession({
@@ -278,9 +274,10 @@ export const Sidebar = memo(function Sidebar({
       setCreatingSession(true);
       try {
         saveAndCacheCurrent();
-        dispatch(setActiveProject(projectId));
+        // createSession.fulfilled sets activeProjectId + activeSessionId atomically.
+        // Do not null the session first — that raced with useSessionLoader and
+        // wiped the previous session's in-memory cache.
         await dispatch(createSession(projectId));
-        dispatch(clearChat());
       } finally {
         setCreatingSession(false);
       }

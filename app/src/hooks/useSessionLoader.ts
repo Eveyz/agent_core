@@ -4,8 +4,10 @@ import {
   resumeSession,
   setActiveSession,
 } from '../features/project/projectSlice';
-import { clearChat } from '../features/chat/chatSlice';
 import { setDefaultModel } from '../features/settings/settingsSlice';
+
+/** Session placeholders stored before a real model is chosen; don't overwrite global default. */
+const PLACEHOLDER_SESSION_MODELS = new Set(['default', 'unknown']);
 
 interface UseSessionLoaderProps {
   projectsLoaded: boolean;
@@ -26,10 +28,10 @@ export function useSessionLoader({
   useEffect(() => {
     if (!projectsLoaded || !activeProjectId) return;
 
-    if (!activeSessionId) {
-      dispatch(clearChat());
-      return;
-    }
+    // No active session — leave other sessions' in-memory caches intact.
+    // New-session creation briefly nulls activeSessionId; clearing here would
+    // wipe the previous session's cache mid-save.
+    if (!activeSessionId) return;
 
     const requestSeq = ++requestSeqRef.current;
     const requestedSessionId = activeSessionId;
@@ -39,7 +41,7 @@ export function useSessionLoader({
         dispatch(setActiveSession(null));
       } else {
         const modelUsed = result.payload.meta.model_used;
-        if (modelUsed) {
+        if (modelUsed && !PLACEHOLDER_SESSION_MODELS.has(modelUsed)) {
           dispatch(setDefaultModel(modelUsed));
         }
         // Scroll to bottom after session is loaded from backend

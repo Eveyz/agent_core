@@ -1,8 +1,8 @@
 import { memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { useSelector } from 'react-redux';
+import { useSelector, useDispatch } from 'react-redux';
 import type { RootState } from '../../store';
-import type { ChatEntry } from '../../features/chat/chatSlice';
+import { type ChatEntry, steerMessageCancelled } from '../../features/chat/chatSlice';
 import ClockIcon from 'lucide-react/dist/esm/icons/clock.mjs';
 import CheckCircleIcon from 'lucide-react/dist/esm/icons/check-circle.mjs';
 import XIcon from 'lucide-react/dist/esm/icons/x.mjs';
@@ -10,11 +10,17 @@ import XIcon from 'lucide-react/dist/esm/icons/x.mjs';
 export const SteerRow = memo(function SteerRow({ entry }: {
   entry: ChatEntry;
 }) {
-  const runId = useSelector((state: RootState) => state.chat.runId[state.chat.activeSessionId ?? '']);
+  const dispatch = useDispatch();
+  const activeSessionId = useSelector((state: RootState) => state.project.activeSessionId);
+  const runId = useSelector((state: RootState) => state.chat.runId[activeSessionId ?? '']);
   const isPending = entry.steerStatus === 'pending';
 
   const handleCancel = async () => {
-    if (!runId || !entry.steerId) return;
+    if (!entry.steerId) return;
+    if (!runId) {
+      dispatch(steerMessageCancelled({ sessionId: activeSessionId ?? '', steerId: entry.steerId }));
+      return;
+    }
     try {
       await invoke('cancel_steer', { runId, steerId: entry.steerId });
     } catch (e) {

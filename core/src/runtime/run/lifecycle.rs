@@ -40,14 +40,61 @@ impl Run {
         self.emit(RunEvent::RunStarted);
         self.transition(RunState::Running);
 
-        // Add user message to context (strip /goal prefix; pin as goal when present)
+        // Add user message to context (strip /goal prefix; pin as goal when present; clean /learn prefix)
         let goal = user_input
             .strip_prefix("/goal ")
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
-        let display_input = goal.clone().unwrap_or_else(|| user_input.to_string());
+        let is_learn = user_input.trim() == "/learn" || user_input.trim().starts_with("/learn ");
+        let display_input = if is_learn {
+            "/learn".to_string()
+        } else {
+            goal.clone().unwrap_or_else(|| user_input.to_string())
+        };
         self.context.add(Message::user_with_model(&display_input, &self.client.model.model_id));
         self.refresh_context_snapshot();
+
+        // /learn: inject system instruction prompting the agent to extract and save lessons
+        if is_learn {
+            let learn_content = if user_input.trim() == "/learn" {
+                "".to_string()
+            } else {
+                user_input.trim().strip_prefix("/learn ").unwrap_or("").trim().to_string()
+            };
+
+            let learn_prompt = if learn_content.is_empty() {
+                "System instruction: The user wants you to learn from this session. Please analyze the conversation history, identify any critical lessons, coding standards, user preferences, or workflows established. \
+                 \n\n\
+                 You have two ways to save this learning based on its complexity:\n\
+                 1. Core Memory: If it is a user trait, simple preference, or rule, call the `core_memory_append` tool (with block_id: 'human') to append it.\n\
+                 2. Custom Skill: If it is a complex workflow, reusable procedure, or specialized agent task, create a Custom Skill. To create the skill:\n\
+                    - Check if there is an available meta skill called `skill-creator` (by Anthropic). If it is available, use the `skill-creator` skill to build the skill.\n\n\
+                    - If the `skill-creator` skill is not available, fallback to writing a `SKILL.md` file (starting with YAML frontmatter containing 'name' and 'description') under one of the customization directories:\n\
+                      * Workspace root: `.agents/skills/<skill_name>/SKILL.md` (applies to all agents in this project)\n\
+                      * Antigravity/Gemini Global: `/Users/zniverse/.gemini/config/skills/<skill_name>/SKILL.md`\n\
+                      * Claude Code Global: `~/.claudecode/skills/<skill_name>/SKILL.md`\n\
+                      * OpenCode / Codex Global customization folders.\n\n\
+                 Choose the most appropriate approach, call the corresponding tools to save it, and respond explaining what you have learned and saved.".to_string()
+            } else {
+                format!(
+                    "System instruction: The user wants you to save the following specific learning/rule/workflow:\n\
+                     \"{}\"\n\n\
+                     You have two ways to save this based on its complexity:\n\
+                     1. Core Memory: If it is a user preference, habit, or simple rule, call the `core_memory_append` tool (with block_id: 'human') to append it.\n\
+                     2. Custom Skill: If it is a complex workflow, reusable procedure, or specialized agent task, create a Custom Skill. To create the skill:\n\
+                        - Check if there is an available meta skill called `skill-creator` (by Anthropic). If it is available, use the `skill-creator` skill to build the skill.\n\n\
+                        - If the `skill-creator` skill is not available, fallback to writing a `SKILL.md` file (starting with YAML frontmatter containing 'name' and 'description') under one of the customization directories:\n\
+                          * Workspace root: `.agents/skills/<skill_name>/SKILL.md` (applies to all agents in this project)\n\
+                          * Antigravity/Gemini Global: `/Users/zniverse/.gemini/config/skills/<skill_name>/SKILL.md`\n\
+                          * Claude Code Global: `~/.claudecode/skills/<skill_name>/SKILL.md`\n\
+                          * OpenCode / Codex Global customization folders.\n\n\
+                     Choose the most appropriate approach, call the corresponding tools to save it, and respond to confirm what you have saved.",
+                    learn_content
+                )
+            };
+
+            self.context.add(Message::system(&learn_prompt));
+        }
 
         // Store in memory if enabled
         if let Some(ref mem) = self.brain.memory {
@@ -382,3 +429,5 @@ impl Run {
         // TODO: implement input request mechanism (future phase)
     }
 }
+
+

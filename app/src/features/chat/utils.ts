@@ -5,6 +5,21 @@ import type { FrontendMessage } from '../project/projectSlice';
 
 export type AnyBlock = TurnBlock | SubagentBlock;
 
+/**
+ * Backend recovery emits `RunEvent::Error` with these phrases while the run
+ * is still alive (retry / compact / escalate / model switch). Treat them as
+ * progress notices, not terminal failures.
+ */
+export function isRecoveryMessage(text: string): boolean {
+  return (
+    text.includes('retrying model call') ||
+    text.includes('compacting to') ||
+    text.includes('escalating max_tokens') ||
+    text.includes('switching to fallback model') ||
+    text.includes('retrying in')
+  );
+}
+
 export function blockMessageId(b: AnyBlock): string | undefined {
   return 'message_id' in b ? (b as { message_id?: string }).message_id : undefined;
 }
@@ -236,12 +251,6 @@ export function entriesToMessages(
     }
   }
   return msgs;
-}
-
-export function getFullMessages(chatState: ChatState): FrontendMessage[] {
-  const sessionId = chatState.activeSessionId;
-  if (!sessionId) return [];
-  return getFullMessagesForSession(chatState, sessionId);
 }
 
 export function getFullMessagesForSession(

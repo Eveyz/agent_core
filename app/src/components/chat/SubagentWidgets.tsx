@@ -1,5 +1,5 @@
 import { useMemo, useCallback, useState, useEffect, memo } from 'react';
-import { useSelector } from 'react-redux';
+import { useSelector, useStore } from 'react-redux';
 import type { RootState } from '../../store';
 import { useAppDispatch } from '../../hooks/useAppDispatch';
 import { viewSubagent } from '../../features/chat/chatSlice';
@@ -54,7 +54,8 @@ const SubagentSpawnWidget = memo(function SubagentSpawnWidget({
 const SubagentCard = memo(function SubagentCard({ subagentId }: { subagentId: string }) {
   const { t } = useTranslation();
   const dispatch = useAppDispatch();
-  const subagent = useSelector((state: RootState) => (state.chat.subagents[state.chat.activeSessionId ?? ''] ?? {})[subagentId]);
+  const store = useStore<RootState>();
+  const subagent = useSelector((state: RootState) => (state.chat.subagents[state.project.activeSessionId ?? ''] ?? {})[subagentId]);
 
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -106,8 +107,10 @@ const SubagentCard = memo(function SubagentCard({ subagentId }: { subagentId: st
   );
 
   const handleViewDetails = useCallback(() => {
-    dispatch(viewSubagent({ id: subagentId, name: idText }));
-  }, [dispatch, subagentId, idText]);
+    const sessionId = store.getState().project.activeSessionId;
+    if (!sessionId) return;
+    dispatch(viewSubagent({ sessionId, id: subagentId, name: idText }));
+  }, [dispatch, store, subagentId, idText]);
 
   if (!subagent) return null;
 

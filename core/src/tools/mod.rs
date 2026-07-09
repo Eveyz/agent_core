@@ -345,6 +345,15 @@ pub fn build_tool_by_name(name: &str) -> Option<Box<dyn Tool>> {
 }
 
 pub fn register_memory_tools(registry: &mut ToolRegistry, memory: Arc<Mutex<MemoryManager>>) {
+    registry.register(Box::new(core_memory::CoreMemoryReadTool::new(
+        memory.clone(),
+    )));
+    registry.register(Box::new(core_memory::CoreMemoryAppendTool::new(
+        memory.clone(),
+    )));
+    registry.register(Box::new(core_memory::CoreMemoryReplaceTool::new(
+        memory.clone(),
+    )));
     registry.register(Box::new(recall_memory::ConversationSearchTool::new(
         memory.clone(),
     )));

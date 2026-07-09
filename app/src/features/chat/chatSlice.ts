@@ -1,6 +1,6 @@
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
 import { invoke } from '@tauri-apps/api/core';
-import { resumeSession, deleteSession, saveSessionMessages, setActiveSession, createSession } from '../project/projectSlice';
+import { resumeSession, deleteSession, saveSessionMessages } from '../project/projectSlice';
 
 import type {
   TurnBlock, SubagentEntry, ChatState, RunState, ChatEntry, FrontendPrompt,
@@ -14,9 +14,12 @@ export type {
 } from './types';
 export {
   selectEntryIds, selectEntryById, selectSubagentById,
-  selectPendingApprovalCount, selectActivePendingApproval,
+  selectPendingApprovalCount, selectHasActivePendingApproval,
+  selectActivePendingApproval, pendingApprovalEqual,
+  selectViewingSubagentPath, selectActiveBtwEntries,
+  selectIsResumingActive,
 } from './selectors';
-export { entriesToMessages, stringifyResult, getFullMessages, getFullMessagesForSession, getTimingMetrics } from './utils';
+export { entriesToMessages, stringifyResult, getFullMessagesForSession, getTimingMetrics } from './utils';
 
 // ── Helper ──────────────────────────────────────────────────────────
 
@@ -35,6 +38,10 @@ function ensureSession(state: ChatState, sessionId: string) {
   if (state._resumedFromBackend[sessionId] === undefined) state._resumedFromBackend[sessionId] = false;
   if (state.goal[sessionId] === undefined) state.goal[sessionId] = null;
   if (state.goalCompleted[sessionId] === undefined) state.goalCompleted[sessionId] = false;
+  if (state.viewingSubagentPath[sessionId] === undefined) state.viewingSubagentPath[sessionId] = [];
+  if (state.btwEntries[sessionId] === undefined) state.btwEntries[sessionId] = [];
+  if (state.isResuming[sessionId] === undefined) state.isResuming[sessionId] = false;
+  if (state._pendingTurnId[sessionId] === undefined) state._pendingTurnId[sessionId] = undefined;
 }
 
 // ── Initial state ────────────────────────────────────────────────────
@@ -54,15 +61,14 @@ const initialState: ChatState = {
   _thinkBuffers: {},
   goal: {},
   goalCompleted: {},
-  activeSessionId: null,
+  viewingSubagentPath: {},
+  btwEntries: {},
+  isResuming: {},
+  _pendingTurnId: {},
   runIdToSessionId: {},
   lastSeqByRun: {},
-  viewingSubagentPath: [],
-  btwEntries: [],
-  learnEntries: [],
   skillsCache: null,
   resyncing: false,
-  isResuming: false,
   _pendingGap: null,
   cacheMetrics: null,
 };
@@ -264,9 +270,14 @@ function rebuildEntries(state: ChatState, sessionId: string) {
   }
 
   const existingEntries = state.entries[sessionId] ?? [];
+  const existingByKey = new Map<string, ChatEntry>();
+  for (const e of existingEntries) {
+    existingByKey.set(`${e.type}:${e.promptId ?? e.id}`, e);
+  }
+
   const mergedEntries = newEntries.map((entry) => {
     if (!entry.promptId) return entry;
-    const existing = existingEntries.find((e) => e.type === entry.type && e.promptId === entry.promptId);
+    const existing = existingByKey.get(`${entry.type}:${entry.promptId}`);
     if (!existing) return entry;
     if (entry.type === 'turn' && existing.type === 'turn') {
       const existingBlocks = existing.blocks?.length ?? 0;
@@ -296,23 +307,18 @@ export const chatSlice = createSlice({
   name: 'chat',
   initialState,
   reducers: {
-    loadMorePrompts: (state) => {
-      const sid = state.activeSessionId;
-      if (!sid) return;
+    loadMorePrompts: (state, action: PayloadAction<{ sessionId: string }>) => {
+      const sid = action.payload.sessionId;
       ensureSession(state, sid);
       state.visiblePromptsCount[sid] += 2;
       rebuildEntries(state, sid);
     },
-    userMessageSent: (state, action: PayloadAction<{ text: string; model?: string; sessionId?: string }>) => {
-      const sid = action.payload.sessionId ?? state.activeSessionId;
-      if (!sid) return;
-      if (action.payload.sessionId) {
-        state.activeSessionId = action.payload.sessionId;
-      }
+    userMessageSent: (state, action: PayloadAction<{ text: string; model?: string; sessionId: string }>) => {
+      const sid = action.payload.sessionId;
       ensureSession(state, sid);
 
       state.entries[sid].push({
-        id: `user-${Date.now()}`,
+        id: `user-${crypto.randomUUID()}`,
         type: 'user',
         promptId: Date.now().toString(),
         text: action.payload.text,
@@ -342,15 +348,10 @@ export const chatSlice = createSlice({
       state.isDirty[sid] = true;
       state.todo[sid] = [];
     },
-    runIdSet: (state, action: PayloadAction<string | { runId: string; sessionId?: string }>) => {
-      const runId = typeof action.payload === 'string' ? action.payload : action.payload.runId;
-      const sid = typeof action.payload === 'string'
-        ? state.activeSessionId
-        : action.payload.sessionId ?? state.activeSessionId;
-      if (!sid) return;
+    runIdSet: (state, action: PayloadAction<{ runId: string; sessionId: string }>) => {
+      const { runId, sessionId: sid } = action.payload;
       ensureSession(state, sid);
 
-      state.activeSessionId = sid;
       state.runId[sid] = runId;
       state.runIdToSessionId[runId] = sid;
       state.runState[sid] = 'running';
@@ -391,13 +392,12 @@ export const chatSlice = createSlice({
         }
       }
     },
-    runStateChanged: (state, action: PayloadAction<RunState>) => {
-      const sid = state.activeSessionId;
-      if (!sid) return;
+    runStateChanged: (state, action: PayloadAction<{ sessionId: string; runState: RunState }>) => {
+      const { sessionId: sid, runState } = action.payload;
       ensureSession(state, sid);
 
-      state.runState[sid] = action.payload;
-      if (action.payload === 'completed' || action.payload === 'cancelled' || action.payload === 'failed') {
+      state.runState[sid] = runState;
+      if (runState === 'completed' || runState === 'cancelled' || runState === 'failed') {
         state.processing[sid] = false;
       }
     },
@@ -413,9 +413,8 @@ export const chatSlice = createSlice({
       }
       for (const sid of dirtySessionIds) state.isDirty[sid] = true;
     },
-    toolApprovalResponded: (state, action: PayloadAction<{ promptId: string; approved: boolean }>) => {
-      const sid = state.activeSessionId;
-      if (!sid) return;
+    toolApprovalResponded: (state, action: PayloadAction<{ sessionId: string; promptId: string; approved: boolean }>) => {
+      const sid = action.payload.sessionId;
       ensureSession(state, sid);
 
       state.isDirty[sid] = true;
@@ -436,9 +435,8 @@ export const chatSlice = createSlice({
         }
       }
     },
-    clearChat: (state, action: PayloadAction<string | undefined>) => {
-      const sid = action.payload ?? state.activeSessionId;
-      if (!sid) return;
+    clearChat: (state, action: PayloadAction<string>) => {
+      const sid = action.payload;
       state.entries[sid] = [];
       state.subagents[sid] = {};
       state.processing[sid] = false;
@@ -451,13 +449,13 @@ export const chatSlice = createSlice({
       state.allPrompts[sid] = [];
       state.visiblePromptsCount[sid] = 1;
       state._thinkBuffers[sid] = {};
-      state.viewingSubagentPath = [];
-      state.btwEntries = [];
-      state.learnEntries = [];
+      state.viewingSubagentPath[sid] = [];
+      state.btwEntries[sid] = [];
+      state.isResuming[sid] = false;
+      state._pendingTurnId[sid] = undefined;
     },
-    agentAborted: (state) => {
-      const sid = state.activeSessionId;
-      if (!sid) return;
+    agentAborted: (state, action: PayloadAction<{ sessionId: string }>) => {
+      const sid = action.payload.sessionId;
       ensureSession(state, sid);
 
       state.processing[sid] = false;
@@ -472,9 +470,8 @@ export const chatSlice = createSlice({
         }
       }
     },
-    retryFromEntry: (state, action: PayloadAction<{ id: string; text?: string }>) => {
-      const sid = state.activeSessionId;
-      if (!sid) return;
+    retryFromEntry: (state, action: PayloadAction<{ sessionId: string; id: string; text?: string }>) => {
+      const sid = action.payload.sessionId;
       ensureSession(state, sid);
 
       const entries = state.entries[sid];
@@ -494,7 +491,7 @@ export const chatSlice = createSlice({
       }
       const promptId = `retry-prompt-${Date.now()}-${Math.random()}`;
       entries.push({
-        id: `user-${Date.now()}`,
+        id: `user-${crypto.randomUUID()}`,
         type: 'user',
         promptId,
         text: userText,
@@ -521,9 +518,8 @@ export const chatSlice = createSlice({
       state._resumedFromBackend[sid] = false;
       state.isDirty[sid] = true;
     },
-    sendFailed: (state, action: PayloadAction<{ sessionId?: string; error: string }>) => {
-      const sid = action.payload.sessionId ?? state.activeSessionId;
-      if (!sid) return;
+    sendFailed: (state, action: PayloadAction<{ sessionId: string; error: string }>) => {
+      const sid = action.payload.sessionId;
       ensureSession(state, sid);
       state.processing[sid] = false;
       state.runState[sid] = 'failed';
@@ -536,14 +532,20 @@ export const chatSlice = createSlice({
         endTime: Date.now(),
       });
     },
-    viewSubagent: (state, action: PayloadAction<{ id: string; name: string }>) => {
-      state.viewingSubagentPath.push(action.payload);
+    viewSubagent: (state, action: PayloadAction<{ sessionId: string; id: string; name: string }>) => {
+      const sid = action.payload.sessionId;
+      ensureSession(state, sid);
+      state.viewingSubagentPath[sid].push({ id: action.payload.id, name: action.payload.name });
     },
-    popSubagentView: (state) => {
-      state.viewingSubagentPath.pop();
+    popSubagentView: (state, action: PayloadAction<{ sessionId: string }>) => {
+      const sid = action.payload.sessionId;
+      ensureSession(state, sid);
+      state.viewingSubagentPath[sid].pop();
     },
-    clearSubagentView: (state) => {
-      state.viewingSubagentPath = [];
+    clearSubagentView: (state, action: PayloadAction<{ sessionId: string }>) => {
+      const sid = action.payload.sessionId;
+      ensureSession(state, sid);
+      state.viewingSubagentPath[sid] = [];
     },
     setResyncing: (state, action: PayloadAction<boolean>) => {
       state.resyncing = action.payload;
@@ -560,9 +562,8 @@ export const chatSlice = createSlice({
     clearSkillsCache: (state) => {
       state.skillsCache = null;
     },
-    steerMessageQueued: (state, action: PayloadAction<{ steerId: string; text: string }>) => {
-      const sid = state.activeSessionId;
-      if (!sid) return;
+    steerMessageQueued: (state, action: PayloadAction<{ sessionId: string; steerId: string; text: string }>) => {
+      const sid = action.payload.sessionId;
       ensureSession(state, sid);
 
       const { steerId, text } = action.payload;
@@ -582,12 +583,11 @@ export const chatSlice = createSlice({
       });
       state.isDirty[sid] = true;
     },
-    steerMessageInjected: (state, action: PayloadAction<string>) => {
-      const sid = state.activeSessionId;
-      if (!sid) return;
+    steerMessageInjected: (state, action: PayloadAction<{ sessionId: string; steerId: string }>) => {
+      const sid = action.payload.sessionId;
       ensureSession(state, sid);
 
-      const steerId = action.payload;
+      const { steerId } = action.payload;
       const sq = state.steerQueue[sid].find((s) => s.steerId === steerId);
       if (sq) sq.status = 'injected';
       for (const entry of state.entries[sid]) {
@@ -597,12 +597,11 @@ export const chatSlice = createSlice({
       }
       state.isDirty[sid] = true;
     },
-    steerMessageCancelled: (state, action: PayloadAction<string>) => {
-      const sid = state.activeSessionId;
-      if (!sid) return;
+    steerMessageCancelled: (state, action: PayloadAction<{ sessionId: string; steerId: string }>) => {
+      const sid = action.payload.sessionId;
       ensureSession(state, sid);
 
-      const steerId = action.payload;
+      const { steerId } = action.payload;
       state.steerQueue[sid] = state.steerQueue[sid].filter((s) => s.steerId !== steerId);
       state.entries[sid] = state.entries[sid].filter(
         (e) => !(e.type === 'user' && e.isSteer && e.steerId === steerId)
@@ -610,53 +609,52 @@ export const chatSlice = createSlice({
       state.isDirty[sid] = true;
     },
     // ── /btw side-channel ──────────────────────────────────────────
-    btwAsked: (state, action: PayloadAction<{ id: string; question: string }>) => {
-      state.btwEntries.push({ ...action.payload, answer: '', isStreaming: true, startTime: Date.now() });
+    btwAsked: (state, action: PayloadAction<{ sessionId: string; id: string; question: string }>) => {
+      const sid = action.payload.sessionId;
+      ensureSession(state, sid);
+      state.btwEntries[sid].push({
+        id: action.payload.id,
+        question: action.payload.question,
+        answer: '',
+        isStreaming: true,
+        startTime: Date.now(),
+      });
     },
-    btwDelta: (state, action: PayloadAction<{ id: string; text: string }>) => {
-      const e = state.btwEntries.find((x) => x.id === action.payload.id);
+    btwDelta: (state, action: PayloadAction<{ sessionId: string; id: string; text: string }>) => {
+      const list = state.btwEntries[action.payload.sessionId];
+      if (!list) return;
+      const e = list.find((x) => x.id === action.payload.id);
       if (e) e.answer += action.payload.text;
     },
-    btwDone: (state, action: PayloadAction<{ id: string }>) => {
-      const e = state.btwEntries.find((x) => x.id === action.payload.id);
+    btwDone: (state, action: PayloadAction<{ sessionId: string; id: string }>) => {
+      const list = state.btwEntries[action.payload.sessionId];
+      if (!list) return;
+      const e = list.find((x) => x.id === action.payload.id);
       if (e) { e.isStreaming = false; e.endTime = Date.now(); }
     },
-    btwError: (state, action: PayloadAction<{ id: string; text: string }>) => {
-      const e = state.btwEntries.find((x) => x.id === action.payload.id);
+    btwError: (state, action: PayloadAction<{ sessionId: string; id: string; text: string }>) => {
+      const list = state.btwEntries[action.payload.sessionId];
+      if (!list) return;
+      const e = list.find((x) => x.id === action.payload.id);
       if (e) { e.isStreaming = false; if (!e.answer) e.answer = `⚠ ${action.payload.text}`; e.endTime = Date.now(); }
     },
-    // ── /learn memory ──────────────────────────────────────────────
-    learnRequested: (state, action: PayloadAction<{ id: string; input: string }>) => {
-      state.learnEntries.push({ ...action.payload, status: 'pending', timestamp: Date.now() });
-    },
-    learnSaved: (state, action: PayloadAction<{ id: string; title: string; rule: string }>) => {
-      const e = state.learnEntries.find((x) => x.id === action.payload.id);
-      if (e) { e.status = 'saved'; e.title = action.payload.title; e.rule = action.payload.rule; }
-    },
-    learnError: (state, action: PayloadAction<{ id: string; error: string }>) => {
-      const e = state.learnEntries.find((x) => x.id === action.payload.id);
-      if (e) { e.status = 'error'; e.error = action.payload.error; }
-    },
+
   },
   extraReducers: (builder) => {
-    builder.addCase(setActiveSession, (state, action) => {
-      state.activeSessionId = action.payload;
+    builder.addCase(resumeSession.pending, (state, action) => {
+      const sessionId = action.meta.arg;
+      state.isResuming[sessionId] = true;
     });
-    builder.addCase(createSession.fulfilled, (state, action) => {
-      state.activeSessionId = action.payload.session.id;
-    });
-    builder.addCase(resumeSession.pending, (state) => {
-      state.isResuming = true;
-    });
-    builder.addCase(resumeSession.rejected, (state) => {
-      state.isResuming = false;
+    builder.addCase(resumeSession.rejected, (state, action) => {
+      const sessionId = action.meta.arg;
+      state.isResuming[sessionId] = false;
     });
     builder.addCase(resumeSession.fulfilled, (state, action) => {
-      state.isResuming = false;
       const sessionId = action.payload.meta.id;
-      state.activeSessionId = sessionId;
+      state.isResuming[sessionId] = false;
       if (state.entries[sessionId]?.length > 0) return;
       const { prompts } = action.payload;
+      ensureSession(state, sessionId);
       state.entries[sessionId] = [];
       state.allPrompts[sessionId] = prompts ?? [];
       state.processing[sessionId] = state.allPrompts[sessionId].some(p => p.status === 'running');
@@ -682,6 +680,11 @@ export const chatSlice = createSlice({
       delete state._thinkBuffers[sessionId];
       delete state.goal[sessionId];
       delete state.goalCompleted[sessionId];
+      delete state.viewingSubagentPath[sessionId];
+      delete state.btwEntries[sessionId];
+
+      delete state.isResuming[sessionId];
+      delete state._pendingTurnId[sessionId];
     });
     builder.addCase(saveSessionMessages.fulfilled, (state, action) => {
       const sessionId = action.payload.sessionId;
@@ -718,8 +721,5 @@ export const {
   btwDelta,
   btwDone,
   btwError,
-  learnRequested,
-  learnSaved,
-  learnError,
 } = chatSlice.actions;
 export default chatSlice.reducer;

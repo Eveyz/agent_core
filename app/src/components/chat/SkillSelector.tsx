@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import WandIcon from 'lucide-react/dist/esm/icons/wand-2.mjs';
+
 import SearchIcon from 'lucide-react/dist/esm/icons/search.mjs';
 import RefreshIcon from 'lucide-react/dist/esm/icons/refresh-cw.mjs';
 import ClockIcon from 'lucide-react/dist/esm/icons/clock.mjs';
@@ -178,7 +178,7 @@ export function SkillSelector({ onSelect, externalOpen, onExternalOpenChange }: 
         aria-expanded={open}
         aria-haspopup="listbox"
       >
-        <WandIcon size={16} />
+        <ZapIcon size={16} style={{ color: 'var(--violet-500)' }} />
       </button>
 
       {open && (
@@ -239,7 +239,7 @@ export function SkillSelector({ onSelect, externalOpen, onExternalOpenChange }: 
                         role="option"
                         aria-selected={allItems[selectedIndex]?.skill.name === skill.name}
                       >
-                        <ClockIcon size={12} className="skill-item-icon" />
+                        <ZapIcon size={14} className="skill-item-icon" style={{ color: 'var(--violet-500)' }} />
                         <div className="skill-item-content">
                           <div className="skill-item-name">{skill.name}</div>
                           <div className="skill-item-description">{skill.description}</div>
@@ -265,7 +265,7 @@ export function SkillSelector({ onSelect, externalOpen, onExternalOpenChange }: 
                         role="option"
                         aria-selected={allItems[selectedIndex]?.skill.name === skill.name}
                       >
-                        <ZapIcon size={14} className="skill-item-icon" />
+                        <ZapIcon size={14} className="skill-item-icon" style={{ color: 'var(--violet-500)' }} />
                         <div className="skill-item-content">
                           <div className="skill-item-name">{skill.name}</div>
                           <div className="skill-item-description">{skill.description}</div>

@@ -35,7 +35,8 @@ pub use context_processor::{ContextProcessor, TransformContextFn};
 pub use config::{Config, MemoryConfig, MemoryMode, ModelConfig, ReflectionConfig, RuntimeOverrides, resolve_env_value};
 pub use context::{CacheHint, Context, ContextEngine, ContextSegment, RefreshPolicy, Stability};
 pub use memory::{
-    MemoryCategory, MemoryManager, MemoryStats, SalienceConfig, SalienceScorer, ScoredRecord,
+    LifecycleReport, MemoryCategory, MemoryManager, MemoryStats, RecallIntent, SalienceConfig,
+    SalienceScorer, ScoredRecord,
 };
 pub use mode::AgentMode;
 pub use tokio_util::sync::CancellationToken;

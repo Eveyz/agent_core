@@ -6,6 +6,7 @@ import AlertTriangleIcon from 'lucide-react/dist/esm/icons/alert-triangle.mjs';
 import BanIcon from 'lucide-react/dist/esm/icons/ban.mjs';
 import FileCheckIcon from 'lucide-react/dist/esm/icons/file-check.mjs';
 import type { ChatEntry, TurnBlock } from '../../features/chat/chatSlice';
+import { isRecoveryMessage } from '../../features/chat/utils';
 import { formatTime } from '../../utils/format';
 import { MarkdownContent } from './MarkdownContent';
 import ProcessingTimer from './ProcessingTimer';
@@ -341,12 +342,8 @@ export const AgentTurnUI = memo(function AgentTurnUI({
             ) : item.type === 'error' ? (
               (() => {
                 const text = item.data.text;
-                const isRecovery = text.includes("retrying model call") ||
-                                   text.includes("compacting to") ||
-                                   text.includes("escalating max_tokens") ||
-                                   text.includes("switching to fallback model") ||
-                                   text.includes("retrying in");
-                
+                const isRecovery = isRecoveryMessage(text);
+
                 if (isRecovery && idx < renderItems.length - 1) {
                   return null;
                 }

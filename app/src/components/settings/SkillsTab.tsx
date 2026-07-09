@@ -1,6 +1,6 @@
 import { useState } from 'react';
 
-import WrenchIcon from 'lucide-react/dist/esm/icons/wrench.mjs';
+
 import BookOpenIcon from 'lucide-react/dist/esm/icons/book-open.mjs';
 import ZapIcon from 'lucide-react/dist/esm/icons/zap.mjs';
 import RefreshIcon from 'lucide-react/dist/esm/icons/refresh-cw.mjs';
@@ -22,7 +22,7 @@ export default function SkillsTab() {
       <div className="settings-section">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
           <h3 className="settings-section-title" style={{ margin: 0 }}>
-            <WrenchIcon size={14} /> Skills
+            <ZapIcon size={14} style={{ color: 'var(--violet-500)' }} /> Skills
           </h3>
           <button
             className="icon-btn"
@@ -59,7 +59,7 @@ export default function SkillsTab() {
               }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div style={{ fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <ZapIcon size={14} style={{ color: 'var(--accent)' }} />
+                    <ZapIcon size={14} style={{ color: 'var(--violet-500)' }} />
                     {skill.name}
                   </div>
                   <div style={{ fontSize: '11px', color: 'var(--text-secondary)', background: 'var(--bg-secondary)', padding: '2px 6px', borderRadius: '4px' }}>

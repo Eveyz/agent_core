@@ -17,6 +17,12 @@ import GitBranchIcon from 'lucide-react/dist/esm/icons/git-branch.mjs';
 import SquareIcon from 'lucide-react/dist/esm/icons/square.mjs';
 import ZapIcon from 'lucide-react/dist/esm/icons/zap.mjs';
 import ClockIcon from 'lucide-react/dist/esm/icons/clock.mjs';
+import MessageSquareIcon from 'lucide-react/dist/esm/icons/message-square.mjs';
+import BookOpenIcon from 'lucide-react/dist/esm/icons/book-open.mjs';
+import TargetIcon from 'lucide-react/dist/esm/icons/target.mjs';
+import BotIcon from 'lucide-react/dist/esm/icons/bot.mjs';
+import Trash2Icon from 'lucide-react/dist/esm/icons/trash-2.mjs';
+import HelpCircleIcon from 'lucide-react/dist/esm/icons/help-circle.mjs';
 import TodoPanel from './TodoPanel';
 
 import { 
@@ -39,7 +45,6 @@ export const ChatInput = memo(function ChatInput({
   currentModel,
   onSteer,
   onBtwQuery,
-  onLearn,
   disabled,
   disabledMessage,
   pendingSteerCount = 0,
@@ -50,7 +55,6 @@ export const ChatInput = memo(function ChatInput({
   currentModel: string;
   onSteer?: (message: string) => void;
   onBtwQuery?: (question: string) => void;
-  onLearn?: (content: string) => void;
   disabled?: boolean;
   disabledMessage?: string;
   pendingSteerCount?: number;
@@ -67,7 +71,7 @@ export const ChatInput = memo(function ChatInput({
   const activeSessionId = useSelector((state: RootState) => state.project.activeSessionId);
   const projects = useSelector((state: RootState) => state.project.projects);
   const activeProject = projects.find((p) => p.id === activeProjectId);
-  const steerQueue = useSelector((state: RootState) => state.chat.steerQueue[state.chat.activeSessionId ?? '']);
+  const steerQueue = useSelector((state: RootState) => state.chat.steerQueue[state.project.activeSessionId ?? '']);
 
   const {
     showAutocomplete,
@@ -105,22 +109,18 @@ export const ChatInput = memo(function ChatInput({
     if (!trimmed) return;
 
     // /btw and /learn bypass the isProcessing gate (side-channel, parallel with the main run)
-    if (trimmed.startsWith('/btw ')) {
-      const question = trimmed.slice(5).trim();
+    if (trimmed === '/btw' || trimmed.startsWith('/btw ')) {
+      const question = trimmed === '/btw' ? '' : trimmed.slice(5).trim();
       if (question) { setInput(''); onBtwQuery?.(question); closeAutocomplete(); }
       return;
     }
-    if (trimmed.startsWith('/learn ')) {
-      const content = trimmed.slice(7).trim();
-      if (content) { setInput(''); onLearn?.(content); closeAutocomplete(); }
-      return;
-    }
+
 
     if (isProcessing) return;
     setInput('');
     onSend(trimmed);
     closeAutocomplete();
-  }, [input, isProcessing, onSend, onBtwQuery, onLearn, closeAutocomplete]);
+  }, [input, isProcessing, onSend, onBtwQuery, closeAutocomplete]);
 
   const handleAbort = useCallback(() => {
     onAbort();
@@ -256,6 +256,12 @@ export const ChatInput = memo(function ChatInput({
                 {item.icon === 'lang-rs' && <SiRust size={14} color="#dea584" />}
                 {item.icon === 'lang-html' && <SiHtml5 size={14} color="#e34f26" />}
                 {item.icon === 'command' && <TerminalSquareIcon size={14} color="var(--accent)" />}
+                {item.icon === 'cmd-btw' && <MessageSquareIcon size={14} color="var(--info)" />}
+                {item.icon === 'cmd-learn' && <BookOpenIcon size={14} color="var(--amber-500)" />}
+                {item.icon === 'cmd-goal' && <TargetIcon size={14} color="var(--danger)" />}
+                {item.icon === 'cmd-subagents' && <BotIcon size={14} color="#6366f1" />}
+                {item.icon === 'cmd-clear' && <Trash2Icon size={14} color="var(--gray-400)" />}
+                {item.icon === 'cmd-help' && <HelpCircleIcon size={14} color="var(--accent)" />}
                 {item.icon === 'skill' && <ZapIcon size={14} color="var(--violet-500)" />}
                 <span className="autocomplete-label">{item.label}</span>
                 {item.description && (

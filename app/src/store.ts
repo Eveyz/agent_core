@@ -1,12 +1,11 @@
 import { configureStore, createListenerMiddleware } from '@reduxjs/toolkit';
-import chatReducer, { agentEventsBatch, resyncRun, clearPendingGap } from './features/chat/chatSlice';
+import chatReducer, { agentEventsBatch, resyncRun, clearPendingGap, userMessageSent } from './features/chat/chatSlice';
 import settingsReducer from './features/settings/settingsSlice';
-import projectReducer from './features/project/projectSlice';
+import projectReducer, { findProjectIdForSession, saveSessionMessages, fetchProjectSessions, touchSessionActivity } from './features/project/projectSlice';
 import agentReducer from './features/agents/agentSlice';
 import workflowReducer from './features/workflow/workflowSlice';
 
 import { getFullMessagesForSession, getTimingMetrics } from './features/chat/chatSlice';
-import { saveSessionMessages, fetchProjectSessions } from './features/project/projectSlice';
 
 // ── Per-session save throttle ─────────────────────────────────────────
 // Prevents overlapping saves from racing: the backend does DELETE + INSERT,
@@ -21,6 +20,16 @@ const lastSaveBySession: Record<string, number> = {};
 // agentEventReceived reducer. The reducer now stores gap info in
 // state.chat._pendingGap; this listener picks it up and dispatches resyncRun.
 const listenerMiddleware = createListenerMiddleware();
+
+listenerMiddleware.startListening({
+  actionCreator: userMessageSent,
+  effect: (action, listenerApi) => {
+    const sessionId = action.payload.sessionId;
+    if (sessionId) {
+      listenerApi.dispatch(touchSessionActivity({ sessionId }));
+    }
+  },
+});
 
 listenerMiddleware.startListening({
   actionCreator: agentEventsBatch,
@@ -96,20 +105,31 @@ listenerMiddleware.startListening({
       }
     }
 
-    // ── Refresh session list from DB on run completion ─────────────────
-    // This is the ONLY mechanism that updates session timestamps and ordering
-    // in the sidebar — always from the database, never fabricated client-side.
-    const hasRunCompletion = events.some((ev) => {
-      if (typeof ev === 'object' && ev !== null) {
-        const name = ev.event;
-        return name === 'run_completed' || name === 'run_cancelled' || name === 'run_failed';
-      }
-      return false;
+    // ── Refresh session list from DB on run completion (final consistency) ──
+    const completionEvents = events.filter((ev) => {
+      if (typeof ev !== 'object' || ev === null) return false;
+      const name = (ev as Record<string, unknown>).event;
+      return name === 'run_completed' || name === 'run_cancelled' || name === 'run_failed';
     });
-    if (hasRunCompletion) {
-      const activeProjectId = (listenerApi.getState() as RootState).project.activeProjectId;
-      if (activeProjectId) {
-        listenerApi.dispatch(fetchProjectSessions(activeProjectId));
+    if (completionEvents.length > 0) {
+      const currentState = listenerApi.getState() as RootState;
+      const projectIds = new Set<string>();
+      for (const ev of completionEvents) {
+        const record = ev as Record<string, unknown>;
+        const runId = record.run_id as string | undefined;
+        const sessionId =
+          (record.session_id as string | undefined)
+          || (runId ? currentState.chat.runIdToSessionId?.[runId] : undefined)
+          || currentState.project.activeSessionId
+          || undefined;
+        if (!sessionId) continue;
+        const projectId =
+          findProjectIdForSession(currentState.project.sessions, sessionId)
+          ?? currentState.project.activeProjectId;
+        if (projectId) projectIds.add(projectId);
+      }
+      for (const projectId of projectIds) {
+        listenerApi.dispatch(fetchProjectSessions(projectId));
       }
     }
   },

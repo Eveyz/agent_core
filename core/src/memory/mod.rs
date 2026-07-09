@@ -4,7 +4,9 @@ pub mod bm25;
 pub mod consolidation;
 pub mod embedding;
 pub mod hnsw;
+pub mod lifecycle;
 pub mod recall;
+pub mod recall_gate;
 pub mod reflection;
 pub mod rrf;
 pub mod salience;
@@ -22,7 +24,9 @@ use self::hnsw::HNSWIndex;
 use self::recall::RecallMemory;
 use self::storage::Storage;
 
+pub use self::lifecycle::LifecycleReport;
 pub use self::recall::MemoryStats;
+pub use self::recall_gate::{RecallIntent, format_recall_results, intent_for_mode, route_recall_intent, RECALL_HINT};
 pub use self::salience::{MemoryCategory, SalienceConfig, SalienceScorer, ScoredRecord};
 pub struct MemoryManager {
     core: CoreMemory,

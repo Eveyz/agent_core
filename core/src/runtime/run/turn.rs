@@ -14,6 +14,25 @@ use crate::types::{CacheUsage, Message, MessageDelta, StreamEvent, ToolCall};
 
 use super::{RecoveryOutcome, Run, RunError, TurnOutcome, CACHE_IDLE_WARN_SECS};
 
+/// Partial stream output preserved across mid-stream retries within one model turn.
+#[derive(Default, Clone)]
+pub(super) struct StreamPartial {
+    pub text: String,
+    pub thinking: String,
+}
+
+impl StreamPartial {
+    /// Keep the longest partial seen so far (model may regenerate from injected hint).
+    fn merge_attempt(&mut self, attempt: &StreamPartial) {
+        if attempt.text.len() > self.text.len() {
+            self.text.clone_from(&attempt.text);
+        }
+        if attempt.thinking.len() > self.thinking.len() {
+            self.thinking.clone_from(&attempt.thinking);
+        }
+    }
+}
+
 impl Run {
     pub(super) async fn run_turn(&mut self, turn_index: usize) -> Result<TurnOutcome, RunError> {
         tracing::info!(
@@ -167,6 +186,31 @@ impl Run {
                                     deduped_recall = report.deduped_recall,
                                     deduped_archival = report.deduped_archival,
                                     "memory consolidated"
+                                );
+                            }
+                        }
+                    });
+                }
+
+                // Lifecycle: prune cold recall + promote to archival every 40 turns.
+                if self.brain.memory_mode() != crate::config::MemoryMode::Stateless
+                    && turn_index > 0
+                    && turn_index % 40 == 0
+                {
+                    let mem = mem.clone();
+                    self.join_set.spawn(async move {
+                        let result = tokio::task::spawn_blocking(move || {
+                            let guard = mem.lock();
+                            guard.run_lifecycle()
+                        })
+                        .await
+                        .unwrap_or_else(|e| Err(anyhow::anyhow!("lifecycle panicked: {e}")));
+                        if let Ok(report) = result {
+                            if report.pruned > 0 || report.promoted > 0 {
+                                tracing::info!(
+                                    pruned = report.pruned,
+                                    promoted = report.promoted,
+                                    "memory lifecycle completed"
                                 );
                             }
                         }
@@ -364,11 +408,12 @@ impl Run {
                 return Err("aborted".to_string());
             }
 
-            let mut messages = self.build_messages();
+            let mut base_messages = self.build_messages();
             let tools = self.registry.tool_definitions();
 
-            // Apply hygiene: truncate oversized tool results, replace long args
-            crate::hygiene::sanitize(&mut messages);
+            // Apply hygiene: truncate oversized tool results, replace long args,
+            // cap embedded thinking tags in historical assistant messages.
+            crate::hygiene::sanitize(&mut base_messages);
 
             // KV cache hint: derived from the 7-segment context layout. Carried
             // into the request so the client can emit cache telemetry and
@@ -386,7 +431,7 @@ impl Run {
             };
 
             // BeforeModel hook: SkipModel short-circuit
-            let snapshot = self.snapshot_messages_for_hook(&messages);
+            let snapshot = self.snapshot_messages_for_hook(&base_messages);
             if let Some(preset) = self.hook_registry.lock().fire_before_model(&snapshot) {
                 self.recovery_ctx.record_success();
                 self.hook_registry.lock().fire_after_model(&preset, 0);
@@ -399,26 +444,38 @@ impl Run {
             // *mid-stream* drops — the HTTP connection succeeded, the
             // SSE stream started delivering tokens, then the connection
             // reset / the proxy timed out / the gateway dropped us.
-            // Because LLM APIs are stateless, reapplying the same
-            // messages+tools is safe — the model restarts from scratch.
+            // On retry we inject truncated partial thinking/text so the
+            // model can continue without redoing completed work.
             let mut stream_attempt = 0;
+            let mut retry_checkpoint = StreamPartial::default();
 
             let stream_result = 'stream_loop: loop {
                 if self.cancel.is_cancelled() {
                     return Err("aborted".to_string());
                 }
 
+                let mut attempt_messages = base_messages.clone();
+                crate::hygiene::inject_stream_retry_hint(
+                    &mut attempt_messages,
+                    &retry_checkpoint.thinking,
+                    &retry_checkpoint.text,
+                );
+
+                let mut attempt_partial = StreamPartial::default();
+
                 let step_res = {
                     let stream_res = self
                         .client
-                        .chat_completion_stream_with_hint(&messages, &tools, Some(cache_hint))
+                        .chat_completion_stream_with_hint(&attempt_messages, &tools, Some(cache_hint))
                         .await;
 
                     match stream_res {
                         Ok(s) => {
                             let cancel = self.cancel.clone();
                             let event_tx = self.event_tx.clone();
-                            let res = self.collect_stream(s, &event_tx).await;
+                            let res = self
+                                .collect_stream(s, &event_tx, &mut attempt_partial)
+                                .await;
                             match res {
                                 Ok(r) => {
                                     if r.0.is_empty() && r.1.is_empty() {
@@ -440,6 +497,7 @@ impl Run {
                         break 'stream_loop Ok(r);
                     }
                     Err(err_msg) => {
+                        retry_checkpoint.merge_attempt(&attempt_partial);
                         tracing::warn!(attempt = stream_attempt, error = %err_msg, "stream attempt failed");
                         if stream_attempt < MAX_STREAM_RETRIES {
                             let delay_ms = 1000u64 * 2u64.pow(stream_attempt as u32);
@@ -487,9 +545,11 @@ impl Run {
         &self,
         stream: impl futures::Stream<Item = Result<StreamEvent>>,
         event_tx: &broadcast::Sender<Envelope>,
+        partial: &mut StreamPartial,
     ) -> Result<(String, Vec<ToolCall>, String, CacheUsage)> {
         tracing::debug!("TURN: collect_stream start");
         let mut text_buffer = String::new();
+        let mut thinking_buffer = String::new();
         let mut accumulator = ToolCallAccumulator::new();
         let mut has_tool_calls = false;
         let mut cache_usage = CacheUsage::default();
@@ -509,6 +569,7 @@ impl Run {
                 StreamEvent::TextDelta(delta) => {
                     tokens.push_text(&delta);
                     text_buffer.push_str(&delta);
+                    partial.text.push_str(&delta);
                     if tokens.should_flush() {
                         if let Some((text, thinking)) = tokens.flush() {
                             if !text.is_empty() {
@@ -530,6 +591,8 @@ impl Run {
                 }
                 StreamEvent::ThinkingDelta(delta) => {
                     tokens.push_thinking(&delta);
+                    thinking_buffer.push_str(&delta);
+                    partial.thinking.push_str(&delta);
                     if tokens.should_flush() {
                         if let Some((text, thinking)) = tokens.flush() {
                             if !text.is_empty() {

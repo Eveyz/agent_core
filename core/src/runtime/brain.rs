@@ -136,7 +136,7 @@ impl Brain {
             .unwrap_or(2000);
         let embedding_enabled = mem_config
             .map(|m| m.embedding_enabled)
-            .unwrap_or(false);
+            .unwrap_or(true);
         let salience_config = mem_config
             .and_then(|m| m.salience.as_ref());
 
@@ -423,12 +423,17 @@ impl Brain {
 
     /// The principles text for the system prompt.
     pub fn principles_text(&self, permission_mode: &str) -> String {
-        format!(
+        let mut text = format!(
             "{}\n\nPermission Mode: {} — tools may require user approval before execution.\n\n{}",
             prompt::DEFAULT_PRINCIPLES,
             permission_mode,
             self.mode().system_prompt_override(),
-        )
+        );
+        if self.memory_mode() != crate::config::MemoryMode::Stateless {
+            text.push_str("\n\n");
+            text.push_str(prompt::MEMORY_PROTOCOL);
+        }
+        text
     }
 
     /// Build a default HookRegistry. If the shared hook_registry is set,

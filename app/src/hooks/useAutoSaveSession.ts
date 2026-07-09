@@ -13,7 +13,7 @@ export function useAutoSaveSession({
   activeProjectPath,
   defaultModel,
 }: AutoSaveParams): void {
-  const saveSession = useSaveSession();
+  const { saveSession } = useSaveSession();
 
   const isProcessing = useAppSelector((state) => (
     activeSessionId ? !!state.chat.processing[activeSessionId] : false

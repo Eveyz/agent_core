@@ -2,7 +2,7 @@ import { useCallback } from 'react';
 import { useStore } from 'react-redux';
 import type { RootState } from '../store';
 import { useAppDispatch } from './useAppDispatch';
-import { getFullMessages, getTimingMetrics } from '../features/chat/chatSlice';
+import { getFullMessagesForSession, getTimingMetrics } from '../features/chat/chatSlice';
 import { saveSessionMessages } from '../features/project/projectSlice';
 
 /**
@@ -22,20 +22,17 @@ export function useSaveSession() {
       defaultModel: string;
       cacheAfter?: boolean;
       cacheOnly?: boolean;
+      /** Skip isDirty check — used before retry so DB matches truncated UI. */
+      force?: boolean;
     }) => {
-      const { activeSessionId, activeProjectPath, defaultModel, cacheAfter, cacheOnly } = params;
+      const { activeSessionId, activeProjectPath, defaultModel, cacheOnly, force } = params;
       if (!activeSessionId || !activeProjectPath) return;
 
       const chatState = store.getState().chat;
-      if (chatState.activeSessionId !== activeSessionId) {
-        return;
-      }
-
+      if (!force && !chatState.isDirty[activeSessionId]) return;
       if (cacheOnly) return;
 
-      if (!chatState.isDirty[activeSessionId]) return;
-
-      const msgs = getFullMessages(chatState);
+      const msgs = getFullMessagesForSession(chatState, activeSessionId);
       if (msgs.length === 0) return;
 
       const entries = chatState.entries[activeSessionId] ?? [];
@@ -50,12 +47,43 @@ export function useSaveSession() {
           thoughtTimeMs: thoughtTimeMs || undefined,
         })
       );
-      if (cacheAfter) {
-        // No need to cache — data persists in session maps
-      }
     },
     [dispatch, store]
   );
 
-  return saveSession;
+  /** Awaitable save — returns true when messages were persisted to SQLite. */
+  const saveSessionNow = useCallback(
+    async (params: {
+      activeSessionId: string | null;
+      activeProjectPath: string | null;
+      defaultModel: string;
+      force?: boolean;
+    }): Promise<boolean> => {
+      const { activeSessionId, activeProjectPath, defaultModel, force } = params;
+      if (!activeSessionId || !activeProjectPath) return false;
+
+      const chatState = store.getState().chat;
+      if (!force && !chatState.isDirty[activeSessionId]) return true;
+
+      const msgs = getFullMessagesForSession(chatState, activeSessionId);
+      if (msgs.length === 0) return false;
+
+      const entries = chatState.entries[activeSessionId] ?? [];
+      const { processTimeMs, thoughtTimeMs } = getTimingMetrics(entries);
+      const result = await dispatch(
+        saveSessionMessages({
+          sessionId: activeSessionId,
+          messages: msgs,
+          cwd: activeProjectPath,
+          modelUsed: defaultModel,
+          processTimeMs: processTimeMs || undefined,
+          thoughtTimeMs: thoughtTimeMs || undefined,
+        })
+      );
+      return saveSessionMessages.fulfilled.match(result);
+    },
+    [dispatch, store]
+  );
+
+  return { saveSession, saveSessionNow };
 }

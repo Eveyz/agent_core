@@ -27,24 +27,31 @@ impl Run {
 You operate using an OS-level memory management system. Proactively manage your own context window to prevent memory bloat and maintain long-term reasoning capabilities.
 
 ## Core Memory (RAM)
-This file (`~/.agverse/agverse.md`) is your Core Memory. It is 100% injected into your context on every turn. It is your ultimate source of truth for Project Overview, Architecture Decisions, Coding Conventions, and User Preferences.
+This file (`~/.agverse/agverse.md`) is your Global Memory. It is 100% injected into your context on every turn as cross-project background. It is the source of truth for the Known Projects catalog, Coding Conventions, and User Preferences — not for the currently active repo.
+
+## Active Project Rule (CRITICAL)
+The active project is determined ONLY by the Working Directory and any project-local `agverse.md` / `AGENTS.md` for that cwd. Entries under Known Projects are a catalog. Never assume a catalog entry is current unless cwd matches.
 
 ## Archival Memory (Disk)
 An underlying SQLite database contains historical conversation logs (Recall Memory) and long-term knowledge (Archival Memory). Use `conversation_search` and `archival_memory_search` tools to retrieve information when needed.
 
 ## Memory Management Directives (CRITICAL)
-Your primary responsibility is to keep this Core Memory highly condensed, strictly structured, and up-to-date. You are forbidden from allowing this file to become a dump for raw conversational logs.
+Your primary responsibility is to keep this Global Memory highly condensed, strictly structured, and up-to-date. You are forbidden from allowing this file to become a dump for raw conversational logs.
 
 When you interact with the user, silently evaluate if the new information alters the global state:
-- **Write/Replace:** If the user makes a new architectural decision, introduces a coding convention, or updates a global preference, use the `edit` tool to update the corresponding section below.
+- **Write/Replace:** If the user updates a global preference, coding convention, or the project catalog, use the `edit` tool to update the corresponding section below.
 - **Compaction (Delete):** If an existing rule is deprecated, overridden, or resolved, delete or overwrite the old information to free up Core Memory space. Do not append contradictory rules.
 - **Offload to Archival (Ignore):** If the information is a specific debugging step, a one-off script, or a transient thought, do NOT write it here. Trust that Archival Memory will capture it for future retrieval.
+- **Project-local:** Architecture and conventions for a specific repo belong in that repo's `agverse.md`, not here.
 
 Never mention your memory management process to the user unless explicitly asked. Maintain a seamless conversational flow while quietly updating this file in the background.
 
 ---
 
-# Project Overview
+# Active Project Rule (CRITICAL)
+The active project is determined ONLY by the Working Directory (and Project Instructions for that cwd).
+
+# Known Projects (catalog)
 
 # Tech Stack & Commands
 

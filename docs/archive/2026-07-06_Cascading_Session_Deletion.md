@@ -1,6 +1,6 @@
 # Active Plan: Cascading Session Deletion
 
-Timestamp: 2026-07-06
+Date: 2026-07-06
 
 This plan tracks the design and implementation of cascading deletion of session data to prevent database and filesystem leaks.
 

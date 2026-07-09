@@ -44,26 +44,13 @@ export type TurnBlock =
   | { type: 'error'; text: string }
   | { type: 'subagent_ref'; subagent_id: string; parent_call_id?: string };
 
-export interface SubagentBlock {
-  type: 'assistant' | 'thinking' | 'tool' | 'approval' | 'error';
-  text?: string;
-  isStreaming?: boolean;
-  message_id?: string;
-  startTime?: number;
-  endTime?: number;
-  call_id?: string;
-  name?: string;
-  args?: unknown;
-  result?: string;
-  active?: boolean;
-  is_error?: boolean;
-  prompt_id?: string;
-  tool_name?: string;
-  tool_input?: unknown;
-  danger_level?: string;
-  explanation?: string;
-  status?: 'pending' | 'approved' | 'denied';
-}
+/** Same shape as TurnBlock, minus nested `subagent_ref` (subagents don't spawn further). */
+export type SubagentBlock =
+  | { type: 'assistant'; text: string; isStreaming: boolean; message_id?: string }
+  | { type: 'thinking'; text: string; isStreaming: boolean; message_id?: string; startTime?: number; endTime?: number }
+  | { type: 'tool'; call_id: string; name: string; args?: unknown; result: string; active: boolean; is_error: boolean; startTime?: number; endTime?: number }
+  | { type: 'approval'; prompt_id: string; tool_name: string; tool_input: unknown; danger_level: string; explanation: string; status: 'pending' | 'approved' | 'denied' }
+  | { type: 'error'; text: string };
 
 export interface SubagentEntry {
   id: string;
@@ -121,15 +108,7 @@ export interface BtwEntry {
   endTime?: number;
 }
 
-export interface LearnEntry {
-  id: string;
-  input: string;
-  status: 'pending' | 'saved' | 'error';
-  title?: string;
-  rule?: string;
-  error?: string;
-  timestamp: number;
-}
+
 
 export interface ChatState {
   // ── Per-session state (maps keyed by sessionId) ──
@@ -147,22 +126,22 @@ export interface ChatState {
   _thinkBuffers: Record<string, Record<string, string>>;
   goal: Record<string, string | null>;
   goalCompleted: Record<string, boolean>;
+  viewingSubagentPath: Record<string, { id: string; name: string }[]>;
+  btwEntries: Record<string, BtwEntry[]>;
 
-  // ── Global state ──
-  activeSessionId: string | null;
+  isResuming: Record<string, boolean>;
+  /** turn_id for the event currently being processed, keyed by sessionId */
+  _pendingTurnId: Record<string, string | undefined>;
+
+  // ── Global / cross-session routing ──
   runIdToSessionId: Record<string, string>;
   lastSeqByRun: Record<string, number>;
-  viewingSubagentPath: { id: string; name: string }[];
-  btwEntries: BtwEntry[];
-  learnEntries: LearnEntry[];
   skillsCache: {
     skills: SkillManifest[];
     loadedAt: number;
   } | null;
   resyncing: boolean;
-  isResuming: boolean;
   _pendingGap: { runId: string; fromSeq: number } | null;
-  _pendingTurnId?: string;
   cacheMetrics: CacheMetrics | null;
 }
 

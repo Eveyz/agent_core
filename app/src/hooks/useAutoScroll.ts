@@ -1,12 +1,31 @@
 import { useEffect, useRef, useCallback, useState, useLayoutEffect } from 'react';
 
 interface UseAutoScrollOptions {
-  /** 当这些依赖变化时，如果处于自动滚动模式，立即贴底（用于新消息、切换会话等） */
-  deps: any[];
-  /** 是否为处理中状态——为 true 时启动 rAF 循环持续贴底 */
+  /** When these change, pin to bottom if stick-to-bottom is enabled (new message, session switch). */
+  deps: unknown[];
+  /** While true, rAF loop keeps the view pinned during streaming. */
   isProcessing: boolean;
 }
 
+const BOTTOM_THRESHOLD_PX = 40;
+
+function maxScrollTop(el: HTMLElement): number {
+  return Math.max(0, el.scrollHeight - el.clientHeight);
+}
+
+function isNearBottom(el: HTMLElement, threshold = BOTTOM_THRESHOLD_PX): boolean {
+  return maxScrollTop(el) - el.scrollTop <= threshold;
+}
+
+/**
+ * Stick-to-bottom scrolling for the chat history pane.
+ *
+ * Important edge cases this handles:
+ * - Never assign `scrollTop = scrollHeight` (can overshoot); always clamp to maxScroll.
+ * - Do not infer "user scrolled up" from scrollTop deltas — content height can shrink
+ *   during markdown/code-block remounts and falsely disable sticking (blank viewport).
+ * - Ignore scroll events caused by our own programmatic pins.
+ */
 export function useAutoScroll<
   T extends HTMLElement,
   U extends HTMLElement = HTMLDivElement,
@@ -16,142 +35,131 @@ export function useAutoScroll<
   const contentRef = useRef<U | null>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
 
-  // 是否允许自动贴底（用户上滚时变为 false）
-  const isAutoScrollEnabled = useRef(true);
+  /** When true, keep the viewport pinned to the latest content. */
+  const stickToBottom = useRef(true);
+  /** Suppress scroll-listener side effects while we pin programmatically. */
+  const programmaticScroll = useRef(false);
+  const clearProgrammaticRaf = useRef<number | null>(null);
 
-  // 记录上一帧的 scrollTop，用于检测用户是否在主动滚动
-  const lastScrollTop = useRef(0);
+  const markProgrammatic = useCallback(() => {
+    programmaticScroll.current = true;
+    if (clearProgrammaticRaf.current != null) {
+      cancelAnimationFrame(clearProgrammaticRaf.current);
+    }
+    // Clear after the scroll event from this write has had a chance to fire.
+    clearProgrammaticRaf.current = requestAnimationFrame(() => {
+      clearProgrammaticRaf.current = requestAnimationFrame(() => {
+        programmaticScroll.current = false;
+        clearProgrammaticRaf.current = null;
+      });
+    });
+  }, []);
 
-  // 检测用户是否正在主动滚动（用于减少渲染干扰）
-  const isUserScrolling = useRef(false);
-  const userScrollEndTimeout = useRef<number | null>(null);
+  const pinToBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el || el.clientHeight === 0) return;
+    markProgrammatic();
+    el.scrollTop = maxScrollTop(el);
+  }, [markProgrammatic]);
 
-
-  // 暴露给外部强制贴底（切换会话、新消息时调用）
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
     const el = scrollRef.current;
     if (!el || el.clientHeight === 0) return;
 
-    // 根据传入的 behavior 执行滚动
-    el.scrollTo({
-      top: el.scrollHeight,
-      behavior
-    });
-
-    // 兜底：如果 smooth 滚动被中断或 instant 滚动，确保下一帧贴底
-    requestAnimationFrame(() => {
-      if (scrollRef.current) {
-        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-      }
-    });
-
-    isAutoScrollEnabled.current = true;
+    stickToBottom.current = true;
     setIsAtBottom(true);
-  }, []);
 
-  // 1. 依赖变化时同步贴底（新消息、切换会话等非流式场景）
-  //    注意：处理中时不执行此逻辑，避免与 rAF 循环冲突
-  useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (!el || el.clientHeight === 0) return;
-    if (isAutoScrollEnabled.current && !isProcessing) {
-      el.scrollTop = el.scrollHeight;
+    const top = maxScrollTop(el);
+    markProgrammatic();
+    if (behavior === 'auto' || behavior === 'instant') {
+      el.scrollTop = top;
+    } else {
+      el.scrollTo({ top, behavior: 'smooth' });
+      // Smooth can be interrupted by the next stream frame — snap once as fallback.
+      requestAnimationFrame(() => {
+        if (!scrollRef.current || !stickToBottom.current) return;
+        markProgrammatic();
+        scrollRef.current.scrollTop = maxScrollTop(scrollRef.current);
+      });
     }
+  }, [markProgrammatic]);
+
+  // Non-streaming updates (new entry, session switch): pin once in layout.
+  useLayoutEffect(() => {
+    if (!stickToBottom.current || isProcessing) return;
+    pinToBottom();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
 
-  // 2. 核心修复：isProcessing 为 true 时，rAF 循环持续贴底
-  //    流式输出的每一帧都会触发，不依赖 React 的依赖数组
+  // Streaming: pin every frame while the user hasn't scrolled away.
   useEffect(() => {
     if (!isProcessing) return;
 
-    let id: number;
-
+    let id = 0;
     const tick = () => {
       const el = scrollRef.current;
-      if (el) {
-        const maxScroll = el.scrollHeight - el.clientHeight;
-        const currentScrollTop = el.scrollTop;
-
-        // 检测用户是否在主动向上滚动
-        if (currentScrollTop < lastScrollTop.current - 5) {
-          // 用户向上滚动，禁用自动滚动
-          isAutoScrollEnabled.current = false;
-          setIsAtBottom(false);
-          isUserScrolling.current = true;
-
-          // 清除之前的超时
-          if (userScrollEndTimeout.current) {
-            clearTimeout(userScrollEndTimeout.current);
-          }
-
-          // 设置超时，500ms 后认为用户停止滚动
-          userScrollEndTimeout.current = window.setTimeout(() => {
-            isUserScrolling.current = false;
-          }, 500);
+      if (el && stickToBottom.current && el.clientHeight > 0) {
+        const max = maxScrollTop(el);
+        if (el.scrollTop < max - 1) {
+          markProgrammatic();
+          el.scrollTop = max;
         }
-
-        // 检测是否接近底部
-        const threshold = 20;
-        const isNearBottom = maxScroll - currentScrollTop <= threshold;
-
-        if (isNearBottom && !isAutoScrollEnabled.current) {
-          // 用户滚回底部，重新启用自动滚动
-          isAutoScrollEnabled.current = true;
-          setIsAtBottom(true);
-          isUserScrolling.current = false;
-        }
-
-        // 用户滚动期间完全禁用自动滚动操作，避免干扰自然惯性
-        if (isUserScrolling.current) {
-          // 只更新状态，不执行任何滚动操作
-          id = requestAnimationFrame(tick);
-          return;
-        }
-
-        // 只有在启用自动滚动且不在底部时才滚动
-        if (isAutoScrollEnabled.current && el.clientHeight > 0 && currentScrollTop < maxScroll - 1) {
-          // 流式输出时使用 instant 滚动，避免 smooth 滚动在 rAF 循环中造成抖动
-          el.scrollTop = maxScroll;
-        }
-
-        // 更新上一帧的 scrollTop
-        lastScrollTop.current = currentScrollTop;
       }
       id = requestAnimationFrame(tick);
     };
 
-    // 启动循环
     id = requestAnimationFrame(tick);
-
     return () => {
       cancelAnimationFrame(id);
-      if (userScrollEndTimeout.current) {
-        clearTimeout(userScrollEndTimeout.current);
+      if (clearProgrammaticRaf.current != null) {
+        cancelAnimationFrame(clearProgrammaticRaf.current);
+        clearProgrammaticRaf.current = null;
       }
     };
-  }, [isProcessing]);
+  }, [isProcessing, markProgrammatic]);
 
-  // 3. 监听用户手动滚动，决定是否解除自动贴底
+  // User intent + near-bottom tracking.
+  // Re-bind when processing/deps change so the listener attaches after EmptyState → ChatArea.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
 
     const handleScroll = () => {
-      // 20px 阈值，兼容亚像素渲染和微小布局偏移
-      const threshold = 20;
-      const maxScroll = el.scrollHeight - el.clientHeight;
-      const isNearBottom = maxScroll - el.scrollTop <= threshold;
-
-      isAutoScrollEnabled.current = isNearBottom;
-      setIsAtBottom(isNearBottom);
+      if (programmaticScroll.current) return;
+      const near = isNearBottom(el);
+      stickToBottom.current = near;
+      setIsAtBottom(near);
     };
 
-    // passive: true 不阻塞滚动
-    el.addEventListener('scroll', handleScroll, { passive: true });
+    // Wheel up is the reliable "user wants to leave the bottom" signal.
+    // Do not use scrollTop deltas — height shrinks look identical to scrolling up.
+    const handleWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) {
+        stickToBottom.current = false;
+        setIsAtBottom(false);
+      }
+    };
 
-    return () => el.removeEventListener('scroll', handleScroll);
-  }, [scrollRef]);
+    const handleTouchMove = () => {
+      // Touch drag away from bottom is reflected in scroll; if still near bottom, keep sticking.
+      if (programmaticScroll.current) return;
+      if (!isNearBottom(el)) {
+        stickToBottom.current = false;
+        setIsAtBottom(false);
+      }
+    };
+
+    el.addEventListener('scroll', handleScroll, { passive: true });
+    el.addEventListener('wheel', handleWheel, { passive: true });
+    el.addEventListener('touchmove', handleTouchMove, { passive: true });
+
+    return () => {
+      el.removeEventListener('scroll', handleScroll);
+      el.removeEventListener('wheel', handleWheel);
+      el.removeEventListener('touchmove', handleTouchMove);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isProcessing, ...deps]);
 
   return { scrollRef, contentRef, scrollToBottom, isAtBottom };
 }

@@ -24,7 +24,9 @@ impl Tool for CoreMemoryAppendTool {
     }
 
     fn description(&self) -> &str {
-        "Append content to a core memory block. Use this to update user info, persona, or task state."
+        "Append to a core memory block. Use block `human` for cross-project user traits \
+         (name, habits, language). Use block `persona` for agent personality. \
+         Do NOT store project architecture here — use edit on agverse.md instead."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -81,7 +83,8 @@ impl Tool for CoreMemoryReplaceTool {
     }
 
     fn description(&self) -> &str {
-        "Replace content in a core memory block. Provide the old text to find and the new text to replace it with."
+        "Replace text in a core memory block (`human` or `persona`). \
+         For project-specific rules, edit agverse.md instead."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -149,7 +152,8 @@ impl Tool for CoreMemoryReadTool {
     }
 
     fn description(&self) -> &str {
-        "Read the content of a core memory block."
+        "Read a core memory block (`human`, `persona`, etc.). \
+         Project rules live in agverse.md — use read_file for those."
     }
 
     fn parameters_schema(&self) -> Value {

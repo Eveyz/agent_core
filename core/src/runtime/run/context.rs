@@ -1,11 +1,15 @@
 //! Context management — message construction, snapshots, goal decomposition,
 //! and per-turn context segment refresh.
 
+use std::time::Duration;
+
 use serde_json::Value;
 
+use crate::config::MemoryMode;
 use crate::context::ContextEngine as Context;
+use crate::memory::{format_recall_results, intent_for_mode, route_recall_intent, RecallIntent, RECALL_HINT};
 use crate::runtime::event::TodoItemPayload;
-use crate::types::Message;
+use crate::types::{Message, Role};
 
 use super::{Run, RunError, GOAL_DECOMPOSE_SYSTEM};
 
@@ -101,103 +105,134 @@ impl Run {
             self.context.set_tool_catalog(&tool_catalog);
         }
 
-        // Segment 5: ACTIVE MEMORY — project instructions + core memory + recall search
+        // Segment 5: ACTIVE MEMORY — core blocks + project docs + recall gate
         {
             let mut mem_str = String::new();
 
-            // Memory mode prompt (guides agent on how to use memory in this mode)
             let mode = self.brain.memory_mode();
-            let mode_prompt = crate::prompt::memory_mode_prompt(&mode);
-            mem_str.push_str(mode_prompt);
+            mem_str.push_str(crate::prompt::memory_mode_prompt(&mode));
             mem_str.push_str("\n\n");
 
-            // In Stateless mode, skip all project instructions and memory injection
-            if mode != crate::config::MemoryMode::Stateless {
-            // Layered project instructions (agverse.md):
-            //   1. Global:   ~/.agverse/agverse.md
-            //   2. Project:  {cwd}/agverse.md  (or AGENTS.md)
-            //   3. Local:    {cwd}/agverse.local.md  (gitignore, personal)
-            //   4. Rules:    {cwd}/.agverse/rules/*.md  (modular, path-scoped later)
-            let cwd = self.working_dir.clone().or_else(|| {
-                std::env::current_dir()
-                    .ok()
-                    .and_then(|p| p.to_str().map(|s| s.to_string()))
-            });
-            let mut instructions = Vec::new();
-
-            // 1. Global
-            let global_path = crate::paths::get_global_agverse_md_path();
-            if let Ok(content) = std::fs::read_to_string(&global_path) {
-                instructions.push(("Global Project".to_string(), content));
-            }
-
-            let mut global_local_path = global_path.clone();
-            global_local_path.set_file_name("agverse.local.md");
-            if let Ok(content) = std::fs::read_to_string(&global_local_path) {
-                instructions.push(("Global User Preferences".to_string(), content));
-            }
-
-            // Extract recent conversation text to match path-scoped rules
-            let conversation_text = self.context.messages().iter().rev().take(5)
-                .filter_map(|m| m.content.as_deref())
-                .collect::<Vec<_>>()
-                .join("\n")
-                .to_lowercase();
-
-            // 2. Project root
-            if let Some(ref dir) = cwd {
-                for name in &["agverse.md", "AGENTS.md"] {
-                    let path = std::path::Path::new(dir).join(name);
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        instructions.push((format!("Project ({name})"), content));
-                        break;
+            if mode != MemoryMode::Stateless {
+                // Core memory blocks (SQLite) — always inject when non-empty
+                if let Some(ref mem_arc) = self.brain.memory {
+                    if let Some(guard) = mem_arc.try_lock_for(Duration::from_secs(1)) {
+                        let core = guard.core().to_nonempty_context_string();
+                        if !core.is_empty() {
+                            mem_str.push_str("Core Memory:\n");
+                            mem_str.push_str(&core);
+                            mem_str.push('\n');
+                        }
                     }
                 }
 
-                // 3. Local (personal, gitignored)
-                let local_path = std::path::Path::new(dir).join("agverse.local.md");
-                if let Ok(content) = std::fs::read_to_string(&local_path) {
-                    instructions.push(("Project Local".to_string(), content));
+                // Layered project instructions (agverse.md):
+                //   1. Global:   ~/.agverse/agverse.md  (cross-project catalog/memory)
+                //   2. Project:  {cwd}/agverse.md  (or AGENTS.md) — active repo
+                //   3. Local:    {cwd}/agverse.local.md  (gitignore, personal)
+                //   4. Rules:    {cwd}/.agverse/rules/*.md  (modular, path-scoped later)
+                let cwd = self.working_dir.clone().or_else(|| {
+                    std::env::current_dir()
+                        .ok()
+                        .and_then(|p| p.to_str().map(|s| s.to_string()))
+                });
+                let mut instructions = Vec::new();
+
+                // 1. Global (cross-project — NOT the active project)
+                let global_path = crate::paths::get_global_agverse_md_path();
+                if let Ok(content) = std::fs::read_to_string(&global_path) {
+                    instructions.push(("Global Memory (cross-project)".to_string(), content));
                 }
 
-                // 4. Rules directory (.agverse/rules/*.md) - Path Scoped
-                let rules_dir = std::path::Path::new(dir).join(".agverse/rules");
-                if rules_dir.is_dir() {
-                    if let Ok(entries) = std::fs::read_dir(&rules_dir) {
-                        let mut rule_files: Vec<_> = entries
-                            .filter_map(|e| e.ok())
-                            .filter(|e| {
-                                e.path().extension().is_some_and(|ext| ext == "md")
-                            })
-                            .collect();
-                        rule_files.sort_by_key(|e| e.path());
-                        for entry in rule_files {
-                            if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                                let path = entry.path();
-                                let name = path
-                                    .file_stem()
-                                    .and_then(|s| s.to_str())
-                                    .unwrap_or("rule");
+                let mut global_local_path = global_path.clone();
+                global_local_path.set_file_name("agverse.local.md");
+                if let Ok(content) = std::fs::read_to_string(&global_local_path) {
+                    instructions.push(("Global User Preferences (cross-project)".to_string(), content));
+                }
 
-                                let name_lower = name.to_lowercase();
-                                if name_lower == "global" || name_lower == "default" || conversation_text.contains(&name_lower) {
-                                    instructions.push((format!("Rule: {name}"), content));
+                // Extract recent conversation text to match path-scoped rules
+                let conversation_text = self
+                    .context
+                    .raw_messages()
+                    .iter()
+                    .rev()
+                    .take(5)
+                    .filter_map(|m| m.content.as_deref())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+                    .to_lowercase();
+
+                // 2. Project root (active repo for this Working Directory)
+                if let Some(ref dir) = cwd {
+                    for name in &["agverse.md", "AGENTS.md"] {
+                        let path = std::path::Path::new(dir).join(name);
+                        if let Ok(content) = std::fs::read_to_string(&path) {
+                            instructions.push((
+                                format!("Project Instructions (cwd: {name})"),
+                                content,
+                            ));
+                            break;
+                        }
+                    }
+
+                    // 3. Local (personal, gitignored)
+                    let local_path = std::path::Path::new(dir).join("agverse.local.md");
+                    if let Ok(content) = std::fs::read_to_string(&local_path) {
+                        instructions.push(("Project Local (cwd)".to_string(), content));
+                    }
+
+                    // 4. Rules directory (.agverse/rules/*.md) - Path Scoped
+                    let rules_dir = std::path::Path::new(dir).join(".agverse/rules");
+                    if rules_dir.is_dir() {
+                        if let Ok(entries) = std::fs::read_dir(&rules_dir) {
+                            let mut rule_files: Vec<_> = entries
+                                .filter_map(|e| e.ok())
+                                .filter(|e| {
+                                    e.path().extension().is_some_and(|ext| ext == "md")
+                                })
+                                .collect();
+                            rule_files.sort_by_key(|e| e.path());
+                            for entry in rule_files {
+                                if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                                    let path = entry.path();
+                                    let name = path
+                                        .file_stem()
+                                        .and_then(|s| s.to_str())
+                                        .unwrap_or("rule");
+
+                                    let name_lower = name.to_lowercase();
+                                    if name_lower == "global"
+                                        || name_lower == "default"
+                                        || conversation_text.contains(&name_lower)
+                                    {
+                                        instructions.push((format!("Rule: {name}"), content));
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
 
-            if !instructions.is_empty() {
-                let mut parts = Vec::new();
-                for (label, content) in &instructions {
-                    parts.push(format!("## {label}\n{content}"));
+                if !instructions.is_empty() {
+                    let mut parts = Vec::new();
+                    for (label, content) in &instructions {
+                        parts.push(format!("## {label}\n{content}"));
+                    }
+                    mem_str.push_str(&format!("Project Instructions:\n{}\n\n", parts.join("\n\n")));
                 }
-                mem_str.push_str(&format!("Project Instructions:\n{}\n\n", parts.join("\n\n")));
-            }
 
-            } // end non-stateless block
+                // Memory router (P2/P3): gate recall injection by intent + mode
+                let last_user = self
+                    .context
+                    .raw_messages()
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == Role::User)
+                    .and_then(|m| m.content.as_deref());
+
+                let intent = intent_for_mode(route_recall_intent(last_user), mode);
+                self.apply_recall_intent(&mut mem_str, last_user, intent);
+            }
 
             if !mem_str.is_empty() {
                 self.context.set_active_memory(&mem_str);
@@ -305,6 +340,67 @@ impl Run {
         // Invalidate tool catalog cache so next turn rebuilds with new tools.
         if changed {
             self.tool_catalog_cache = None;
+        }
+    }
+
+    /// Apply memory-router recall intent to the active memory string.
+    fn apply_recall_intent(
+        &self,
+        mem_str: &mut String,
+        last_user: Option<&str>,
+        intent: RecallIntent,
+    ) {
+        match intent {
+            RecallIntent::None => {}
+            RecallIntent::Hint => {
+                mem_str.push_str(RECALL_HINT);
+                mem_str.push('\n');
+            }
+            RecallIntent::AutoInject => {
+                let Some(query) = last_user else {
+                    return;
+                };
+                let Some(ref mem_arc) = self.brain.memory else {
+                    mem_str.push_str(RECALL_HINT);
+                    mem_str.push('\n');
+                    return;
+                };
+
+                let embedding: Option<Vec<f32>> = mem_arc
+                    .try_lock_for(Duration::from_secs(1))
+                    .and_then(|m| {
+                        m.embedding_model()
+                            .and_then(|model| model.embed_single(query).ok())
+                    });
+
+                let Some(guard) = mem_arc.try_lock_for(Duration::from_secs(1)) else {
+                    mem_str.push_str(RECALL_HINT);
+                    mem_str.push('\n');
+                    return;
+                };
+
+                let results = if let Some(ref emb) = embedding {
+                    guard
+                        .search_conversation_precomputed(emb, query, 3)
+                        .unwrap_or_else(|_| {
+                            guard
+                                .search_conversation_bm25_with_salience(query, 3)
+                                .unwrap_or_default()
+                        })
+                } else {
+                    guard
+                        .search_conversation_bm25_with_salience(query, 3)
+                        .unwrap_or_default()
+                };
+
+                let formatted = format_recall_results(&results, 1200);
+                if formatted.is_empty() {
+                    mem_str.push_str(RECALL_HINT);
+                } else {
+                    mem_str.push_str(&formatted);
+                }
+                mem_str.push('\n');
+            }
         }
     }
 }

@@ -5,7 +5,7 @@ import { useSkills } from './useSkills';
 
 export type IconType = 'folder' | 'file' | 'command' | 'file-code' | 'file-json' | 'file-image' | 'file-text'
   | 'lang-js' | 'lang-ts' | 'lang-jsx' | 'lang-tsx' | 'lang-py' | 'lang-go' | 'lang-css' | 'lang-rs' | 'lang-html'
-  | 'skill';
+  | 'skill' | 'cmd-btw' | 'cmd-learn' | 'cmd-goal' | 'cmd-subagents' | 'cmd-clear' | 'cmd-help';
 
 export interface AutocompleteItem {
   label: string;
@@ -50,12 +50,12 @@ function getFileIcon(filename: string): IconType {
 }
 
 const COMMANDS: AutocompleteItem[] = [
-  { label: 'btw',    value: '/btw ',    icon: 'command', description: 'Ask a side question without polluting context' },
-  { label: 'learn',  value: '/learn ',  icon: 'command', description: 'Save a learning to persistent memory' },
-  { label: 'goal',   value: '/goal ',   icon: 'command', description: 'Set a pinned goal with task decomposition' },
-  { label: 'subagents', value: '/subagents ', icon: 'command', description: 'Enable subagent mode' },
-  { label: 'clear',  value: '/clear',   icon: 'command', description: 'Clear the conversation' },
-  { label: 'help',   value: '/help',    icon: 'command', description: 'Show available commands' },
+  { label: 'btw',    value: '/btw ',    icon: 'cmd-btw', description: 'Ask a side question without polluting context' },
+  { label: 'learn',  value: '/learn ',  icon: 'cmd-learn', description: 'Save a learning to persistent memory' },
+  { label: 'goal',   value: '/goal ',   icon: 'cmd-goal', description: 'Set a pinned goal with task decomposition' },
+  { label: 'subagents', value: '/subagents ', icon: 'cmd-subagents', description: 'Enable subagent mode' },
+  { label: 'clear',  value: '/clear',   icon: 'cmd-clear', description: 'Clear the conversation' },
+  { label: 'help',   value: '/help',    icon: 'cmd-help', description: 'Show available commands' },
 ];
 
 export function useAutocomplete(

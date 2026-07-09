@@ -24,7 +24,8 @@ impl Tool for ArchivalMemoryInsertTool {
     }
 
     fn description(&self) -> &str {
-        "Insert a new piece of knowledge into archival memory for long-term storage."
+        "Store long-term knowledge in archival memory. Use for important facts too verbose \
+         for core blocks or agverse.md. Prefer agverse.md for active project conventions."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -80,7 +81,9 @@ impl Tool for ArchivalMemorySearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search archival memory using semantic similarity."
+        "Search archival memory for long-term stored knowledge. \
+         USE when: looking up distilled facts, old decisions, or knowledge promoted from recall. \
+         For recent conversations use conversation_search instead."
     }
 
     fn parameters_schema(&self) -> Value {

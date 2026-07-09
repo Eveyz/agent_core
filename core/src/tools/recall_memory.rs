@@ -24,7 +24,9 @@ impl Tool for ConversationSearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search past conversation history using semantic similarity. Returns the most relevant messages."
+        "Search past conversation history (keyword + salience ranking, hybrid when embeddings available). \
+         USE when: user asks about prior discussions, preferences, or decisions; you need context from \
+         earlier sessions; continuing work from before. Do NOT use for current codebase — use grep/read_file."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -49,14 +51,33 @@ impl Tool for ConversationSearchTool {
         let query = args["query"].as_str().context("missing 'query'")?;
         let top_k = args["top_k"].as_u64().unwrap_or(5) as usize;
 
-        // BM25 keyword search + Salience reranking (forgetting curve).
-        // BM25 handles retrieval; Salience handles importance weighting
-        // and memory reinforcement — no embedding model on the hot path.
+        // Compute embedding outside the memory lock when available.
+        let embedding = {
+            let memory = match try_lock_memory(&self.memory) {
+                Ok(m) => m,
+                Err(busy_msg) => return Ok(busy_msg),
+            };
+            memory
+                .embedding_model()
+                .and_then(|model| model.embed_single(query).ok())
+        };
+
         let memory = match try_lock_memory(&self.memory) {
             Ok(m) => m,
             Err(busy_msg) => return Ok(busy_msg),
         };
-        let results = memory.search_conversation_bm25_with_salience(query, top_k)?;
+
+        let results = if let Some(ref emb) = embedding {
+            memory
+                .search_conversation_precomputed(emb, query, top_k)
+                .unwrap_or_else(|_| {
+                    memory
+                        .search_conversation_bm25_with_salience(query, top_k)
+                        .unwrap_or_default()
+                })
+        } else {
+            memory.search_conversation_bm25_with_salience(query, top_k)?
+        };
 
         let items: Vec<Value> = results
             .iter()

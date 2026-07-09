@@ -3,6 +3,8 @@
 //! Operations performed on the request-boundary copy only (persistent history untouched):
 //! 1. Truncate oversized tool results (keep head + tail + signal lines)
 //! 2. Replace long tool arguments with placeholders
+//! 3. Truncate `<think>` blocks in assistant content
+//! 4. Inject stream-retry hints with partial thinking (request copy only)
 //!
 //! This prevents context pollution from bloated tool outputs and keeps the
 //! message prefix stable for prompt KV cache hits.
@@ -16,6 +18,88 @@ pub mod policy;
 use crate::types::{Message, Role};
 
 const TOOL_ARG_MAX_CHARS: usize = 200;
+const THINKING_OPEN: &str = "<think>";
+const THINKING_CLOSE: &str = "</think>";
+
+/// Max chars kept from a `<think>` body on outbound API requests.
+pub const THINKING_BODY_MAX_CHARS: usize = 4_096;
+/// Max chars of partial assistant text injected on stream retry.
+pub const PARTIAL_TEXT_MAX_CHARS: usize = 2_048;
+
+/// Truncate a raw thinking string to the outbound budget.
+pub fn truncate_thinking_body(thinking: &str) -> String {
+    if thinking.len() <= THINKING_BODY_MAX_CHARS {
+        return thinking.to_string();
+    }
+    let end = crate::util::floor_char_boundary(thinking, THINKING_BODY_MAX_CHARS);
+    format!(
+        "{}\n[thinking truncated from {} chars]",
+        &thinking[..end],
+        thinking.len()
+    )
+}
+
+/// Truncate every `<think>` block inside assistant content.
+pub fn truncate_thinking_in_content(content: &str) -> Option<String> {
+    if !content.contains(THINKING_OPEN) {
+        return None;
+    }
+    let mut result = String::new();
+    let mut rest = content;
+    let mut modified = false;
+    while let Some(start) = rest.find(THINKING_OPEN) {
+        result.push_str(&rest[..start]);
+        rest = &rest[start + THINKING_OPEN.len()..];
+        if let Some(end) = rest.find(THINKING_CLOSE) {
+            let body = &rest[..end];
+            let truncated = truncate_thinking_body(body);
+            if truncated != body {
+                modified = true;
+            }
+            result.push_str(THINKING_OPEN);
+            result.push_str(&truncated);
+            result.push_str(THINKING_CLOSE);
+            rest = &rest[end + THINKING_CLOSE.len()..];
+        } else {
+            result.push_str(THINKING_OPEN);
+            result.push_str(&truncate_thinking_body(rest));
+            modified = true;
+            return Some(result);
+        }
+    }
+    result.push_str(rest);
+    if modified { Some(result) } else { None }
+}
+
+/// Append a trailing user hint so a stream retry can continue without redoing work.
+/// Only mutates the request-boundary message list — never persisted history.
+pub fn inject_stream_retry_hint(messages: &mut Vec<Message>, thinking: &str, text: &str) {
+    if thinking.is_empty() && text.is_empty() {
+        return;
+    }
+    let think = truncate_thinking_body(thinking);
+    let partial_text = if text.len() > PARTIAL_TEXT_MAX_CHARS {
+        truncate_thinking_body(text)
+    } else {
+        text.to_string()
+    };
+    let mut hint = String::from(
+        "[Previous response was interrupted mid-stream. Continue from where you left off; \
+         do not repeat work already completed.",
+    );
+    if !think.is_empty() {
+        hint.push_str("\nPartial reasoning:\n");
+        hint.push_str(THINKING_OPEN);
+        hint.push_str(&think);
+        hint.push_str(THINKING_CLOSE);
+    }
+    if !partial_text.is_empty() {
+        hint.push_str("\nPartial output: ");
+        hint.push_str(&partial_text);
+    }
+    hint.push(']');
+    messages.push(Message::user(&hint));
+}
 
 /// Run the full hygiene pass on a message list (mutates in place).
 /// Returns the count of messages that were modified.
@@ -28,8 +112,26 @@ pub fn sanitize(messages: &mut Vec<Message>) -> usize {
         if truncate_tool_args(msg) {
             modified += 1;
         }
+        if truncate_assistant_thinking(msg) {
+            modified += 1;
+        }
     }
     modified
+}
+
+fn truncate_assistant_thinking(msg: &mut Message) -> bool {
+    if msg.role != Role::Assistant {
+        return false;
+    }
+    let content = match &msg.content {
+        Some(c) if c.contains(THINKING_OPEN) => c.clone(),
+        _ => return false,
+    };
+    if let Some(truncated) = truncate_thinking_in_content(&content) {
+        msg.content = Some(truncated);
+        return true;
+    }
+    false
 }
 
 /// Truncate an oversized tool result message.
@@ -233,5 +335,40 @@ mod tests {
         // Char-capped (not head/tail-split): no signal section.
         assert!(c.contains("truncated"));
         assert!(!c.contains("--- signals ---"));
+    }
+
+    #[test]
+    fn truncate_assistant_thinking_tags() {
+        let long = "x".repeat(10_000);
+        let content = format!("<think>{long}</think>\nanswer");
+        let out = truncate_thinking_in_content(&content).unwrap();
+        assert!(out.contains("thinking truncated"));
+        assert!(out.contains("answer"));
+        assert!(out.len() < content.len());
+    }
+
+    #[test]
+    fn inject_stream_retry_hint_adds_user_message() {
+        let mut msgs = vec![Message::user("hi")];
+        inject_stream_retry_hint(&mut msgs, "partial reasoning", "partial text");
+        assert_eq!(msgs.len(), 2);
+        assert!(msgs[1].content.as_ref().unwrap().contains("Partial reasoning"));
+        assert!(msgs[1].content.as_ref().unwrap().contains("partial text"));
+    }
+
+    #[test]
+    fn sanitize_truncates_assistant_thinking() {
+        let long = "y".repeat(10_000);
+        let mut msg = Message {
+            role: Role::Assistant,
+            content: Some(format!("<think>{long}</think>")),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+            model: None,
+            metadata: None,
+        };
+        let n = sanitize(&mut vec![msg]);
+        assert_eq!(n, 1);
     }
 }

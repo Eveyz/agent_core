@@ -12,6 +12,7 @@ pub const DEFAULT_PRINCIPLES: &str = r#"Rules:
 - Use tools directly when needed — no need to narrate your reasoning in text before acting.
 - If a tool call fails, try an alternative approach.
 - Be concise and focused in your responses. No greetings, no filler, no summaries of what you just did.
+- Identify the active repo from Working Directory (and Project Instructions for that cwd) before applying any project-specific knowledge from Global Memory. Global Memory may list multiple user projects as a catalog — never assume a catalog entry is the current project unless cwd matches.
 
 File operations:
 - Use `write_file` ONLY when creating a brand-new file or completely overwriting an existing file.
@@ -35,6 +36,25 @@ For simple tasks (1-2 tool calls): just do them, skip the todo list.
 - Do it YOURSELF: 1-2 reads, simple searches, single edits, straightforward commands
 - Use subagent_spawn: multi-step research, complex file operations, tasks needing clean context
 - Subagents get READ-ONLY tools by default (read_file, glob, grep). Add tools explicitly if they need to write/edit."#;
+
+/// Memory protocol — appended to Principles when memory is enabled (Stable segment).
+pub const MEMORY_PROTOCOL: &str = r#"## Memory Protocol
+
+Before answering, decide if the question needs historical context:
+- Past conversations, user preferences, prior decisions → call `conversation_search` FIRST
+- Long-term facts and distilled knowledge → call `archival_memory_search`
+- Current project rules → already in Project Instructions (cwd) below; do NOT search for those
+- Current codebase → use `grep` / `read_file`; do NOT use memory search
+- Active project identity → resolve from Working Directory + Project Instructions (cwd). Global Memory is cross-project background only.
+
+When search returns nothing relevant, say so — do not invent past context.
+
+When learning durable facts, use the correct store:
+- Cross-project personal traits (name, habits, language) → `core_memory_append` on block `human`
+- Agent persona adjustments → `core_memory_append` on block `persona`
+- Project architecture, conventions, decisions → `edit` on the project-local `agverse.md` (cwd), not global catalog entries
+- Cross-project catalog / global preferences → `edit` on `~/.agverse/agverse.md`
+- Important but verbose history → `archival_memory_insert`"#;
 
 /// Deprecated: old-style monolithic prompt. Use `DEFAULT_IDENTITY` + `DEFAULT_PRINCIPLES` instead.
 pub const DEFAULT_REACT_PROMPT: &str = r#"You are a helpful assistant with access to tools. Use them directly when you need to gather information or perform actions. When you have enough information, respond to the user.
@@ -231,11 +251,11 @@ pub const MEMORY_PROMPT_STATELESS: &str = "You have no memory of previous conver
 
 /// Prompt instructions for Standard memory mode.
 /// Injected into the Active Memory segment alongside agverse.md.
-pub const MEMORY_PROMPT_STANDARD: &str = "You have access to long-term memory. The Project Instructions section below is your Core Memory (RAM) — it is always in your context. Keep it concise and up-to-date by using the edit tool to modify ~/.agverse/agverse.md directly. When you learn a new user preference, architectural decision, or coding convention, write it into the appropriate section. When an old rule is deprecated or overridden, replace it — do not append contradictory rules. Use conversation_search to recall relevant past discussions when needed.";
+pub const MEMORY_PROMPT_STANDARD: &str = "You have long-term memory. Core Memory blocks (human/persona), Global Memory (cross-project catalog), and Project Instructions (cwd) are always in context. Resolve the active repo from Working Directory first. Use `core_memory_*` for short cross-project traits; use `edit` on project-local agverse.md for project-specific knowledge. Call `conversation_search` when a question may depend on past discussions.";
 
 /// Prompt instructions for Deep memory mode.
 /// Same as Standard, with additional emphasis on proactive recall.
-pub const MEMORY_PROMPT_DEEP: &str = "You have access to long-term memory with deep recall. The Project Instructions section below is your Core Memory (RAM) — it is always in your context. Keep it concise and up-to-date by using the edit tool to modify ~/.agverse/agverse.md directly. When you learn a new user preference, architectural decision, or coding convention, write it into the appropriate section. When an old rule is deprecated or overridden, replace it — do not append contradictory rules. Proactively use conversation_search and archival_memory_search to recall relevant past discussions and long-term knowledge. The system may also inject background reflection summaries — use them to inform your responses.";
+pub const MEMORY_PROMPT_DEEP: &str = "You have deep long-term memory. Core Memory blocks, Global Memory (cross-project), Project Instructions (cwd), and relevant past conversations may be pre-injected below. Resolve the active repo from Working Directory first. Use `core_memory_*` for personal traits, `edit` on project-local agverse.md for project rules, `archival_memory_search` for long-term facts. Proactively search when unsure. Background reflection may update agverse.md between turns.";
 
 /// Get the memory prompt for a given mode string.
 pub fn memory_mode_prompt(mode: &crate::config::MemoryMode) -> &'static str {

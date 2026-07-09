@@ -51,13 +51,15 @@ export function useAgentEventListener(): void {
       }
 
       // /btw side-channel stream (independent channel — not persisted, no seq)
-      const btwFn = await listen<{ btw_id: string; event_type: string; text: string }>('btw-event', (event) => {
+      const btwFn = await listen<{ btw_id: string; event_type: string; text: string; session_id?: string }>('btw-event', (event) => {
         if (!isMounted) return;
         const e = event.payload;
         if (!e) return;
-        if (e.event_type === 'delta') dispatch(btwDelta({ id: e.btw_id, text: e.text }));
-        else if (e.event_type === 'done') dispatch(btwDone({ id: e.btw_id }));
-        else if (e.event_type === 'error') dispatch(btwError({ id: e.btw_id, text: e.text }));
+        const sessionId = e.session_id;
+        if (!sessionId) return;
+        if (e.event_type === 'delta') dispatch(btwDelta({ sessionId, id: e.btw_id, text: e.text }));
+        else if (e.event_type === 'done') dispatch(btwDone({ sessionId, id: e.btw_id }));
+        else if (e.event_type === 'error') dispatch(btwError({ sessionId, id: e.btw_id, text: e.text }));
       });
       if (!isMounted) {
         btwFn();

@@ -13,7 +13,7 @@ export function useVisibilityResync() {
     const handleFocusOrVisibility = () => {
       const state = store.getState();
       if (document.visibilityState === 'hidden') {
-        const sid = state.chat.activeSessionId;
+        const sid = state.project.activeSessionId;
         if (!sid || !state.chat.isDirty[sid]) return;
         const activeProject = state.project.projects.find((p) => p.id === state.project.activeProjectId);
         if (!activeProject?.path) return;
@@ -32,7 +32,7 @@ export function useVisibilityResync() {
         return;
       }
 
-      const sid = state.chat.activeSessionId;
+      const sid = state.project.activeSessionId;
       const { isProcessing, runId } = sid ? {
         isProcessing: state.chat.processing[sid],
         runId: state.chat.runId[sid],

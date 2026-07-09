@@ -214,23 +214,12 @@ async fn send_message(
 #[derive(Clone, serde::Serialize)]
 struct BtwEvent {
     btw_id: String,
+    session_id: String,
     event_type: &'static str,
     text: String,
 }
 
-#[derive(serde::Serialize)]
-struct LearnResult {
-    title: String,
-    rule: String,
-}
 
-#[derive(serde::Deserialize)]
-struct LearnEntry {
-    title: String,
-    rule: String,
-}
-
-const LEARN_SYSTEM_PROMPT: &str = "You are a memory extraction assistant. The user wants to save a learning. Extract a durable, generalizable rule from their input. Output JSON only (no markdown, no code fences): {\"title\": \"short title (max 60 chars)\", \"rule\": \"the actionable rule, written as an instruction\"}";
 
 /// Render a read-only context snapshot as a compact transcript for `/btw`.
 fn render_context_snapshot(messages: &[agent_core::Message]) -> String {
@@ -278,7 +267,12 @@ async fn btw_query(
             Err(e) => {
                 let _ = app_handle.emit(
                     "btw-event",
-                    BtwEvent { btw_id: btw_id.clone(), event_type: "error", text: e.to_string() },
+                    BtwEvent {
+                        btw_id: btw_id.clone(),
+                        session_id: session_id.clone(),
+                        event_type: "error",
+                        text: e.to_string(),
+                    },
                 );
                 return;
             }
@@ -303,7 +297,12 @@ async fn btw_query(
                     if let Ok(agent_core::StreamEvent::TextDelta(text)) = item {
                         let _ = app_handle.emit(
                             "btw-event",
-                            BtwEvent { btw_id: btw_id.clone(), event_type: "delta", text },
+                            BtwEvent {
+                                btw_id: btw_id.clone(),
+                                session_id: session_id.clone(),
+                                event_type: "delta",
+                                text,
+                            },
                         );
                     }
                 }
@@ -311,7 +310,12 @@ async fn btw_query(
             Err(e) => {
                 let _ = app_handle.emit(
                     "btw-event",
-                    BtwEvent { btw_id: btw_id.clone(), event_type: "error", text: e.to_string() },
+                    BtwEvent {
+                        btw_id: btw_id.clone(),
+                        session_id: session_id.clone(),
+                        event_type: "error",
+                        text: e.to_string(),
+                    },
                 );
                 return;
             }
@@ -319,52 +323,19 @@ async fn btw_query(
 
         let _ = app_handle.emit(
             "btw-event",
-            BtwEvent { btw_id: btw_id.clone(), event_type: "done", text: String::new() },
+            BtwEvent {
+                btw_id: btw_id.clone(),
+                session_id: session_id.clone(),
+                event_type: "done",
+                text: String::new(),
+            },
         );
     });
 
     Ok(return_id)
 }
 
-/// `/learn` — extract a durable rule from user input via a lightweight model
-/// and persist it to core memory (SQLite). Returns the extracted
-/// `{ title, rule }` so the frontend can update its entry by id.
-#[tauri::command]
-async fn learn_memory(
-    state: State<'_, AppState>,
-    session_id: Option<String>,
-    content: String,
-) -> Result<LearnResult, String> {
-    let _ = session_id;
-    let brain = state.run_manager.lock().await.brain().clone();
 
-    let client = brain.build_client_for("learn").map_err(|e| e.to_string())?;
-    let messages = vec![
-        agent_core::Message::system(LEARN_SYSTEM_PROMPT),
-        agent_core::Message::user(&content),
-    ];
-    let (extraction, _) = client
-        .chat_completion(&messages, &[])
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let entry: LearnEntry = serde_json::from_str(&extraction).unwrap_or(LearnEntry {
-        title: content.chars().take(60).collect(),
-        rule: content.clone(),
-    });
-
-    if let Some(ref mem) = brain.memory {
-        let mut mgr = mem.lock();
-        let block_id = format!("learn_{}", uuid::Uuid::new_v4());
-        mgr.core_mut()
-            .create(&block_id, &entry.title, &entry.rule)
-            .map_err(|e| e.to_string())?;
-    } else {
-        return Err("memory is disabled (stateless mode)".to_string());
-    }
-
-    Ok(LearnResult { title: entry.title, rule: entry.rule })
-}
 
 /// Replay events from a Run's persisted log that the frontend missed (resync).
 /// Returns envelopes with seq > from_seq, serialized as JSON strings.
@@ -714,6 +685,10 @@ async fn get_mode(state: State<'_, AppState>) -> Result<String, String> {
 
 #[tauri::command]
 async fn create_session(state: State<'_, AppState>, project_id: String) -> Result<agent_core::SessionMeta, String> {
+    let model = {
+        let manager = state.run_manager.lock().await;
+        manager.brain().current_model_name().to_string()
+    };
     let pm = state.project_manager.clone();
     let sm = state.session_manager.clone();
     tokio::task::spawn_blocking(move || {
@@ -733,9 +708,8 @@ async fn create_session(state: State<'_, AppState>, project_id: String) -> Resul
         } else {
             project.path.clone()
         };
-        let model = "default";
         let _ = sm
-            .save_with_project(Some(&session_id), &messages, &cwd, model, Some(&project_id))
+            .save_with_project(Some(&session_id), &messages, &cwd, &model, Some(&project_id))
             .map_err(|e| e.to_string())?;
         let _ = sm.rename(&session_id, "New Session");
         let meta = sm
@@ -2038,7 +2012,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             send_message, approve_tool, abort_agent, replay_since,
-            btw_query, learn_memory,
+            btw_query,
             pause_run, resume_run, steer_run, cancel_steer, get_run_state,
             list_directory, search_files,
             get_config, save_config, switch_model, set_mode, get_mode,

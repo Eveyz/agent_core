@@ -171,6 +171,12 @@ impl SessionManager {
             rusqlite::params![prompt_id, session_id, turn_index, model, now],
         )?;
 
+        // Bump session activity so sidebar ordering reflects a new user turn immediately.
+        db.execute(
+            "UPDATE sessions SET updated_at = ?1 WHERE id = ?2",
+            rusqlite::params![now, session_id],
+        )?;
+
         Ok((prompt_id, turn_index))
     }
 
@@ -1012,6 +1018,21 @@ mod tests {
         assert_eq!(sessions[0].message_count, 4);
         assert_eq!(sessions[0].cwd, "/home/project");
         assert_eq!(sessions[0].model_used, "gpt-4o");
+    }
+
+    #[test]
+    fn test_create_prompt_bumps_session_updated_at() {
+        let (mgr, _dir) = make_manager();
+        let msgs = vec![Message::user("hello")];
+        let session_id = mgr.save(None, &msgs, "/tmp", "gpt").unwrap();
+        let before = mgr.get_meta(&session_id).unwrap().unwrap().updated_at;
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let (_prompt_id, _turn) = mgr.create_prompt(&session_id, "gpt-4o").unwrap();
+        let after = mgr.get_meta(&session_id).unwrap().unwrap().updated_at;
+
+        assert_ne!(before, after);
+        assert!(after >= before);
     }
 
     #[test]

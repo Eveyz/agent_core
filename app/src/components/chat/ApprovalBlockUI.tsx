@@ -1,7 +1,9 @@
 import { useState, memo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { useStore } from 'react-redux';
 import { useAppDispatch } from '../../hooks/useAppDispatch';
 import { toolApprovalResponded } from '../../features/chat/chatSlice';
+import type { RootState } from '../../store';
 import type { ApprovalBlock } from './turnHelpers';
 
 const APPROVAL_LABELS: Record<string, string> = {
@@ -20,12 +22,15 @@ const ApprovalBlockUI = memo(function ApprovalBlockUI({
   isOverlay?: boolean;
 }) {
   const dispatch = useAppDispatch();
+  const store = useStore<RootState>();
   const [chosenAction, setChosenAction] = useState<string | null>(null);
 
   const promptId = block.prompt_id ?? '';
   const handleApprove = async (choice: string) => {
     setChosenAction(choice);
-    dispatch(toolApprovalResponded({ promptId, approved: !choice.startsWith('deny') }));
+    const sessionId = store.getState().project.activeSessionId;
+    if (!sessionId) return;
+    dispatch(toolApprovalResponded({ sessionId, promptId, approved: !choice.startsWith('deny') }));
     try {
       await invoke('approve_tool', { promptId, choice });
     } catch (e) {

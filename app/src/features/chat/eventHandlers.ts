@@ -13,6 +13,7 @@ import {
   appendDeltaToBlocks,
   truncateResult,
   stringifyResult,
+  isRecoveryMessage,
 } from './utils';
 import type { AnyBlock } from './utils';
 
@@ -134,9 +135,10 @@ function pushApproval(
 export function getActiveTurn(state: ChatState, sessionId: string): ChatEntry | undefined {
   const entries = state.entries[sessionId];
   if (!entries) return undefined;
-  if (state._pendingTurnId) {
+  const pendingTurnId = state._pendingTurnId?.[sessionId];
+  if (pendingTurnId) {
     const byId = entries.find(
-      (e) => e.type === 'turn' && (e.turnId === state._pendingTurnId || e.turnIds?.includes(state._pendingTurnId!))
+      (e) => e.type === 'turn' && (e.turnId === pendingTurnId || e.turnIds?.includes(pendingTurnId))
     );
     if (byId && byId.type === 'turn') return byId;
   }
@@ -316,6 +318,10 @@ export function handleApprovalRequired(
 
 export function handleAgentEnd(state: ChatState, sessionId: string): void {
   state.processing[sessionId] = false;
+  state.steerQueue[sessionId] = [];
+  state.entries[sessionId] = state.entries[sessionId].filter(
+    (e) => !(e.type === 'user' && e.isSteer && e.steerStatus === 'pending')
+  );
   for (const entry of state.entries[sessionId]) {
     if (entry.type === 'turn' && !entry.endTime) {
       entry.endTime = Date.now();
@@ -325,18 +331,25 @@ export function handleAgentEnd(state: ChatState, sessionId: string): void {
 }
 
 export function handleError(state: ChatState, sessionId: string, errorText: string): void {
-  state.processing[sessionId] = false;
+  // Recovery notices reuse the Error event channel but the run is still
+  // alive — keep the stop button / sidebar spinner until a real terminal event.
+  const recovery = isRecoveryMessage(errorText);
+  if (!recovery) {
+    state.processing[sessionId] = false;
+  }
   const turn = getActiveTurn(state, sessionId);
   if (turn && turn.type === 'turn' && turn.blocks) {
     closeStreamingBlock(turn.blocks);
-    stopDanglingSubagents(state.subagents[sessionId], turn);
+    if (!recovery) {
+      stopDanglingSubagents(state.subagents[sessionId], turn);
+    }
     const lastBlock = turn.blocks[turn.blocks.length - 1];
     if (lastBlock && lastBlock.type === 'error') {
       lastBlock.text = errorText;
       return;
     }
     turn.blocks.push({ type: 'error', text: errorText });
-  } else {
+  } else if (!recovery) {
     state.entries[sessionId].push({
       id: `error-${Date.now()}`,
       type: 'turn',
@@ -553,11 +566,7 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
   // Resolve sessionId. Most runtime events are Envelope-scoped by run_id only;
   // the run_created bootstrap event can be missed because the frontend subscribes
   // after create_run returns, so keep a client-side runId -> sessionId map too.
-  let sessionId = ev.session_id ?? state.runIdToSessionId?.[ev.run_id] ?? null;
-  if (!sessionId && state.activeSessionId && state.runId[state.activeSessionId] === ev.run_id) {
-    sessionId = state.activeSessionId;
-    state.runIdToSessionId[ev.run_id] = sessionId;
-  }
+  const sessionId = ev.session_id ?? state.runIdToSessionId?.[ev.run_id] ?? null;
   if (!sessionId) {
     return null;
   }
@@ -573,9 +582,13 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
   (state.runState ??= {})[sessionId] ??= null;
   (state.goal ??= {})[sessionId] ??= null;
   (state.goalCompleted ??= {})[sessionId] ??= false;
+  (state.viewingSubagentPath ??= {})[sessionId] ??= [];
+  (state.btwEntries ??= {})[sessionId] ??= [];
+  (state.isResuming ??= {})[sessionId] ??= false;
+  (state._pendingTurnId ??= {})[sessionId] ??= undefined;
 
   // Set _pendingTurnId BEFORE lifecycle handlers that may call handleError/getActiveTurn
-  state._pendingTurnId = ev.turn_id;
+  state._pendingTurnId[sessionId] = ev.turn_id;
 
   // Seq gap detection
   if (typeof ev.seq === 'number' && typeof ev.run_id === 'string') {

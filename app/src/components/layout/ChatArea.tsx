@@ -1,9 +1,10 @@
-import { RefObject, useState } from 'react';
-import { useSelector, useDispatch } from 'react-redux';
+import { RefObject, useState, memo } from 'react';
+import { useSelector, shallowEqual } from 'react-redux';
 import { RootState } from '../../store';
 import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
 import { LazyEntry } from '../chat/LazyEntry';
-import { loadMorePrompts } from '../../features/chat/chatSlice';
+import { loadMorePrompts, selectActiveBtwEntries } from '../../features/chat/chatSlice';
+import { useAppDispatch } from '../../hooks/useAppDispatch';
 
 interface ChatAreaProps {
   entryIds: string[];
@@ -17,7 +18,7 @@ interface ChatAreaProps {
   onSend?: (msg: string) => void;
 }
 
-export function ChatArea({
+export const ChatArea = memo(function ChatArea({
   entryIds,
   defaultModel,
   isProcessing,
@@ -28,14 +29,14 @@ export function ChatArea({
   handleRetry,
   onSend,
 }: ChatAreaProps) {
-  const dispatch = useDispatch();
-  const btwEntries = useSelector((state: RootState) => state.chat.btwEntries);
-  const learnEntries = useSelector((state: RootState) => state.chat.learnEntries);
-  const goal = useSelector((state: RootState) => state.chat.goal[state.chat.activeSessionId ?? '']);
-  const goalCompleted = useSelector((state: RootState) => state.chat.goalCompleted[state.chat.activeSessionId ?? '']);
+  const dispatch = useAppDispatch();
+  const activeSessionId = useSelector((state: RootState) => state.project.activeSessionId);
+  const btwEntries = useSelector(selectActiveBtwEntries, shallowEqual);
+  const goal = useSelector((state: RootState) => state.chat.goal[activeSessionId ?? '']);
+  const goalCompleted = useSelector((state: RootState) => state.chat.goalCompleted[activeSessionId ?? '']);
 
-  const allPrompts = useSelector((state: RootState) => state.chat.allPrompts[state.chat.activeSessionId ?? '']);
-  const visiblePromptsCount = useSelector((state: RootState) => state.chat.visiblePromptsCount[state.chat.activeSessionId ?? '']);
+  const allPrompts = useSelector((state: RootState) => state.chat.allPrompts[activeSessionId ?? '']);
+  const visiblePromptsCount = useSelector((state: RootState) => state.chat.visiblePromptsCount[activeSessionId ?? '']);
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
 
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
@@ -44,7 +45,8 @@ export function ChatArea({
       target.scrollTop < 30 &&
       visiblePromptsCount < allPrompts.length &&
       !isLoadingOlder &&
-      !isProcessing
+      !isProcessing &&
+      activeSessionId
     ) {
       setIsLoadingOlder(true);
 
@@ -52,7 +54,7 @@ export function ChatArea({
       const oldScrollTop = target.scrollTop;
 
       setTimeout(() => {
-        dispatch(loadMorePrompts());
+        dispatch(loadMorePrompts({ sessionId: activeSessionId }));
 
         requestAnimationFrame(() => {
           if (scrollRef.current) {
@@ -98,23 +100,7 @@ export function ChatArea({
               onSend={onSend}
             />
           ))}
-          {learnEntries.map((e) => (
-            <div key={e.id} style={{
-              alignSelf: 'center',
-              maxWidth: '80%',
-              padding: '8px 12px',
-              borderRadius: 8,
-              border: '1px solid var(--border-color, #333)',
-              background: 'var(--bg-secondary, #1a1a1a)',
-              fontSize: 13,
-            }}>
-              💡 {e.status === 'pending'
-                ? <span style={{ opacity: 0.7 }}>Saving learning…</span>
-                : e.status === 'saved'
-                  ? <><strong>Learned:</strong> {e.title}<br /><span style={{ opacity: 0.7 }}>{e.rule}</span></>
-                  : <span style={{ color: '#ef4444' }}>⚠ {e.error}</span>}
-            </div>
-          ))}
+
           {btwEntries.map((e) => (
             <div key={e.id} style={{
               alignSelf: 'center',
@@ -138,4 +124,4 @@ export function ChatArea({
       )}
     </div>
   );
-}
+});

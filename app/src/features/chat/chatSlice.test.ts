@@ -10,7 +10,6 @@ async function loadModules() {
     removeItem: vi.fn(),
   });
   const chat = await import('./chatSlice');
-  const project = await import('../project/projectSlice');
   const utils = await import('./utils');
   return {
     reducer: chat.default as Reducer<ChatState, AnyAction>,
@@ -19,7 +18,8 @@ async function loadModules() {
     retryFromEntry: chat.retryFromEntry,
     runIdSet: chat.runIdSet,
     userMessageSent: chat.userMessageSent,
-    setActiveSession: project.setActiveSession,
+    toolApprovalResponded: chat.toolApprovalResponded,
+    btwAsked: chat.btwAsked,
     entriesToMessages: utils.entriesToMessages,
   };
 }
@@ -30,8 +30,8 @@ beforeEach(() => {
 
 describe('chat reducer session routing', () => {
   it('routes run events to the session mapped by runIdSet', async () => {
-    const { reducer, setActiveSession, userMessageSent, runIdSet, agentEventsBatch } = await loadModules();
-    let state = reducer(undefined, setActiveSession('s1'));
+    const { reducer, userMessageSent, runIdSet, agentEventsBatch } = await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
     state = reducer(state, userMessageSent({ text: 'hello', model: 'm1', sessionId: 's1' }));
     state = reducer(state, runIdSet({ runId: 'run-1', sessionId: 's1' }));
 
@@ -49,16 +49,83 @@ describe('chat reducer session routing', () => {
     expect(state.isDirty.s1).toBe(true);
   });
 
+  it('does not mix events across concurrent sessions in one batch', async () => {
+    const { reducer, userMessageSent, runIdSet, agentEventsBatch } = await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, userMessageSent({ text: 'a', model: 'm1', sessionId: 's1' }));
+    state = reducer(state, runIdSet({ runId: 'run-1', sessionId: 's1' }));
+    state = reducer(state, userMessageSent({ text: 'b', model: 'm1', sessionId: 's2' }));
+    state = reducer(state, runIdSet({ runId: 'run-2', sessionId: 's2' }));
+
+    state = reducer(
+      state,
+      agentEventsBatch([
+        { event: 'turn_started', run_id: 'run-1', turn_id: 't1', index: 0 },
+        { event: 'turn_started', run_id: 'run-2', turn_id: 't2', index: 0 },
+        { event: 'model_streaming', run_id: 'run-1', turn_id: 't1', message_id: 'm1', delta: { Text: 'from-s1' } },
+        { event: 'model_streaming', run_id: 'run-2', turn_id: 't2', message_id: 'm2', delta: { Text: 'from-s2' } },
+      ]),
+    );
+
+    const turn1 = state.entries.s1.find((e) => e.type === 'turn');
+    const turn2 = state.entries.s2.find((e) => e.type === 'turn');
+    expect(turn1?.blocks?.some((b) => b.type === 'assistant' && b.text === 'from-s1')).toBe(true);
+    expect(turn2?.blocks?.some((b) => b.type === 'assistant' && b.text === 'from-s2')).toBe(true);
+    expect(turn1?.blocks?.some((b) => b.type === 'assistant' && b.text === 'from-s2')).toBe(false);
+  });
+
+  it('toolApprovalResponded updates the targeted session even when another is active', async () => {
+    const { reducer, userMessageSent, runIdSet, agentEventsBatch, toolApprovalResponded } = await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, userMessageSent({ text: 'hello', model: 'm1', sessionId: 's1' }));
+    state = reducer(state, runIdSet({ runId: 'run-1', sessionId: 's1' }));
+    state = reducer(
+      state,
+      agentEventsBatch([
+        { event: 'turn_started', run_id: 'run-1', turn_id: 'turn-1', index: 0 },
+        {
+          event: 'approval_required',
+          run_id: 'run-1',
+          turn_id: 'turn-1',
+          prompt_id: 'ap-1',
+          tool_name: 'bash',
+          tool_input: {},
+          danger_level: 'high',
+          explanation: 'run cmd',
+        },
+      ]),
+    );
+
+    // Simulate user viewing s2 while approving s1's prompt
+    state = reducer(state, userMessageSent({ text: 'other', model: 'm1', sessionId: 's2' }));
+    state = reducer(state, toolApprovalResponded({ sessionId: 's1', promptId: 'ap-1', approved: true }));
+
+    const turn = state.entries.s1.find((e) => e.type === 'turn');
+    const approval = turn?.blocks?.find((b) => b.type === 'approval');
+    expect(approval && approval.type === 'approval' && approval.status).toBe('approved');
+  });
+
+  it('scopes btw entries per session', async () => {
+    const { reducer, btwAsked } = await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, btwAsked({ sessionId: 's1', id: 'b1', question: 'q1' }));
+    state = reducer(state, btwAsked({ sessionId: 's2', id: 'b2', question: 'q2' }));
+    expect(state.btwEntries.s1).toHaveLength(1);
+    expect(state.btwEntries.s1[0].question).toBe('q1');
+    expect(state.btwEntries.s2).toHaveLength(1);
+    expect(state.btwEntries.s2[0].question).toBe('q2');
+  });
+
   it('retryFromEntry truncates entries and prompts at the retried user message', async () => {
-    const { reducer, setActiveSession, userMessageSent, runIdSet, retryFromEntry } = await loadModules();
-    let state = reducer(undefined, setActiveSession('s1'));
+    const { reducer, userMessageSent, runIdSet, retryFromEntry } = await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
     state = reducer(state, userMessageSent({ text: 'one', model: 'm1', sessionId: 's1' }));
     state = reducer(state, runIdSet({ runId: 'run-1', sessionId: 's1' }));
     state = structuredClone(state);
     state.entries.s1.push({ id: 'turn-run-1', type: 'turn', promptId: 'run-1', blocks: [{ type: 'assistant', text: 'old answer', isStreaming: false }] });
     state = reducer(state, userMessageSent({ text: 'two', model: 'm2', sessionId: 's1' }));
 
-    state = reducer(state, retryFromEntry({ id: 'user-run-1', text: 'edited one' }));
+    state = reducer(state, retryFromEntry({ sessionId: 's1', id: 'user-run-1', text: 'edited one' }));
 
     expect(state.entries.s1.map((e) => e.text ?? e.type)).toEqual(['edited one']);
     expect(state.entries.s1[0].model).toBe('m1');
@@ -67,8 +134,8 @@ describe('chat reducer session routing', () => {
   });
 
   it('loadMorePrompts preserves live prompt blocks when rebuilding visible entries', async () => {
-    const { reducer, setActiveSession, loadMorePrompts } = await loadModules();
-    let state = reducer(undefined, setActiveSession('s1'));
+    const { reducer, loadMorePrompts } = await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
     state = structuredClone(state);
     state.allPrompts.s1 = [
       {
@@ -90,7 +157,7 @@ describe('chat reducer session routing', () => {
       { id: 'turn-p-live', type: 'turn', promptId: 'p-live', blocks: [{ type: 'assistant', text: 'live answer', isStreaming: false }] },
     ];
 
-    state = reducer(state, loadMorePrompts());
+    state = reducer(state, loadMorePrompts({ sessionId: 's1' }));
 
     expect(state.entries.s1.some((e) => e.promptId === 'p-live')).toBe(true);
     expect(state.entries.s1.some((e) => e.type === 'turn' && e.blocks?.some((b) => b.type === 'assistant' && b.text === 'live answer'))).toBe(true);
@@ -117,5 +184,55 @@ describe('chat serialization', () => {
     );
 
     expect(messages[1].content).toBe('<think>reasoning</think>\nanswer');
+  });
+});
+
+describe('recovery error events', () => {
+  it('keeps processing true when recovery Error events arrive mid-run', async () => {
+    const { reducer, userMessageSent, runIdSet, agentEventsBatch } = await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, userMessageSent({ text: 'hello', model: 'm1', sessionId: 's1' }));
+    state = reducer(state, runIdSet({ runId: 'run-1', sessionId: 's1' }));
+    expect(state.processing.s1).toBe(true);
+
+    state = reducer(
+      state,
+      agentEventsBatch([
+        { event: 'turn_started', run_id: 'run-1', turn_id: 'turn-1', index: 0 },
+        {
+          event: 'error',
+          run_id: 'run-1',
+          turn_id: 'turn-1',
+          message: 'retrying model call after 500ms',
+        },
+      ]),
+    );
+
+    expect(state.processing.s1).toBe(true);
+    const turn = state.entries.s1.find((e) => e.type === 'turn');
+    expect(turn?.endTime).toBeUndefined();
+    expect(turn?.blocks?.some((b) => b.type === 'error' && b.text.includes('retrying'))).toBe(true);
+  });
+
+  it('clears processing on terminal Error events', async () => {
+    const { reducer, userMessageSent, runIdSet, agentEventsBatch } = await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, userMessageSent({ text: 'hello', model: 'm1', sessionId: 's1' }));
+    state = reducer(state, runIdSet({ runId: 'run-1', sessionId: 's1' }));
+
+    state = reducer(
+      state,
+      agentEventsBatch([
+        { event: 'turn_started', run_id: 'run-1', turn_id: 'turn-1', index: 0 },
+        {
+          event: 'error',
+          run_id: 'run-1',
+          turn_id: 'turn-1',
+          message: 'provider returned 500 Internal Server Error',
+        },
+      ]),
+    );
+
+    expect(state.processing.s1).toBe(false);
   });
 });

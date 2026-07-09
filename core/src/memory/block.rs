@@ -167,6 +167,17 @@ impl CoreMemory {
         result
     }
 
+    /// Like `to_context_string` but skips empty blocks (for prompt injection).
+    pub fn to_nonempty_context_string(&self) -> String {
+        let mut result = String::new();
+        for block in self.blocks.values() {
+            if !block.content.trim().is_empty() {
+                result.push_str(&format!("[{}]: {}\n", block.id, block.content));
+            }
+        }
+        result
+    }
+
     pub fn has(&self, id: &str) -> bool {
         self.blocks.contains_key(id)
     }

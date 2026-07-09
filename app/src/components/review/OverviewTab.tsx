@@ -22,7 +22,7 @@ export function OverviewTab() {
   const entries = useSelector(selectActiveSessionEntries);
   const todo = useSelector(selectActiveSessionTodos);
   const subagentsMap = useSelector((state: RootState) => state.chat.subagents);
-  const activeSessionId = useSelector((state: RootState) => state.chat.activeSessionId);
+  const activeSessionId = useSelector((state: RootState) => state.project.activeSessionId);
 
   const [expanded, setExpanded] = useState<Set<SectionKey>>(
     new Set(['files_changed', 'background_tasks'])

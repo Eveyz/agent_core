@@ -10,14 +10,15 @@ import {
   runIdSet,
   selectEntryIds,
   selectPendingApprovalCount,
+  selectHasActivePendingApproval,
   selectActivePendingApproval,
+  pendingApprovalEqual,
   selectSubagentById,
+  selectViewingSubagentPath,
+  selectIsResumingActive,
   steerMessageQueued,
   steerMessageCancelled,
   btwAsked,
-  learnRequested,
-  learnSaved,
-  learnError,
 } from './features/chat/chatSlice';
 import { openSettings, fetchConfig } from './features/settings/settingsSlice';
 import {
@@ -35,6 +36,7 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useWindowShow } from './hooks/useWindowShow';
 import { useSessionLoader } from './hooks/useSessionLoader';
 import { useVisibilityResync } from './hooks/useVisibilityResync';
+import { useSaveSession } from './hooks/useSaveSession';
 
 import { Sidebar } from './components/layout/Sidebar';
 import { CosmicBackground } from './components/layout/CosmicBackground';
@@ -93,14 +95,14 @@ function App() {
 
   const entryIds = useSelector(selectEntryIds);
   const entriesLength = useSelector((state: RootState) => {
-    const sid = state.chat.activeSessionId;
+    const sid = state.project.activeSessionId;
     return sid ? (state.chat.entries[sid]?.length ?? 0) : 0;
   });
   const isProcessing = useSelector((state: RootState) => {
-    const sid = state.chat.activeSessionId;
+    const sid = state.project.activeSessionId;
     return sid ? !!state.chat.processing[sid] : false;
   });
-  const isResuming = useSelector((state: RootState) => state.chat.isResuming);
+  const isResuming = useSelector(selectIsResumingActive);
   const defaultModel = useSelector((state: RootState) => state.settings.config?.default_model || '');
   const appearance = useSelector((state: RootState) => state.settings.appearance);
   
@@ -148,14 +150,16 @@ function App() {
     defaultModel,
   });
 
+  const { saveSessionNow } = useSaveSession();
+
   useThemeEffect(appearance);
 
   const runId = useSelector((state: RootState) => {
-    const sid = state.chat.activeSessionId;
+    const sid = state.project.activeSessionId;
     return sid ? (state.chat.runId[sid] ?? null) : null;
   });
   
-  useKeyboardShortcuts({ isProcessing, runId });
+  useKeyboardShortcuts({ isProcessing, runId, sessionId: activeSessionId });
   useWindowShow();
   useVisibilityResync();
 
@@ -169,12 +173,13 @@ function App() {
 
   // Track pending approvals — scroll to bottom when a new one appears
   const pendingApprovalCount = useSelector(selectPendingApprovalCount);
-  const activePendingApproval = useSelector(selectActivePendingApproval);
+  const hasActivePendingApproval = useSelector(selectHasActivePendingApproval);
+  const activePendingApproval = useSelector(selectActivePendingApproval, pendingApprovalEqual);
   const pendingSteerCount = useSelector((state: RootState) => {
-    const sid = state.chat.activeSessionId;
+    const sid = state.project.activeSessionId;
     return sid ? (state.chat.steerQueue[sid]?.filter((s) => s.status === 'pending').length ?? 0) : 0;
   });
-  const viewingSubagentPath = useSelector((state: RootState) => state.chat.viewingSubagentPath, shallowEqual);
+  const viewingSubagentPath = useSelector(selectViewingSubagentPath, shallowEqual);
 
   const activeSubagentId = viewingSubagentPath.length > 0 ? viewingSubagentPath[viewingSubagentPath.length - 1].id : null;
   const activeSubagent = useSelector((state: RootState) =>
@@ -214,40 +219,30 @@ function App() {
   }, [activeSessionId, scrollToBottom]);
 
   const handleAbort = useCallback(() => {
-    dispatch(agentAborted());
+    if (!activeSessionId) return;
+    dispatch(agentAborted({ sessionId: activeSessionId }));
     invoke('abort_agent', { runId }).catch((e) => console.error('Failed to abort agent:', e));
-  }, [dispatch, runId]);
+  }, [dispatch, runId, activeSessionId]);
 
   const handleSteer = useCallback(async (message: string) => {
-    if (!runId || !message.trim()) return;
+    if (!runId || !message.trim() || !activeSessionId) return;
     const steerId = crypto.randomUUID();
-    dispatch(steerMessageQueued({ steerId, text: message.trim() }));
+    dispatch(steerMessageQueued({ sessionId: activeSessionId, steerId, text: message.trim() }));
     try {
       await invoke('steer_run', { runId, steerId, message: message.trim() });
     } catch (e) {
       console.error('Failed to steer run:', e);
-      dispatch(steerMessageCancelled(steerId));
+      dispatch(steerMessageCancelled({ sessionId: activeSessionId, steerId }));
     }
-  }, [runId, dispatch]);
+  }, [runId, dispatch, activeSessionId]);
 
   const handleBtwQuery = useCallback(async (question: string) => {
     if (!activeSessionId) return;
     try {
       const id = await invoke<string>('btw_query', { sessionId: activeSessionId, question });
-      dispatch(btwAsked({ id, question }));
+      dispatch(btwAsked({ sessionId: activeSessionId, id, question }));
     } catch (e) {
       console.error('btw_query failed:', e);
-    }
-  }, [activeSessionId, dispatch]);
-
-  const handleLearn = useCallback(async (content: string) => {
-    const id = crypto.randomUUID();
-    dispatch(learnRequested({ id, input: content }));
-    try {
-      const result = await invoke<{ title: string; rule: string }>('learn_memory', { sessionId: activeSessionId, content });
-      dispatch(learnSaved({ id, title: result.title, rule: result.rule }));
-    } catch (e) {
-      dispatch(learnError({ id, error: String(e) }));
     }
   }, [activeSessionId, dispatch]);
 
@@ -279,7 +274,7 @@ function App() {
         }
       }
 
-      if (store.getState().chat.activeSessionId !== sessionId) {
+      if (store.getState().project.activeSessionId !== sessionId) {
         dispatch(setActiveSession(sessionId));
       }
 
@@ -311,12 +306,22 @@ function App() {
       const msg = editedText ?? entry.text ?? '';
       if (!msg.trim() || !activeSessionId) return;
 
-      if (store.getState().chat.activeSessionId !== activeSessionId) {
+      if (store.getState().project.activeSessionId !== activeSessionId) {
         dispatch(setActiveSession(activeSessionId));
       }
 
-      dispatch(retryFromEntry({ id: entryId, text: msg }));
+      dispatch(retryFromEntry({ sessionId: activeSessionId, id: entryId, text: msg }));
       scrollToBottom();
+
+      const projectPath = activeProject?.path ?? null;
+      if (projectPath) {
+        await saveSessionNow({
+          activeSessionId,
+          activeProjectPath: projectPath,
+          defaultModel,
+          force: true,
+        });
+      }
 
       try {
         const id = await invoke<string>('send_message', { message: msg, sessionId: activeSessionId, model: defaultModel });
@@ -326,7 +331,7 @@ function App() {
         dispatch(sendFailed({ sessionId: activeSessionId, error: String(e) }));
       }
     },
-    [dispatch, activeSessionId, store, scrollToBottom, defaultModel]
+    [dispatch, activeSessionId, activeProject, store, scrollToBottom, defaultModel, saveSessionNow]
   );
 
   const handleOpenSettings = useCallback(() => {
@@ -410,13 +415,12 @@ function App() {
                 onAbort={handleAbort}
                 onSteer={handleSteer}
                 onBtwQuery={handleBtwQuery}
-                onLearn={handleLearn}
                 pendingSteerCount={pendingSteerCount}
-                disabled={viewingSubagentPath.length > 0 || isResuming || !!activePendingApproval}
+                disabled={viewingSubagentPath.length > 0 || isResuming || hasActivePendingApproval}
                 disabledMessage={
                   isResuming
                     ? "Resuming session..."
-                    : activePendingApproval
+                    : hasActivePendingApproval
                     ? "Awaiting approval..."
                     : "the input chat is disabled for the subagent"
                 }

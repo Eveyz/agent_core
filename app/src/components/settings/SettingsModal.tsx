@@ -8,7 +8,7 @@ import SettingsIcon from 'lucide-react/dist/esm/icons/settings.mjs';
 import ServerIcon from 'lucide-react/dist/esm/icons/server.mjs';
 import BrainIcon from 'lucide-react/dist/esm/icons/brain.mjs';
 import PlugIcon from 'lucide-react/dist/esm/icons/plug.mjs';
-import WrenchIcon from 'lucide-react/dist/esm/icons/wrench.mjs';
+import ZapIcon from 'lucide-react/dist/esm/icons/zap.mjs';
 import LoaderIcon from 'lucide-react/dist/esm/icons/loader.mjs';
 import ShieldIcon from 'lucide-react/dist/esm/icons/shield.mjs';
 import GeneralTab from './GeneralTab';
@@ -25,7 +25,7 @@ const TABS = [
   { key: 'provider' as const, icon: ServerIcon },
   { key: 'memory' as const, icon: BrainIcon },
   { key: 'mcp' as const, icon: PlugIcon },
-  { key: 'skills' as const, icon: WrenchIcon },
+  { key: 'skills' as const, icon: ZapIcon },
   { key: 'permissions' as const, icon: ShieldIcon },
 ];
 

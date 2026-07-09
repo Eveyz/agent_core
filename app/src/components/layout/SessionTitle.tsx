@@ -66,7 +66,9 @@ export function SessionTitle({
           <span
             className="header-session-name"
             style={viewingSubagentPath.length > 0 ? { cursor: 'pointer' } : undefined}
-            onClick={viewingSubagentPath.length > 0 ? () => dispatch(clearSubagentView()) : undefined}
+            onClick={viewingSubagentPath.length > 0 && activeSessionId
+              ? () => dispatch(clearSubagentView({ sessionId: activeSessionId }))
+              : undefined}
           >
             {sessionTitle || 'New Session'}
           </span>
@@ -77,10 +79,10 @@ export function SessionTitle({
                 className="header-breadcrumb-name"
                 style={{ cursor: i < viewingSubagentPath.length - 1 ? 'pointer' : 'default' }}
                 onClick={
-                  i < viewingSubagentPath.length - 1
+                  i < viewingSubagentPath.length - 1 && activeSessionId
                     ? () => {
                         const pops = viewingSubagentPath.length - 1 - i;
-                        for (let k = 0; k < pops; k++) dispatch(popSubagentView());
+                        for (let k = 0; k < pops; k++) dispatch(popSubagentView({ sessionId: activeSessionId }));
                       }
                     : undefined
                 }
