@@ -115,7 +115,16 @@ pub enum RunEvent {
     },
     InputRequested {
         prompt_id: String,
-        question: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        questions: Vec<crate::runtime::input::ClarificationQuestion>,
+        /// Legacy single-question field kept for older clients / logs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        question: Option<String>,
+    },
+    InputResolved {
+        prompt_id: String,
+        answers: crate::runtime::input::ClarificationAnswers,
     },
 
     // ── Context ────────────────────────────────────────────────────
@@ -186,6 +195,8 @@ pub enum RunEvent {
     GoalCompleted {
         goal: String,
     },
+    /// The pinned goal was cleared by the user.
+    GoalCleared,
 
     // ── Cache telemetry ────────────────────────────────────────────
     /// Per-turn cache hit/miss statistics from the model API response.
@@ -382,6 +393,19 @@ impl RunEvent {
                 danger_level,
                 explanation,
             },
+            AgentEvent::InputRequested {
+                prompt_id,
+                title,
+                questions,
+            } => {
+                let question = questions.first().map(|q| q.prompt.clone());
+                RunEvent::InputRequested {
+                    prompt_id,
+                    title,
+                    questions,
+                    question,
+                }
+            }
             AgentEvent::Error(message) => RunEvent::Error { message },
             AgentEvent::SubagentStart {
                 subagent_id,
@@ -525,6 +549,16 @@ impl RunEvent {
                     explanation: explanation.clone(),
                 }
             }
+            RunEvent::InputRequested {
+                prompt_id,
+                title,
+                questions,
+                ..
+            } => AgentEvent::InputRequested {
+                prompt_id: prompt_id.clone(),
+                title: title.clone(),
+                questions: questions.clone(),
+            },
             RunEvent::Error { message } => AgentEvent::Error(message.clone()),
             RunEvent::SubagentStarted { subagent_id, role_name, task } => {
                 AgentEvent::SubagentStart {

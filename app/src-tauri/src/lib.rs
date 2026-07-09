@@ -101,13 +101,45 @@ async fn send_message(
         let _ = manager.switch_model(m);
     }
 
-    // Load history if resuming a session
+    // Load history + session-level pinned goal
     let mut history = vec![];
     let mut working_dir = None;
+    let mut initial_goal: Option<String> = None;
+    let mut initial_goal_completed = false;
     if let Some(ref sid) = session_id {
         if let Ok(Some(sess)) = state.session_manager.resume(sid) {
             history = sess.messages;
             working_dir = Some(sess.meta.cwd);
+            initial_goal = sess.meta.pinned_goal.clone();
+            initial_goal_completed = sess.meta.goal_completed;
+        }
+    }
+
+    // Persist /goal mutations on the session before creating the Run.
+    let trimmed = message.trim();
+    let is_goal_clear = trimmed == "/goal clear"
+        || trimmed == "/goal stop"
+        || trimmed == "/goal cancel"
+        || trimmed == "/goal off";
+    if let Some(ref sid) = session_id {
+        let sm = state.session_manager.clone();
+        let sid_owned = sid.clone();
+        if is_goal_clear {
+            let _ = tokio::task::spawn_blocking(move || sm.clear_pinned_goal(&sid_owned)).await;
+            initial_goal = None;
+            initial_goal_completed = false;
+        } else if let Some(g) = message
+            .strip_prefix("/goal ")
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        {
+            let goal_for_db = g.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                sm.set_pinned_goal(&sid_owned, &goal_for_db)
+            })
+            .await;
+            initial_goal = Some(g);
+            initial_goal_completed = false;
         }
     }
 
@@ -138,7 +170,14 @@ async fn send_message(
 
     // Create the Run
     let run_id = manager
-        .create_run_with_workdir(&message, session_id.clone(), working_dir, history)
+        .create_run_with_workdir(
+            &message,
+            session_id.clone(),
+            working_dir,
+            history,
+            initial_goal,
+            initial_goal_completed,
+        )
         .await
         .map_err(|e| e.to_string())?;
 
@@ -178,6 +217,17 @@ async fn send_message(
                         RunEvent::RunFailed { .. } => Some("failed"),
                         _ => None,
                     };
+
+                    // Persist goal completion on the session when the Run signals it.
+                    if let RunEvent::GoalCompleted { .. } = &event.event {
+                        if let Some(ref sid) = event.session_id {
+                            let sm = sm_for_task.clone();
+                            let sid_owned = sid.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let _ = sm.set_goal_completed(&sid_owned, true);
+                            });
+                        }
+                    }
 
                     if let Some(status) = maybe_terminal {
                         // ── Prompt lifecycle: mark prompt as finished ──
@@ -492,6 +542,86 @@ async fn approve_tool(
         }
         Ok(())
     }
+}
+
+/// Answer a pending `ask_user` clarification request.
+///
+/// Resolution order mirrors `approve_tool`:
+/// 1. Per-Run `InputResolver` (direct — no actor deadlock)
+/// 2. Command channel `Answer` fallback
+#[tauri::command]
+async fn answer_input(
+    state: State<'_, AppState>,
+    run_id: Option<String>,
+    prompt_id: String,
+    answer: String,
+) -> Result<(), String> {
+    let answers: agent_core::ClarificationAnswers = serde_json::from_str(&answer)
+        .or_else(|_| {
+            serde_json::from_str::<std::collections::HashMap<String, Vec<String>>>(&answer).map(
+                |map| agent_core::ClarificationAnswers { answers: map },
+            )
+        })
+        .map_err(|e| format!("invalid clarification answer JSON: {e}"))?;
+
+    let manager = state.run_manager.lock().await;
+
+    if manager
+        .resolve_input(run_id.as_deref(), &prompt_id, answers.clone())
+        .await
+    {
+        return Ok(());
+    }
+
+    // Fallback: command channel (paused / edge-case runs)
+    if let Some(id) = run_id {
+        manager
+            .command(
+                &id,
+                RunCommand::Answer {
+                    prompt_id,
+                    answer: serde_json::to_string(&answers).unwrap_or(answer),
+                },
+            )
+            .await
+            .map_err(|e| e.to_string())
+    } else {
+        let runs = manager.list_runs().await;
+        let payload = serde_json::to_string(&answers).unwrap_or(answer);
+        for id in runs {
+            let _ = manager
+                .command(
+                    &id,
+                    RunCommand::Answer {
+                        prompt_id: prompt_id.clone(),
+                        answer: payload.clone(),
+                    },
+                )
+                .await;
+        }
+        Ok(())
+    }
+}
+
+/// Clear the session-level pinned goal (banner ×). Does not start a Run.
+#[tauri::command]
+async fn clear_session_goal(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<(), String> {
+    let sm = state.session_manager.clone();
+    let sid = session_id.clone();
+    tokio::task::spawn_blocking(move || sm.clear_pinned_goal(&sid))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+
+    // Clear in-memory Brain todos so the Plan panel empties immediately.
+    {
+        let manager = state.run_manager.lock().await;
+        manager.brain().todo_list.lock().replace_all(Vec::new());
+    }
+    Ok(())
 }
 
 /// Get the state of a Run.
@@ -2011,7 +2141,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            send_message, approve_tool, abort_agent, replay_since,
+            send_message, approve_tool, answer_input, clear_session_goal, abort_agent, replay_since,
             btw_query,
             pause_run, resume_run, steer_run, cancel_steer, get_run_state,
             list_directory, search_files,

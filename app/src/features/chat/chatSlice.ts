@@ -8,17 +8,20 @@ import type {
 import { processSingleEvent, stopDanglingSubagents } from './eventHandlers';
 
 // ── Re-export types, selectors, and utils for backward compatibility ─
-export type {
-  TodoItem, TurnBlock, SubagentBlock, SubagentEntry, ChatEntry,
-  ChatState, RunState, RunEventPayload, RunEventType, SteerMessage,
-} from './types';
 export {
   selectEntryIds, selectEntryById, selectSubagentById,
   selectPendingApprovalCount, selectHasActivePendingApproval,
   selectActivePendingApproval, pendingApprovalEqual,
+  selectHasActivePendingClarification, selectActivePendingClarification,
+  pendingClarificationEqual,
   selectViewingSubagentPath, selectActiveBtwEntries,
   selectIsResumingActive,
 } from './selectors';
+export type {
+  TodoItem, TurnBlock, SubagentBlock, SubagentEntry, ChatEntry,
+  ChatState, RunState, RunEventPayload, RunEventType, SteerMessage,
+  ClarificationQuestion, ClarificationOption, ClarificationAnswers,
+} from './types';
 export { entriesToMessages, stringifyResult, getFullMessagesForSession, getTimingMetrics } from './utils';
 
 // ── Helper ──────────────────────────────────────────────────────────
@@ -435,6 +438,34 @@ export const chatSlice = createSlice({
         }
       }
     },
+    clarificationAnswered: (state, action: PayloadAction<{
+      sessionId: string;
+      promptId: string;
+      answers: Record<string, string[]>;
+    }>) => {
+      const sid = action.payload.sessionId;
+      ensureSession(state, sid);
+      state.isDirty[sid] = true;
+      for (const entry of state.entries[sid]) {
+        if (entry.type !== 'turn' || !entry.blocks) continue;
+        const block = entry.blocks.find(
+          (b) => b.type === 'clarification' && b.prompt_id === action.payload.promptId
+        );
+        if (block && block.type === 'clarification') {
+          block.status = 'answered';
+          block.answers = action.payload.answers;
+          return;
+        }
+      }
+    },
+    goalCleared: (state, action: PayloadAction<{ sessionId: string }>) => {
+      const sid = action.payload.sessionId;
+      ensureSession(state, sid);
+      state.goal[sid] = null;
+      state.goalCompleted[sid] = false;
+      state.todo[sid] = [];
+      state.isDirty[sid] = true;
+    },
     clearChat: (state, action: PayloadAction<string>) => {
       const sid = action.payload;
       state.entries[sid] = [];
@@ -652,9 +683,16 @@ export const chatSlice = createSlice({
     builder.addCase(resumeSession.fulfilled, (state, action) => {
       const sessionId = action.payload.meta.id;
       state.isResuming[sessionId] = false;
+      const meta = action.payload.meta as {
+        pinned_goal?: string | null;
+        goal_completed?: boolean;
+      };
+      // Always hydrate session-level goal (even if entries already cached).
+      ensureSession(state, sessionId);
+      state.goal[sessionId] = meta.pinned_goal?.trim() ? meta.pinned_goal : null;
+      state.goalCompleted[sessionId] = !!meta.goal_completed;
       if (state.entries[sessionId]?.length > 0) return;
       const { prompts } = action.payload;
-      ensureSession(state, sessionId);
       state.entries[sessionId] = [];
       state.allPrompts[sessionId] = prompts ?? [];
       state.processing[sessionId] = state.allPrompts[sessionId].some(p => p.status === 'running');
@@ -700,6 +738,8 @@ export const {
   agentEventReceived,
   agentEventsBatch,
   toolApprovalResponded,
+  clarificationAnswered,
+  goalCleared,
   clearChat,
   agentAborted,
   loadMorePrompts,

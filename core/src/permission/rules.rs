@@ -115,6 +115,12 @@ pub fn default_rules_with_danger() -> Vec<(ToolPermissionPattern, DangerLevel, A
             DangerLevel::ReadOnly,
             ApprovalLevel::Allow,
         ),
+        // ── Human clarification (pre-work gate) ──────────────────────
+        (
+            ToolPermissionPattern::simple("ask_user"),
+            DangerLevel::ReadOnly,
+            ApprovalLevel::Allow,
+        ),
         // ── Todo / Task / Skill (safe metadata ops) ──────────────────
         (
             ToolPermissionPattern::simple("todo_write"),

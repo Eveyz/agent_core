@@ -294,6 +294,7 @@ impl Run {
         // Using the per-Run resolver eliminates the actor deadlock that the
         // old global-map fallback path was vulnerable to.
         let approval_resolver = self.approval_resolver.clone();
+        let input_resolver = self.input_resolver.clone();
         let tool_results = {
             let mut orchestrator = ToolOrchestrator {
                 registry: &self.registry,
@@ -302,6 +303,7 @@ impl Run {
                 tool_execution_mode: self.tool_execution_mode,
                 cancel_token: self.cancel.clone(),
                 approval_resolver: Some(approval_resolver),
+                input_resolver: Some(input_resolver),
                 session_id: self.session_id.clone(),
                 working_dir: self.working_dir.clone(),
             };

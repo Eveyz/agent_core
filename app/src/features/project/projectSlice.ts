@@ -24,6 +24,8 @@ export interface SessionMeta {
   session_type: string;
   process_time_ms: number;
   thought_time_ms: number;
+  pinned_goal?: string | null;
+  goal_completed?: boolean;
   created_at: string;
   updated_at: string;
 }

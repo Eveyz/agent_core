@@ -32,9 +32,6 @@ export const ChatArea = memo(function ChatArea({
   const dispatch = useAppDispatch();
   const activeSessionId = useSelector((state: RootState) => state.project.activeSessionId);
   const btwEntries = useSelector(selectActiveBtwEntries, shallowEqual);
-  const goal = useSelector((state: RootState) => state.chat.goal[activeSessionId ?? '']);
-  const goalCompleted = useSelector((state: RootState) => state.chat.goalCompleted[activeSessionId ?? '']);
-
   const allPrompts = useSelector((state: RootState) => state.chat.allPrompts[activeSessionId ?? '']);
   const visiblePromptsCount = useSelector((state: RootState) => state.chat.visiblePromptsCount[activeSessionId ?? '']);
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
@@ -75,17 +72,6 @@ export const ChatArea = memo(function ChatArea({
           {isLoadingOlder && (
             <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '16px 0' }}>
               <div className="loader-spinner" />
-            </div>
-          )}
-          {goal && (
-            <div style={{
-              padding: '8px 12px',
-              borderRadius: 8,
-              border: '1px solid var(--border-color, #333)',
-              background: goalCompleted ? 'rgba(34,197,94,0.12)' : 'rgba(99,102,241,0.12)',
-              fontSize: 13,
-            }}>
-              🎯 <strong>Goal:</strong> {goal} {goalCompleted && <span style={{ color: '#22c55e' }}>✓ completed</span>}
             </div>
           )}
           {entryIds.map((id, index) => (

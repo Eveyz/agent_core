@@ -88,6 +88,7 @@ The active project is determined ONLY by the Working Directory (and Project Inst
 
         // 4. Drop all pending approvals (resolvers get a dropped error)
         self.approval_resolver.clear();
+        self.input_resolver.clear();
 
         // 5. Cancel all remaining steering messages (notify frontend)
         let cancelled: Vec<SteerEntry> = self.steering_queue.drain(..).collect();
@@ -112,6 +113,7 @@ The active project is determined ONLY by the Working Directory (and Project Inst
 
         // Drop pending approvals
         self.approval_resolver.clear();
+        self.input_resolver.clear();
 
         // Cancel any remaining steering messages (normal completion path
         // where steer messages were queued but the run hit max iterations

@@ -13,12 +13,16 @@ import {
   selectHasActivePendingApproval,
   selectActivePendingApproval,
   pendingApprovalEqual,
+  selectHasActivePendingClarification,
+  selectActivePendingClarification,
+  pendingClarificationEqual,
   selectSubagentById,
   selectViewingSubagentPath,
   selectIsResumingActive,
   steerMessageQueued,
   steerMessageCancelled,
   btwAsked,
+  goalCleared,
 } from './features/chat/chatSlice';
 import { openSettings, fetchConfig } from './features/settings/settingsSlice';
 import {
@@ -43,6 +47,7 @@ import { CosmicBackground } from './components/layout/CosmicBackground';
 import { EmptyState } from './components/chat/EmptyState';
 import { ChatInput } from './components/chat/ChatInput';
 import ApprovalBlockUI from './components/chat/ApprovalBlockUI';
+import ClarificationOverlay from './components/chat/ClarificationOverlay';
 import SettingsModal from './components/settings/SettingsModal';
 import { CustomTitleBar } from './components/layout/CustomTitleBar';
 import { AppHeader } from './components/layout/AppHeader';
@@ -175,6 +180,11 @@ function App() {
   const pendingApprovalCount = useSelector(selectPendingApprovalCount);
   const hasActivePendingApproval = useSelector(selectHasActivePendingApproval);
   const activePendingApproval = useSelector(selectActivePendingApproval, pendingApprovalEqual);
+  const hasActivePendingClarification = useSelector(selectHasActivePendingClarification);
+  const activePendingClarification = useSelector(
+    selectActivePendingClarification,
+    pendingClarificationEqual
+  );
   const pendingSteerCount = useSelector((state: RootState) => {
     const sid = state.project.activeSessionId;
     return sid ? (state.chat.steerQueue[sid]?.filter((s) => s.status === 'pending').length ?? 0) : 0;
@@ -193,6 +203,12 @@ function App() {
     }
     prevPendingRef.current = pendingApprovalCount;
   }, [pendingApprovalCount, scrollToBottom]);
+
+  useEffect(() => {
+    if (hasActivePendingClarification) {
+      scrollToBottom();
+    }
+  }, [hasActivePendingClarification, scrollToBottom]);
 
   // When a session is opened/switched, force-stick to the bottom. This pins the
   // view through the async reflows (markdown, code blocks, tool calls) that happen
@@ -253,6 +269,26 @@ function App() {
 
   const handleSend = useCallback(
     async (msg: string) => {
+      const trimmed = msg.trim();
+      const isGoalClear =
+        trimmed === '/goal clear' ||
+        trimmed === '/goal stop' ||
+        trimmed === '/goal cancel' ||
+        trimmed === '/goal off';
+
+      // /goal clear: drop session pin without starting a Run.
+      if (isGoalClear) {
+        const sessionId = activeSessionId;
+        if (!sessionId) return;
+        dispatch(goalCleared({ sessionId }));
+        try {
+          await invoke('clear_session_goal', { sessionId });
+        } catch (e) {
+          console.error('Failed to clear session goal:', e);
+        }
+        return;
+      }
+
       let sessionId = activeSessionId;
       let isNewSession = false;
       if (!sessionId) {
@@ -416,18 +452,30 @@ function App() {
                 onSteer={handleSteer}
                 onBtwQuery={handleBtwQuery}
                 pendingSteerCount={pendingSteerCount}
-                disabled={viewingSubagentPath.length > 0 || isResuming || hasActivePendingApproval}
+                disabled={
+                  viewingSubagentPath.length > 0 ||
+                  isResuming ||
+                  hasActivePendingApproval ||
+                  hasActivePendingClarification
+                }
                 disabledMessage={
                   isResuming
                     ? "Resuming session..."
                     : hasActivePendingApproval
                     ? "Awaiting approval..."
+                    : hasActivePendingClarification
+                    ? "Awaiting your clarification..."
                     : "the input chat is disabled for the subagent"
                 }
               />
               {activePendingApproval && (
                 <div className="approval-overlay-container">
                   <ApprovalBlockUI block={activePendingApproval} isOverlay={true} />
+                </div>
+              )}
+              {!activePendingApproval && activePendingClarification && (
+                <div className="approval-overlay-container">
+                  <ClarificationOverlay block={activePendingClarification} isOverlay={true} />
                 </div>
               )}
             </div>

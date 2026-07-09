@@ -26,6 +26,7 @@ use crate::mode::AgentMode;
 use crate::permission::ApprovalChoice;
 use crate::reflector::Reflector;
 use crate::runtime::approval::ApprovalResolver;
+use crate::runtime::input::{ClarificationAnswers, InputResolver};
 use crate::runtime::brain::Brain;
 use crate::runtime::command::RunCommand;
 use crate::runtime::event::{Envelope, RunEvent, RunId};
@@ -56,6 +57,8 @@ pub struct RunHandle {
     /// Per-Run approval resolver — resolved directly by `approve_tool`
     /// to avoid actor deadlock (bypassing the command channel).
     pub approval_resolver: ApprovalResolver,
+    /// Per-Run clarification resolver — resolved directly by `answer_input`.
+    pub input_resolver: InputResolver,
     /// CancellationToken — cancelled immediately on `cancel_run()` so that
     /// hot-path checks in collect_stream() and ToolOrchestrator respond
     /// without waiting for the next poll_commands() turn boundary.
@@ -169,7 +172,7 @@ impl RunManager {
         session_id: Option<String>,
         history: Vec<crate::types::Message>,
     ) -> Result<RunId> {
-        self.create_run_with_workdir(user_input, session_id, None, history)
+        self.create_run_with_workdir(user_input, session_id, None, history, None, false)
             .await
     }
 
@@ -177,12 +180,17 @@ impl RunManager {
     /// When `working_dir` is set, the Run's tools execute in that directory
     /// instead of the process CWD, allowing multiple concurrent Runs to work
     /// in separate git worktrees without file conflicts.
+    ///
+    /// `initial_goal` / `initial_goal_completed` seed a session-level pinned goal
+    /// so follow-up messages (after Stop) still inject PRIMARY GOAL.
     pub async fn create_run_with_workdir(
         &self,
         user_input: &str,
         session_id: Option<String>,
         working_dir: Option<String>,
         history: Vec<crate::types::Message>,
+        initial_goal: Option<String>,
+        initial_goal_completed: bool,
     ) -> Result<RunId> {
         let run_id = uuid::Uuid::new_v4().to_string();
 
@@ -219,10 +227,13 @@ impl RunManager {
             history,
             mode,
             context_snapshot.clone(),
+            initial_goal,
+            initial_goal_completed,
         )?;
         // Clone the approval resolver before spawning so we can store
         // it in the RunHandle for direct (non-command-channel) resolution.
         let approval_resolver = run.approval_resolver().clone();
+        let input_resolver = run.input_resolver().clone();
         // Clone the cancel token so cancel_run() can trigger immediate
         // cancellation without waiting for the next poll_commands() cycle.
         let cancel_token = run.cancel_token();
@@ -405,6 +416,7 @@ impl RunManager {
             join_handle: Some(join_handle),
             state: shared_state,
             approval_resolver,
+            input_resolver,
             cancel_token,
             context_snapshot,
         };
@@ -507,6 +519,30 @@ impl RunManager {
         false
     }
 
+    /// Resolve a pending clarification directly through the per-Run resolver.
+    ///
+    /// Same deadlock-avoidance rationale as [`Self::resolve_approval`].
+    pub async fn resolve_input(
+        &self,
+        run_id: Option<&str>,
+        prompt_id: &str,
+        answers: ClarificationAnswers,
+    ) -> bool {
+        let runs = self.runs.lock().await;
+        if let Some(id) = run_id {
+            if let Some(handle) = runs.get(id) {
+                return handle.input_resolver.resolve(prompt_id, answers);
+            }
+        } else {
+            for handle in runs.values() {
+                if handle.input_resolver.resolve(prompt_id, answers.clone()) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Remove completed Runs from the tracking map (garbage collection).
     pub async fn reap_completed(&self) -> usize {
         let mut runs = self.runs.lock().await;
@@ -557,7 +593,14 @@ impl RunManager {
         let worktree_path = record.path.to_string_lossy().to_string();
 
         let run_id = self
-            .create_run_with_workdir(user_input, session_id, Some(worktree_path.clone()), history)
+            .create_run_with_workdir(
+                user_input,
+                session_id,
+                Some(worktree_path.clone()),
+                history,
+                None,
+                false,
+            )
             .await?;
 
         Ok((run_id, worktree_path))
@@ -655,7 +698,7 @@ default = { model_id = "mock" }
         let brain = Brain::from_config(test_config()).unwrap();
         let manager = RunManager::new(brain);
         let run_id = manager
-            .create_run_with_workdir("hello", None, Some("/tmp".to_string()), vec![])
+            .create_run_with_workdir("hello", None, Some("/tmp".to_string()), vec![], None, false)
             .await
             .unwrap();
         assert!(!run_id.is_empty());

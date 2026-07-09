@@ -24,6 +24,7 @@ import BotIcon from 'lucide-react/dist/esm/icons/bot.mjs';
 import Trash2Icon from 'lucide-react/dist/esm/icons/trash-2.mjs';
 import HelpCircleIcon from 'lucide-react/dist/esm/icons/help-circle.mjs';
 import TodoPanel from './TodoPanel';
+import GoalBanner from './GoalBanner';
 
 import { 
   SiJavascript, SiTypescript, SiReact, SiPython, SiGo, SiCss, SiHtml5, SiRust 
@@ -230,6 +231,7 @@ export const ChatInput = memo(function ChatInput({
   return (
     <div className="input-area">
       <TodoPanel />
+      <GoalBanner />
       <div className={`input-container${isProcessing ? ' steer-active' : ''}`} style={{ position: 'relative' }}>
         {showAutocomplete && autocompleteItems.length > 0 && (
           <div className="autocomplete-dropdown" ref={dropdownRef}>

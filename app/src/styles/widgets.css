@@ -487,6 +487,72 @@
   font-size: 13px;
 }
 
+/* ── GoalBanner (above input, below plan) ───────────────────────── */
+.goal-banner {
+  width: 100%;
+  max-width: 800px;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border-color));
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-input));
+  font-size: 13px;
+  color: var(--text-main);
+  box-sizing: border-box;
+}
+
+.goal-banner-done {
+  border-color: color-mix(in srgb, #22c55e 40%, var(--border-color));
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.goal-banner-icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--accent);
+}
+
+.goal-banner-done .goal-banner-icon {
+  color: #22c55e;
+}
+
+.goal-banner-text {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.goal-banner-done-label {
+  color: #22c55e;
+  font-weight: 500;
+  margin-left: 6px;
+}
+
+.goal-banner-clear {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin: -2px -4px -2px 0;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.goal-banner-clear:hover {
+  background: var(--overlay-0_08);
+  color: var(--text-main);
+}
+
 .todo-header {
   display: flex;
   align-items: center;

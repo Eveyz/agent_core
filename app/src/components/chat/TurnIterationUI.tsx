@@ -12,6 +12,7 @@ import EditFileWidget from './EditFileWidget';
 import ReadFileWidget from './ReadFileWidget';
 import BashWidget from './BashWidget';
 import SubagentSpawnWidget, { SubagentCard } from './SubagentWidgets';
+import ClarificationOverlay from './ClarificationOverlay';
 import { generateSmartToolsLabel } from './turnHelpers';
 import { useTranslation } from 'react-i18next';
 
@@ -123,6 +124,10 @@ const TurnIterationUI = memo(function TurnIterationUI({
           );
         } else if (b.type === 'approval') {
           return null;
+        } else if (b.type === 'clarification') {
+          // Pending clarifications render as overlay in App.tsx; answered ones show inline.
+          if (b.status === 'pending') return null;
+          return <ClarificationOverlay key={b.prompt_id || idx} block={b} />;
         }
         return null;
       })}

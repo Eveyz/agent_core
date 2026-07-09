@@ -6,6 +6,8 @@ import type {
   RunEventPayload,
   RunState,
   TodoItem,
+  ClarificationQuestion,
+  ClarificationAnswers,
 } from './types';
 import {
   closeStreamingBlock,
@@ -126,6 +128,22 @@ function pushApproval(
     tool_input: toolInput,
     danger_level: dangerLevel,
     explanation,
+    status: 'pending',
+  });
+}
+
+function pushClarification(
+  blocks: AnyBlock[],
+  promptId: string,
+  title: string | undefined,
+  questions: ClarificationQuestion[]
+): void {
+  closeStreamingBlock(blocks);
+  blocks.push({
+    type: 'clarification',
+    prompt_id: promptId,
+    title,
+    questions,
     status: 'pending',
   });
 }
@@ -313,6 +331,38 @@ export function handleApprovalRequired(
   const turn = getActiveTurn(state, sessionId);
   if (turn && turn.type === 'turn' && turn.blocks) {
     pushApproval(turn.blocks, promptId, toolName, toolInput, dangerLevel, explanation);
+  }
+}
+
+export function handleInputRequested(
+  state: ChatState,
+  sessionId: string,
+  promptId: string,
+  title: string | undefined,
+  questions: ClarificationQuestion[]
+): void {
+  const turn = getActiveTurn(state, sessionId);
+  if (turn && turn.type === 'turn' && turn.blocks) {
+    pushClarification(turn.blocks, promptId, title, questions);
+  }
+}
+
+export function resolveClarificationBlock(
+  state: ChatState,
+  sessionId: string,
+  promptId: string,
+  answers?: ClarificationAnswers
+): void {
+  if (!promptId) return;
+  for (const entry of state.entries[sessionId]) {
+    if (entry.type !== 'turn' || !entry.blocks) continue;
+    for (const b of entry.blocks) {
+      if (b.type === 'clarification' && b.prompt_id === promptId) {
+        b.status = 'answered';
+        if (answers) b.answers = answers;
+        return;
+      }
+    }
   }
 }
 
@@ -683,6 +733,25 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
     case 'approval_resolved':
       resolveApprovalBlock(state, sessionId, ev.prompt_id ?? '', ev.choice);
       break;
+    case 'input_requested': {
+      const questions = (ev.questions as ClarificationQuestion[] | undefined) ?? [];
+      handleInputRequested(state, sessionId, ev.prompt_id ?? '', ev.title, questions);
+      break;
+    }
+    case 'input_resolved': {
+      // Rust emits ClarificationAnswers { answers: { qId: [optIds] } }
+      const raw = ev.answers as { answers?: ClarificationAnswers } | ClarificationAnswers | undefined;
+      let normalized: ClarificationAnswers | undefined;
+      if (raw && typeof raw === 'object') {
+        if ('answers' in raw && raw.answers && typeof raw.answers === 'object' && !Array.isArray(raw.answers)) {
+          normalized = raw.answers;
+        } else {
+          normalized = raw as ClarificationAnswers;
+        }
+      }
+      resolveClarificationBlock(state, sessionId, ev.prompt_id ?? '', normalized);
+      break;
+    }
     case 'error':
       handleError(state, sessionId, ((ev as unknown as Record<string, unknown>).message as string | undefined) ?? 'unknown error');
       break;
@@ -701,6 +770,11 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
       break;
     case 'goal_completed':
       state.goalCompleted[sessionId] = true;
+      break;
+    case 'goal_cleared':
+      state.goal[sessionId] = null;
+      state.goalCompleted[sessionId] = false;
+      state.todo[sessionId] = [];
       break;
     case 'steer_queued': {
       const steerId = ev.steer_id ?? '';

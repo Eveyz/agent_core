@@ -249,6 +249,13 @@ pub enum AgentEvent {
         explanation: String,
     },
 
+    // ── Human clarification (ask_user) ──────────────────────────────
+    InputRequested {
+        prompt_id: String,
+        title: Option<String>,
+        questions: Vec<crate::runtime::input::ClarificationQuestion>,
+    },
+
     // ── Errors ─────────────────────────────────────────────────────
     Error(String),
 

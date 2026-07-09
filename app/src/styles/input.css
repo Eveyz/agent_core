@@ -315,6 +315,193 @@
   box-shadow: 0 0 8px var(--accent);
 }
 
+/* Clarification overlay (ask_user) — reuses approval container positioning */
+.clarification-overlay-card,
+.clarification-block {
+  width: 100%;
+  max-width: 800px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  backdrop-filter: blur(8px);
+}
+
+.clarification-block {
+  box-shadow: none;
+  margin: 8px 0;
+}
+
+.clarification-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.clarification-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.clarification-status-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: var(--radius-md);
+  font-weight: 500;
+}
+
+.clarification-status-badge.status-answered {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+}
+
+.clarification-questions {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.clarification-prompt {
+  font-size: 13px;
+  color: var(--text-main);
+  margin-bottom: 8px;
+  line-height: 1.4;
+}
+
+.clarification-multi-hint {
+  color: var(--text-dim);
+  font-weight: 400;
+}
+
+.clarification-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.clarification-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-color);
+  background: var(--overlay-0_04);
+  color: var(--text-main);
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.clarification-option:hover {
+  border-color: var(--text-dim);
+  background: var(--overlay-0_08);
+}
+
+.clarification-option.selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.clarification-check {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--text-dim);
+  box-sizing: border-box;
+  position: relative;
+}
+
+.clarification-check.single {
+  border-radius: 50%;
+}
+
+.clarification-check.multi {
+  border-radius: 3px;
+}
+
+.clarification-check.on {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.clarification-check.single.on::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--text-inverse);
+}
+
+.clarification-check.multi.on::after {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 0px;
+  width: 4px;
+  height: 8px;
+  border: solid var(--text-inverse);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
+}
+
+.clarification-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.clarification-actions .btn-allow {
+  padding: 8px 16px;
+  border-radius: var(--radius-lg);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid transparent;
+  background: var(--accent);
+  color: var(--text-inverse);
+}
+
+.clarification-actions .btn-allow:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.clarification-actions .btn-allow:not(:disabled):hover {
+  opacity: 0.95;
+}
+
+.clarification-summary {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.clarification-summary li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.clarification-summary li strong {
+  color: var(--text-main);
+  font-weight: 500;
+}
+
 @keyframes slideUp {
   from {
     opacity: 0;

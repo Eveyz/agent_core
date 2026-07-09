@@ -52,7 +52,8 @@ function getFileIcon(filename: string): IconType {
 const COMMANDS: AutocompleteItem[] = [
   { label: 'btw',    value: '/btw ',    icon: 'cmd-btw', description: 'Ask a side question without polluting context' },
   { label: 'learn',  value: '/learn ',  icon: 'cmd-learn', description: 'Save a learning to persistent memory' },
-  { label: 'goal',   value: '/goal ',   icon: 'cmd-goal', description: 'Set a pinned goal with task decomposition' },
+  { label: 'goal',   value: '/goal ',   icon: 'cmd-goal', description: 'Pin a session goal — clarify, plan, execute; Stop keeps it' },
+  { label: 'goal clear', value: '/goal clear', icon: 'cmd-goal', description: 'Clear the pinned session goal' },
   { label: 'subagents', value: '/subagents ', icon: 'cmd-subagents', description: 'Enable subagent mode' },
   { label: 'clear',  value: '/clear',   icon: 'cmd-clear', description: 'Clear the conversation' },
   { label: 'help',   value: '/help',    icon: 'cmd-help', description: 'Show available commands' },

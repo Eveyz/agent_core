@@ -36,11 +36,33 @@ export interface TodoItem {
   status: 'pending' | 'in_progress' | 'completed' | 'blocked';
 }
 
+export interface ClarificationOption {
+  id: string;
+  label: string;
+}
+
+export interface ClarificationQuestion {
+  id: string;
+  prompt: string;
+  allow_multiple?: boolean;
+  options: ClarificationOption[];
+}
+
+export type ClarificationAnswers = Record<string, string[]>;
+
 export type TurnBlock =
   | { type: 'assistant'; text: string; isStreaming: boolean; message_id?: string }
   | { type: 'thinking'; text: string; isStreaming: boolean; message_id?: string; startTime?: number; endTime?: number }
   | { type: 'tool'; call_id: string; name: string; args?: unknown; result: string; active: boolean; is_error: boolean; startTime?: number; endTime?: number }
   | { type: 'approval'; prompt_id: string; tool_name: string; tool_input: unknown; danger_level: string; explanation: string; status: 'pending' | 'approved' | 'denied' }
+  | {
+      type: 'clarification';
+      prompt_id: string;
+      title?: string;
+      questions: ClarificationQuestion[];
+      status: 'pending' | 'answered' | 'cancelled';
+      answers?: ClarificationAnswers;
+    }
   | { type: 'error'; text: string }
   | { type: 'subagent_ref'; subagent_id: string; parent_call_id?: string };
 
@@ -50,6 +72,14 @@ export type SubagentBlock =
   | { type: 'thinking'; text: string; isStreaming: boolean; message_id?: string; startTime?: number; endTime?: number }
   | { type: 'tool'; call_id: string; name: string; args?: unknown; result: string; active: boolean; is_error: boolean; startTime?: number; endTime?: number }
   | { type: 'approval'; prompt_id: string; tool_name: string; tool_input: unknown; danger_level: string; explanation: string; status: 'pending' | 'approved' | 'denied' }
+  | {
+      type: 'clarification';
+      prompt_id: string;
+      title?: string;
+      questions: ClarificationQuestion[];
+      status: 'pending' | 'answered' | 'cancelled';
+      answers?: ClarificationAnswers;
+    }
   | { type: 'error'; text: string };
 
 export interface SubagentEntry {
@@ -166,7 +196,7 @@ export type RunEventType =
   | 'model_call_started' | 'model_streaming' | 'model_call_ended'
   | 'message_start' | 'message_update' | 'message_end'
   | 'tool_started' | 'tool_update' | 'tool_ended'
-  | 'approval_required' | 'approval_resolved' | 'input_requested'
+  | 'approval_required' | 'approval_resolved' | 'input_requested' | 'input_resolved'
   | 'context_compacted' | 'error'
   | 'subagent_started' | 'subagent_ended'
   | 'process_spawned' | 'process_killed'
@@ -177,7 +207,8 @@ export type RunEventType =
   | 'steer_cancelled'
   | 'steer_failed'
   | 'goal_set'
-  | 'goal_completed';
+  | 'goal_completed'
+  | 'goal_cleared';
 
 export interface RunEventPayload {
   event: RunEventType;
@@ -209,6 +240,10 @@ export interface RunEventPayload {
   tool_input?: unknown;
   danger_level?: string;
   explanation?: string;
+  title?: string;
+  questions?: ClarificationQuestion[];
+  answers?: ClarificationAnswers;
+  question?: string;
   error?: string;
   choice?: string;
   subagent_id?: string;

@@ -1,5 +1,5 @@
-//! Context management — message construction, snapshots, goal decomposition,
-//! and per-turn context segment refresh.
+//! Context management — message construction, snapshots, and per-turn
+//! context segment refresh.
 
 use std::time::Duration;
 
@@ -8,10 +8,9 @@ use serde_json::Value;
 use crate::config::MemoryMode;
 use crate::context::ContextEngine as Context;
 use crate::memory::{format_recall_results, intent_for_mode, route_recall_intent, RecallIntent, RECALL_HINT};
-use crate::runtime::event::TodoItemPayload;
 use crate::types::{Message, Role};
 
-use super::{Run, RunError, GOAL_DECOMPOSE_SYSTEM};
+use super::{Run, RunError};
 
 impl Run {
     // ── Context management ────────────────────────────────────────
@@ -36,46 +35,6 @@ impl Run {
                 })
             })
             .collect()
-    }
-
-    /// Decompose a pinned goal into todo items via a lightweight LLM call.
-    pub(super) async fn decompose_goal(&self, goal: &str) -> Result<Vec<TodoItemPayload>, RunError> {
-        let msgs = vec![
-            Message::system(GOAL_DECOMPOSE_SYSTEM),
-            Message::user(&format!(
-                "Break down this goal into 3-8 concrete, actionable subtasks.\n\
-                 Output a JSON array of objects with a single \"description\" field.\n\
-                 Example: [{{\"description\":\"...\"}}]\n\nGoal: {goal}"
-            )),
-        ];
-        let (resp, _) = self
-            .client
-            .chat_completion(&msgs, &[])
-            .await
-            .map_err(|e| RunError::Failed(format!("goal decompose model call failed: {e}")))?;
-        let json = super::extract_json_array(&resp);
-        let arr: Vec<Value> = serde_json::from_str(&json)
-            .map_err(|e| RunError::Failed(format!("goal decompose parse failed: {e}")))?;
-        let descs: Vec<String> = arr
-            .iter()
-            .filter_map(|v| v.get("description").and_then(|d| d.as_str()).map(|s| s.to_string()))
-            .collect();
-        if descs.is_empty() {
-            return Err(RunError::Failed("goal decomposition produced no tasks".to_string()));
-        }
-        {
-            let mut list = self.brain.todo_list.lock();
-            list.replace_all(descs.clone());
-        }
-        Ok(descs
-            .into_iter()
-            .enumerate()
-            .map(|(i, d)| TodoItemPayload {
-                id: (i + 1).to_string(),
-                description: d,
-                status: "pending".to_string(),
-            })
-            .collect())
     }
 
     pub(super) fn refresh_context_segments(&mut self) {
@@ -266,12 +225,24 @@ impl Run {
                 todo_str
             } else {
                 let mut s = format!(
-                    "## PRIMARY GOAL (pinned)\n{g}\n\nYou MUST keep this goal in mind. \
-                     Break it into subtasks, track progress, and drive toward completion. \
-                     If the conversation drifts, remind the user of this goal.\n\n"
+                    "## PRIMARY GOAL (pinned)\n{g}\n\n\
+                     This is a pinned goal. Drive it to completion — do not stop after a high-level overview.\n\
+                     Protocol:\n\
+                     1. If the goal is ambiguous (scope, success criteria, or multiple valid paths), \
+                        call `ask_user` FIRST. Do not invent a plan while guessing.\n\
+                     2. Once clear, call `todo_write` with concrete, actionable steps.\n\
+                     3. Execute the steps with tools (`todo_update` as you go). Prefer doing real work \
+                        over narrating advice. Keep going until todos are completed or you are blocked \
+                        and need another `ask_user`.\n\
+                     4. Do not end the turn with only prose while todos are still pending — either \
+                        call tools to make progress, or `ask_user` if you need a decision.\n\n"
                 );
                 if !todo_str.is_empty() {
                     s.push_str(&todo_str);
+                } else {
+                    s.push_str(
+                        "(No plan yet — clarify with ask_user if needed, then todo_write.)\n",
+                    );
                 }
                 s
             }

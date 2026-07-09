@@ -63,6 +63,35 @@ impl Storage {
             }
         }
 
+        // Session-level pinned goal (survives Stop / resume).
+        let sessions_exist: bool = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'",
+                [],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        if sessions_exist {
+            let mut stmt = conn.prepare("PRAGMA table_info(sessions)")?;
+            let existing: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .collect();
+            drop(stmt);
+            for (column, definition) in [
+                ("pinned_goal", "TEXT NOT NULL DEFAULT ''"),
+                ("goal_completed", "INTEGER NOT NULL DEFAULT 0"),
+            ] {
+                if !existing.iter().any(|c| c == column) {
+                    conn.execute(
+                        &format!("ALTER TABLE sessions ADD COLUMN {column} {definition}"),
+                        [],
+                    )
+                    .with_context(|| format!("failed to add {column} to sessions"))?;
+                }
+            }
+        }
+
         let storage = Self {
             db: Arc::new(Mutex::new(conn)),
         };
@@ -145,6 +174,8 @@ impl Storage {
                 process_time_ms INTEGER DEFAULT 0,
                 thought_time_ms INTEGER DEFAULT 0,
                 mode TEXT NOT NULL DEFAULT 'build',
+                pinned_goal TEXT NOT NULL DEFAULT '',
+                goal_completed INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );

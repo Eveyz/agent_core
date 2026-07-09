@@ -86,6 +86,7 @@ impl Brain {
         // Build a baseline tool registry for CLI display.
         let mut base_tool_registry = ToolRegistry::with_defaults();
         crate::tools::todo::register_todo_tools(&mut base_tool_registry, todo_list.clone());
+        crate::tools::ask_user::register_ask_user_tool(&mut base_tool_registry);
         if let Some(ref sm) = skill_manager {
             crate::tools::skill::register_skill_tools(&mut base_tool_registry, sm.clone());
         }
@@ -353,6 +354,7 @@ impl Brain {
         }
 
         crate::tools::todo::register_todo_tools(&mut registry, self.todo_list.clone());
+        crate::tools::ask_user::register_ask_user_tool(&mut registry);
 
         if let Some(ref sm) = self.skill_manager {
             crate::tools::skill::register_skill_tools(&mut registry, sm.clone());
@@ -523,6 +525,7 @@ default = { model_id = "mock" }
         let registry = brain.build_tool_registry(AgentMode::Build);
         assert!(registry.has("read_file"));
         assert!(registry.has("bash"));
+        assert!(registry.has("ask_user"));
     }
 
     #[test]

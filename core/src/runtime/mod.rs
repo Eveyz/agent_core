@@ -36,6 +36,7 @@ pub mod command;
 pub mod event;
 pub mod event_log;
 pub mod guard;
+pub mod input;
 pub mod manager;
 pub mod run;
 pub mod state;
@@ -49,6 +50,10 @@ pub use command::{RunCommand, SteerEntry};
 pub use event::{CacheMetrics, ChildId, Envelope, RunEvent, RunId};
 pub use event_log::EventLog;
 pub use guard::EventGuard;
+pub use input::{
+    ClarificationAnswers, ClarificationOption, ClarificationQuestion, ClarificationRequest,
+    InputResolver,
+};
 pub use manager::{RunHandle, RunManager};
 pub use run::Run;
 pub use state::RunState;

@@ -3,6 +3,7 @@ import type { TurnBlock } from '../../features/chat/chatSlice';
 export type ThinkingBlock = Extract<TurnBlock, { type: 'thinking' }>;
 export type AssistantBlock = Extract<TurnBlock, { type: 'assistant' }>;
 export type ApprovalBlock = Extract<TurnBlock, { type: 'approval' }>;
+export type ClarificationBlock = Extract<TurnBlock, { type: 'clarification' }>;
 export type SubagentRefBlock = Extract<TurnBlock, { type: 'subagent_ref' }>;
 
 const SUBAGENT_TOOL_NAMES = ['subagent', 'subagents', 'invoke_subagent'];

@@ -443,6 +443,7 @@ impl Subagent {
                     tool_execution_mode: crate::types::ToolExecutionMode::Sequential,
                     cancel_token: cancel,
                     approval_resolver: None,
+                    input_resolver: None, // ask_user only on main Run (v1)
                     session_id: self.session_id.clone(),
                     working_dir: self.config.working_dir.as_ref().map(|p| p.to_string_lossy().to_string()),
                 };

@@ -19,6 +19,7 @@ async function loadModules() {
     runIdSet: chat.runIdSet,
     userMessageSent: chat.userMessageSent,
     toolApprovalResponded: chat.toolApprovalResponded,
+    clarificationAnswered: chat.clarificationAnswered,
     btwAsked: chat.btwAsked,
     entriesToMessages: utils.entriesToMessages,
   };
@@ -103,6 +104,56 @@ describe('chat reducer session routing', () => {
     const turn = state.entries.s1.find((e) => e.type === 'turn');
     const approval = turn?.blocks?.find((b) => b.type === 'approval');
     expect(approval && approval.type === 'approval' && approval.status).toBe('approved');
+  });
+
+  it('input_requested creates a clarification block and clarificationAnswered resolves it', async () => {
+    const { reducer, userMessageSent, runIdSet, agentEventsBatch, clarificationAnswered } = await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, userMessageSent({ text: 'vague goal', model: 'm1', sessionId: 's1' }));
+    state = reducer(state, runIdSet({ runId: 'run-1', sessionId: 's1' }));
+    state = reducer(
+      state,
+      agentEventsBatch([
+        { event: 'turn_started', run_id: 'run-1', turn_id: 'turn-1', index: 0 },
+        {
+          event: 'input_requested',
+          run_id: 'run-1',
+          turn_id: 'turn-1',
+          prompt_id: 'cl-1',
+          title: 'Clarify goal',
+          questions: [
+            {
+              id: 'scope',
+              prompt: 'What scope?',
+              allow_multiple: false,
+              options: [
+                { id: 'mvp', label: 'MVP' },
+                { id: 'full', label: 'Full' },
+              ],
+            },
+          ],
+        },
+      ]),
+    );
+
+    const turn = state.entries.s1.find((e) => e.type === 'turn');
+    const pending = turn?.blocks?.find((b) => b.type === 'clarification');
+    expect(pending && pending.type === 'clarification' && pending.status).toBe('pending');
+    expect(pending && pending.type === 'clarification' && pending.questions).toHaveLength(1);
+
+    state = reducer(
+      state,
+      clarificationAnswered({
+        sessionId: 's1',
+        promptId: 'cl-1',
+        answers: { scope: ['mvp'] },
+      }),
+    );
+    const answered = state.entries.s1
+      .find((e) => e.type === 'turn')
+      ?.blocks?.find((b) => b.type === 'clarification');
+    expect(answered && answered.type === 'clarification' && answered.status).toBe('answered');
+    expect(answered && answered.type === 'clarification' && answered.answers).toEqual({ scope: ['mvp'] });
   });
 
   it('scopes btw entries per session', async () => {

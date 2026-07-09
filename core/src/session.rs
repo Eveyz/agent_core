@@ -35,6 +35,11 @@ pub struct SessionMeta {
     pub process_time_ms: u64,
     pub thought_time_ms: u64,
     pub mode: String,
+    /// Session-scoped pinned goal (empty string in DB → None here).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_goal: Option<String>,
+    #[serde(default)]
+    pub goal_completed: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -94,6 +99,7 @@ pub const META_SELECT: &str = "SELECT id, title, summary, start_time, end_time, 
     COALESCE(parent_session_id, ''), COALESCE(session_type, 'main'), \
     COALESCE(process_time_ms, 0), COALESCE(thought_time_ms, 0), \
     COALESCE(mode, 'build'), \
+    COALESCE(pinned_goal, ''), COALESCE(goal_completed, 0), \
     created_at, updated_at FROM sessions";
 
 pub fn row_to_meta(row: &rusqlite::Row) -> rusqlite::Result<SessionMeta> {
@@ -101,6 +107,7 @@ pub fn row_to_meta(row: &rusqlite::Row) -> rusqlite::Result<SessionMeta> {
     let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
     let parent: String = row.get(11)?;
     let stype: String = row.get(12)?;
+    let pinned: String = row.get(16)?;
     Ok(SessionMeta {
         id: row.get(0)?,
         title: row.get(1)?,
@@ -122,8 +129,10 @@ pub fn row_to_meta(row: &rusqlite::Row) -> rusqlite::Result<SessionMeta> {
         process_time_ms: row.get::<_, i64>(13)? as u64,
         thought_time_ms: row.get::<_, i64>(14)? as u64,
         mode: row.get(15)?,
-        created_at: row.get(16)?,
-        updated_at: row.get(17)?,
+        pinned_goal: if pinned.is_empty() { None } else { Some(pinned) },
+        goal_completed: row.get::<_, i32>(17)? != 0,
+        created_at: row.get(18)?,
+        updated_at: row.get(19)?,
     })
 }
 
@@ -713,6 +722,39 @@ impl SessionManager {
         let changed = db.execute(
             "UPDATE sessions SET summary = ?1, updated_at = ?2 WHERE id = ?3",
             rusqlite::params![summary, now, session_id],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Pin a session-level goal (replaces any previous goal; resets completed).
+    pub fn set_pinned_goal(&self, session_id: &str, goal: &str) -> Result<bool> {
+        let db = self.storage.conn();
+        let now = Utc::now().to_rfc3339();
+        let changed = db.execute(
+            "UPDATE sessions SET pinned_goal = ?1, goal_completed = 0, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![goal, now, session_id],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Clear the session-level pinned goal.
+    pub fn clear_pinned_goal(&self, session_id: &str) -> Result<bool> {
+        let db = self.storage.conn();
+        let now = Utc::now().to_rfc3339();
+        let changed = db.execute(
+            "UPDATE sessions SET pinned_goal = '', goal_completed = 0, updated_at = ?1 WHERE id = ?2",
+            rusqlite::params![now, session_id],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Mark the session-level goal as completed (or not).
+    pub fn set_goal_completed(&self, session_id: &str, completed: bool) -> Result<bool> {
+        let db = self.storage.conn();
+        let now = Utc::now().to_rfc3339();
+        let changed = db.execute(
+            "UPDATE sessions SET goal_completed = ?1, updated_at = ?2 WHERE id = ?3",
+            rusqlite::params![if completed { 1 } else { 0 }, now, session_id],
         )?;
         Ok(changed > 0)
     }
@@ -1315,6 +1357,8 @@ mod tests {
             process_time_ms: 0,
             thought_time_ms: 0,
             mode: "build".to_string(),
+            pinned_goal: None,
+            goal_completed: false,
             created_at: "2026-06-07T12:00:00Z".to_string(),
             updated_at: "2026-06-07T12:30:00Z".to_string(),
         };
@@ -1344,6 +1388,8 @@ mod tests {
             process_time_ms: 0,
             thought_time_ms: 0,
             mode: "build".to_string(),
+            pinned_goal: None,
+            goal_completed: false,
             created_at: "".to_string(),
             updated_at: "".to_string(),
         };
@@ -1370,6 +1416,8 @@ mod tests {
             process_time_ms: 0,
             thought_time_ms: 0,
             mode: "build".to_string(),
+            pinned_goal: None,
+            goal_completed: false,
             created_at: "".to_string(),
             updated_at: "".to_string(),
         };

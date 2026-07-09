@@ -1,4 +1,8 @@
 #![allow(deprecated)]
+use crate::runtime::input::{
+    format_answers_for_model, parse_ask_user_args, validate_answers, ClarificationAnswers,
+    InputResolver,
+};
 use crate::runtime::tool_scheduler::{DepGraph, SchedNode, classify_resources};
 use crate::hooks::{HookRegistry, PreToolResult};
 use crate::permission::{
@@ -23,6 +27,8 @@ pub struct ToolOrchestrator<'a> {
     /// Per-Run approval resolver. If `None`, falls back to the global map
     /// (for backward compat with the old Agent path).
     pub approval_resolver: Option<ApprovalResolver>,
+    /// Per-Run clarification resolver for `ask_user`.
+    pub input_resolver: Option<InputResolver>,
     pub session_id: Option<String>,
     pub working_dir: Option<String>,
 }
@@ -33,6 +39,23 @@ impl<'a> ToolOrchestrator<'a> {
     where
         F: Fn(AgentEvent, &str) + Send + Sync,
     {
+        // If ask_user is in this batch, run it alone as a pre-work gate.
+        // Other tools in the same model response are deferred with a clear
+        // message so the agent re-issues them after clarification.
+        if let Some(ask_idx) = calls.iter().position(|c| c.function.name == "ask_user") {
+            let mut results = vec![
+                "Deferred: ask_user must complete before other tools. \
+                 Re-issue this tool on the next turn after clarification."
+                    .to_string();
+                calls.len()
+            ];
+            let ask_call = &calls[ask_idx];
+            let args: Value =
+                serde_json::from_str(&ask_call.function.arguments).unwrap_or_default();
+            results[ask_idx] = self.execute_ask_user(ask_call, args, on_event).await;
+            return results;
+        }
+
         // Resolve execution mode (per-tool override wins)
         let mode = self
             .registry
@@ -358,6 +381,70 @@ impl<'a> ToolOrchestrator<'a> {
         }
 
         results
+    }
+
+    /// Block on `ask_user`: emit InputRequested, await InputResolver.
+    async fn execute_ask_user<F>(
+        &self,
+        call: &ToolCall,
+        args: Value,
+        on_event: &F,
+    ) -> String
+    where
+        F: Fn(AgentEvent, &str) + Send + Sync,
+    {
+        let request = match parse_ask_user_args(&args) {
+            Ok(r) => r,
+            Err(e) => return format!("Error: {e}"),
+        };
+
+        let Some(ref resolver) = self.input_resolver else {
+            return "Error: ask_user requires a live input channel (not available in this context). \
+                    Ask clarifying questions in your next assistant message instead."
+                .to_string();
+        };
+
+        on_event(
+            AgentEvent::ToolExecutionStart {
+                tool_call_id: call.id.clone(),
+                tool_name: call.function.name.clone(),
+                args: args.clone(),
+            },
+            &call.id,
+        );
+
+        let (tx, rx) = tokio::sync::oneshot::channel::<ClarificationAnswers>();
+        resolver.insert(request.prompt_id.clone(), tx);
+
+        on_event(
+            AgentEvent::InputRequested {
+                prompt_id: request.prompt_id.clone(),
+                title: request.title.clone(),
+                questions: request.questions.clone(),
+            },
+            &call.id,
+        );
+
+        let outcome: Result<ClarificationAnswers, ()> = tokio::select! {
+            answers = rx => answers.map_err(|_| ()),
+            _ = self.cancel_token.cancelled() => Err(()),
+        };
+
+        resolver.remove(&request.prompt_id);
+
+        match outcome {
+            Ok(answers) => match validate_answers(&request, &answers) {
+                Ok(cleaned) => format_answers_for_model(&request, &cleaned),
+                Err(e) => format!("Error: invalid clarification answers: {e}"),
+            },
+            Err(_) => {
+                if self.cancel_token.is_cancelled() {
+                    "Aborted".to_string()
+                } else {
+                    "Error: clarification cancelled — no answers received from the user.".to_string()
+                }
+            }
+        }
     }
 
     /// Run one scheduled node to completion, respecting cancellation. Returns

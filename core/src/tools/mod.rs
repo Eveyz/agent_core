@@ -1,4 +1,5 @@
 pub mod archival_memory;
+pub mod ask_user;
 pub mod bash;
 pub mod core_memory;
 pub mod edit;
@@ -336,6 +337,7 @@ pub fn build_tool_by_name(name: &str) -> Option<Box<dyn Tool>> {
         "grep" => Some(Box::new(grep::GrepTool)),
         "glob" => Some(Box::new(glob::GlobTool)),
         "bash" => Some(Box::new(bash::BashTool::new())),
+        "ask_user" => Some(Box::new(ask_user::AskUserTool)),
         "webfetch" => Some(Box::new(webfetch::WebFetchTool::new())),
         "tavily_search" => {
             tavily_search::TavilySearchTool::from_env().map(|t| Box::new(t) as Box<dyn Tool>)

@@ -134,3 +134,49 @@ export const selectActivePendingApproval = createSelector(
     return null;
   }
 );
+
+export type ClarificationBlock = Extract<import('./types').TurnBlock, { type: 'clarification' }>;
+
+export const selectHasActivePendingClarification = createSelector(
+  [selectActiveSessionEntries, sid],
+  (entries, sessionId) => {
+    if (!sessionId) return false;
+    for (const entry of entries) {
+      if (entry.type !== 'turn' || !entry.blocks) continue;
+      for (const b of entry.blocks) {
+        if (b.type === 'clarification' && b.status === 'pending') return true;
+      }
+    }
+    return false;
+  }
+);
+
+export function pendingClarificationEqual(
+  a: ClarificationBlock | null,
+  b: ClarificationBlock | null,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.prompt_id === b.prompt_id &&
+    a.status === b.status &&
+    a.title === b.title &&
+    a.questions.length === b.questions.length
+  );
+}
+
+export const selectActivePendingClarification = createSelector(
+  [selectActiveSessionEntries, sid],
+  (entries, sessionId): ClarificationBlock | null => {
+    if (!sessionId) return null;
+    for (const entry of entries) {
+      if (entry.type !== 'turn' || !entry.blocks) continue;
+      for (const b of entry.blocks) {
+        if (b.type === 'clarification' && b.status === 'pending') {
+          return b;
+        }
+      }
+    }
+    return null;
+  }
+);

@@ -55,6 +55,7 @@ use crate::hooks::HookRegistry;
 use crate::mode::AgentMode;
 use crate::permission::PermissionPolicy;
 use crate::runtime::approval::ApprovalResolver;
+use crate::runtime::input::InputResolver;
 use crate::runtime::brain::Brain;
 use crate::runtime::command::{RunCommand, SteerEntry};
 use crate::runtime::event::{CacheMetrics, Envelope, RunEvent, RunId};
@@ -63,21 +64,10 @@ use crate::runtime::supervisor::ProcessSupervisor;
 use crate::tools::ToolRegistry;
 use crate::types::{Message, Role, ToolExecutionMode};
 
-/// System prompt for `/goal` task decomposition.
-const GOAL_DECOMPOSE_SYSTEM: &str = "You decompose a goal into subtasks. Output ONLY a JSON array of objects, each with a single \"description\" string field. No markdown, no commentary. Produce 3-8 items.";
-
 /// Threshold for detecting cache expiry due to idle time.
 /// DeepSeek's prefix cache has an undocumented ~5–10 minute idle timeout.
 /// We warn at 4 minutes to give headroom before the actual expiry.
 const CACHE_IDLE_WARN_SECS: u64 = 240;
-
-/// Extract the first JSON array `[...]` from a model response that may
-/// include markdown fences or surrounding prose.
-fn extract_json_array(s: &str) -> String {
-    let start = match s.find('[') { Some(i) => i, None => return s.to_string() };
-    let end = match s.rfind(']') { Some(i) => i + 1, None => return s.to_string() };
-    if end > start { s[start..end].to_string() } else { s.to_string() }
-}
 
 /// Result of running a single turn.
 enum TurnOutcome {
@@ -142,8 +132,9 @@ pub struct Run {
     /// Queued follow-up messages — injected as user messages after the Run completes.
     follow_up_queue: VecDeque<Message>,
 
-    // ── Pending approvals (per-Run, not global) ───────────────────
+    // ── Pending approvals / clarification (per-Run, not global) ───
     approval_resolver: ApprovalResolver,
+    input_resolver: InputResolver,
 
     // ── Configuration ─────────────────────────────────────────────
     max_iterations: usize,
@@ -161,6 +152,9 @@ pub struct Run {
     goal: Option<String>,
     /// Whether the pinned goal has been marked completed.
     goal_completed: bool,
+    /// How many times we've nudged the model to keep working a pinned goal
+    /// after it tried to end with text-only while todos were still pending.
+    goal_continue_nudges: u8,
 
     /// Last stable prefix fingerprint — used to detect drift across turns.
     last_prefix_fingerprint: String,
@@ -205,6 +199,8 @@ impl Run {
         history: Vec<crate::types::Message>,
         mode: AgentMode,
         context_snapshot: Arc<RwLock<Vec<Message>>>,
+        initial_goal: Option<String>,
+        initial_goal_completed: bool,
     ) -> anyhow::Result<Self> {
         let client = brain.build_client()?;
         let permission_policy = brain.build_permission_policy();
@@ -325,6 +321,7 @@ impl Run {
             steering_queue: VecDeque::new(),
             follow_up_queue: VecDeque::new(),
             approval_resolver: ApprovalResolver::new(),
+            input_resolver: InputResolver::new(),
             working_dir,
             mode,
             max_iterations,
@@ -336,8 +333,9 @@ impl Run {
             session_snapshot_path,
             session_snapshot_gen: Arc::new(AtomicU64::new(0)),
             context_snapshot,
-            goal: None,
-            goal_completed: false,
+            goal: initial_goal,
+            goal_completed: initial_goal_completed,
+            goal_continue_nudges: 0,
         })
     }
 
@@ -376,6 +374,11 @@ impl Run {
     /// Access the per-Run approval resolver (used by RunManager for direct resolution).
     pub fn approval_resolver(&self) -> &ApprovalResolver {
         &self.approval_resolver
+    }
+
+    /// Access the per-Run clarification resolver (used by RunManager for direct resolution).
+    pub fn input_resolver(&self) -> &InputResolver {
+        &self.input_resolver
     }
 
     // ── State machine helpers ─────────────────────────────────────

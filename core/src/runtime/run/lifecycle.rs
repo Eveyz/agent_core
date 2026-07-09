@@ -41,15 +41,24 @@ impl Run {
         self.transition(RunState::Running);
 
         // Add user message to context (strip /goal prefix; pin as goal when present; clean /learn prefix)
-        let goal = user_input
+        let trimmed = user_input.trim();
+        let is_goal_clear = trimmed == "/goal clear"
+            || trimmed == "/goal stop"
+            || trimmed == "/goal cancel"
+            || trimmed == "/goal off";
+        let new_goal = user_input
             .strip_prefix("/goal ")
             .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty());
-        let is_learn = user_input.trim() == "/learn" || user_input.trim().starts_with("/learn ");
+            .filter(|s| !s.is_empty() && !is_goal_clear);
+        let is_learn = trimmed == "/learn" || trimmed.starts_with("/learn ");
         let display_input = if is_learn {
             "/learn".to_string()
+        } else if is_goal_clear {
+            "/goal clear".to_string()
         } else {
-            goal.clone().unwrap_or_else(|| user_input.to_string())
+            new_goal
+                .clone()
+                .unwrap_or_else(|| user_input.to_string())
         };
         self.context.add(Message::user_with_model(&display_input, &self.client.model.model_id));
         self.refresh_context_snapshot();
@@ -144,14 +153,38 @@ impl Run {
             }
         }
 
-        // /goal: pin goal + decompose into todos
-        if let Some(ref g) = goal {
+        // /goal clear — drop session-level pin for this Run (persistence cleared by Tauri).
+        if is_goal_clear {
+            self.goal = None;
+            self.goal_completed = false;
+            self.goal_continue_nudges = 0;
+            {
+                let mut list = self.brain.todo_list.lock();
+                list.replace_all(Vec::new());
+            }
+            self.emit(RunEvent::GoalCleared);
+            self.emit(RunEvent::TodoUpdated { items: vec![] });
+        }
+
+        // /goal <text>: pin a new goal (do NOT auto-decompose).
+        // Auto-decomposition raced ahead of ask_user and produced generic plans
+        // the agent then narrated instead of clarifying / executing.
+        if let Some(ref g) = new_goal {
             self.goal = Some(g.clone());
+            self.goal_completed = false;
+            self.goal_continue_nudges = 0;
+            {
+                let mut list = self.brain.todo_list.lock();
+                list.replace_all(Vec::new());
+            }
             self.emit(RunEvent::GoalSet { goal: g.clone() });
-            match self.decompose_goal(g).await {
-                Ok(items) => self.emit(RunEvent::TodoUpdated { items }),
-                Err(RunError::Failed(msg)) => tracing::warn!("goal decomposition failed: {msg}"),
-                Err(RunError::Cancelled) => tracing::warn!("goal decomposition cancelled"),
+            self.emit(RunEvent::TodoUpdated { items: vec![] });
+        } else if !is_goal_clear {
+            // Inherited session-level goal: re-emit so UI stays in sync on follow-ups.
+            if let Some(g) = self.goal.clone() {
+                if !self.goal_completed {
+                    self.emit(RunEvent::GoalSet { goal: g });
+                }
             }
         }
 
@@ -240,7 +273,24 @@ impl Run {
             self.hook_registry.lock().fire_turn_start(turn_index);
 
             match self.run_turn(turn_index).await {
-                Ok(TurnOutcome::Final(text)) => return Ok(text),
+                Ok(TurnOutcome::Final(text)) => {
+                    // Soft autopilot: if a pinned goal still has incomplete todos,
+                    // don't let the model stop after a prose-only turn. Nudge a
+                    // few times, then allow Final (user can steer / re-send).
+                    if self.should_nudge_goal_continue() {
+                        self.goal_continue_nudges += 1;
+                        self.context.add(Message::user(
+                            "[System] The pinned goal still has incomplete todos. \
+                             Continue: call tools to execute the next pending step, \
+                             or call `ask_user` if you need a decision. \
+                             Do not stop with only advice or a high-level overview.",
+                        ));
+                        self.last_turn_end_time = Some(Instant::now());
+                        self.current_turn_id = None;
+                        continue;
+                    }
+                    return Ok(text);
+                }
                 Ok(TurnOutcome::Continue) => {}
                 Ok(TurnOutcome::Stop(msg)) => return Ok(msg),
                 Err(RunError::Cancelled) => return Err(RunError::Cancelled),
@@ -425,8 +475,48 @@ impl Run {
         tracing::debug!(prompt_id, "approval prompt not found");
     }
 
-    pub(super) fn resolve_input(&mut self, _prompt_id: &str, _answer: &str) {
-        // TODO: implement input request mechanism (future phase)
+    pub(super) fn resolve_input(&mut self, prompt_id: &str, answer: &str) {
+        let answers: crate::runtime::input::ClarificationAnswers =
+            match serde_json::from_str(answer) {
+                Ok(a) => a,
+                Err(e) => {
+                    // Accept a bare `{ "q": ["a"] }` map as answers.
+                    match serde_json::from_str::<std::collections::HashMap<String, Vec<String>>>(
+                        answer,
+                    ) {
+                        Ok(map) => crate::runtime::input::ClarificationAnswers { answers: map },
+                        Err(_) => {
+                            tracing::warn!(prompt_id, error = %e, "invalid clarification answer JSON");
+                            return;
+                        }
+                    }
+                }
+            };
+
+        if self.input_resolver.resolve(prompt_id, answers.clone()) {
+            self.emit(RunEvent::InputResolved {
+                prompt_id: prompt_id.to_string(),
+                answers,
+            });
+        } else {
+            tracing::debug!(prompt_id, "clarification prompt not found");
+        }
+    }
+
+    /// Whether a text-only Final should be rejected so the agent keeps working
+    /// a pinned goal (clarify / plan / execute) instead of stopping early.
+    fn should_nudge_goal_continue(&self) -> bool {
+        const MAX_NUDGES: u8 = 3;
+        if self.goal.is_none() || self.goal_completed || self.goal_continue_nudges >= MAX_NUDGES {
+            return false;
+        }
+        let list = self.brain.todo_list.lock();
+        // No plan yet, or any incomplete item → keep going.
+        list.items.is_empty()
+            || list
+                .items
+                .iter()
+                .any(|i| i.status != crate::todo::TodoStatus::Completed)
     }
 }
 
