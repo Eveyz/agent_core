@@ -1,0 +1,11 @@
+[[steps]]
+type = "tool_calls"
+tools = [{ name = "write_file", arguments = { path = "hello.txt", content = "hi" } }]
+cache_hit = 80
+cache_miss = 40
+
+[[steps]]
+type = "text"
+text = "Created hello.txt"
+cache_hit = 90
+cache_miss = 10

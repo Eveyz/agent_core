@@ -1,0 +1,11 @@
+id = "multi_edit"
+bucket = "edit"
+prompt = "Uppercase contents of a.txt and b.txt to FOO and BAR"
+driver = "run"
+approval = "yolo"
+max_iterations = 8
+timeout_secs = 90
+
+[grader]
+kind = "command"
+command = "bash checker.sh"

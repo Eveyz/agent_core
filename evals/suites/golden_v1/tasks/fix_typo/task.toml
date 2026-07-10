@@ -1,0 +1,11 @@
+id = "fix_typo"
+bucket = "edit"
+prompt = "Fix the typo in note.txt so it says Hello world"
+driver = "run"
+approval = "yolo"
+max_iterations = 6
+timeout_secs = 90
+
+[grader]
+kind = "command"
+command = "bash checker.sh"

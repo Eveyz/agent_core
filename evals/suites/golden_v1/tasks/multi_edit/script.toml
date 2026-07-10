@@ -1,0 +1,14 @@
+[[steps]]
+type = "tool_calls"
+tools = [
+  { name = "write_file", arguments = { path = "a.txt", content = "FOO\n" } },
+  { name = "write_file", arguments = { path = "b.txt", content = "BAR\n" } },
+]
+cache_hit = 60
+cache_miss = 40
+
+[[steps]]
+type = "text"
+text = "Updated both files."
+cache_hit = 80
+cache_miss = 10

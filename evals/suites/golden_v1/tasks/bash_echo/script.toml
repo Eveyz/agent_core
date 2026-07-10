@@ -1,0 +1,11 @@
+[[steps]]
+type = "tool_calls"
+tools = [{ name = "bash", arguments = { command = "echo ok > out.txt" } }]
+cache_hit = 30
+cache_miss = 30
+
+[[steps]]
+type = "text"
+text = "done"
+cache_hit = 40
+cache_miss = 5

@@ -1,0 +1,32 @@
+# Approximate list prices ($ / million tokens) for cost rollups.
+# Update when provider pricing changes; pin profile name in reports.
+
+[models."gpt-4.1"]
+input_per_mtok = 2.0
+output_per_mtok = 8.0
+cache_hit_per_mtok = 0.5
+
+[models."gpt-4o"]
+input_per_mtok = 2.5
+output_per_mtok = 10.0
+cache_hit_per_mtok = 1.25
+
+[models."gpt-4o-mini"]
+input_per_mtok = 0.15
+output_per_mtok = 0.6
+cache_hit_per_mtok = 0.075
+
+[models.mock]
+input_per_mtok = 0.0
+output_per_mtok = 0.0
+cache_hit_per_mtok = 0.0
+
+[models."deepseek-chat"]
+input_per_mtok = 0.27
+output_per_mtok = 1.10
+cache_hit_per_mtok = 0.07
+
+[models.v3]
+input_per_mtok = 0.27
+output_per_mtok = 1.10
+cache_hit_per_mtok = 0.07

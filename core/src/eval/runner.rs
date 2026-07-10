@@ -54,8 +54,14 @@ pub async fn run_suite(opts: EvalRunOptions) -> Result<EvalRunResult> {
     let price_table = match &opts.price_profile {
         Some(p) => load_price_table(p).ok(),
         None => {
-            // Try default next to suite: ../../prices/*.toml — optional
-            None
+            let candidates = [
+                PathBuf::from("evals/prices/openai_2026_07.toml"),
+                PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../evals/prices/openai_2026_07.toml"),
+                opts.suite_dir
+                    .join("../../prices/openai_2026_07.toml"),
+            ];
+            candidates.into_iter().find_map(|p| load_price_table(&p).ok())
         }
     };
 

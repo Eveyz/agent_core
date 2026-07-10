@@ -1,0 +1,11 @@
+id = "bash_echo"
+bucket = "bash"
+prompt = "Write ok into out.txt using bash."
+driver = "run"
+approval = "yolo"
+max_iterations = 5
+timeout_secs = 60
+
+[grader]
+kind = "command"
+command = "bash checker.sh"

@@ -1,0 +1,11 @@
+[[steps]]
+type = "tool_calls"
+tools = [{ name = "read_file", arguments = { path = "README.md" } }]
+cache_hit = 50
+cache_miss = 50
+
+[[steps]]
+type = "text"
+text = "Project Alpha ships widgets."
+cache_hit = 70
+cache_miss = 10

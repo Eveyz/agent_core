@@ -1,0 +1,12 @@
+id = "read_readme"
+bucket = "read"
+prompt = "Read README.md and reply with one sentence."
+driver = "run"
+approval = "yolo"
+max_iterations = 5
+timeout_secs = 60
+
+[grader]
+kind = "expect_events"
+require_events = ["tool_started", "tool_ended", "run_completed"]
+require_terminal = "RunCompleted"

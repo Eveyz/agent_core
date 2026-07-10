@@ -1,0 +1,12 @@
+id = "create_greeting"
+bucket = "edit"
+prompt = "Create hello.txt containing exactly: hi"
+driver = "run"
+approval = "yolo"
+max_iterations = 5
+timeout_secs = 60
+
+[grader]
+kind = "file_equals"
+file = "hello.txt"
+expect = "hi"

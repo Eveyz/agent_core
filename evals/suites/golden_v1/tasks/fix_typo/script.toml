@@ -1,0 +1,11 @@
+[[steps]]
+type = "tool_calls"
+tools = [{ name = "write_file", arguments = { path = "note.txt", content = "Hello world\n" } }]
+cache_hit = 100
+cache_miss = 50
+
+[[steps]]
+type = "text"
+text = "Fixed the typo."
+cache_hit = 120
+cache_miss = 20
