@@ -5,7 +5,7 @@
 id: PLAN-0010
 type: PLAN
 title: Harness Evaluation — Ledger, Report & Model Matrix
-status: Draft
+status: Implemented
 author: zniverse
 created: 2026-07-10
 updated: 2026-07-10
@@ -316,3 +316,4 @@ Day 5+: T9–T12 (live / compare)
 | Date | Author | Change |
 |------|--------|--------|
 | 2026-07-10 | zniverse | Created as Draft — harness eval ledger/report/matrix plan |
+| 2026-07-10 | zniverse | P0–P3 implemented: ledger/reporter, mock runner + contract_v1, golden_v1 + prices, compare/ablate CLI |
