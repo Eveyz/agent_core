@@ -367,8 +367,9 @@ impl Compressor {
                 }
                 crate::types::Role::Assistant => {
                     if let Some(ref content) = msg.content {
-                        if !content.is_empty() {
-                            turns_text.push_str(&format!("[Assistant]: {}\n", content));
+                        let visible = crate::hygiene::strip_thinking_in_content(content);
+                        if !visible.is_empty() {
+                            turns_text.push_str(&format!("[Assistant]: {}\n", visible));
                         }
                     }
                     if let Some(ref calls) = msg.tool_calls {
@@ -401,6 +402,8 @@ impl Compressor {
     }
 
     /// Apply a summary returned by the LLM, replacing old messages.
+    /// Also strips plaintext thinking from any remaining assistant messages so
+    /// compacted history does not re-inject old CoT.
     pub fn apply_summary(
         messages: &mut Vec<Message>,
         split_idx: usize,
@@ -416,6 +419,7 @@ impl Compressor {
         // Remove old messages and insert summary as system message
         messages.drain(..split_idx);
         messages.insert(0, Message::system(&summary_text));
+        crate::hygiene::strip_all_thinking(messages);
 
         summary_text
     }
@@ -530,6 +534,7 @@ mod tests {
             name: None,
             model: None,
             metadata: None,
+        reasoning: None,
         }
     }
 
@@ -542,6 +547,7 @@ mod tests {
             name: Some(name.to_string()),
             model: None,
             metadata: None,
+        reasoning: None,
         }
     }
 

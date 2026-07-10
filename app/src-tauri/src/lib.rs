@@ -71,6 +71,7 @@ impl FrontendMessage {
             name: self.name.clone(),
             model: self.model.clone(),
             metadata: self.metadata.clone(),
+            reasoning: None,
         }
     }
 }
@@ -1907,6 +1908,7 @@ pub fn run() {
                             max_context_tokens: None,
                             reasoning_effort: None,
                             thinking_enabled: false,
+                            api_mode: None,
                         });
                         p.insert("default".to_string(), agent_core::config::ProviderConfig {
                             name: "default".to_string(),

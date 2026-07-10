@@ -10,9 +10,20 @@ use crate::client::streaming::{TokenAccumulator, ToolCallAccumulator};
 use crate::client::ClientCacheHint;
 use crate::runtime::event::{Envelope, RunEvent, TodoItemPayload};
 use crate::runtime::guard::EventGuard;
-use crate::types::{CacheUsage, Message, MessageDelta, StreamEvent, ToolCall};
+use crate::types::{CacheUsage, Message, MessageDelta, ReasoningState, StreamEvent, ToolCall};
 
 use super::{RecoveryOutcome, Run, RunError, TurnOutcome, CACHE_IDLE_WARN_SECS};
+
+/// Result of one successful model stream collection.
+pub(super) struct ModelTurnResult {
+    pub text: String,
+    pub thinking: String,
+    pub tool_calls: Vec<ToolCall>,
+    pub message_id: String,
+    pub cache_usage: CacheUsage,
+    /// Opaque provider blobs collected during the stream (encrypted_content / signature).
+    pub reasoning_blob: ReasoningState,
+}
 
 /// Partial stream output preserved across mid-stream retries within one model turn.
 #[derive(Default, Clone)]
@@ -80,11 +91,19 @@ impl Run {
 
         // Stage: Model
         tracing::info!("TURN: calling model_turn");
-        let (text, tool_calls, message_id, cache_usage) = match self.model_turn().await {
+        let ModelTurnResult {
+            text,
+            thinking,
+            tool_calls,
+            message_id,
+            cache_usage,
+            reasoning_blob,
+        } = match self.model_turn().await {
             Ok(r) => {
                 tracing::info!(
-                    text_len = r.0.len(),
-                    tool_count = r.1.len(),
+                    text_len = r.text.len(),
+                    thinking_len = r.thinking.len(),
+                    tool_count = r.tool_calls.len(),
                     "TURN: model_turn ok"
                 );
                 r
@@ -117,8 +136,16 @@ impl Run {
 
         // Stage: Dispatch
         if tool_calls.is_empty() {
-            // Final answer
-            let assistant_msg = Message::assistant(&text);
+            // Final answer — persist thinking for resume; memory uses visible text only.
+            let content = crate::hygiene::wrap_thinking(&thinking, &text);
+            let mut assistant_msg = Message::assistant(&content);
+            let mut reasoning = reasoning_blob;
+            if !thinking.trim().is_empty() && reasoning.text.is_none() {
+                reasoning.text = Some(thinking.trim().to_string());
+            }
+            if !reasoning.is_empty() {
+                assistant_msg = assistant_msg.with_reasoning(reasoning);
+            }
             self.context.add(assistant_msg.clone());
             self.save_session_snapshot();
             self.emit(RunEvent::MessageEnd {
@@ -220,21 +247,24 @@ impl Run {
 
             // Process steering messages — inject one per turn boundary
             // to avoid overwhelming the LLM with multiple instructions at once.
-            if let Some(entry) = self.steering_queue.pop_front() {
-                self.emit(RunEvent::SteerInjected {
-                    steer_id: entry.id.clone(),
-                    message: entry.raw_text.clone(),
-                });
-                self.context.add(entry.message);
-                // Continue the loop with the steered message
+            // Poll cmd_rx first so mid-turn steers are not deferred an extra turn.
+            if self.inject_next_steer()? {
                 return Ok(TurnOutcome::Continue);
             }
 
             return Ok(TurnOutcome::Final(text));
         }
 
-        // Add assistant message with tool calls
-        let assistant_msg = Message::assistant_with_tools(&text, tool_calls.clone());
+        // Add assistant message with tool calls — include thinking for ReAct continuity.
+        let content = crate::hygiene::wrap_thinking(&thinking, &text);
+        let mut assistant_msg = Message::assistant_with_tools(&content, tool_calls.clone());
+        let mut reasoning = reasoning_blob;
+        if !thinking.trim().is_empty() && reasoning.text.is_none() {
+            reasoning.text = Some(thinking.trim().to_string());
+        }
+        if !reasoning.is_empty() {
+            assistant_msg = assistant_msg.with_reasoning(reasoning);
+        }
         self.context.add(assistant_msg.clone());
         self.save_session_snapshot();
         self.emit(RunEvent::MessageEnd {
@@ -377,14 +407,9 @@ impl Run {
 
         // Process steering messages (injected before next LLM call).
         // Inject one per turn boundary — remaining messages will be
-        // processed on subsequent turn boundaries.
-        if let Some(entry) = self.steering_queue.pop_front() {
-            self.emit(RunEvent::SteerInjected {
-                steer_id: entry.id.clone(),
-                message: entry.raw_text.clone(),
-            });
-            self.context.add(entry.message);
-        }
+        // processed on subsequent turn boundaries. Poll cmd_rx first so
+        // mid-turn steers land before the next model request.
+        self.inject_next_steer()?;
 
         if turn_index == self.max_iterations - 1 {
             let summary = super::build_iteration_limit_summary(&self.context, self.max_iterations);
@@ -399,7 +424,7 @@ impl Run {
 
     // ── Model interaction ────────────────────────────────────────
 
-    pub(super) async fn model_turn(&mut self) -> Result<(String, Vec<ToolCall>, String, CacheUsage), String> {
+    pub(super) async fn model_turn(&mut self) -> Result<ModelTurnResult, String> {
         const MAX_RECOVERY_ATTEMPTS: u32 = 3;
         /// How many times we restart a dropped SSE stream before escalating to recovery.
         const MAX_STREAM_RETRIES: u32 = 10;
@@ -437,7 +462,14 @@ impl Run {
             if let Some(preset) = self.hook_registry.lock().fire_before_model(&snapshot) {
                 self.recovery_ctx.record_success();
                 self.hook_registry.lock().fire_after_model(&preset, 0);
-                return Ok((preset, Vec::new(), uuid::Uuid::new_v4().to_string(), CacheUsage::default()));
+                return Ok(ModelTurnResult {
+                    text: preset,
+                    thinking: String::new(),
+                    tool_calls: Vec::new(),
+                    message_id: uuid::Uuid::new_v4().to_string(),
+                    cache_usage: CacheUsage::default(),
+                    reasoning_blob: ReasoningState::default(),
+                });
             }
 
             // ── Inner stream-retry loop ──────────────────────────────
@@ -480,7 +512,7 @@ impl Run {
                                 .await;
                             match res {
                                 Ok(r) => {
-                                    if r.0.is_empty() && r.1.is_empty() {
+                                    if r.text.is_empty() && r.tool_calls.is_empty() {
                                         Err("empty response from model — SSE stream had no useful events".to_string())
                                     } else {
                                         Ok(r)
@@ -536,7 +568,7 @@ impl Run {
             };
 
             self.recovery_ctx.record_success();
-            self.hook_registry.lock().fire_after_model(&r.0, r.1.len());
+            self.hook_registry.lock().fire_after_model(&r.text, r.tool_calls.len());
             return Ok(r);
         }
 
@@ -548,10 +580,11 @@ impl Run {
         stream: impl futures::Stream<Item = Result<StreamEvent>>,
         event_tx: &broadcast::Sender<Envelope>,
         partial: &mut StreamPartial,
-    ) -> Result<(String, Vec<ToolCall>, String, CacheUsage)> {
+    ) -> Result<ModelTurnResult> {
         tracing::debug!("TURN: collect_stream start");
         let mut text_buffer = String::new();
         let mut thinking_buffer = String::new();
+        let mut reasoning_blob = ReasoningState::default();
         let mut accumulator = ToolCallAccumulator::new();
         let mut has_tool_calls = false;
         let mut cache_usage = CacheUsage::default();
@@ -614,6 +647,31 @@ impl Run {
                         }
                     }
                 }
+                StreamEvent::ReasoningBlob {
+                    encrypted_content,
+                    signature,
+                    summary,
+                } => {
+                    if let Some(blob) = encrypted_content {
+                        if !blob.is_empty() {
+                            reasoning_blob.encrypted_content = Some(blob);
+                        }
+                    }
+                    if let Some(sig) = signature {
+                        if !sig.is_empty() {
+                            // Anthropic may stream signature in chunks; append.
+                            match &mut reasoning_blob.signature {
+                                Some(existing) => existing.push_str(&sig),
+                                None => reasoning_blob.signature = Some(sig),
+                            }
+                        }
+                    }
+                    if let Some(s) = summary {
+                        if !s.is_empty() {
+                            reasoning_blob.summary = Some(s);
+                        }
+                    }
+                }
                 StreamEvent::ToolCallDelta { .. } => {
                     has_tool_calls = true;
                     accumulator.push(event);
@@ -663,11 +721,19 @@ impl Run {
 
         tracing::debug!(
             text_len = text_buffer.len(),
+            thinking_len = thinking_buffer.len(),
             tool_count = tool_calls.len(),
             "TURN: collect_stream done"
         );
 
-        Ok((text_buffer, tool_calls, message_id, cache_usage))
+        Ok(ModelTurnResult {
+            text: text_buffer,
+            thinking: thinking_buffer,
+            tool_calls,
+            message_id,
+            cache_usage,
+            reasoning_blob,
+        })
     }
 
     /// Queue a best-effort mid-turn context snapshot write on the blocking

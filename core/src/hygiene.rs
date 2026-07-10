@@ -3,8 +3,9 @@
 //! Operations performed on the request-boundary copy only (persistent history untouched):
 //! 1. Truncate oversized tool results (keep head + tail + signal lines)
 //! 2. Replace long tool arguments with placeholders
-//! 3. Truncate `<think>` blocks in assistant content
-//! 4. Inject stream-retry hints with partial thinking (request copy only)
+//! 3. Strip `<think>` blocks from assistant turns before the last user message
+//! 4. Truncate remaining `<think>` blocks in the active tool loop (4KB)
+//! 5. Inject stream-retry hints with partial thinking (request copy only)
 //!
 //! This prevents context pollution from bloated tool outputs and keeps the
 //! message prefix stable for prompt KV cache hits.
@@ -25,6 +26,149 @@ const THINKING_CLOSE: &str = "</think>";
 pub const THINKING_BODY_MAX_CHARS: usize = 4_096;
 /// Max chars of partial assistant text injected on stream retry.
 pub const PARTIAL_TEXT_MAX_CHARS: usize = 2_048;
+
+/// Embed thinking into assistant content for live context / Chat Completions compat.
+/// Empty thinking returns `text` unchanged. Format matches frontend `entriesToMessages`.
+pub fn wrap_thinking(thinking: &str, text: &str) -> String {
+    let thinking = thinking.trim();
+    if thinking.is_empty() {
+        return text.to_string();
+    }
+    if text.is_empty() {
+        format!("{THINKING_OPEN}{thinking}{THINKING_CLOSE}")
+    } else {
+        format!("{THINKING_OPEN}{thinking}{THINKING_CLOSE}\n{text}")
+    }
+}
+
+/// Remove every `<think>…</think>` block from content (including unclosed open tags).
+pub fn strip_thinking_in_content(content: &str) -> String {
+    if !content.contains(THINKING_OPEN) {
+        return content.to_string();
+    }
+    let mut result = String::with_capacity(content.len());
+    let mut rest = content;
+    while let Some(start) = rest.find(THINKING_OPEN) {
+        result.push_str(&rest[..start]);
+        rest = &rest[start + THINKING_OPEN.len()..];
+        if let Some(end) = rest.find(THINKING_CLOSE) {
+            rest = &rest[end + THINKING_CLOSE.len()..];
+            // Drop a single leading newline left by wrap_thinking.
+            if rest.starts_with('\n') {
+                rest = &rest[1..];
+            }
+        } else {
+            // Unclosed tag: drop the remainder of the thinking body.
+            break;
+        }
+    }
+    result.push_str(rest);
+    result
+}
+
+/// Strip plaintext `<think>` from assistant messages before the last *real* user turn.
+/// Keeps thinking in the active tool loop (messages after the last user).
+///
+/// The trailing `<context_injection>` user message appended by ContextEngine is
+/// ignored when locating the last user — otherwise the entire tool loop would
+/// be treated as "historical" and stripped every turn.
+///
+/// Also clears structured reasoning (text + opaque blobs) on those historical
+/// assistants. Active-loop blobs are left intact for provider round-trip.
+pub fn strip_historical_thinking(messages: &mut [Message]) -> usize {
+    let last_user = messages.iter().enumerate().rev().find_map(|(i, m)| {
+        if m.role == Role::User && !is_context_injection_message(m) {
+            Some(i)
+        } else {
+            None
+        }
+    });
+    let Some(last_user) = last_user else {
+        return 0;
+    };
+    let mut modified = 0;
+    for msg in messages.iter_mut().take(last_user) {
+        if msg.role != Role::Assistant {
+            continue;
+        }
+        let mut changed = false;
+        if let Some(content) = msg.content.as_ref() {
+            if content.contains(THINKING_OPEN) {
+                let stripped = strip_thinking_in_content(content);
+                if stripped != *content {
+                    msg.content = if stripped.is_empty() {
+                        None
+                    } else {
+                        Some(stripped)
+                    };
+                    changed = true;
+                }
+            }
+        }
+        if let Some(ref mut reasoning) = msg.reasoning {
+            if reasoning.text.take().is_some() {
+                changed = true;
+            }
+            if reasoning.encrypted_content.take().is_some() {
+                changed = true;
+            }
+            if reasoning.signature.take().is_some() {
+                changed = true;
+            }
+            if reasoning.summary.take().is_some() {
+                changed = true;
+            }
+            if reasoning.is_empty() {
+                msg.reasoning = None;
+            }
+        }
+        if changed {
+            modified += 1;
+        }
+    }
+    modified
+}
+
+fn is_context_injection_message(msg: &Message) -> bool {
+    msg.role == Role::User
+        && msg
+            .content
+            .as_deref()
+            .is_some_and(|c| c.contains("<context_injection>"))
+}
+
+/// Strip plaintext thinking from every assistant message (content tags + reasoning.text).
+/// Opaque blobs/signatures are also cleared — after compaction the model starts fresh.
+/// Returns the number of messages modified.
+pub fn strip_all_thinking(messages: &mut [Message]) -> usize {
+    let mut modified = 0;
+    for msg in messages.iter_mut() {
+        if msg.role != Role::Assistant {
+            continue;
+        }
+        let mut changed = false;
+        if let Some(content) = msg.content.as_ref() {
+            if content.contains(THINKING_OPEN) {
+                let stripped = strip_thinking_in_content(content);
+                if stripped != *content {
+                    msg.content = if stripped.is_empty() {
+                        None
+                    } else {
+                        Some(stripped)
+                    };
+                    changed = true;
+                }
+            }
+        }
+        if msg.reasoning.take().is_some() {
+            changed = true;
+        }
+        if changed {
+            modified += 1;
+        }
+    }
+    modified
+}
 
 /// Truncate a raw thinking string to the outbound budget.
 pub fn truncate_thinking_body(thinking: &str) -> String {
@@ -103,8 +247,12 @@ pub fn inject_stream_retry_hint(messages: &mut Vec<Message>, thinking: &str, tex
 
 /// Run the full hygiene pass on a message list (mutates in place).
 /// Returns the count of messages that were modified.
+///
+/// Order matters: strip historical thinking first, then truncate what remains
+/// in the active tool loop. Opaque `encrypted_content` / `signature` blobs are
+/// never truncated.
 pub fn sanitize(messages: &mut Vec<Message>) -> usize {
-    let mut modified = 0;
+    let mut modified = strip_historical_thinking(messages);
     for msg in messages.iter_mut() {
         if truncate_tool_result(msg) {
             modified += 1;
@@ -123,15 +271,27 @@ fn truncate_assistant_thinking(msg: &mut Message) -> bool {
     if msg.role != Role::Assistant {
         return false;
     }
+    let mut changed = false;
     let content = match &msg.content {
         Some(c) if c.contains(THINKING_OPEN) => c.clone(),
-        _ => return false,
+        _ => String::new(),
     };
-    if let Some(truncated) = truncate_thinking_in_content(&content) {
-        msg.content = Some(truncated);
-        return true;
+    if !content.is_empty() {
+        if let Some(truncated) = truncate_thinking_in_content(&content) {
+            msg.content = Some(truncated);
+            changed = true;
+        }
     }
-    false
+    // Truncate plaintext reasoning.text only; never touch opaque blobs.
+    if let Some(ref mut reasoning) = msg.reasoning {
+        if let Some(ref text) = reasoning.text {
+            if text.len() > THINKING_BODY_MAX_CHARS {
+                reasoning.text = Some(truncate_thinking_body(text));
+                changed = true;
+            }
+        }
+    }
+    changed
 }
 
 /// Truncate an oversized tool result message.
@@ -191,6 +351,7 @@ mod tests {
             name: Some("test_tool".into()),
             model: None,
             metadata: None,
+        reasoning: None,
         }
     }
 
@@ -210,6 +371,7 @@ mod tests {
             name: None,
             model: None,
             metadata: None,
+        reasoning: None,
         }
     }
 
@@ -292,6 +454,7 @@ mod tests {
             name: Some("skill_load".into()),
             model: None,
             metadata: None,
+        reasoning: None,
         };
         assert!(!truncate_tool_result(&mut msg));
         assert_eq!(msg.content.unwrap(), big);
@@ -308,6 +471,7 @@ mod tests {
             name: Some("skill_load".into()),
             model: None,
             metadata: None,
+        reasoning: None,
         };
         let normal_msg = make_tool_msg(&big); // name: "test_tool" → Incidental → truncated
         let mut msgs = vec![skill_msg, normal_msg];
@@ -329,6 +493,7 @@ mod tests {
             name: Some("read_file".into()),
             model: None,
             metadata: None,
+        reasoning: None,
         };
         assert!(truncate_tool_result(&mut msg));
         let c = msg.content.unwrap();
@@ -359,7 +524,7 @@ mod tests {
     #[test]
     fn sanitize_truncates_assistant_thinking() {
         let long = "y".repeat(10_000);
-        let mut msg = Message {
+        let msg = Message {
             role: Role::Assistant,
             content: Some(format!("<think>{long}</think>")),
             tool_calls: None,
@@ -367,8 +532,129 @@ mod tests {
             name: None,
             model: None,
             metadata: None,
+            reasoning: None,
         };
         let n = sanitize(&mut vec![msg]);
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn wrap_thinking_embeds_tags() {
+        assert_eq!(wrap_thinking("", "hi"), "hi");
+        assert_eq!(
+            wrap_thinking("reason", "hi"),
+            "<think>reason</think>\nhi"
+        );
+        assert_eq!(wrap_thinking("reason", ""), "<think>reason</think>");
+    }
+
+    #[test]
+    fn strip_thinking_removes_tags() {
+        let content = "<think>secret</think>\nvisible";
+        assert_eq!(strip_thinking_in_content(content), "visible");
+        assert_eq!(strip_thinking_in_content("no tags"), "no tags");
+    }
+
+    #[test]
+    fn strip_historical_keeps_active_tool_loop() {
+        let mut msgs = vec![
+            Message::user("first"),
+            Message::assistant(&wrap_thinking("old reason", "old answer")),
+            Message::user("second"),
+            Message::assistant_with_tools(
+                &wrap_thinking("active reason", "calling tool"),
+                vec![crate::types::ToolCall {
+                    id: "c1".into(),
+                    call_type: "function".into(),
+                    function: crate::types::FunctionCall {
+                        name: "bash".into(),
+                        arguments: "{}".into(),
+                    },
+                }],
+            ),
+            Message::tool("c1".into(), "ok".into(), Some("bash".into())),
+            // Trailing context injection must not count as the "last user".
+            Message::user("<context_injection>\ncwd=/tmp\n</context_injection>"),
+        ];
+        let n = strip_historical_thinking(&mut msgs);
+        assert_eq!(n, 1);
+        assert!(
+            !msgs[1].content.as_ref().unwrap().contains("<think>"),
+            "historical thinking stripped"
+        );
+        assert!(
+            msgs[3].content.as_ref().unwrap().contains("<think>active reason</think>"),
+            "active loop thinking kept"
+        );
+    }
+
+    #[test]
+    fn sanitize_strips_then_truncates_active_loop() {
+        let long = "z".repeat(10_000);
+        let mut msgs = vec![
+            Message::user("q1"),
+            Message::assistant(&wrap_thinking("old", "a1")),
+            Message::user("q2"),
+            Message::assistant(&wrap_thinking(&long, "a2")),
+            Message::user("<context_injection>\nx\n</context_injection>"),
+        ];
+        let n = sanitize(&mut msgs);
+        assert!(n >= 2);
+        assert!(!msgs[1].content.as_ref().unwrap().contains("<think>"));
+        let active = msgs[3].content.as_ref().unwrap();
+        assert!(active.contains("thinking truncated"));
+        assert!(active.contains("a2"));
+    }
+
+    #[test]
+    fn opaque_blob_never_truncated_in_active_loop() {
+        use crate::types::ReasoningState;
+        let blob = "ENCRYPTED_BLOB_".to_string() + &"B".repeat(20_000);
+        let msg = Message::assistant("ok").with_reasoning(ReasoningState {
+            text: Some("x".repeat(10_000)),
+            encrypted_content: Some(blob.clone()),
+            signature: Some("sig-unchanged".into()),
+            summary: None,
+        });
+        let mut msgs = vec![
+            Message::user("q"),
+            msg,
+            Message::user("<context_injection>\nx\n</context_injection>"),
+        ];
+        sanitize(&mut msgs);
+        let r = msgs[1].reasoning.as_ref().unwrap();
+        assert_eq!(r.encrypted_content.as_deref(), Some(blob.as_str()));
+        assert_eq!(r.signature.as_deref(), Some("sig-unchanged"));
+        assert!(r.text.as_ref().unwrap().contains("thinking truncated"));
+    }
+
+    #[test]
+    fn historical_blobs_cleared_across_user_turn() {
+        use crate::types::ReasoningState;
+        let mut msgs = vec![
+            Message::user("q1"),
+            Message::assistant("a1").with_reasoning(ReasoningState {
+                text: Some("t".into()),
+                encrypted_content: Some("blob1".into()),
+                signature: Some("sig1".into()),
+                summary: None,
+            }),
+            Message::user("q2"),
+            Message::assistant("a2").with_reasoning(ReasoningState {
+                encrypted_content: Some("blob2".into()),
+                ..Default::default()
+            }),
+        ];
+        strip_historical_thinking(&mut msgs);
+        assert!(msgs[1].reasoning.is_none());
+        assert_eq!(
+            msgs[3]
+                .reasoning
+                .as_ref()
+                .unwrap()
+                .encrypted_content
+                .as_deref(),
+            Some("blob2")
+        );
     }
 }

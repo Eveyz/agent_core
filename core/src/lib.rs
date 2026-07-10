@@ -32,7 +32,7 @@ pub mod util;
 pub mod worktree;
 
 pub use context_processor::{ContextProcessor, TransformContextFn};
-pub use config::{Config, MemoryConfig, MemoryMode, ModelConfig, ReflectionConfig, RuntimeOverrides, resolve_env_value};
+pub use config::{ApiMode, Config, MemoryConfig, MemoryMode, ModelConfig, ReflectionConfig, RuntimeOverrides, resolve_env_value};
 pub use context::{CacheHint, Context, ContextEngine, ContextSegment, RefreshPolicy, Stability};
 pub use memory::{
     LifecycleReport, MemoryCategory, MemoryManager, MemoryStats, RecallIntent, SalienceConfig,
@@ -43,7 +43,8 @@ pub use tokio_util::sync::CancellationToken;
 pub use tools::{Tool, ToolRegistry, ToolUpdateFn, build_tool_by_name};
 pub use types::{
     AgentEvent, AgentState, EventReceiver, EventSender, FunctionCall, FunctionSchema, Message,
-    MessageDelta, Role, StreamEvent, ToolCall, ToolDefinition, ToolExecutionMode, ToolResultRecord,
+    MessageDelta, ReasoningState, Role, StreamEvent, ToolCall, ToolDefinition, ToolExecutionMode,
+    ToolResultRecord,
 };
 
 // New harness modules
@@ -67,7 +68,7 @@ pub use runtime::{
     ApprovalResolver, Brain, ChildId, ClarificationAnswers, ClarificationOption,
     ClarificationQuestion, ClarificationRequest, Envelope, EventGuard, EventLog, InputResolver,
     ProcessSupervisor, Run, RunCommand, RunEvent, RunHandle, RunId, RunManager, RunState,
-    SteerEntry, SupervisedChild,
+    STEER_MID_RUN_PREFIX, SteerEntry, SupervisedChild,
 };
 pub use session::{
     Prompt, Session, SessionCounts, SessionManager, SessionMeta, SubagentResultLike,

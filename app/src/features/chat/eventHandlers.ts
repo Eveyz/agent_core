@@ -190,6 +190,18 @@ function getOrCreateSubagent(
 
 // ── Main agent event handlers ────────────────────────────────────────
 
+/** Find the open turn even when a pending steer card was pushed after it. */
+function findOpenTurn(entries: ChatEntry[]): ChatEntry | undefined {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (entry.type === 'turn' && !entry.endTime) return entry;
+    // Skip trailing steer cards — they must not split the pre-inject Worked block.
+    if (entry.type === 'user' && entry.isSteer) continue;
+    break;
+  }
+  return undefined;
+}
+
 export function handleTurnStart(state: ChatState, sessionId: string, turnIndex: number, turnId?: string): void {
   const entries = state.entries[sessionId];
   if (turnId) {
@@ -201,13 +213,13 @@ export function handleTurnStart(state: ChatState, sessionId: string, turnIndex: 
       return;
     }
   }
-  const last = entries[entries.length - 1];
-  if (last && last.type === 'turn' && !last.endTime) {
-    last.turnIndex = turnIndex;
+  const openTurn = findOpenTurn(entries);
+  if (openTurn && openTurn.type === 'turn') {
+    openTurn.turnIndex = turnIndex;
     if (turnId) {
-      last.turnId = turnId;
-      if (!last.turnIds) last.turnIds = [];
-      if (!last.turnIds.includes(turnId)) last.turnIds.push(turnId);
+      openTurn.turnId = turnId;
+      if (!openTurn.turnIds) openTurn.turnIds = [];
+      if (!openTurn.turnIds.includes(turnId)) openTurn.turnIds.push(turnId);
     }
   } else {
     // Close any previous open turns since we are starting a new turn block

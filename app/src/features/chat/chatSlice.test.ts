@@ -21,6 +21,7 @@ async function loadModules() {
     toolApprovalResponded: chat.toolApprovalResponded,
     clarificationAnswered: chat.clarificationAnswered,
     btwAsked: chat.btwAsked,
+    steerMessageQueued: chat.steerMessageQueued,
     entriesToMessages: utils.entriesToMessages,
   };
 }
@@ -285,5 +286,89 @@ describe('recovery error events', () => {
     );
 
     expect(state.processing.s1).toBe(false);
+  });
+});
+
+describe('steer two-segment timeline', () => {
+  it('merges turn_started into the open turn when a pending steer card is last', async () => {
+    const { reducer, userMessageSent, runIdSet, agentEventsBatch, steerMessageQueued } =
+      await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, userMessageSent({ text: 'research world cup', model: 'm1', sessionId: 's1' }));
+    state = reducer(state, runIdSet({ runId: 'run-1', sessionId: 's1' }));
+    state = reducer(
+      state,
+      agentEventsBatch([{ event: 'turn_started', run_id: 'run-1', turn_id: 'turn-1', index: 0 }]),
+    );
+
+    const openTurnId = state.entries.s1.find((e) => e.type === 'turn')?.id;
+    expect(openTurnId).toBeTruthy();
+
+    // Optimistic steer card lands after the open turn (would previously split Worked).
+    state = reducer(
+      state,
+      steerMessageQueued({ sessionId: 's1', steerId: 'steer-1', text: '阿根廷怎么样' }),
+    );
+    expect(state.entries.s1[state.entries.s1.length - 1]?.isSteer).toBe(true);
+
+    state = reducer(
+      state,
+      agentEventsBatch([{ event: 'turn_started', run_id: 'run-1', turn_id: 'turn-2', index: 1 }]),
+    );
+
+    const turns = state.entries.s1.filter((e) => e.type === 'turn');
+    expect(turns).toHaveLength(1);
+    expect(turns[0].id).toBe(openTurnId);
+    expect(turns[0].endTime).toBeUndefined();
+    expect(turns[0].turnIds).toEqual(expect.arrayContaining(['turn-1', 'turn-2']));
+  });
+
+  it('closes the open turn on steer_injected and starts a new segment on next turn_started', async () => {
+    const { reducer, userMessageSent, runIdSet, agentEventsBatch, steerMessageQueued } =
+      await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, userMessageSent({ text: 'research world cup', model: 'm1', sessionId: 's1' }));
+    state = reducer(state, runIdSet({ runId: 'run-1', sessionId: 's1' }));
+    state = reducer(
+      state,
+      agentEventsBatch([{ event: 'turn_started', run_id: 'run-1', turn_id: 'turn-1', index: 0 }]),
+    );
+    state = reducer(
+      state,
+      steerMessageQueued({ sessionId: 's1', steerId: 'steer-1', text: '阿根廷怎么样' }),
+    );
+    // Pre-inject work continues in the same segment.
+    state = reducer(
+      state,
+      agentEventsBatch([{ event: 'turn_started', run_id: 'run-1', turn_id: 'turn-2', index: 1 }]),
+    );
+
+    state = reducer(
+      state,
+      agentEventsBatch([
+        {
+          event: 'steer_injected',
+          run_id: 'run-1',
+          steer_id: 'steer-1',
+          message: '阿根廷怎么样',
+        },
+      ]),
+    );
+
+    const preInjectTurn = state.entries.s1.find((e) => e.type === 'turn');
+    expect(preInjectTurn?.endTime).toBeDefined();
+    const steer = state.entries.s1.find((e) => e.isSteer);
+    expect(steer?.steerStatus).toBe('injected');
+
+    state = reducer(
+      state,
+      agentEventsBatch([{ event: 'turn_started', run_id: 'run-1', turn_id: 'turn-3', index: 2 }]),
+    );
+
+    const turns = state.entries.s1.filter((e) => e.type === 'turn');
+    expect(turns).toHaveLength(2);
+    expect(turns[0].endTime).toBeDefined();
+    expect(turns[1].endTime).toBeUndefined();
+    expect(turns[1].turnId).toBe('turn-3');
   });
 });

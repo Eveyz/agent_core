@@ -653,6 +653,12 @@ impl ContextEngine {
         &self.messages
     }
 
+    /// Strip plaintext thinking / opaque reasoning from conversation history
+    /// after a compaction boundary (chunked drop or summary).
+    pub fn strip_thinking_after_compact(&mut self) {
+        crate::hygiene::strip_all_thinking(&mut self.messages);
+    }
+
     /// Build the full message array: system (frozen) + conversation history
     /// (untouched) + dynamic context injection as a separate trailing user
     /// message.
@@ -1212,6 +1218,7 @@ mod tests {
             name: Some("test_tool".to_string()),
             model: None,
             metadata: None,
+        reasoning: None,
         });
 
         let msgs = engine.messages();
@@ -1335,6 +1342,7 @@ mod tests {
             name: Some("test_tool".to_string()),
             model: None,
             metadata: None,
+        reasoning: None,
         });
 
         // Use compressor directly to test snipCompact
@@ -1436,6 +1444,7 @@ mod tests {
             name: Some("write_file".to_string()),
             model: None,
             metadata: None,
+        reasoning: None,
         };
         engine.add(tool_msg);
         

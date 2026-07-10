@@ -96,9 +96,110 @@ impl SseParser {
 fn parse_sse_data(data: &str) -> Result<StreamEvent> {
     let v: Value = serde_json::from_str(data)?;
 
-    let choices = v["choices"]
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("no choices array"))?;
+    // ── OpenAI Responses API events ────────────────────────────────
+    if let Some(event_type) = v["type"].as_str() {
+        match event_type {
+            "response.reasoning_summary_text.delta" => {
+                if let Some(delta) = v["delta"].as_str() {
+                    return Ok(StreamEvent::ThinkingDelta(delta.to_string()));
+                }
+            }
+            "response.output_text.delta" => {
+                if let Some(delta) = v["delta"].as_str() {
+                    return Ok(StreamEvent::TextDelta(delta.to_string()));
+                }
+            }
+            "response.output_item.done" => {
+                let item = &v["item"];
+                if item["type"].as_str() == Some("reasoning") {
+                    return Ok(StreamEvent::ReasoningBlob {
+                        encrypted_content: item["encrypted_content"].as_str().map(|s| s.to_string()),
+                        signature: None,
+                        summary: item["summary"]
+                            .as_array()
+                            .and_then(|a| a.first())
+                            .and_then(|s| s["text"].as_str())
+                            .map(|s| s.to_string()),
+                    });
+                }
+                if item["type"].as_str() == Some("function_call") {
+                    return Ok(StreamEvent::ToolCallDelta {
+                        index: 0,
+                        id: item["call_id"].as_str().map(|s| s.to_string()),
+                        function_name: item["name"].as_str().map(|s| s.to_string()),
+                        arguments_delta: item["arguments"].as_str().map(|s| s.to_string()),
+                    });
+                }
+            }
+            "response.completed" | "response.done" => {
+                return Ok(StreamEvent::Done);
+            }
+            _ => {}
+        }
+    }
+
+    // ── Anthropic Messages SSE ─────────────────────────────────────
+    if let Some(delta_type) = v["delta"]["type"].as_str() {
+        match delta_type {
+            "thinking_delta" => {
+                if let Some(t) = v["delta"]["thinking"].as_str() {
+                    return Ok(StreamEvent::ThinkingDelta(t.to_string()));
+                }
+            }
+            "signature_delta" => {
+                if let Some(sig) = v["delta"]["signature"].as_str() {
+                    return Ok(StreamEvent::ReasoningBlob {
+                        encrypted_content: None,
+                        signature: Some(sig.to_string()),
+                        summary: None,
+                    });
+                }
+            }
+            "text_delta" => {
+                if let Some(t) = v["delta"]["text"].as_str() {
+                    return Ok(StreamEvent::TextDelta(t.to_string()));
+                }
+            }
+            "input_json_delta" => {
+                if let Some(partial) = v["delta"]["partial_json"].as_str() {
+                    return Ok(StreamEvent::ToolCallDelta {
+                        index: v["index"].as_u64().unwrap_or(0) as usize,
+                        id: None,
+                        function_name: None,
+                        arguments_delta: Some(partial.to_string()),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+    if v["type"].as_str() == Some("content_block_start") {
+        let block = &v["content_block"];
+        if block["type"].as_str() == Some("tool_use") {
+            return Ok(StreamEvent::ToolCallDelta {
+                index: v["index"].as_u64().unwrap_or(0) as usize,
+                id: block["id"].as_str().map(|s| s.to_string()),
+                function_name: block["name"].as_str().map(|s| s.to_string()),
+                arguments_delta: Some(String::new()),
+            });
+        }
+        if block["type"].as_str() == Some("thinking") {
+            // thinking block start — signature may arrive later via signature_delta
+            return Ok(StreamEvent::TextDelta(String::new()));
+        }
+    }
+    if v["type"].as_str() == Some("message_stop") {
+        return Ok(StreamEvent::Done);
+    }
+
+    // ── Chat Completions (OpenAI-compat / DeepSeek) ────────────────
+    let choices = match v["choices"].as_array() {
+        Some(c) => c,
+        None => {
+            // Unknown shape — ignore quietly rather than fail the stream.
+            return Ok(StreamEvent::TextDelta(String::new()));
+        }
+    };
 
     if choices.is_empty() {
         return Ok(StreamEvent::Done);

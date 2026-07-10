@@ -26,12 +26,21 @@ pub struct SteerEntry {
     pub timestamp: u64,
 }
 
+/// Prefix wrapped around mid-run steer text before it is added to model context.
+/// UI / events keep the raw user text; only the LLM sees this framing.
+pub const STEER_MID_RUN_PREFIX: &str = "\
+[USER STEER MID-RUN]
+The user injected a mid-run follow-up. Treat it as a new instruction that takes \
+priority over the previous plan when they conflict. Address it in your next actions.
+
+";
+
 impl SteerEntry {
     /// Convenience constructor from raw text. Generates a random id.
     pub fn from_text(text: &str) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
-            message: Message::user(text),
+            message: RunCommand::steer_message(text),
             raw_text: text.to_string(),
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -81,9 +90,13 @@ pub enum RunCommand {
 }
 
 impl RunCommand {
-    /// Convert a steer command into a `Message::user`.
+    /// Convert a steer command into a framed `Message::user` for model context.
+    ///
+    /// The framing tells the model this is a mid-run follow-up that should take
+    /// priority when it conflicts with the previous plan. Callers that display
+    /// the message to the user should keep the raw text separately.
     pub fn steer_message(message: &str) -> Message {
-        Message::user(message)
+        Message::user(&format!("{STEER_MID_RUN_PREFIX}{message}"))
     }
 }
 
@@ -92,10 +105,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn steer_message_is_user_role() {
+    fn steer_message_is_user_role_with_mid_run_prefix() {
         let msg = RunCommand::steer_message("use a different approach");
         assert_eq!(msg.role, crate::types::Role::User);
-        assert_eq!(msg.content.as_deref(), Some("use a different approach"));
+        let content = msg.content.as_deref().unwrap();
+        assert!(content.starts_with("[USER STEER MID-RUN]"));
+        assert!(content.ends_with("use a different approach"));
+    }
+
+    #[test]
+    fn steer_entry_from_text_keeps_raw_and_wraps_message() {
+        let entry = SteerEntry::from_text("阿根廷怎么样");
+        assert_eq!(entry.raw_text, "阿根廷怎么样");
+        let content = entry.message.content.as_deref().unwrap();
+        assert!(content.contains("[USER STEER MID-RUN]"));
+        assert!(content.ends_with("阿根廷怎么样"));
     }
 
     #[test]

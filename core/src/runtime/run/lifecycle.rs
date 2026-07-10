@@ -339,22 +339,7 @@ impl Run {
                     }
                 }
                 RunCommand::Steer { steer_id, message } => {
-                    let entry = SteerEntry {
-                        id: steer_id.clone(),
-                        message: Message::user(&message),
-                        raw_text: message.clone(),
-                        timestamp: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis() as u64,
-                    };
-                    self.steering_queue.push_back(entry);
-                    let depth = self.steering_queue.len();
-                    self.emit(RunEvent::SteerQueued {
-                        steer_id,
-                        message,
-                        queue_depth: depth,
-                    });
+                    self.enqueue_steer(steer_id, message);
                 }
                 RunCommand::CancelSteer { steer_id } => {
                     let before = self.steering_queue.len();
@@ -386,6 +371,46 @@ impl Run {
         Ok(())
     }
 
+    /// Queue a steer message and notify the frontend.
+    fn enqueue_steer(&mut self, steer_id: String, message: String) {
+        let entry = SteerEntry {
+            id: steer_id.clone(),
+            message: RunCommand::steer_message(&message),
+            raw_text: message.clone(),
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+        };
+        self.steering_queue.push_back(entry);
+        let depth = self.steering_queue.len();
+        self.emit(RunEvent::SteerQueued {
+            steer_id,
+            message,
+            queue_depth: depth,
+        });
+    }
+
+    /// Drain pending commands, then inject at most one steer into context.
+    ///
+    /// Called at turn boundaries so a steer that arrived mid-turn (still sitting
+    /// in `cmd_rx`) is available for injection before the next LLM call —
+    /// without waiting an extra full turn.
+    ///
+    /// Returns `true` if a steer was injected.
+    pub(super) fn inject_next_steer(&mut self) -> Result<bool, RunError> {
+        self.poll_commands()?;
+        if let Some(entry) = self.steering_queue.pop_front() {
+            self.emit(RunEvent::SteerInjected {
+                steer_id: entry.id.clone(),
+                message: entry.raw_text.clone(),
+            });
+            self.context.add(entry.message);
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     /// Block until Resume or Cancel is received.
     pub(super) async fn wait_for_resume(&mut self) -> Result<(), RunError> {
         loop {
@@ -400,22 +425,7 @@ impl Run {
                     return Err(RunError::Cancelled);
                 }
                 Some(RunCommand::Steer { steer_id, message }) => {
-                    let entry = SteerEntry {
-                        id: steer_id.clone(),
-                        message: Message::user(&message),
-                        raw_text: message.clone(),
-                        timestamp: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis() as u64,
-                    };
-                    self.steering_queue.push_back(entry);
-                    let depth = self.steering_queue.len();
-                    self.emit(RunEvent::SteerQueued {
-                        steer_id,
-                        message,
-                        queue_depth: depth,
-                    });
+                    self.enqueue_steer(steer_id, message);
                 }
                 Some(RunCommand::CancelSteer { steer_id }) => {
                     let before = self.steering_queue.len();

@@ -1,8 +1,9 @@
 pub mod resilience;
 pub mod streaming;
+pub mod providers;
 
 use crate::client::resilience::{CircuitBreaker, CircuitBreakerConfig, calculate_backoff};
-use crate::config::{ModelConfig, RuntimeOverrides};
+use crate::config::{ApiMode, ModelConfig, RuntimeOverrides};
 use crate::types::{Message, StreamEvent, ToolDefinition};
 use anyhow::{Result, bail};
 use reqwest::Response;
@@ -105,65 +106,61 @@ impl OpenAIClient {
         stream: bool,
         cache_hint: Option<ClientCacheHint>,
     ) -> Value {
-        let mut body = serde_json::json!({
-            "model": self.model.model_id,
-            "messages": messages,
-            "stream": stream,
-        });
+        let api_mode = self.model.resolved_api_mode();
+        let temperature = self.overrides.temperature.or(self.model.temperature);
+        let max_tokens = self.overrides.max_tokens.or(self.model.max_tokens);
 
-        if let Some(temp) = self.overrides.temperature.or(self.model.temperature) {
-            body["temperature"] = serde_json::json!(temp);
-        }
-
-        if let Some(max_tokens) = self.overrides.max_tokens.or(self.model.max_tokens) {
-            body["max_tokens"] = serde_json::json!(max_tokens);
-        }
+        let mut body = providers::build_provider_body(
+            api_mode,
+            &self.model.model_id,
+            messages,
+            tools,
+            stream,
+            temperature,
+            max_tokens,
+            self.model.thinking_enabled,
+            self.model.reasoning_effort.as_deref(),
+        );
 
         // NVIDIA's API gateway wraps DeepSeek models behind a chat_template_kwargs
         // translation layer.  Sending top-level `thinking` / `reasoning_effort`
         // produces a 400 — they must live inside `chat_template_kwargs`.
-        let is_nvidia = self
-            .model
-            .base_url
-            .contains("nvidia.com");
-
-        if is_nvidia {
-            let mut ctk = serde_json::Map::new();
-            if let Some(ref effort) = self.model.reasoning_effort {
-                ctk.insert("reasoning_effort".to_string(), serde_json::json!(effort));
+        // Only applies to Chat Completions wire format.
+        if api_mode == ApiMode::ChatCompletions {
+            let is_nvidia = self.model.base_url.contains("nvidia.com");
+            if is_nvidia {
+                let mut ctk = serde_json::Map::new();
+                if let Some(ref effort) = self.model.reasoning_effort {
+                    ctk.insert("reasoning_effort".to_string(), serde_json::json!(effort));
+                }
+                if self.model.thinking_enabled {
+                    ctk.insert("thinking".to_string(), serde_json::json!(true));
+                }
+                if !ctk.is_empty() {
+                    body["chat_template_kwargs"] = serde_json::Value::Object(ctk);
+                    body.as_object_mut().map(|o| {
+                        o.remove("thinking");
+                        o.remove("reasoning_effort");
+                    });
+                }
+            } else {
+                if let Some(effort) = &self.model.reasoning_effort {
+                    body["reasoning_effort"] = serde_json::json!(effort);
+                }
+                if self.model.thinking_enabled {
+                    body["thinking"] = serde_json::json!({
+                        "type": "enabled"
+                    });
+                }
             }
-            if self.model.thinking_enabled {
-                ctk.insert("thinking".to_string(), serde_json::json!(true));
-            }
-            if !ctk.is_empty() {
-                body["chat_template_kwargs"] = serde_json::Value::Object(ctk);
-            }
-        } else {
-            if let Some(effort) = &self.model.reasoning_effort {
-                body["reasoning_effort"] = serde_json::json!(effort);
-            }
-
-            if self.model.thinking_enabled {
-                body["thinking"] = serde_json::json!({
-                    "type": "enabled"
-                });
-            }
-        }
-
-        if !tools.is_empty() {
-            body["tools"] = serde_json::json!(tools);
-            body["tool_choice"] = serde_json::json!("auto");
         }
 
         // ── KV cache hint wiring ────────────────────────────────────
-        // `cache_hint` is computed by ContextEngine from the 7-segment layout.
-        // Here it (1) produces verification telemetry for every backend and
-        // (2) for Anthropic, marks the stable system message(s) with an
-        // ephemeral cache breakpoint so the provider actually reuses the KV.
         if let Some(hint) = cache_hint {
             tracing::info!(
                 target: "kv_cache",
                 provider = %self.model.base_url,
+                api_mode = ?api_mode,
                 stable_prefix_tokens = hint.stable_prefix_tokens,
                 cacheable_prefix_tokens = hint.cacheable_prefix_tokens,
                 last_turn_elapsed_ms = hint.last_turn_elapsed_ms,
@@ -173,20 +170,38 @@ impl OpenAIClient {
                 "KV cache hint for this request"
             );
 
-            let is_anthropic =
-                self.model.base_url.contains("anthropic.com") || self.model.base_url.contains("api.anthropic");
-            if is_anthropic && hint.can_reuse_cache && hint.strategy != "none" {
-                if let Some(msgs) = body.get_mut("messages").and_then(|m| m.as_array_mut()) {
-                    for m in msgs.iter_mut() {
-                        if m.get("role").and_then(|r| r.as_str()) == Some("system") {
-                            if let Some(text) = m.get("content").and_then(|c| c.as_str()) {
-                                m["content"] = serde_json::json!([
-                                    {
-                                        "type": "text",
-                                        "text": text,
-                                        "cache_control": { "type": "ephemeral" }
-                                    }
-                                ]);
+            if api_mode == ApiMode::AnthropicMessages
+                && hint.can_reuse_cache
+                && hint.strategy != "none"
+            {
+                // Anthropic: mark system with ephemeral cache_control when possible.
+                if let Some(sys) = body.get_mut("system") {
+                    if let Some(text) = sys.as_str() {
+                        *sys = serde_json::json!([
+                            {
+                                "type": "text",
+                                "text": text,
+                                "cache_control": { "type": "ephemeral" }
+                            }
+                        ]);
+                    }
+                }
+            } else if api_mode == ApiMode::ChatCompletions {
+                let is_anthropic = self.model.base_url.contains("anthropic.com")
+                    || self.model.base_url.contains("api.anthropic");
+                if is_anthropic && hint.can_reuse_cache && hint.strategy != "none" {
+                    if let Some(msgs) = body.get_mut("messages").and_then(|m| m.as_array_mut()) {
+                        for m in msgs.iter_mut() {
+                            if m.get("role").and_then(|r| r.as_str()) == Some("system") {
+                                if let Some(text) = m.get("content").and_then(|c| c.as_str()) {
+                                    m["content"] = serde_json::json!([
+                                        {
+                                            "type": "text",
+                                            "text": text,
+                                            "cache_control": { "type": "ephemeral" }
+                                        }
+                                    ]);
+                                }
                             }
                         }
                     }
@@ -294,7 +309,10 @@ impl OpenAIClient {
                 bail!("Circuit breaker open: {}", msg);
             }
 
-            let url = format!("{}/chat/completions", current_client.model.base_url);
+            let url = providers::endpoint_for(
+                current_client.model.resolved_api_mode(),
+                &current_client.model.base_url,
+            );
             let base_delay = Duration::from_millis(500);
             let max_delay = Duration::from_secs(60);
             // Rate-limit retries (429 only) — separate from general network retries.
@@ -314,13 +332,21 @@ impl OpenAIClient {
                     break;
                 }
 
-                let resp = current_client
+                let mut req = current_client
                     .http
                     .post(&url)
-                    .bearer_auth(&current_client.model.api_key)
-                    .json(body)
-                    .send()
-                    .await;
+                    .json(body);
+
+                // Anthropic Messages uses x-api-key + version header, not Bearer.
+                if current_client.model.resolved_api_mode() == ApiMode::AnthropicMessages {
+                    req = req
+                        .header("x-api-key", &current_client.model.api_key)
+                        .header("anthropic-version", "2023-06-01");
+                } else {
+                    req = req.bearer_auth(&current_client.model.api_key);
+                }
+
+                let resp = req.send().await;
 
                 match resp {
                     Ok(r) if r.status().is_success() => {

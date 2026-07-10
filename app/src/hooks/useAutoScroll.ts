@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback, useState, useLayoutEffect } from 'react';
+import { isNearBottom as isNearBottomMetrics, maxScrollTop as maxScrollTopMetrics, pinnedScrollTop } from './scrollPin';
 
 interface UseAutoScrollOptions {
   /** When these change, pin to bottom if stick-to-bottom is enabled (new message, session switch). */
@@ -7,14 +8,12 @@ interface UseAutoScrollOptions {
   isProcessing: boolean;
 }
 
-const BOTTOM_THRESHOLD_PX = 40;
-
 function maxScrollTop(el: HTMLElement): number {
-  return Math.max(0, el.scrollHeight - el.clientHeight);
+  return maxScrollTopMetrics(el.scrollHeight, el.clientHeight);
 }
 
-function isNearBottom(el: HTMLElement, threshold = BOTTOM_THRESHOLD_PX): boolean {
-  return maxScrollTop(el) - el.scrollTop <= threshold;
+function isNearBottom(el: HTMLElement): boolean {
+  return isNearBottomMetrics(el.scrollTop, el.scrollHeight, el.clientHeight);
 }
 
 /**
@@ -22,8 +21,11 @@ function isNearBottom(el: HTMLElement, threshold = BOTTOM_THRESHOLD_PX): boolean
  *
  * Important edge cases this handles:
  * - Never assign `scrollTop = scrollHeight` (can overshoot); always clamp to maxScroll.
- * - Do not infer "user scrolled up" from scrollTop deltas — content height can shrink
- *   during markdown/code-block remounts and falsely disable sticking (blank viewport).
+ * - Correct BOTH undershoot (content grew) and overshoot (content shrank after
+ *   markdown/code remounts). Undershoot-only left a blank viewport until the
+ *   user nudged the scrollbar.
+ * - Do not infer "user scrolled up" from scrollTop deltas — height shrinks
+ *   look identical to scrolling up and falsely disable sticking.
  * - Ignore scroll events caused by our own programmatic pins.
  */
 export function useAutoScroll<
@@ -84,12 +86,27 @@ export function useAutoScroll<
     }
   }, [markProgrammatic]);
 
-  // Non-streaming updates (new entry, session switch): pin once in layout.
+  const applyPin = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const next = pinnedScrollTop(
+      el.scrollTop,
+      el.scrollHeight,
+      el.clientHeight,
+      stickToBottom.current,
+    );
+    if (next != null) {
+      markProgrammatic();
+      el.scrollTop = next;
+    }
+  }, [markProgrammatic]);
+
+  // Non-streaming updates (new entry, session switch, stream end): pin once in layout.
   useLayoutEffect(() => {
-    if (!stickToBottom.current || isProcessing) return;
+    if (!stickToBottom.current) return;
     pinToBottom();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
+  }, [...deps, isProcessing]);
 
   // Streaming: pin every frame while the user hasn't scrolled away.
   useEffect(() => {
@@ -97,14 +114,7 @@ export function useAutoScroll<
 
     let id = 0;
     const tick = () => {
-      const el = scrollRef.current;
-      if (el && stickToBottom.current && el.clientHeight > 0) {
-        const max = maxScrollTop(el);
-        if (el.scrollTop < max - 1) {
-          markProgrammatic();
-          el.scrollTop = max;
-        }
-      }
+      applyPin();
       id = requestAnimationFrame(tick);
     };
 
@@ -116,7 +126,20 @@ export function useAutoScroll<
         clearProgrammaticRaf.current = null;
       }
     };
-  }, [isProcessing, markProgrammatic]);
+  }, [isProcessing, applyPin]);
+
+  // Content height can shrink after markdown/code remounts (often right as
+  // streaming ends) without a scroll event — ResizeObserver catches that and
+  // corrects overshoot so the viewport doesn't go blank.
+  useEffect(() => {
+    const content = contentRef.current;
+    if (!content || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => applyPin());
+    ro.observe(content);
+    return () => ro.disconnect();
+    // Re-attach when the chat pane remounts (EmptyState → ChatArea / session switch).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applyPin, ...deps]);
 
   // User intent + near-bottom tracking.
   // Re-bind when processing/deps change so the listener attaches after EmptyState → ChatArea.
@@ -126,9 +149,22 @@ export function useAutoScroll<
 
     const handleScroll = () => {
       if (programmaticScroll.current) return;
+      // Overshoot (scrollTop past max) is a layout artifact, not user intent —
+      // keep sticking and let the pin loop pull us back.
+      if (el.scrollTop > maxScrollTop(el) + 1) return;
       const near = isNearBottom(el);
-      stickToBottom.current = near;
-      setIsAtBottom(near);
+      if (near) {
+        stickToBottom.current = true;
+        setIsAtBottom(true);
+        return;
+      }
+      // During streaming, content can grow faster than the pin frame and briefly
+      // look "not near bottom" — that must not disable stick (blank viewport).
+      // Wheel / touch are the leave-bottom signals while processing.
+      if (!isProcessing) {
+        stickToBottom.current = false;
+      }
+      setIsAtBottom(false);
     };
 
     // Wheel up is the reliable "user wants to leave the bottom" signal.
@@ -143,6 +179,7 @@ export function useAutoScroll<
     const handleTouchMove = () => {
       // Touch drag away from bottom is reflected in scroll; if still near bottom, keep sticking.
       if (programmaticScroll.current) return;
+      if (el.scrollTop > maxScrollTop(el) + 1) return;
       if (!isNearBottom(el)) {
         stickToBottom.current = false;
         setIsAtBottom(false);

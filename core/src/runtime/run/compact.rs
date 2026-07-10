@@ -55,6 +55,9 @@ impl Run {
 
         // Tier 1: Chunked drop — zero-cost, cache-friendly bulk removal.
         if self.context.chunked_drop(keep) > 0 {
+            // Dropped turns are gone; strip thinking from what remains so old
+            // CoT does not linger across the compaction boundary.
+            self.context.strip_thinking_after_compact();
             tracing::info!(
                 compact = "chunked_drop",
                 tokens_before = current,

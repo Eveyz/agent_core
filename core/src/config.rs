@@ -3,6 +3,37 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiMode {
+    /// OpenAI-compatible Chat Completions (`/chat/completions`). Default / DeepSeek.
+    #[default]
+    ChatCompletions,
+    /// OpenAI Responses API (`/responses`) with encrypted reasoning round-trip.
+    Responses,
+    /// Anthropic Messages API with thinking + signature round-trip.
+    AnthropicMessages,
+}
+
+impl ApiMode {
+    /// Infer API mode from base URL / model id when not explicitly configured.
+    pub fn infer(base_url: &str, model_id: &str) -> Self {
+        let url = base_url.to_lowercase();
+        let model = model_id.to_lowercase();
+        if url.contains("anthropic.com") || url.contains("api.anthropic") || model.contains("claude")
+        {
+            return Self::AnthropicMessages;
+        }
+        // Explicit opt-in via model id prefix or responses-style endpoints.
+        if url.contains("/responses") || model.starts_with("o1") || model.starts_with("o3")
+            || model.starts_with("o4") || model.contains("codex")
+        {
+            return Self::Responses;
+        }
+        Self::ChatCompletions
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderModelEntry {
     pub model_id: String,
@@ -18,6 +49,9 @@ pub struct ProviderModelEntry {
     pub reasoning_effort: Option<String>,
     #[serde(default)]
     pub thinking_enabled: bool,
+    /// Override API wire format. When unset, inferred from base_url / model_id.
+    #[serde(default)]
+    pub api_mode: Option<ApiMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +100,9 @@ pub struct ModelConfig {
     pub reasoning_effort: Option<String>,
     #[serde(default)]
     pub thinking_enabled: bool,
+    /// Wire-format mode. `None` → inferred from base_url / model_id at use time.
+    #[serde(default)]
+    pub api_mode: Option<ApiMode>,
 }
 
 fn default_request_timeout() -> u64 {
@@ -101,11 +138,18 @@ impl Default for ModelConfig {
             fallback_model: None,
             reasoning_effort: None,
             thinking_enabled: false,
+            api_mode: None,
         }
     }
 }
 
 impl ModelConfig {
+    /// Resolved API mode (explicit config or inferred).
+    pub fn resolved_api_mode(&self) -> ApiMode {
+        self.api_mode
+            .unwrap_or_else(|| ApiMode::infer(&self.base_url, &self.model_id))
+    }
+
     pub fn auto_detect_max_context_tokens(&mut self) {
         let model_lower = self.model_id.to_lowercase();
         if self.max_context_tokens == 128000 {
@@ -393,6 +437,7 @@ impl Config {
                 max_context_tokens: None,
                 reasoning_effort: None,
                 thinking_enabled: false,
+                api_mode: None,
             },
         );
 
@@ -429,6 +474,7 @@ impl Config {
             fallback_model: None,
             reasoning_effort: None,
             thinking_enabled: false,
+            api_mode: None,
         };
         model_config.auto_detect_max_context_tokens();
         models.insert("default/default".to_string(), model_config);
@@ -480,6 +526,7 @@ impl Config {
                     fallback_model: None,
                     reasoning_effort: entry.reasoning_effort.clone(),
                     thinking_enabled: entry.thinking_enabled,
+                    api_mode: entry.api_mode,
                 };
                 model_config.auto_detect_max_context_tokens();
                 self.models.insert(full_key, model_config);
@@ -530,6 +577,7 @@ impl Config {
                     max_context_tokens: Some(model.max_context_tokens),
                     reasoning_effort: model.reasoning_effort.clone(),
                     thinking_enabled: model.thinking_enabled,
+                    api_mode: model.api_mode,
                 },
             );
         }
@@ -578,6 +626,7 @@ impl Config {
                 max_context_tokens: Some(model.max_context_tokens),
                 reasoning_effort: model.reasoning_effort.clone(),
                 thinking_enabled: model.thinking_enabled,
+                api_mode: model.api_mode,
             },
         );
 

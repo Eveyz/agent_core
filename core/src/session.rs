@@ -9,10 +9,63 @@
 //! Memory  = "what I know"     (extracted facts, searchable, cross-session)
 //! ```
 
-use crate::types::Message;
+use crate::types::{Message, ReasoningState};
 use anyhow::Result;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+
+const REASONING_METADATA_KEY: &str = "_reasoning";
+
+/// Embed structured reasoning into the session `metadata` JSON blob so it
+/// survives SQLite round-trips without a schema migration.
+fn merge_reasoning_into_metadata(
+    metadata: Option<&serde_json::Value>,
+    reasoning: Option<&ReasoningState>,
+) -> Option<serde_json::Value> {
+    match (metadata, reasoning) {
+        (None, None) => None,
+        (Some(meta), None) => Some(meta.clone()),
+        (None, Some(r)) if r.is_empty() => None,
+        (None, Some(r)) => Some(serde_json::json!({ REASONING_METADATA_KEY: r })),
+        (Some(meta), Some(r)) if r.is_empty() => Some(meta.clone()),
+        (Some(meta), Some(r)) => {
+            let mut obj = match meta {
+                serde_json::Value::Object(map) => map.clone(),
+                other => {
+                    let mut map = serde_json::Map::new();
+                    map.insert("_value".into(), other.clone());
+                    map
+                }
+            };
+            if let Ok(v) = serde_json::to_value(r) {
+                obj.insert(REASONING_METADATA_KEY.into(), v);
+            }
+            Some(serde_json::Value::Object(obj))
+        }
+    }
+}
+
+/// Pull `_reasoning` out of metadata on load; returns (cleaned_metadata, reasoning).
+fn split_reasoning_from_metadata(
+    metadata: Option<serde_json::Value>,
+) -> (Option<serde_json::Value>, Option<ReasoningState>) {
+    let Some(mut meta) = metadata else {
+        return (None, None);
+    };
+    let reasoning = meta
+        .as_object_mut()
+        .and_then(|obj| obj.remove(REASONING_METADATA_KEY))
+        .and_then(|v| serde_json::from_value::<ReasoningState>(v).ok())
+        .filter(|r| !r.is_empty());
+    let metadata = match &meta {
+        serde_json::Value::Object(map) if map.is_empty() => None,
+        serde_json::Value::Object(map) if map.len() == 1 && map.contains_key("_value") => {
+            map.get("_value").cloned()
+        }
+        other => Some(other.clone()),
+    };
+    (metadata, reasoning)
+}
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -406,8 +459,11 @@ impl SessionManager {
                 let tool_call_id = msg.tool_call_id.as_deref().unwrap_or("");
                 let name = msg.name.as_deref().unwrap_or("");
                 let model = msg.model.as_deref().unwrap_or("");
-                let metadata =
-                    serde_json::to_string(&msg.metadata).unwrap_or_else(|_| "{}".to_string());
+                let metadata = serde_json::to_string(&merge_reasoning_into_metadata(
+                    msg.metadata.as_ref(),
+                    msg.reasoning.as_ref(),
+                ))
+                .unwrap_or_else(|_| "{}".to_string());
 
                 tx.execute(
                     "INSERT OR REPLACE INTO session_messages (session_id, prompt_id, msg_index, role, content, tool_calls, tool_call_id, name, model, metadata, created_at) \
@@ -555,6 +611,8 @@ impl SessionManager {
                 let metadata: Option<serde_json::Value> =
                     serde_json::from_str(&metadata_json).ok();
 
+                let (metadata, reasoning) = split_reasoning_from_metadata(metadata);
+
                 Ok((
                     idx,
                     Message {
@@ -573,6 +631,7 @@ impl SessionManager {
                         name: if name.is_empty() { None } else { Some(name) },
                         model: if model.is_empty() { None } else { Some(model) },
                         metadata,
+                        reasoning,
                     },
                     prompt_id,
                 ))
@@ -634,6 +693,7 @@ impl SessionManager {
                                 name: None,
                                 model: None,
                                 metadata: None,
+                            reasoning: None,
                             });
                         }
                     }
@@ -1009,6 +1069,7 @@ mod tests {
                 name: None,
                 model: None,
                 metadata: None,
+            reasoning: None,
             },
             Message {
                 role: Role::Assistant,
@@ -1018,6 +1079,7 @@ mod tests {
                 name: None,
                 model: None,
                 metadata: None,
+            reasoning: None,
             },
             Message {
                 role: Role::Assistant,
@@ -1034,6 +1096,7 @@ mod tests {
                 name: None,
                 model: None,
                 metadata: None,
+            reasoning: None,
             },
             Message {
                 role: Role::Tool,
@@ -1043,6 +1106,7 @@ mod tests {
                 name: Some("read_file".to_string()),
                 model: None,
                 metadata: None,
+            reasoning: None,
             },
         ]
     }

@@ -337,6 +337,8 @@ impl Subagent {
             const MAX_STREAM_ATTEMPTS: u32 = 3;
             let mut stream_error: Option<anyhow::Error> = None;
             let mut text = String::new();
+            let mut thinking = String::new();
+            let mut reasoning_blob = crate::types::ReasoningState::default();
             let mut tool_calls = Vec::new();
 
             for attempt in 0..MAX_STREAM_ATTEMPTS {
@@ -367,8 +369,10 @@ impl Subagent {
                 };
 
                 match self.collect_stream(stream, event_sender.as_ref()).await {
-                    Ok((t, tc)) => {
+                    Ok((t, th, blob, tc)) => {
                         text = t;
+                        thinking = th;
+                        reasoning_blob = blob;
                         tool_calls = tc;
                         stream_error = None;
                         break;
@@ -428,8 +432,16 @@ impl Subagent {
             }
 
             if !text.is_empty() || !tool_calls.is_empty() {
-                self.context
-                    .add(Message::assistant_with_tools(&text, tool_calls.clone()));
+                let content = crate::hygiene::wrap_thinking(&thinking, &text);
+                let mut msg = Message::assistant_with_tools(&content, tool_calls.clone());
+                let mut reasoning = reasoning_blob;
+                if !thinking.trim().is_empty() && reasoning.text.is_none() {
+                    reasoning.text = Some(thinking.trim().to_string());
+                }
+                if !reasoning.is_empty() {
+                    msg = msg.with_reasoning(reasoning);
+                }
+                self.context.add(msg);
             }
 
             // Execute tools, emitting SubagentToolStart/SubagentToolEnd events
@@ -571,11 +583,13 @@ impl Subagent {
         &self,
         stream: impl futures::Stream<Item = Result<StreamEvent>>,
         event_sender: Option<&EventSender>,
-    ) -> Result<(String, Vec<ToolCall>)> {
+    ) -> Result<(String, String, crate::types::ReasoningState, Vec<ToolCall>)> {
         use crate::client::streaming::{TokenAccumulator, ToolCallAccumulator};
         use futures::StreamExt;
 
         let mut text_buffer = String::new();
+        let mut thinking_buffer = String::new();
+        let mut reasoning_blob = crate::types::ReasoningState::default();
         let mut accumulator = ToolCallAccumulator::new();
         let mut has_tool_calls = false;
         let mut tokens = TokenAccumulator::new();
@@ -636,6 +650,7 @@ impl Subagent {
                 }
                 StreamEvent::ThinkingDelta(delta) => {
                     tokens.push_thinking(&delta);
+                    thinking_buffer.push_str(&delta);
                     if tokens.should_flush() {
                         if let Some((text, thinking)) = tokens.flush() {
                             if let Some(tx) = event_sender {
@@ -657,6 +672,30 @@ impl Subagent {
                         }
                     }
                 }
+                StreamEvent::ReasoningBlob {
+                    encrypted_content,
+                    signature,
+                    summary,
+                } => {
+                    if let Some(blob) = encrypted_content {
+                        if !blob.is_empty() {
+                            reasoning_blob.encrypted_content = Some(blob);
+                        }
+                    }
+                    if let Some(sig) = signature {
+                        if !sig.is_empty() {
+                            match &mut reasoning_blob.signature {
+                                Some(existing) => existing.push_str(&sig),
+                                None => reasoning_blob.signature = Some(sig),
+                            }
+                        }
+                    }
+                    if let Some(s) = summary {
+                        if !s.is_empty() {
+                            reasoning_blob.summary = Some(s);
+                        }
+                    }
+                }
                 StreamEvent::ToolCallDelta { .. } => {
                     has_tool_calls = true;
                     accumulator.push(event);
@@ -675,7 +714,7 @@ impl Subagent {
             vec![]
         };
 
-        Ok((text_buffer, tool_calls))
+        Ok((text_buffer, thinking_buffer, reasoning_blob, tool_calls))
     }
 
     /// Inject relevant memories from the per-agent store into the context's

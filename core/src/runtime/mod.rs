@@ -46,7 +46,7 @@ pub mod tool_scheduler;
 
 pub use approval::ApprovalResolver;
 pub use brain::Brain;
-pub use command::{RunCommand, SteerEntry};
+pub use command::{RunCommand, SteerEntry, STEER_MID_RUN_PREFIX};
 pub use event::{CacheMetrics, ChildId, Envelope, RunEvent, RunId};
 pub use event_log::EventLog;
 pub use guard::EventGuard;

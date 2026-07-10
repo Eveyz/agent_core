@@ -47,6 +47,51 @@ where
     }
 }
 
+/// Provider-native or compat reasoning carried with an assistant message.
+///
+/// - `text`: plaintext CoT for UI / Chat Completions (`<think>` / `reasoning_content`)
+/// - `encrypted_content`: OpenAI Responses opaque blob — never truncate
+/// - `signature`: Anthropic thinking signature — never truncate
+/// - `summary`: optional short summary for UI (Codex-style)
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReasoningState {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encrypted_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+impl ReasoningState {
+    pub fn from_text(text: impl Into<String>) -> Self {
+        let text = text.into();
+        if text.is_empty() {
+            Self::default()
+        } else {
+            Self {
+                text: Some(text),
+                ..Self::default()
+            }
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.text.as_ref().is_none_or(|s| s.is_empty())
+            && self.encrypted_content.as_ref().is_none_or(|s| s.is_empty())
+            && self.signature.as_ref().is_none_or(|s| s.is_empty())
+            && self.summary.as_ref().is_none_or(|s| s.is_empty())
+    }
+
+    /// True when an opaque provider blob must be round-tripped unchanged.
+    pub fn has_opaque_blob(&self) -> bool {
+        self.encrypted_content.as_ref().is_some_and(|s| !s.is_empty())
+            || self.signature.as_ref().is_some_and(|s| !s.is_empty())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
@@ -65,6 +110,11 @@ pub struct Message {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
+    /// Structured reasoning for tool-loop continuity (Phase 1 plaintext + Phase 2 blobs).
+    /// Not serialized into Chat Completions JSON bodies (unknown field). Session
+    /// persistence embeds it under metadata `_reasoning` instead.
+    #[serde(default, skip_serializing)]
+    pub reasoning: Option<ReasoningState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,6 +149,13 @@ pub struct FunctionSchema {
 pub enum StreamEvent {
     TextDelta(String),
     ThinkingDelta(String),
+    /// Opaque provider reasoning blob (OpenAI encrypted_content or Anthropic signature).
+    /// Carried separately from plaintext ThinkingDelta so hygiene never truncates it.
+    ReasoningBlob {
+        encrypted_content: Option<String>,
+        signature: Option<String>,
+        summary: Option<String>,
+    },
     ToolCallDelta {
         index: usize,
         id: Option<String>,
@@ -329,6 +386,7 @@ impl Message {
             name: None,
             model: None,
             metadata: None,
+            reasoning: None,
         }
     }
 
@@ -341,6 +399,7 @@ impl Message {
             name: None,
             model: None,
             metadata: None,
+            reasoning: None,
         }
     }
 
@@ -353,6 +412,7 @@ impl Message {
             name: None,
             model: Some(model.to_string()),
             metadata: None,
+            reasoning: None,
         }
     }
 
@@ -365,6 +425,7 @@ impl Message {
             name: None,
             model: None,
             metadata: None,
+            reasoning: None,
         }
     }
 
@@ -377,6 +438,7 @@ impl Message {
             name: None,
             model: None,
             metadata: None,
+            reasoning: None,
         }
     }
 
@@ -389,7 +451,15 @@ impl Message {
             name: tool_name,
             model: None,
             metadata: None,
+            reasoning: None,
         }
+    }
+
+    pub fn with_reasoning(mut self, reasoning: ReasoningState) -> Self {
+        if !reasoning.is_empty() {
+            self.reasoning = Some(reasoning);
+        }
+        self
     }
 
     pub fn token_count(&self) -> usize {
@@ -402,6 +472,18 @@ impl Message {
                 count += tc.function.name.len() / 4;
                 count += tc.function.arguments.len() / 4;
                 count += 10;
+            }
+        }
+        if let Some(ref reasoning) = self.reasoning {
+            if let Some(ref text) = reasoning.text {
+                count += text.len() / 4;
+            }
+            // Opaque blobs are opaque to us; rough estimate from byte length.
+            if let Some(ref blob) = reasoning.encrypted_content {
+                count += blob.len() / 4;
+            }
+            if let Some(ref sig) = reasoning.signature {
+                count += sig.len() / 4;
             }
         }
         count
