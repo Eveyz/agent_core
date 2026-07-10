@@ -3,6 +3,7 @@
 use anyhow::Result;
 use futures::StreamExt;
 use std::sync::atomic::Ordering;
+use std::time::Instant;
 use tokio::sync::broadcast;
 
 use crate::runtime::tool_orchestrator::ToolOrchestrator;
@@ -13,6 +14,9 @@ use crate::runtime::guard::EventGuard;
 use crate::types::{CacheUsage, Message, MessageDelta, ReasoningState, StreamEvent, ToolCall};
 
 use super::{RecoveryOutcome, Run, RunError, TurnOutcome, CACHE_IDLE_WARN_SECS};
+
+/// Gap between consecutive SSE events that warrants a live warn (ms).
+const LATENCY_GAP_WARN_MS: u64 = 2_000;
 
 /// Result of one successful model stream collection.
 pub(super) struct ModelTurnResult {
@@ -91,6 +95,7 @@ impl Run {
 
         // Stage: Model
         tracing::info!("TURN: calling model_turn");
+        let model_turn_started = Instant::now();
         let ModelTurnResult {
             text,
             thinking,
@@ -104,6 +109,7 @@ impl Run {
                     text_len = r.text.len(),
                     thinking_len = r.thinking.len(),
                     tool_count = r.tool_calls.len(),
+                    elapsed_ms = model_turn_started.elapsed().as_millis() as u64,
                     "TURN: model_turn ok"
                 );
                 r
@@ -112,7 +118,11 @@ impl Run {
                 if self.cancel.is_cancelled() {
                     return Err(RunError::Cancelled);
                 }
-                tracing::warn!(error = %e, "TURN: model_turn failed");
+                tracing::warn!(
+                    error = %e,
+                    elapsed_ms = model_turn_started.elapsed().as_millis() as u64,
+                    "TURN: model_turn failed"
+                );
                 let friendly_err = format_user_friendly_error(&e);
                 self.emit(RunEvent::Error { message: friendly_err.clone() });
                 return Ok(TurnOutcome::Stop(friendly_err));
@@ -256,6 +266,7 @@ impl Run {
         }
 
         // Add assistant message with tool calls — include thinking for ReAct continuity.
+        let post_model_t0 = Instant::now();
         let content = crate::hygiene::wrap_thinking(&thinking, &text);
         let mut assistant_msg = Message::assistant_with_tools(&content, tool_calls.clone());
         let mut reasoning = reasoning_blob;
@@ -266,17 +277,29 @@ impl Run {
             assistant_msg = assistant_msg.with_reasoning(reasoning);
         }
         self.context.add(assistant_msg.clone());
+        let after_context_ms = post_model_t0.elapsed().as_millis() as u64;
         self.save_session_snapshot();
+        let after_snapshot_ms = post_model_t0.elapsed().as_millis() as u64;
         self.emit(RunEvent::MessageEnd {
             message_id: message_id.clone(),
             message: assistant_msg.clone(),
         });
-
-        // Stage: Execute
         tracing::info!(
             tool_count = tool_calls.len(),
             tools = ?tool_calls.iter().map(|c| &c.function.name).collect::<Vec<_>>(),
-            "TURN: executing tools"
+            context_ms = after_context_ms,
+            snapshot_queue_ms = after_snapshot_ms.saturating_sub(after_context_ms),
+            post_model_ms = post_model_t0.elapsed().as_millis() as u64,
+            "LATENCY: pre-tool handoff (model done → execute)"
+        );
+
+        // Stage: Execute
+        let execute_started = Instant::now();
+        // info: turn-level wall clock; pair with execute_tools done.
+        tracing::info!(
+            tool_count = tool_calls.len(),
+            tools = ?tool_calls.iter().map(|c| &c.function.name).collect::<Vec<_>>(),
+            "LATENCY: execute_tools begin"
         );
         // Clone the event sender and run id out of self so the bridge
         // closure doesn't borrow self (which would conflict with the
@@ -354,6 +377,11 @@ impl Run {
                 })
                 .await
         };
+        tracing::info!(
+            tool_count = tool_calls.len(),
+            elapsed_ms = execute_started.elapsed().as_millis() as u64,
+            "LATENCY: execute_tools done"
+        );
         if self.cancel.is_cancelled() {
             return Err(RunError::Cancelled);
         }
@@ -654,7 +682,8 @@ impl Run {
         event_tx: &broadcast::Sender<Envelope>,
         partial: &mut StreamPartial,
     ) -> Result<ModelTurnResult> {
-        tracing::debug!("TURN: collect_stream start");
+        tracing::debug!("LATENCY: collect_stream start");
+        let stream_t0 = Instant::now();
         let mut text_buffer = String::new();
         let mut thinking_buffer = String::new();
         let mut reasoning_blob = ReasoningState::default();
@@ -667,14 +696,93 @@ impl Run {
         // so the frontend routes by identity instead of position.
         let message_id = uuid::Uuid::new_v4().to_string();
 
+        // ── Latency milestones (ms since stream_t0) ─────────────────
+        // Level policy (keep forever; tune RUST_LOG in prod):
+        //   info  — one summary per stream + first tool_call (smoking gun)
+        //   warn  — inter-event gaps ≥ LATENCY_GAP_WARN_MS
+        //   debug — per-phase first-* breadcrumbs (TTFE / thinking / text / preparing)
+        // Pinpoints: TTFT / first thinking / last thinking / first tool / stream done.
+        let mut first_event_ms: Option<u64> = None;
+        let mut first_thinking_ms: Option<u64> = None;
+        let mut last_thinking_ms: Option<u64> = None;
+        let mut first_text_ms: Option<u64> = None;
+        let mut last_text_ms: Option<u64> = None;
+        let mut first_tool_ms: Option<u64> = None;
+        let mut first_tool_name: Option<String> = None;
+        let mut first_preparing_ms: Option<u64> = None;
+        let mut last_tool_delta_ms: Option<u64> = None;
+        let mut tool_delta_count: u64 = 0;
+        let mut thinking_delta_count: u64 = 0;
+        let mut text_delta_count: u64 = 0;
+        let mut last_event_at = stream_t0;
+        let mut last_event_kind = "start";
+        let mut max_gap_ms: u64 = 0;
+        let mut max_gap_from = "start";
+        let mut max_gap_to = "start";
+
+        // Classify + stamp a stream event for latency tracking.
+        let stamp = |kind: &'static str,
+                     now: Instant,
+                     last_at: &mut Instant,
+                     last_kind: &mut &'static str,
+                     max_gap: &mut u64,
+                     max_from: &mut &'static str,
+                     max_to: &mut &'static str| {
+            let gap = now.duration_since(*last_at).as_millis() as u64;
+            if gap > *max_gap {
+                *max_gap = gap;
+                *max_from = *last_kind;
+                *max_to = kind;
+            }
+            if gap >= LATENCY_GAP_WARN_MS {
+                tracing::warn!(
+                    gap_ms = gap,
+                    from = %last_kind,
+                    to = %kind,
+                    since_start_ms = now.duration_since(stream_t0).as_millis() as u64,
+                    "LATENCY: stream gap"
+                );
+            }
+            *last_at = now;
+            *last_kind = kind;
+        };
+
         tokio::pin!(stream);
         while let Some(event) = stream.next().await {
             if self.cancel.is_cancelled() {
                 anyhow::bail!("aborted");
             }
             let event = event?;
+            let now = Instant::now();
+            let since = now.duration_since(stream_t0).as_millis() as u64;
+            if first_event_ms.is_none() {
+                first_event_ms = Some(since);
+                tracing::debug!(ttfe_ms = since, "LATENCY: first stream event");
+            }
+
             match event {
                 StreamEvent::TextDelta(delta) => {
+                    if !delta.is_empty() {
+                        stamp(
+                            "text",
+                            now,
+                            &mut last_event_at,
+                            &mut last_event_kind,
+                            &mut max_gap_ms,
+                            &mut max_gap_from,
+                            &mut max_gap_to,
+                        );
+                        text_delta_count += 1;
+                        if first_text_ms.is_none() {
+                            first_text_ms = Some(since);
+                            tracing::debug!(
+                                since_start_ms = since,
+                                chars = delta.len(),
+                                "LATENCY: first text delta"
+                            );
+                        }
+                        last_text_ms = Some(since);
+                    }
                     tokens.push_text(&delta);
                     text_buffer.push_str(&delta);
                     partial.text.push_str(&delta);
@@ -698,6 +806,27 @@ impl Run {
                     }
                 }
                 StreamEvent::ThinkingDelta(delta) => {
+                    if !delta.is_empty() {
+                        stamp(
+                            "thinking",
+                            now,
+                            &mut last_event_at,
+                            &mut last_event_kind,
+                            &mut max_gap_ms,
+                            &mut max_gap_from,
+                            &mut max_gap_to,
+                        );
+                        thinking_delta_count += 1;
+                        if first_thinking_ms.is_none() {
+                            first_thinking_ms = Some(since);
+                            tracing::debug!(
+                                since_start_ms = since,
+                                chars = delta.len(),
+                                "LATENCY: first thinking delta"
+                            );
+                        }
+                        last_thinking_ms = Some(since);
+                    }
                     tokens.push_thinking(&delta);
                     thinking_buffer.push_str(&delta);
                     partial.thinking.push_str(&delta);
@@ -725,6 +854,15 @@ impl Run {
                     signature,
                     summary,
                 } => {
+                    stamp(
+                        "reasoning_blob",
+                        now,
+                        &mut last_event_at,
+                        &mut last_event_kind,
+                        &mut max_gap_ms,
+                        &mut max_gap_from,
+                        &mut max_gap_to,
+                    );
                     if let Some(blob) = encrypted_content {
                         if !blob.is_empty() {
                             reasoning_blob.encrypted_content = Some(blob);
@@ -746,8 +884,50 @@ impl Run {
                     }
                 }
                 StreamEvent::ToolCallDelta { .. } => {
+                    stamp(
+                        "tool_delta",
+                        now,
+                        &mut last_event_at,
+                        &mut last_event_kind,
+                        &mut max_gap_ms,
+                        &mut max_gap_from,
+                        &mut max_gap_to,
+                    );
                     has_tool_calls = true;
+                    tool_delta_count += 1;
+                    last_tool_delta_ms = Some(since);
+                    if first_tool_ms.is_none() {
+                        first_tool_ms = Some(since);
+                        let gap_after_thinking = last_thinking_ms
+                            .map(|t| since.saturating_sub(t))
+                            .unwrap_or(since);
+                        let gap_after_text = last_text_ms
+                            .map(|t| since.saturating_sub(t))
+                            .unwrap_or(0);
+                        tracing::info!(
+                            since_start_ms = since,
+                            gap_after_last_thinking_ms = gap_after_thinking,
+                            gap_after_last_text_ms = gap_after_text,
+                            "LATENCY: first tool_call delta"
+                        );
+                    }
                     if let Some(notify) = accumulator.push(event) {
+                        if first_tool_name.is_none() {
+                            if let Some(ref name) = notify.name {
+                                first_tool_name = Some(name.clone());
+                            }
+                        }
+                        if first_preparing_ms.is_none() {
+                            first_preparing_ms = Some(since);
+                            tracing::debug!(
+                                since_start_ms = since,
+                                index = notify.index,
+                                name = ?notify.name,
+                                call_id = ?notify.call_id,
+                                hint_path = ?notify.hint_path,
+                                "LATENCY: first tool_preparing emit"
+                            );
+                        }
                         let _ = event_tx.send(self.wrap(RunEvent::ToolPreparing {
                             index: notify.index,
                             call_id: notify.call_id,
@@ -756,8 +936,28 @@ impl Run {
                         }));
                     }
                 }
-                StreamEvent::Done => break,
+                StreamEvent::Done => {
+                    stamp(
+                        "done",
+                        now,
+                        &mut last_event_at,
+                        &mut last_event_kind,
+                        &mut max_gap_ms,
+                        &mut max_gap_from,
+                        &mut max_gap_to,
+                    );
+                    break;
+                }
                 StreamEvent::CompleteWithUsage { prompt_cache_hit_tokens, prompt_cache_miss_tokens } => {
+                    stamp(
+                        "complete_usage",
+                        now,
+                        &mut last_event_at,
+                        &mut last_event_kind,
+                        &mut max_gap_ms,
+                        &mut max_gap_from,
+                        &mut max_gap_to,
+                    );
                     cache_usage = CacheUsage {
                         hit_tokens: prompt_cache_hit_tokens.unwrap_or(0),
                         miss_tokens: prompt_cache_miss_tokens.unwrap_or(0),
@@ -799,11 +999,44 @@ impl Run {
             vec![]
         };
 
-        tracing::debug!(
-            text_len = text_buffer.len(),
-            thinking_len = thinking_buffer.len(),
+        let total_ms = stream_t0.elapsed().as_millis() as u64;
+        let thinking_to_tool_ms = match (last_thinking_ms, first_tool_ms) {
+            (Some(t), Some(f)) => Some(f.saturating_sub(t)),
+            _ => None,
+        };
+        let text_to_tool_ms = match (last_text_ms, first_tool_ms) {
+            (Some(t), Some(f)) => Some(f.saturating_sub(t)),
+            _ => None,
+        };
+        let tool_args_span_ms = match (first_tool_ms, last_tool_delta_ms) {
+            (Some(f), Some(l)) => Some(l.saturating_sub(f)),
+            _ => None,
+        };
+
+        tracing::info!(
+            total_ms,
+            first_event_ms,
+            first_thinking_ms,
+            last_thinking_ms,
+            first_text_ms,
+            last_text_ms,
+            first_tool_ms,
+            first_preparing_ms,
+            last_tool_delta_ms,
+            thinking_to_tool_ms,
+            text_to_tool_ms,
+            tool_args_span_ms,
+            max_gap_ms,
+            max_gap_from,
+            max_gap_to,
+            thinking_delta_count,
+            text_delta_count,
+            tool_delta_count,
+            thinking_chars = thinking_buffer.len(),
+            text_chars = text_buffer.len(),
             tool_count = tool_calls.len(),
-            "TURN: collect_stream done"
+            first_tool_name = ?first_tool_name,
+            "LATENCY: collect_stream summary"
         );
 
         Ok(ModelTurnResult {

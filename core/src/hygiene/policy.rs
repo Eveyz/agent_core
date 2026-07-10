@@ -1,14 +1,20 @@
-//! Shared tool-result truncation policy — single source of truth.
+//! Shared truncation policy — single source of truth for tool results **and**
+//! tool-call arguments.
 //!
 //! Consumed by BOTH truncation layers so the model never sees a request view
 //! that diverges from the persisted-history view (PLAN-0008):
-//! - `hygiene::truncate_tool_result`  — L2, every turn, request-boundary copy
-//! - `compressor::snip_compact`       — L3, persistent history, on overload
+//! - `hygiene::truncate_tool_result` / `truncate_tool_args` — L2, every turn,
+//!   request-boundary copy
+//! - `compressor::snip_compact` — L3, persistent history, on overload
 //!
-//! Tools fall into three semantic kinds. Only `Incidental` output gets the
-//! head/tail/signal split; `ActivelyRead` output (the model asked for it, and
-//! L1 already bounded the read) skips that split and gets only a higher char
-//! cap; `Instruction` output is never touched.
+//! Tools fall into three semantic kinds for **results**. Only `Incidental`
+//! output gets the head/tail/signal split; `ActivelyRead` output (the model
+//! asked for it, and L1 already bounded the read) skips that split and gets
+//! only a higher char cap; `Instruction` output is never touched.
+//!
+//! **Arguments** use a separate rule: content-bearing tools (`write_file`,
+//! `edit`) are never truncated — the args *are* the intent. Everything else
+//! gets a structured JSON summary when over budget (not a raw placeholder).
 
 /// Semantic kind of a tool result, deciding how (if at all) it is truncated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +33,10 @@ const INSTRUCTION_TOOLS: &[&str] = &["skill_load"];
 
 /// Tools whose results the model explicitly requested; bounded by L1 already.
 const ACTIVE_READ_TOOLS: &[&str] = &["read_file", "subagent", "subagents"];
+
+/// Tools whose arguments *are* the file content / edit payload. Truncating
+/// these args makes the model lose what it just wrote — never touch them.
+const CONTENT_BEARING_ARG_TOOLS: &[&str] = &["write_file", "edit"];
 
 // ── Budgets (PLAN-0008, updated 2026-07) ────────────────────────────
 //
@@ -50,6 +60,15 @@ pub const ACTIVE_READ_MAX_CHARS: usize = 128_000;
 /// this cap is a safety net — subagent results should normally stay well below
 /// it after the 2026-07 refactor.
 pub const SUBAGENT_RESULT_MAX_CHARS: usize = 256_000;
+
+/// Whole-arguments budget for non-content-bearing tools. Old value was 200 —
+/// far too small (a path + a few lines already exceeded it) and the old
+/// strategy replaced the entire JSON with an illegal placeholder.
+pub const TOOL_ARG_MAX_CHARS: usize = 4_000;
+/// Per-string-field budget when summarizing oversized args JSON.
+pub const TOOL_ARG_STRING_MAX_CHARS: usize = 1_000;
+/// Preview length kept when args are not valid JSON.
+const TOOL_ARG_PREVIEW_CHARS: usize = 500;
 
 /// Keywords marking "signal" lines worth preserving from the middle.
 const SIGNAL_KEYWORDS: &[&str] = &["error", "exit code", "warning", "failed", "denied"];
@@ -145,6 +164,74 @@ fn truncate_head_tail(content: &str) -> String {
     )
 }
 
+// ── Tool-call argument truncation ───────────────────────────────────
+
+/// Whether this tool's arguments must be preserved in full (file content /
+/// edit payload). Used by hygiene so the model can still see what it wrote.
+pub fn is_content_bearing_args(tool_name: &str) -> bool {
+    CONTENT_BEARING_ARG_TOOLS.contains(&tool_name)
+}
+
+/// Truncate oversized tool-call arguments for the request-boundary copy.
+///
+/// Returns `Some(new_arguments)` when truncated, or `None` when left untouched
+/// (content-bearing tools, or under budget).
+///
+/// Strategy:
+/// - `write_file` / `edit` → never truncate
+/// - valid JSON object → keep short fields; replace oversized string values
+///   with `"[truncated N chars]"` so the skeleton stays valid JSON
+/// - otherwise → UTF-8-safe prefix + size marker (still a JSON string value
+///   wrapped as an object so providers don't choke on bare placeholders)
+pub fn truncate_args(tool_name: &str, arguments: &str) -> Option<String> {
+    if is_content_bearing_args(tool_name) {
+        return None;
+    }
+    if arguments.len() <= TOOL_ARG_MAX_CHARS {
+        return None;
+    }
+    Some(summarize_args(arguments))
+}
+
+fn summarize_args(arguments: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(arguments) {
+        Ok(serde_json::Value::Object(mut map)) => {
+            for (_key, value) in map.iter_mut() {
+                if let serde_json::Value::String(s) = value {
+                    if s.len() > TOOL_ARG_STRING_MAX_CHARS {
+                        *value = serde_json::Value::String(format!(
+                            "[truncated {} chars]",
+                            s.len()
+                        ));
+                    }
+                }
+            }
+            serde_json::to_string(&map).unwrap_or_else(|_| fallback_args_stub(arguments))
+        }
+        Ok(other) => {
+            // Non-object JSON (array / string / number): keep a short preview.
+            let rendered = other.to_string();
+            if rendered.len() <= TOOL_ARG_MAX_CHARS {
+                rendered
+            } else {
+                fallback_args_stub(arguments)
+            }
+        }
+        Err(_) => fallback_args_stub(arguments),
+    }
+}
+
+fn fallback_args_stub(arguments: &str) -> String {
+    let end = floor_char_boundary(arguments, TOOL_ARG_PREVIEW_CHARS);
+    let preview = &arguments[..end];
+    serde_json::json!({
+        "_truncated": true,
+        "_original_bytes": arguments.len(),
+        "_preview": preview,
+    })
+    .to_string()
+}
+
 use crate::util::floor_char_boundary;
 
 #[cfg(test)]
@@ -222,5 +309,51 @@ mod tests {
         assert!(out.contains("truncated"));
         // The kept prefix is valid UTF-8 (String guarantees this, but assert no panic).
         assert!(out.starts_with('é'));
+    }
+
+    #[test]
+    fn write_file_args_never_truncated() {
+        let content = "x".repeat(20_000);
+        let args = serde_json::json!({
+            "path": "tests/big.py",
+            "content": content,
+        })
+        .to_string();
+        assert!(args.len() > TOOL_ARG_MAX_CHARS);
+        assert_eq!(truncate_args("write_file", &args), None);
+        assert_eq!(truncate_args("edit", &args), None);
+    }
+
+    #[test]
+    fn incidental_args_summarized_when_large() {
+        let long = "y".repeat(5_000);
+        let args = serde_json::json!({
+            "command": "echo hello",
+            "stdin": long,
+        })
+        .to_string();
+        assert!(args.len() > TOOL_ARG_MAX_CHARS);
+        let out = truncate_args("bash", &args).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["command"], "echo hello");
+        let stdin = v["stdin"].as_str().unwrap();
+        assert!(stdin.starts_with("[truncated"));
+        assert!(stdin.contains("5000"));
+    }
+
+    #[test]
+    fn short_args_untouched() {
+        let args = r#"{"command":"ls"}"#;
+        assert_eq!(truncate_args("bash", args), None);
+    }
+
+    #[test]
+    fn invalid_json_args_get_preview_stub() {
+        let junk = format!("not-json {}", "z".repeat(5_000));
+        let out = truncate_args("bash", &junk).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["_truncated"], true);
+        assert!(v["_original_bytes"].as_u64().unwrap() > 5000);
+        assert!(v["_preview"].as_str().unwrap().starts_with("not-json"));
     }
 }

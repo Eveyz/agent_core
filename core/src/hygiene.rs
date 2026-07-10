@@ -2,7 +2,7 @@
 //!
 //! Operations performed on the request-boundary copy only (persistent history untouched):
 //! 1. Truncate oversized tool results (keep head + tail + signal lines)
-//! 2. Replace long tool arguments with placeholders
+//! 2. Summarize long tool arguments (content-bearing tools like write_file/edit exempt)
 //! 3. Strip `<think>` blocks from assistant turns before the last user message
 //! 4. Truncate remaining `<think>` blocks in the active tool loop (4KB)
 //! 5. Inject stream-retry hints with partial thinking (request copy only)
@@ -10,7 +10,7 @@
 //! This prevents context pollution from bloated tool outputs and keeps the
 //! message prefix stable for prompt KV cache hits.
 //!
-//! Tool-result truncation delegates to [`policy`] (shared with
+//! Tool-result and tool-arg truncation delegate to [`policy`] (shared with
 //! `compressor::snip_compact`) so the request view and the persisted-history
 //! view never diverge. See PLAN-0008.
 
@@ -18,7 +18,6 @@ pub mod policy;
 
 use crate::types::{Message, Role};
 
-const TOOL_ARG_MAX_CHARS: usize = 200;
 const THINKING_OPEN: &str = "<think>";
 const THINKING_CLOSE: &str = "</think>";
 
@@ -315,7 +314,10 @@ fn truncate_tool_result(msg: &mut Message) -> bool {
     }
 }
 
-/// Truncate long tool call arguments to a placeholder.
+/// Truncate long tool call arguments via the shared policy.
+///
+/// Content-bearing tools (`write_file`, `edit`) are never touched; other tools
+/// get a structured JSON summary when over budget. See [`policy::truncate_args`].
 fn truncate_tool_args(msg: &mut Message) -> bool {
     if msg.role != Role::Assistant {
         return false;
@@ -327,11 +329,8 @@ fn truncate_tool_args(msg: &mut Message) -> bool {
 
     let mut modified = false;
     for tc in calls.iter_mut() {
-        if tc.function.arguments.len() > TOOL_ARG_MAX_CHARS {
-            tc.function.arguments = format!(
-                "[args truncated: {} bytes]",
-                tc.function.arguments.len()
-            );
+        if let Some(summarized) = policy::truncate_args(&tc.function.name, &tc.function.arguments) {
+            tc.function.arguments = summarized;
             modified = true;
         }
     }
@@ -355,7 +354,7 @@ mod tests {
         }
     }
 
-    fn make_assistant_with_args(args: &str) -> Message {
+    fn make_assistant_with_named_args(name: &str, args: &str) -> Message {
         Message {
             role: Role::Assistant,
             content: Some("ok".into()),
@@ -363,7 +362,7 @@ mod tests {
                 id: "c1".into(),
                 call_type: "function".into(),
                 function: crate::types::FunctionCall {
-                    name: "test".into(),
+                    name: name.into(),
                     arguments: args.to_string(),
                 },
             }]),
@@ -371,8 +370,12 @@ mod tests {
             name: None,
             model: None,
             metadata: None,
-        reasoning: None,
+            reasoning: None,
         }
+    }
+
+    fn make_assistant_with_args(args: &str) -> Message {
+        make_assistant_with_named_args("bash", args)
     }
 
     // Incidental output large enough to exceed the 16K char budget.
@@ -416,18 +419,53 @@ mod tests {
 
     #[test]
     fn truncate_long_tool_args() {
-        let long_args = "x".repeat(500);
-        let mut msg = make_assistant_with_args(&long_args);
+        let long = "x".repeat(5_000);
+        let args = serde_json::json!({
+            "command": "run",
+            "stdin": long,
+        })
+        .to_string();
+        let mut msg = make_assistant_with_args(&args);
         assert!(truncate_tool_args(&mut msg));
-        let args = &msg.tool_calls.unwrap()[0].function.arguments;
-        assert!(args.contains("truncated"));
-        assert!(args.len() < long_args.len());
+        let out = &msg.tool_calls.as_ref().unwrap()[0].function.arguments;
+        let v: serde_json::Value = serde_json::from_str(out).unwrap();
+        assert_eq!(v["command"], "run");
+        assert!(v["stdin"].as_str().unwrap().contains("truncated"));
     }
 
     #[test]
     fn skip_short_tool_args() {
-        let short = r#"{"cmd": "ls"}"#;
+        let short = r#"{"command": "ls"}"#;
         let mut msg = make_assistant_with_args(short);
+        assert!(!truncate_tool_args(&mut msg));
+    }
+
+    #[test]
+    fn skip_write_file_args_even_when_huge() {
+        let content = "fn main() {}\n".repeat(2_000);
+        let args = serde_json::json!({
+            "path": "src/main.rs",
+            "content": content,
+        })
+        .to_string();
+        assert!(args.len() > policy::TOOL_ARG_MAX_CHARS);
+        let mut msg = make_assistant_with_named_args("write_file", &args);
+        assert!(!truncate_tool_args(&mut msg));
+        assert_eq!(
+            msg.tool_calls.as_ref().unwrap()[0].function.arguments,
+            args
+        );
+    }
+
+    #[test]
+    fn skip_edit_args_even_when_huge() {
+        let args = serde_json::json!({
+            "path": "src/lib.rs",
+            "old_string": "a".repeat(3_000),
+            "new_string": "b".repeat(3_000),
+        })
+        .to_string();
+        let mut msg = make_assistant_with_named_args("edit", &args);
         assert!(!truncate_tool_args(&mut msg));
     }
 

@@ -1,9 +1,57 @@
-import React, { useState, useEffect, memo, useCallback } from 'react';
+import React, { useState, useEffect, memo, useCallback, useMemo } from 'react';
 import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
 import ChevronRightIcon from 'lucide-react/dist/esm/icons/chevron-right.mjs';
 import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
 import CopyIcon from 'lucide-react/dist/esm/icons/copy.mjs';
+import WrapTextIcon from 'lucide-react/dist/esm/icons/wrap-text.mjs';
 import { getToolIcon } from './toolIcons';
+
+function cleanTerminalOutput(text: string): string {
+  if (!text) return '';
+
+  // 1. Strip ANSI escape codes
+  const ansiRegex = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
+  let cleaned = text.replace(ansiRegex, '');
+
+  // 2. Normalize \r\n to \n. After this, any remaining \r is a standalone carriage return.
+  cleaned = cleaned.replace(/\r\n/g, '\n');
+
+  // 3. Process carriage returns (\r) and backspaces (\x08) line by line
+  const lines = cleaned.split('\n');
+  const processedLines = lines.map(line => {
+    if (!line.includes('\r') && !line.includes('\x08')) {
+      return line;
+    }
+
+    const chars: string[] = [];
+    let cursor = 0;
+
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      if (char === '\r') {
+        cursor = 0;
+      } else if (char === '\x08') {
+        if (cursor > 0) {
+          cursor--;
+        }
+      } else {
+        chars[cursor] = char;
+        cursor++;
+      }
+    }
+
+    // Fill gaps with space
+    for (let i = 0; i < chars.length; i++) {
+      if (chars[i] === undefined) {
+        chars[i] = ' ';
+      }
+    }
+
+    return chars.join('');
+  });
+
+  return processedLines.join('\n');
+}
 
 const BashWidget = memo(function BashWidget({
   args,
@@ -20,6 +68,11 @@ const BashWidget = memo(function BashWidget({
 }) {
   const [collapsed, setCollapsed] = useState(!active);
   const [copied, setCopied] = useState(false);
+  const [wrapLines, setWrapLines] = useState(false);
+
+  const cleanedResult = useMemo(() => {
+    return cleanTerminalOutput(result || '');
+  }, [result]);
 
   const toolName = name || 'bash';
   let command = (args as Record<string, unknown> | undefined)?.command as string || '';
@@ -52,12 +105,12 @@ const BashWidget = memo(function BashWidget({
   const handleCopy = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      await navigator.clipboard.writeText(result || '');
+      await navigator.clipboard.writeText(cleanedResult || '');
       setCopied(true);
     } catch (error) {
       console.error('Failed to copy:', error);
     }
-  }, [result]);
+  }, [cleanedResult]);
 
   useEffect(() => {
     if (!copied) return;
@@ -95,11 +148,62 @@ const BashWidget = memo(function BashWidget({
             </div>
             {result && (
               <div className="bash-details-output-wrapper" style={{ position: 'relative', borderTop: '1px solid var(--border-color)' }}>
-                <button className="code-block-copy-btn" onClick={handleCopy} title="Copy output" style={{ position: 'absolute', top: '8px', right: '12px', display: 'flex', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '4px', padding: '4px', cursor: 'pointer', color: 'var(--text-muted)' }}>
+                <button
+                  className="code-block-wrap-btn"
+                  onClick={() => setWrapLines(!wrapLines)}
+                  title={wrapLines ? "Unwrap lines (allow horizontal scroll)" : "Wrap lines"}
+                  style={{
+                    position: 'absolute',
+                    top: '8px',
+                    right: '40px',
+                    display: 'flex',
+                    background: wrapLines ? 'var(--overlay-0_08)' : 'var(--bg-secondary)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '4px',
+                    padding: '4px',
+                    cursor: 'pointer',
+                    color: wrapLines ? 'var(--accent)' : 'var(--text-muted)',
+                    zIndex: 10
+                  }}
+                >
+                  <WrapTextIcon size={14} />
+                </button>
+                <button
+                  className="code-block-copy-btn"
+                  onClick={handleCopy}
+                  title="Copy output"
+                  style={{
+                    position: 'absolute',
+                    top: '8px',
+                    right: '12px',
+                    display: 'flex',
+                    background: 'var(--bg-secondary)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '4px',
+                    padding: '4px',
+                    cursor: 'pointer',
+                    color: 'var(--text-muted)',
+                    zIndex: 10
+                  }}
+                >
                   {copied ? <CheckIcon size={14} color="var(--success)" /> : <CopyIcon size={14} />}
                 </button>
-                <div className="bash-details-output" style={{ padding: '12px', paddingRight: '40px', color: 'var(--text-muted)', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '300px', overflowY: 'auto', background: 'var(--overlay-0_02)' }}>
-                  {result}
+                <div
+                  className="bash-details-output"
+                  style={{
+                    padding: '12px',
+                    paddingRight: '68px',
+                    color: 'var(--text-muted)',
+                    whiteSpace: wrapLines ? 'pre-wrap' : 'pre',
+                    wordBreak: wrapLines ? 'break-word' : 'normal',
+                    overflowX: wrapLines ? 'hidden' : 'auto',
+                    maxHeight: '400px',
+                    overflowY: 'auto',
+                    background: 'var(--overlay-0_02)',
+                    lineHeight: '1.6'
+                  }}
+                >
+                  {cleanedResult}
                 </div>
               </div>
             )}

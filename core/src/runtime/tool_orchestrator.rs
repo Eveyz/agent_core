@@ -16,6 +16,7 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use parking_lot::Mutex;
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 pub struct ToolOrchestrator<'a> {
@@ -61,11 +62,21 @@ impl<'a> ToolOrchestrator<'a> {
             .registry
             .resolve_execution_mode(calls, self.tool_execution_mode);
 
-        // Always preflight sequentially (permission + hooks)
+        // Always preflight sequentially (permission + hooks).
+        // This is the critical "before any tool body runs" window — UI should
+        // already show tool_started once preflight finishes for that call.
+        let preflight_t0 = Instant::now();
+        tracing::info!(
+            tool_count = calls.len(),
+            tools = ?calls.iter().map(|c| &c.function.name).collect::<Vec<_>>(),
+            "LATENCY: preflight begin"
+        );
         let mut allowed: Vec<(usize, ToolCall, Value)> = Vec::new();
         let mut results = vec![String::new(); calls.len()];
+        let mut first_tool_started_logged = false;
 
         for (i, call) in calls.iter().enumerate() {
+            let tool_preflight_t0 = Instant::now();
             let args: Value = serde_json::from_str(&call.function.arguments).unwrap_or_default();
 
             // Permission check — layered: Deny → Ask(with approval) → Allow
@@ -84,6 +95,7 @@ impl<'a> ToolOrchestrator<'a> {
                 .or(args.get("host"))
                 .and_then(|v| v.as_str());
 
+            let perm_t0 = Instant::now();
             let decision = self.permission_policy.check(
                 &call.function.name,
                 &call.function.arguments,
@@ -91,12 +103,16 @@ impl<'a> ToolOrchestrator<'a> {
                 path,
                 host,
             );
+            let perm_check_ms = perm_t0.elapsed().as_millis() as u64;
 
+            // debug: check itself is sync/cheap; keep for profiling, not prod noise.
             tracing::debug!(
                 tool = %call.function.name,
+                call_id = %call.id,
                 decision = ?decision,
+                check_ms = perm_check_ms,
                 has_resolver = self.approval_resolver.is_some(),
-                "tool permission check"
+                "LATENCY: permission check"
             );
 
             match decision {
@@ -108,11 +124,13 @@ impl<'a> ToolOrchestrator<'a> {
                     // Create oneshot channel for approval
                     let (tx, rx) = tokio::sync::oneshot::channel();
                     let using_resolver = self.approval_resolver.is_some();
-                    tracing::debug!(
+                    let approval_wait_t0 = Instant::now();
+                    tracing::info!(
                         pid = %prompt.prompt_id,
                         tool = %prompt.tool_name,
+                        call_id = %call.id,
                         has_resolver = using_resolver,
-                        "approval required"
+                        "LATENCY: approval wait begin"
                     );
                     if let Some(ref resolver) = self.approval_resolver {
                         resolver.insert(prompt.prompt_id.clone(), tx);
@@ -143,10 +161,12 @@ impl<'a> ToolOrchestrator<'a> {
                         _ = self.cancel_token.cancelled() => Err(()),
                     };
 
-                    tracing::debug!(
+                    tracing::info!(
                         tool = %call.function.name,
+                        call_id = %call.id,
                         resolved = outcome.is_ok(),
-                        "approval outcome"
+                        wait_ms = approval_wait_t0.elapsed().as_millis() as u64,
+                        "LATENCY: approval wait done"
                     );
 
                     match outcome {
@@ -260,21 +280,53 @@ impl<'a> ToolOrchestrator<'a> {
             }
 
             // Pre-tool hook
-            match self
+            let hook_t0 = Instant::now();
+            let hook_result = self
                 .hook_registry
                 .lock()
-                .fire_pre_tool_use(&call.function.name, &args)
-            {
+                .fire_pre_tool_use(&call.function.name, &args);
+            let hook_ms = hook_t0.elapsed().as_millis() as u64;
+            tracing::debug!(
+                tool = %call.function.name,
+                call_id = %call.id,
+                hook_ms,
+                "LATENCY: pre_tool hook"
+            );
+
+            match hook_result {
                 PreToolResult::Veto(reason) => {
                     results[i] = format!("Hook vetoed: {}", reason);
                     continue;
                 }
                 PreToolResult::Proceed(modified_args) => {
-                    tracing::debug!(
-                        tool = %call.function.name,
-                        call_id = %call.id,
-                        "tool execution start"
-                    );
+                    let preflight_tool_ms = tool_preflight_t0.elapsed().as_millis() as u64;
+                    // First tool_started in the batch is the UI inflection point —
+                    // keep at info so prod can see "preflight → visible tool".
+                    if !first_tool_started_logged {
+                        first_tool_started_logged = true;
+                        tracing::info!(
+                            tool = %call.function.name,
+                            call_id = %call.id,
+                            batch_index = i,
+                            perm_ms = perm_check_ms,
+                            hook_ms,
+                            preflight_tool_ms,
+                            since_preflight_ms = preflight_t0.elapsed().as_millis() as u64,
+                            args_chars = call.function.arguments.len(),
+                            "LATENCY: first tool_started emit"
+                        );
+                    } else {
+                        tracing::debug!(
+                            tool = %call.function.name,
+                            call_id = %call.id,
+                            batch_index = i,
+                            perm_ms = perm_check_ms,
+                            hook_ms,
+                            preflight_tool_ms,
+                            args_chars = call.function.arguments.len(),
+                            "LATENCY: tool_started emit"
+                        );
+                    }
                     on_event(
                         AgentEvent::ToolExecutionStart {
                             tool_call_id: call.id.clone(),
@@ -287,6 +339,13 @@ impl<'a> ToolOrchestrator<'a> {
                 }
             }
         }
+
+        tracing::info!(
+            allowed = allowed.len(),
+            denied_or_skipped = calls.len().saturating_sub(allowed.len()),
+            preflight_ms = preflight_t0.elapsed().as_millis() as u64,
+            "LATENCY: preflight done"
+        );
 
         if allowed.is_empty() {
             return results;
@@ -314,6 +373,14 @@ impl<'a> ToolOrchestrator<'a> {
             })
             .collect();
         let graph = DepGraph::build(&nodes, mode);
+
+        let ready_count = graph.indegree.iter().filter(|&&d| d == 0).count();
+        tracing::info!(
+            allowed = nodes.len(),
+            ready_now = ready_count,
+            mode = ?mode,
+            "LATENCY: tool bodies begin"
+        );
 
         // Each in-flight future returns (node_idx, output), so completions map
         // straight back to the graph without a separate slot table.
@@ -416,6 +483,14 @@ impl<'a> ToolOrchestrator<'a> {
         let (tx, rx) = tokio::sync::oneshot::channel::<ClarificationAnswers>();
         resolver.insert(request.prompt_id.clone(), tx);
 
+        let ask_wait_t0 = Instant::now();
+        tracing::info!(
+            call_id = %call.id,
+            prompt_id = %request.prompt_id,
+            question_count = request.questions.len(),
+            "LATENCY: ask_user wait begin"
+        );
+
         on_event(
             AgentEvent::InputRequested {
                 prompt_id: request.prompt_id.clone(),
@@ -429,6 +504,14 @@ impl<'a> ToolOrchestrator<'a> {
             answers = rx => answers.map_err(|_| ()),
             _ = self.cancel_token.cancelled() => Err(()),
         };
+
+        tracing::info!(
+            call_id = %call.id,
+            prompt_id = %request.prompt_id,
+            resolved = outcome.is_ok(),
+            wait_ms = ask_wait_t0.elapsed().as_millis() as u64,
+            "LATENCY: ask_user wait done"
+        );
 
         resolver.remove(&request.prompt_id);
 
@@ -480,6 +563,13 @@ impl<'a> ToolOrchestrator<'a> {
     where
         F: Fn(AgentEvent, &str) + Send + Sync,
     {
+        let body_t0 = Instant::now();
+        tracing::debug!(
+            tool = %tool_name,
+            call_id = %tool_call_id,
+            "LATENCY: tool body begin"
+        );
+
         let tool = match self.registry.get(tool_name) {
             Some(t) => t,
             None => {
@@ -542,9 +632,28 @@ impl<'a> ToolOrchestrator<'a> {
             on_event(event, tool_call_id);
         }
 
+        let body_ms = body_t0.elapsed().as_millis() as u64;
         match result {
-            Ok(output) => output,
-            Err(e) => format!("Error executing tool '{}': {}", tool_name, e),
+            Ok(output) => {
+                tracing::debug!(
+                    tool = %tool_name,
+                    call_id = %tool_call_id,
+                    body_ms,
+                    ok = true,
+                    "LATENCY: tool body done"
+                );
+                output
+            }
+            Err(e) => {
+                tracing::debug!(
+                    tool = %tool_name,
+                    call_id = %tool_call_id,
+                    body_ms,
+                    ok = false,
+                    "LATENCY: tool body done"
+                );
+                format!("Error executing tool '{}': {}", tool_name, e)
+            }
         }
     }
 }

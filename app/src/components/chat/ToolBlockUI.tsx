@@ -240,10 +240,10 @@ const ToolBlockUI = memo(function ToolBlockUI({
         ((args as Record<string, unknown> | undefined)?.file_path as string | undefined);
       if (path) {
         const basename = path.replace(/\\/g, '/').split('/').pop() || path;
-        return `Preparing ${name} · ${basename}`;
+        return t('chat.tools.display.preparingNamedPath', { name, basename });
       }
-      if (name && name !== 'tool') return `Preparing ${name}…`;
-      return 'Preparing tool…';
+      if (name && name !== 'tool') return t('chat.tools.display.preparingNamed', { name });
+      return t('chat.tools.display.preparingTool');
     }
     if (name === 'tavily_search') {
       const query = (args as Record<string, unknown> | undefined)?.query as string | undefined;

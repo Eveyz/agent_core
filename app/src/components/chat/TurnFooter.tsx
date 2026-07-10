@@ -1,9 +1,22 @@
-import { useState, useMemo, useCallback, useEffect, memo } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef, memo } from 'react';
 import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
 import CopyIcon from 'lucide-react/dist/esm/icons/copy.mjs';
+import { useTranslation } from 'react-i18next';
 import type { ChatEntry, TurnBlock } from '../../features/chat/chatSlice';
 
+/** After this many ms with no new stream tokens, show a "waiting on model" hint. */
+const MODEL_IDLE_MS = 4_000;
+/** Rotate witty waiting lines every N ms while still idle. */
+const WAITING_ROTATE_MS = 8_000;
+
+const WAITING_KEYS = [
+  'chat.footer.modelWaiting',
+  'chat.footer.modelWaitingAlt',
+  'chat.footer.modelWaitingQuiet',
+] as const;
+
 const TurnFooter = memo(function TurnFooter({ entry }: { entry: ChatEntry }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   // PERF-7: Skip expensive text concatenation while streaming (no endTime).
   // The footer renders null during streaming anyway, so the computation is wasted.
@@ -38,29 +51,90 @@ const TurnFooter = memo(function TurnFooter({ entry }: { entry: ChatEntry }) {
     return () => clearTimeout(timer);
   }, [copied]);
 
-
-
   const isProcessing = !entry.endTime;
 
-  const preparingStatus = useMemo(() => {
-    if (!isProcessing || !entry.blocks) return null;
+  // Fingerprint of in-flight model output — changes when thinking/text grows.
+  const streamFingerprint = useMemo(() => {
+    if (!isProcessing || !entry.blocks) return '';
+    let thinkingLen = 0;
+    let textLen = 0;
+    let streaming = false;
+    for (const b of entry.blocks) {
+      if (b.type === 'thinking') {
+        thinkingLen += b.text.length;
+        if (b.isStreaming) streaming = true;
+      } else if (b.type === 'assistant') {
+        textLen += b.text.length;
+        if (b.isStreaming) streaming = true;
+      }
+    }
+    return streaming ? `${thinkingLen}:${textLen}` : '';
+  }, [entry.blocks, isProcessing]);
+
+  const lastActivityRef = useRef(Date.now());
+  const [idleMs, setIdleMs] = useState(0);
+
+  useEffect(() => {
+    if (!isProcessing) {
+      setIdleMs(0);
+      return;
+    }
+    if (streamFingerprint) {
+      lastActivityRef.current = Date.now();
+      setIdleMs(0);
+    }
+  }, [streamFingerprint, isProcessing]);
+
+  useEffect(() => {
+    if (!isProcessing || !streamFingerprint) {
+      setIdleMs(0);
+      return;
+    }
+    const id = window.setInterval(() => {
+      setIdleMs(Date.now() - lastActivityRef.current);
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [isProcessing, streamFingerprint]);
+
+  const statusText = useMemo(() => {
+    if (!isProcessing || !entry.blocks) return t('chat.footer.working');
+
     const preparing = entry.blocks.filter(
       (b): b is Extract<TurnBlock, { type: 'tool' }> =>
         b.type === 'tool' && b.phase === 'preparing'
     );
-    if (preparing.length === 0) return null;
-    const names = [...new Set(preparing.map((b) => b.name).filter((n) => n && n !== 'tool'))];
-    if (names.length === 1) {
-      return `Generating ${names[0]}…`;
+    if (preparing.length > 0) {
+      const names = [...new Set(preparing.map((b) => b.name).filter((n) => n && n !== 'tool'))];
+      if (names.length === 1) {
+        return t('chat.footer.generatingTool', { name: names[0] });
+      }
+      return t('chat.footer.generatingTools');
     }
-    return 'Generating tools…';
-  }, [entry.blocks, isProcessing]);
+
+    const hasActiveTool = entry.blocks.some(
+      (b) => b.type === 'tool' && b.active && b.phase !== 'preparing'
+    );
+    if (hasActiveTool) {
+      return t('chat.footer.working');
+    }
+
+    // Model still streaming (or mid-stream silence before tool_call).
+    if (streamFingerprint) {
+      if (idleMs >= MODEL_IDLE_MS) {
+        const idx = Math.floor((idleMs - MODEL_IDLE_MS) / WAITING_ROTATE_MS) % WAITING_KEYS.length;
+        return t(WAITING_KEYS[idx]);
+      }
+      return t('chat.footer.modelThinking');
+    }
+
+    return t('chat.footer.working');
+  }, [entry.blocks, isProcessing, streamFingerprint, idleMs, t]);
 
   if (isProcessing) {
     return (
       <div className="turn-footer turn-footer-processing">
         <div className="black-hole-spinner" style={{ width: 12, height: 12 }} />
-        <span className="turn-end-time">{preparingStatus || 'Working...'}</span>
+        <span className="turn-end-time">{statusText}</span>
       </div>
     );
   }

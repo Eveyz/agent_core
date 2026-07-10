@@ -42,6 +42,15 @@
     "thinking": "正在思考...",
     "thoughtFor": "思考用时 {{time}}",
     "thought": "思考过程",
+    "footer": {
+      "working": "运行中...",
+      "generatingTools": "正在生成工具…",
+      "generatingTool": "正在生成 {{name}}…",
+      "modelThinking": "模型还在想…",
+      "modelWaiting": "还在等模型…",
+      "modelWaitingAlt": "模型还在酝酿下一步…",
+      "modelWaitingQuiet": "模型安静了一会儿，还在想…"
+    },
     "todoPanel": {
       "plan": "任务计划",
       "completed": "已完成 {{completed}}/{{total}}"
@@ -147,6 +156,9 @@
         "calledOthers_plural": "已调用 {{count}} 个其他工具"
       },
       "display": {
+        "preparingTool": "正在准备工具…",
+        "preparingNamed": "正在准备 {{name}}…",
+        "preparingNamedPath": "正在准备 {{name}} · {{basename}}",
         "searching": "正在搜索 \"{{query}}\"",
         "searched": "已搜索 \"{{query}}\"",
         "fetching": "正在抓取 {{url}}",

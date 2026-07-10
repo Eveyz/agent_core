@@ -121,7 +121,7 @@
 /* Scroll-to-bottom floating button */
 .scroll-to-bottom-btn {
   position: absolute;
-  bottom: 160px;
+  bottom: 20px;
   left: 50%;
   transform: translateX(-50%);
   width: 36px;

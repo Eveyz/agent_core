@@ -275,6 +275,7 @@ impl OpenAIClient {
         tools: &[ToolDefinition],
         cache_hint: Option<ClientCacheHint>,
     ) -> Result<impl futures::Stream<Item = Result<StreamEvent>>> {
+        let http_t0 = std::time::Instant::now();
         let body = self.build_request_body(messages, tools, true, cache_hint);
         let resp = self.send_with_retry(&body).await?;
         let status = resp.status();
@@ -283,7 +284,14 @@ impl OpenAIClient {
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("(none)");
-        tracing::info!(%status, content_type = %ct, "LLM stream response received");
+        // info: one line per request — useful in prod for provider TTFB.
+        tracing::info!(
+            %status,
+            content_type = %ct,
+            http_ms = http_t0.elapsed().as_millis() as u64,
+            model = %self.model.model_id,
+            "LATENCY: LLM stream HTTP ready"
+        );
         if !ct.starts_with("text/event-stream") {
             tracing::warn!(%status, %ct, "unexpected content-type for SSE stream");
         }

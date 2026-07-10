@@ -42,6 +42,15 @@
     "thinking": "Thinking...",
     "thoughtFor": "Thought for {{time}}",
     "thought": "Thought",
+    "footer": {
+      "working": "Working...",
+      "generatingTools": "Generating tools…",
+      "generatingTool": "Generating {{name}}…",
+      "modelThinking": "Model is thinking…",
+      "modelWaiting": "Still waiting on the model…",
+      "modelWaitingAlt": "Model is cooking up the next step…",
+      "modelWaitingQuiet": "Model went quiet — still thinking…"
+    },
     "todoPanel": {
       "plan": "Plan",
       "completed": "{{completed}}/{{total}} Completed"
@@ -147,6 +156,9 @@
         "calledOthers_plural": "called {{count}} other tools"
       },
       "display": {
+        "preparingTool": "Preparing tool…",
+        "preparingNamed": "Preparing {{name}}…",
+        "preparingNamedPath": "Preparing {{name}} · {{basename}}",
         "searching": "Searching \"{{query}}\"",
         "searched": "Searched \"{{query}}\"",
         "fetching": "Fetching {{url}}",
