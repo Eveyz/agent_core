@@ -157,6 +157,75 @@ describe('chat reducer session routing', () => {
     expect(answered && answered.type === 'clarification' && answered.answers).toEqual({ scope: ['mvp'] });
   });
 
+  it('tool_preparing upserts placeholders and tool_started upgrades without duplicating', async () => {
+    const { reducer, userMessageSent, runIdSet, agentEventsBatch } = await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, userMessageSent({ text: 'scaffold', model: 'm1', sessionId: 's1' }));
+    state = reducer(state, runIdSet({ runId: 'run-1', sessionId: 's1' }));
+
+    state = reducer(
+      state,
+      agentEventsBatch([
+        { event: 'turn_started', run_id: 'run-1', turn_id: 'turn-1', index: 0 },
+        {
+          event: 'tool_preparing',
+          run_id: 'run-1',
+          turn_id: 'turn-1',
+          index: 0,
+          call_id: 'c1',
+          name: 'write_file',
+        },
+        {
+          event: 'tool_preparing',
+          run_id: 'run-1',
+          turn_id: 'turn-1',
+          index: 0,
+          call_id: 'c1',
+          name: 'write_file',
+          hint_path: 'src/App.tsx',
+        },
+        {
+          event: 'tool_preparing',
+          run_id: 'run-1',
+          turn_id: 'turn-1',
+          index: 1,
+          call_id: 'c2',
+          name: 'write_file',
+          hint_path: 'src/main.ts',
+        },
+      ]),
+    );
+
+    let turn = state.entries.s1.find((e) => e.type === 'turn');
+    const preparing = turn?.blocks?.filter((b) => b.type === 'tool' && b.phase === 'preparing') ?? [];
+    expect(preparing).toHaveLength(2);
+    expect(preparing[0].type === 'tool' && preparing[0].hint_path).toBe('src/App.tsx');
+    expect(preparing[1].type === 'tool' && preparing[1].hint_path).toBe('src/main.ts');
+
+    state = reducer(
+      state,
+      agentEventsBatch([
+        {
+          event: 'tool_started',
+          run_id: 'run-1',
+          turn_id: 'turn-1',
+          call_id: 'c1',
+          name: 'write_file',
+          args: { path: 'src/App.tsx', content: 'x' },
+        },
+      ]),
+    );
+
+    turn = state.entries.s1.find((e) => e.type === 'turn');
+    const tools = turn?.blocks?.filter((b) => b.type === 'tool') ?? [];
+    expect(tools).toHaveLength(2);
+    const first = tools.find((b) => b.type === 'tool' && b.call_id === 'c1');
+    expect(first && first.type === 'tool' && first.phase).toBe('running');
+    expect(first && first.type === 'tool' && first.hint_path).toBeUndefined();
+    const second = tools.find((b) => b.type === 'tool' && b.call_id === 'c2');
+    expect(second && second.type === 'tool' && second.phase).toBe('preparing');
+  });
+
   it('scopes btw entries per session', async () => {
     const { reducer, btwAsked } = await loadModules();
     let state = reducer(undefined, { type: '@@INIT' });

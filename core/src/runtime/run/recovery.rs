@@ -26,9 +26,15 @@ impl Run {
                 self.client.set_max_tokens(new_max_tokens);
                 RecoveryOutcome::Retry
             }
-            RecoveryAction::Retry { delay_ms } => {
+            RecoveryAction::Retry { delay_ms, reason } => {
                 self.emit(RunEvent::Error {
-                    message: format!("retrying model call after {delay_ms}ms"),
+                    message: format!(
+                        "Failed to connect to remote model ({}), retrying in {}s (attempt {}/{})",
+                        reason.as_str(),
+                        delay_ms / 1000,
+                        self.recovery_ctx.attempt,
+                        self.recovery.max_retries(),
+                    ),
                 });
                 tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                 RecoveryOutcome::Retry

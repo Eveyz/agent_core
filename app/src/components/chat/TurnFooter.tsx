@@ -42,11 +42,25 @@ const TurnFooter = memo(function TurnFooter({ entry }: { entry: ChatEntry }) {
 
   const isProcessing = !entry.endTime;
 
+  const preparingStatus = useMemo(() => {
+    if (!isProcessing || !entry.blocks) return null;
+    const preparing = entry.blocks.filter(
+      (b): b is Extract<TurnBlock, { type: 'tool' }> =>
+        b.type === 'tool' && b.phase === 'preparing'
+    );
+    if (preparing.length === 0) return null;
+    const names = [...new Set(preparing.map((b) => b.name).filter((n) => n && n !== 'tool'))];
+    if (names.length === 1) {
+      return `Generating ${names[0]}…`;
+    }
+    return 'Generating tools…';
+  }, [entry.blocks, isProcessing]);
+
   if (isProcessing) {
     return (
       <div className="turn-footer turn-footer-processing">
         <div className="black-hole-spinner" style={{ width: 12, height: 12 }} />
-        <span className="turn-end-time">Working...</span>
+        <span className="turn-end-time">{preparingStatus || 'Working...'}</span>
       </div>
     );
   }

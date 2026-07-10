@@ -371,7 +371,7 @@ export const ChatInput = memo(function ChatInput({
                 title={branchError || undefined}
               >
                 <GitBranchIcon size={10} />
-                {activeBranch || (activeProject ? activeProject.name : 'No project')}
+                {activeBranch || 'none'}
                 {showBranchDropdown ? <ChevronUpIcon size={10} /> : <ChevronDownIcon size={10} />}
               </span>
               {showBranchDropdown && (

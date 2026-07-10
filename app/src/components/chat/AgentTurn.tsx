@@ -134,7 +134,18 @@ function translateRecoveryMessage(text: string, t: any): string {
     return t('chat.recovery.switchingModel', { model: switchMatch[1] });
   }
 
-  // 5. Retrying in
+  // 5. Structured remote model retry
+  const remoteRetryMatch = text.match(/Failed to connect to remote model \(([^)]+)\), retrying in (\d+)s \(attempt (\d+)\/(\d+)\)/i);
+  if (remoteRetryMatch) {
+    const reasonKey = remoteRetryMatch[1].replace(' ', '_');
+    return t(`chat.recovery.remoteRetry.${reasonKey}`, {
+      time: remoteRetryMatch[2],
+      attempt: remoteRetryMatch[3],
+      maxAttempts: remoteRetryMatch[4],
+    });
+  }
+
+  // 6. Legacy retrying in
   const retryingInMatch = text.match(/retrying in\s*(.*)/i);
   if (retryingInMatch) {
     return t('chat.recovery.retryingIn', { time: retryingInMatch[1] });

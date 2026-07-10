@@ -131,6 +131,7 @@ fn event_tag(event: &AgentEvent) -> &'static str {
         AgentEvent::MessageStart { .. } => "MessageStart",
         AgentEvent::MessageUpdate { .. } => "MessageUpdate",
         AgentEvent::MessageEnd { .. } => "MessageEnd",
+        AgentEvent::ToolPreparing { .. } => "ToolPreparing",
         AgentEvent::ToolExecutionStart { .. } => "ToolExecutionStart",
         AgentEvent::ToolExecutionUpdate { .. } => "ToolExecutionUpdate",
         AgentEvent::ToolExecutionEnd { .. } => "ToolExecutionEnd",

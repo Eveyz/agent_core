@@ -274,20 +274,41 @@ impl Run {
 
             match self.run_turn(turn_index).await {
                 Ok(TurnOutcome::Final(text)) => {
-                    // Soft autopilot: if a pinned goal still has incomplete todos,
-                    // don't let the model stop after a prose-only turn. Nudge a
-                    // few times, then allow Final (user can steer / re-send).
-                    if self.should_nudge_goal_continue() {
-                        self.goal_continue_nudges += 1;
-                        self.context.add(Message::user(
-                            "[System] The pinned goal still has incomplete todos. \
-                             Continue: call tools to execute the next pending step, \
-                             or call `ask_user` if you need a decision. \
-                             Do not stop with only advice or a high-level overview.",
-                        ));
+                    // Soft autopilot: block premature Final while Execute/Verify
+                    // still has incomplete steps (goal-pinned or not).
+                    if self.should_block_premature_final() {
+                        self.execution.note_final_blocked();
+                        self.goal_continue_nudges =
+                            self.goal_continue_nudges.saturating_add(1);
+                        let step = self
+                            .execution
+                            .active_step_id
+                            .clone()
+                            .unwrap_or_else(|| "next pending".into());
+                        let nudge = format!(
+                            "[System] Execution phase is `{}` with incomplete steps. \
+                             Do NOT stop with prose only. Resume step {step} with tools \
+                             (todo_update as you go). Do not replan unless force=true.",
+                            self.execution.phase
+                        );
+                        self.context.add(Message::user(&nudge));
                         self.last_turn_end_time = Some(Instant::now());
                         self.current_turn_id = None;
                         continue;
+                    }
+                    // Successful Final in Verify with all todos done → Done.
+                    {
+                        use crate::runtime::execution::ExecutionPhase;
+                        let all_done = {
+                            let list = self.brain.todo_list.lock();
+                            !list.items.is_empty()
+                                && list.items.iter().all(|i| {
+                                    i.status == crate::todo::TodoStatus::Completed
+                                })
+                        };
+                        if all_done && self.execution.phase == ExecutionPhase::Verify {
+                            self.execution.mark_verified_done();
+                        }
                     }
                     return Ok(text);
                 }
@@ -513,15 +534,18 @@ impl Run {
         }
     }
 
-    /// Whether a text-only Final should be rejected so the agent keeps working
-    /// a pinned goal (clarify / plan / execute) instead of stopping early.
-    fn should_nudge_goal_continue(&self) -> bool {
-        const MAX_NUDGES: u8 = 3;
+    /// Whether a text-only Final should be rejected so the agent keeps working.
+    /// Uses runtime ExecutionPhase (not only pinned goal).
+    fn should_block_premature_final(&self) -> bool {
+        let list = self.brain.todo_list.lock();
+        if self.execution.should_block_final(&list) {
+            return true;
+        }
+        // Legacy goal nudge: empty plan under an active goal still needs work.
+        const MAX_NUDGES: u8 = 5;
         if self.goal.is_none() || self.goal_completed || self.goal_continue_nudges >= MAX_NUDGES {
             return false;
         }
-        let list = self.brain.todo_list.lock();
-        // No plan yet, or any incomplete item → keep going.
         list.items.is_empty()
             || list
                 .items

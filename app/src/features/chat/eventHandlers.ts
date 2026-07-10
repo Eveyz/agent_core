@@ -82,6 +82,33 @@ function applyMessageEnd(
 }
 
 function pushToolStart(blocks: AnyBlock[], callId: string, name: string, args?: unknown): void {
+  // Upgrade an existing preparing placeholder when possible.
+  const preparingIdx = blocks.findIndex((b) => {
+    if (b.type !== 'tool' || b.phase !== 'preparing') return false;
+    if (b.call_id && b.call_id === callId) return true;
+    return false;
+  });
+  const byNameIdx =
+    preparingIdx >= 0
+      ? preparingIdx
+      : blocks.findIndex((b) => b.type === 'tool' && b.phase === 'preparing' && b.name === name);
+
+  if (byNameIdx >= 0) {
+    const block = blocks[byNameIdx];
+    if (block.type === 'tool') {
+      block.call_id = callId;
+      block.name = name;
+      block.args = args;
+      block.result = '';
+      block.active = true;
+      block.is_error = false;
+      block.phase = 'running';
+      block.startTime = Date.now();
+      delete block.hint_path;
+      return;
+    }
+  }
+
   closeStreamingBlock(blocks);
   blocks.push({
     type: 'tool',
@@ -92,6 +119,48 @@ function pushToolStart(blocks: AnyBlock[], callId: string, name: string, args?: 
     active: true,
     is_error: false,
     startTime: Date.now(),
+    phase: 'running',
+  });
+}
+
+function upsertToolPreparing(
+  blocks: AnyBlock[],
+  streamIndex: number,
+  callId?: string,
+  name?: string,
+  hintPath?: string
+): void {
+  const existingIdx = blocks.findIndex((b) => {
+    if (b.type !== 'tool' || b.phase !== 'preparing') return false;
+    if (b.stream_index === streamIndex) return true;
+    if (callId && b.call_id === callId) return true;
+    return false;
+  });
+
+  if (existingIdx >= 0) {
+    const block = blocks[existingIdx];
+    if (block.type === 'tool') {
+      if (callId) block.call_id = callId;
+      if (name) block.name = name;
+      if (hintPath) block.hint_path = hintPath;
+      block.stream_index = streamIndex;
+    }
+    return;
+  }
+
+  closeStreamingBlock(blocks);
+  blocks.push({
+    type: 'tool',
+    call_id: callId || `preparing_${streamIndex}`,
+    name: name || 'tool',
+    args: hintPath ? { path: hintPath } : undefined,
+    result: '',
+    active: true,
+    is_error: false,
+    startTime: Date.now(),
+    phase: 'preparing',
+    stream_index: streamIndex,
+    hint_path: hintPath,
   });
 }
 
@@ -295,6 +364,20 @@ export function handleMessageEnd(state: ChatState, sessionId: string, messageId?
   const turn = getActiveTurn(state, sessionId);
   if (turn && turn.type === 'turn' && turn.blocks) {
     applyMessageEnd(state._thinkBuffers[sessionId], turn.blocks, messageId);
+  }
+}
+
+export function handleToolPreparing(
+  state: ChatState,
+  sessionId: string,
+  streamIndex: number,
+  callId?: string,
+  name?: string,
+  hintPath?: string
+): void {
+  const turn = getActiveTurn(state, sessionId);
+  if (turn && turn.type === 'turn' && turn.blocks) {
+    upsertToolPreparing(turn.blocks, streamIndex, callId, name, hintPath);
   }
 }
 
@@ -725,6 +808,16 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
     case 'message_end':
       if (ev.subagent_id) handleSubagentMessageEnd(state, sessionId, ev.subagent_id, ev.message_id);
       else handleMessageEnd(state, sessionId, ev.message_id);
+      break;
+    case 'tool_preparing':
+      handleToolPreparing(
+        state,
+        sessionId,
+        typeof ev.index === 'number' ? ev.index : 0,
+        ev.call_id,
+        ev.name,
+        ev.hint_path
+      );
       break;
     case 'tool_started':
       if (ev.subagent_id) handleSubagentToolStart(state, sessionId, ev.subagent_id, ev.call_id ?? '', ev.name ?? '', ev.args);

@@ -30,8 +30,9 @@ pub struct SteerEntry {
 /// UI / events keep the raw user text; only the LLM sees this framing.
 pub const STEER_MID_RUN_PREFIX: &str = "\
 [USER STEER MID-RUN]
-The user injected a mid-run follow-up. Treat it as a new instruction that takes \
-priority over the previous plan when they conflict. Address it in your next actions.
+The user injected a mid-run follow-up. Adjust your approach for the CURRENT step. \
+Do NOT call todo_write to replan unless the user explicitly asks to change the plan. \
+Address the steer in your next tool actions.
 
 ";
 

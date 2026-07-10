@@ -180,6 +180,8 @@ const ToolBlockUI = memo(function ToolBlockUI({
   startTime,
   endTime,
   approvalStatus,
+  phase,
+  hint_path,
 }: {
   name: string;
   args?: unknown;
@@ -189,9 +191,12 @@ const ToolBlockUI = memo(function ToolBlockUI({
   startTime?: number;
   endTime?: number;
   approvalStatus?: 'approved' | 'denied';
+  phase?: 'preparing' | 'running';
+  hint_path?: string;
 }) {
   const { t } = useTranslation();
-  const isExpandable = name !== 'write_file' && name !== 'write_to_file';
+  const isPreparing = phase === 'preparing';
+  const isExpandable = !isPreparing && name !== 'write_file' && name !== 'write_to_file';
   const [collapsed, setCollapsed] = useState(true);
   const [copied, setCopied] = useState(false);
 
@@ -228,6 +233,18 @@ const ToolBlockUI = memo(function ToolBlockUI({
   }, [args]);
 
   const displayLabel = useMemo(() => {
+    if (phase === 'preparing') {
+      const path =
+        hint_path ||
+        ((args as Record<string, unknown> | undefined)?.path as string | undefined) ||
+        ((args as Record<string, unknown> | undefined)?.file_path as string | undefined);
+      if (path) {
+        const basename = path.replace(/\\/g, '/').split('/').pop() || path;
+        return `Preparing ${name} · ${basename}`;
+      }
+      if (name && name !== 'tool') return `Preparing ${name}…`;
+      return 'Preparing tool…';
+    }
     if (name === 'tavily_search') {
       const query = (args as Record<string, unknown> | undefined)?.query as string | undefined;
       if (query) return active ? t('chat.tools.display.searching', { query }) : t('chat.tools.display.searched', { query });
@@ -287,7 +304,7 @@ const ToolBlockUI = memo(function ToolBlockUI({
       return query ? t('chat.tools.display.searchConversationQuery', { query }) : t('chat.tools.display.searchConversation');
     }
     return name;
-  }, [name, args, active, result, t]);
+  }, [name, args, active, result, t, phase, hint_path]);
 
   const isSearch = name === 'tavily_search' || name === 'webfetch';
   const hideInput = isSearch || name.startsWith('todo_') || name.startsWith('skill_') || name === 'archival_memory_search' || name === 'conversation_search';

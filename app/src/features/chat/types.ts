@@ -53,7 +53,7 @@ export type ClarificationAnswers = Record<string, string[]>;
 export type TurnBlock =
   | { type: 'assistant'; text: string; isStreaming: boolean; message_id?: string }
   | { type: 'thinking'; text: string; isStreaming: boolean; message_id?: string; startTime?: number; endTime?: number }
-  | { type: 'tool'; call_id: string; name: string; args?: unknown; result: string; active: boolean; is_error: boolean; startTime?: number; endTime?: number }
+  | { type: 'tool'; call_id: string; name: string; args?: unknown; result: string; active: boolean; is_error: boolean; startTime?: number; endTime?: number; phase?: 'preparing' | 'running'; stream_index?: number; hint_path?: string }
   | { type: 'approval'; prompt_id: string; tool_name: string; tool_input: unknown; danger_level: string; explanation: string; status: 'pending' | 'approved' | 'denied' }
   | {
       type: 'clarification';
@@ -70,7 +70,7 @@ export type TurnBlock =
 export type SubagentBlock =
   | { type: 'assistant'; text: string; isStreaming: boolean; message_id?: string }
   | { type: 'thinking'; text: string; isStreaming: boolean; message_id?: string; startTime?: number; endTime?: number }
-  | { type: 'tool'; call_id: string; name: string; args?: unknown; result: string; active: boolean; is_error: boolean; startTime?: number; endTime?: number }
+  | { type: 'tool'; call_id: string; name: string; args?: unknown; result: string; active: boolean; is_error: boolean; startTime?: number; endTime?: number; phase?: 'preparing' | 'running'; stream_index?: number; hint_path?: string }
   | { type: 'approval'; prompt_id: string; tool_name: string; tool_input: unknown; danger_level: string; explanation: string; status: 'pending' | 'approved' | 'denied' }
   | {
       type: 'clarification';
@@ -195,7 +195,7 @@ export type RunEventType =
   | 'turn_started' | 'turn_ended'
   | 'model_call_started' | 'model_streaming' | 'model_call_ended'
   | 'message_start' | 'message_update' | 'message_end'
-  | 'tool_started' | 'tool_update' | 'tool_ended'
+  | 'tool_preparing' | 'tool_started' | 'tool_update' | 'tool_ended'
   | 'approval_required' | 'approval_resolved' | 'input_requested' | 'input_resolved'
   | 'context_compacted' | 'error'
   | 'subagent_started' | 'subagent_ended'
@@ -235,6 +235,7 @@ export interface RunEventPayload {
   partial?: string;
   result?: string;
   is_error?: boolean;
+  hint_path?: string;
   prompt_id?: string;
   tool_name?: string;
   tool_input?: unknown;

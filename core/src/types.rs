@@ -232,6 +232,13 @@ pub enum AgentEvent {
     },
 
     // ── Tool execution ─────────────────────────────────────────────
+    /// Mid-stream: model is still generating tool-call args (UI placeholder).
+    ToolPreparing {
+        index: usize,
+        call_id: Option<String>,
+        name: Option<String>,
+        hint_path: Option<String>,
+    },
     ToolExecutionStart {
         tool_call_id: String,
         tool_name: String,

@@ -35,6 +35,7 @@ pub mod brain;
 pub mod command;
 pub mod event;
 pub mod event_log;
+pub mod execution;
 pub mod guard;
 pub mod input;
 pub mod manager;
@@ -49,6 +50,7 @@ pub use brain::Brain;
 pub use command::{RunCommand, SteerEntry, STEER_MID_RUN_PREFIX};
 pub use event::{CacheMetrics, ChildId, Envelope, RunEvent, RunId};
 pub use event_log::EventLog;
+pub use execution::{ExecutionPhase, ExecutionState};
 pub use guard::EventGuard;
 pub use input::{
     ClarificationAnswers, ClarificationOption, ClarificationQuestion, ClarificationRequest,

@@ -89,6 +89,10 @@ impl RecoveryEngine {
         self
     }
 
+    pub fn max_retries(&self) -> u32 {
+        self.max_retries
+    }
+
     pub fn determine_strategy(&self, ctx: &RecoveryContext) -> RecoveryAction {
         if let Some(ref error) = ctx.last_error {
             if error.contains("too long") || error.contains("context length") {
@@ -107,17 +111,23 @@ impl RecoveryEngine {
                 }
                 return RecoveryAction::Retry {
                     delay_ms: 500 * 2u64.pow(ctx.attempt),
+                    reason: RetryReason::RateLimit,
                 };
             }
 
             // Network-level errors — stream drops, timeouts, connection resets.
             // These benefit from a longer base delay (1s) since the underlying
             // infrastructure may need more time to stabilize.
-            if ["timeout", "stream error", "connection", "reset",
+            let is_network_error = ["timeout", "connection", "reset",
                 "broken pipe", "connection refused", "eof",
-                "unexpected eof", "dns", "empty response", "no useful events", "sse stream", "stream"].iter()
-                .any(|kw| error.contains(kw))
-            {
+                "unexpected eof", "dns"].iter()
+                .any(|kw| error.contains(kw));
+
+            let is_server_error = ["500", "502", "503", "504", "server error",
+                "empty response", "no useful events", "sse stream", "stream error", "stream"].iter()
+                .any(|kw| error.contains(kw));
+
+            if is_network_error || is_server_error {
                 if let Some(ref fallback) = self.fallback_model
                     && ctx.attempt >= self.max_retries
                 {
@@ -125,8 +135,14 @@ impl RecoveryEngine {
                         model: fallback.clone(),
                     };
                 }
+                let reason = if is_network_error {
+                    RetryReason::NetworkError
+                } else {
+                    RetryReason::ServerError
+                };
                 return RecoveryAction::Retry {
                     delay_ms: 1000 * 2u64.pow(ctx.attempt),
+                    reason,
                 };
             }
 
@@ -140,6 +156,7 @@ impl RecoveryEngine {
             if ctx.attempt < self.max_retries {
                 return RecoveryAction::Retry {
                     delay_ms: 500 * 2u64.pow(ctx.attempt),
+                    reason: RetryReason::Generic,
                 };
             }
 
@@ -154,9 +171,31 @@ impl RecoveryEngine {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryReason {
+    RateLimit,
+    NetworkError,
+    ServerError,
+    Generic,
+}
+
+impl RetryReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::RateLimit => "rate limit",
+            Self::NetworkError => "network error",
+            Self::ServerError => "server error",
+            Self::Generic => "generic",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum RecoveryAction {
-    Retry { delay_ms: u64 },
+    Retry {
+        delay_ms: u64,
+        reason: RetryReason,
+    },
     EscalateTokens { new_max_tokens: u32 },
     SwitchModel { model: String },
     CompactContext { target_ratio: f64 },
@@ -174,7 +213,7 @@ mod tests {
         ctx.record_error("rate limit exceeded");
 
         match engine.determine_strategy(&ctx) {
-            RecoveryAction::Retry { delay_ms } => assert!(delay_ms > 0),
+            RecoveryAction::Retry { delay_ms, .. } => assert!(delay_ms > 0),
             _ => panic!("expected Retry"),
         }
     }
@@ -186,9 +225,7 @@ mod tests {
         ctx.record_error("response was truncated due to length");
 
         match engine.determine_strategy(&ctx) {
-            RecoveryAction::EscalateTokens { new_max_tokens } => {
-                assert!(new_max_tokens > 4096);
-            }
+            RecoveryAction::EscalateTokens { new_max_tokens } => assert!(new_max_tokens > 4096),
             _ => panic!("expected EscalateTokens"),
         }
     }
@@ -247,6 +284,20 @@ mod tests {
     }
 
     #[test]
+    fn test_switch_model_on_consecutive_rate_limits() {
+        let engine = RecoveryEngine::new().with_fallback_model("fallback-model");
+        let mut ctx = RecoveryContext::new("model", 4096);
+        for _ in 0..3 {
+            ctx.record_error("rate limit exceeded");
+        }
+
+        match engine.determine_strategy(&ctx) {
+            RecoveryAction::SwitchModel { model } => assert_eq!(model, "fallback-model"),
+            _ => panic!("expected SwitchModel"),
+        }
+    }
+
+    #[test]
     fn test_switch_to_fallback_on_network_error_after_retries() {
         // Mirrors the contract the Run's SwitchModel recovery path relies on
         // (recovery.rs): after max_retries, a network error routes to the fallback.
@@ -270,7 +321,7 @@ mod tests {
             ctx.attempt = i;
             ctx.last_error = Some("transient".into());
             match engine.determine_strategy(&ctx) {
-                RecoveryAction::Retry { delay_ms } => delays.push(delay_ms),
+                RecoveryAction::Retry { delay_ms, .. } => delays.push(delay_ms),
                 other => panic!("attempt {i}: expected Retry, got {other:?}"),
             }
         }

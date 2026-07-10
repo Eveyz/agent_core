@@ -359,23 +359,96 @@ impl Run {
         }
 
         // Stage: Observe
+        let mut saw_abort = false;
+        let mut todo_write_failed = false;
+        let mut todo_write_ok = false;
+        let mut todo_write_forced = false;
+
         for (call, result) in tool_calls.iter().zip(&tool_results) {
             let is_error = result.starts_with("Error")
                 || result.starts_with("Permission denied")
                 || result.starts_with("Hook vetoed");
+            let aborted = result.starts_with("Aborted")
+                || result.contains("aborted (guard cleanup)");
+
+            if aborted {
+                saw_abort = true;
+            }
+
+            if call.function.name == "todo_write" {
+                if is_error {
+                    todo_write_failed = true;
+                } else {
+                    todo_write_ok = true;
+                    todo_write_forced = call.function.arguments.contains("\"force\":true")
+                        || call.function.arguments.contains("\"force\": true");
+                }
+            }
+
+            if let Some(fact) = crate::runtime::execution::artifact_from_tool(
+                &call.function.name,
+                &call.function.arguments,
+                result,
+                is_error || aborted,
+            ) {
+                self.execution.record_artifact(fact);
+            }
 
             self.emit(RunEvent::ToolEnded {
                 subagent_id: None,
                 call_id: call.id.clone(),
                 name: call.function.name.clone(),
                 result: result.clone(),
-                is_error,
+                is_error: is_error || aborted,
             });
 
             self.context
                 .add(Message::tool(call.id.clone(), result.clone(), Some(call.function.name.clone())));
         }
         self.save_session_snapshot();
+
+        // Sync execution phase from todos after tool batch.
+        {
+            let mut list = self.brain.todo_list.lock();
+            if todo_write_ok {
+                self.execution.on_plan_written(&list, todo_write_forced);
+                let _ = list.ensure_active_step();
+            } else {
+                self.execution.sync_from_todos(&list);
+            }
+
+            // All steps done → Verify (then Done on next successful Final).
+            if !list.items.is_empty()
+                && list
+                    .items
+                    .iter()
+                    .all(|i| i.status == crate::todo::TodoStatus::Completed)
+            {
+                use crate::runtime::execution::ExecutionPhase;
+                if self.execution.phase == ExecutionPhase::Execute {
+                    self.execution.phase = ExecutionPhase::Verify;
+                }
+            }
+
+            if saw_abort || todo_write_failed {
+                let step = self
+                    .execution
+                    .active_step_id
+                    .clone()
+                    .or_else(|| list.ensure_active_step())
+                    .unwrap_or_else(|| "?".into());
+                let reason = if saw_abort {
+                    "interrupted/aborted"
+                } else {
+                    "todo_write failed"
+                };
+                self.execution.set_resume_hint(format!(
+                    "{reason}. Plan unchanged (v{}). Resume step {step} with tools; \
+                     do NOT replan unless force=true is required.",
+                    self.execution.plan_version
+                ));
+            }
+        }
 
         // All tools completed normally — disarm the guards.
         for g in tool_guards.iter_mut() {
@@ -537,7 +610,7 @@ impl Run {
                             let delay_ms = 1000u64 * 2u64.pow(stream_attempt as u32);
                             self.emit(RunEvent::Error {
                                 message: format!(
-                                    "LLM stream request failed, retrying in {}s (attempt {}/{})",
+                                    "Failed to connect to remote model (stream failed), retrying in {}s (attempt {}/{})",
                                     delay_ms / 1000,
                                     stream_attempt + 1,
                                     MAX_STREAM_RETRIES,
@@ -674,7 +747,14 @@ impl Run {
                 }
                 StreamEvent::ToolCallDelta { .. } => {
                     has_tool_calls = true;
-                    accumulator.push(event);
+                    if let Some(notify) = accumulator.push(event) {
+                        let _ = event_tx.send(self.wrap(RunEvent::ToolPreparing {
+                            index: notify.index,
+                            call_id: notify.call_id,
+                            name: notify.name,
+                            hint_path: notify.hint_path,
+                        }));
+                    }
                 }
                 StreamEvent::Done => break,
                 StreamEvent::CompleteWithUsage { prompt_cache_hit_tokens, prompt_cache_miss_tokens } => {

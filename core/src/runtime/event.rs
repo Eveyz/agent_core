@@ -81,6 +81,16 @@ pub enum RunEvent {
     },
 
     // ── Tool execution ─────────────────────────────────────────────
+    /// Model is still streaming tool-call arguments (pre-`tool_started`).
+    ToolPreparing {
+        index: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        call_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hint_path: Option<String>,
+    },
     ToolStarted {
         subagent_id: Option<String>,
         call_id: String,
@@ -348,6 +358,17 @@ impl RunEvent {
                 message,
             },
             // ModelCall events don't exist in AgentEvent — Run emits them directly
+            AgentEvent::ToolPreparing {
+                index,
+                call_id,
+                name,
+                hint_path,
+            } => RunEvent::ToolPreparing {
+                index,
+                call_id,
+                name,
+                hint_path,
+            },
             AgentEvent::ToolExecutionStart {
                 tool_call_id,
                 tool_name,
@@ -521,6 +542,17 @@ impl RunEvent {
             RunEvent::MessageEnd { message_id, message } => AgentEvent::MessageEnd {
                 message_id: message_id.clone(),
                 message: message.clone(),
+            },
+            RunEvent::ToolPreparing {
+                index,
+                call_id,
+                name,
+                hint_path,
+            } => AgentEvent::ToolPreparing {
+                index: *index,
+                call_id: call_id.clone(),
+                name: name.clone(),
+                hint_path: hint_path.clone(),
             },
             RunEvent::ToolStarted { call_id, name, args, .. } => AgentEvent::ToolExecutionStart {
                 tool_call_id: call_id.clone(),

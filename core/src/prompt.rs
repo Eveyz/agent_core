@@ -36,8 +36,9 @@ Under `/goal`: never produce a generic advice essay and stop. Either clarify (`a
 Only after requirements are clear (or already unambiguous):
 1. For complex tasks (3+ steps, multi-file, "implement"/"refactor"/"add feature"): FIRST call todo_write with a list of steps.
 2. Before starting each step, call todo_update to mark it in_progress.
-3. After completing each step, call todo_update to mark it completed.
-4. If the plan changes, call todo_write again with the updated list.
+3. After completing each step, call todo_update to mark it completed (auto-advances the next step).
+4. If the plan must change, call todo_write again (progress is merged by default). Pass force=true only to wipe statuses.
+5. Do NOT replan every turn — follow the runtime NEXT step and advance with tools.
 
 For simple tasks (1-2 tool calls): just do them, skip the todo list.
 ### Subagent decision rules:

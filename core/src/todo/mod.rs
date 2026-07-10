@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum TodoStatus {
     Pending,
     InProgress,
@@ -92,6 +92,7 @@ impl TodoList {
     }
 
     /// Replace the entire list with new items. IDs are auto-assigned (1, 2, 3, ...).
+    /// **Destructive** — wipes all statuses. Prefer [`Self::merge_replace`] for replans.
     pub fn replace_all(&mut self, descriptions: Vec<String>) {
         self.items = descriptions
             .into_iter()
@@ -99,6 +100,81 @@ impl TodoList {
             .map(|(i, desc)| TodoItem::new(&(i + 1).to_string(), &desc))
             .collect();
         self.persist();
+    }
+
+    /// Merge a new plan description list with existing progress.
+    ///
+    /// Matching is by normalized description (case-insensitive trim). Completed /
+    /// InProgress / Blocked statuses are preserved for matches. New items start
+    /// Pending. Unmatched old items are dropped.
+    ///
+    /// After merge, if nothing is InProgress and there is a ready/pending item,
+    /// the first ready item is marked InProgress.
+    pub fn merge_replace(&mut self, descriptions: Vec<String>) {
+        let old = std::mem::take(&mut self.items);
+        let mut used_old: Vec<bool> = vec![false; old.len()];
+
+        for (i, desc) in descriptions.into_iter().enumerate() {
+            let id = (i + 1).to_string();
+            let norm = normalize_desc(&desc);
+            let mut item = TodoItem::new(&id, &desc);
+
+            if let Some((idx, prev)) = old.iter().enumerate().find(|(j, o)| {
+                !used_old[*j] && normalize_desc(&o.description) == norm
+            }) {
+                used_old[idx] = true;
+                item.status = prev.status.clone();
+                item.completed_at = prev.completed_at;
+                item.depends_on = prev.depends_on.clone();
+            }
+            self.items.push(item);
+        }
+
+        // Ensure exactly one InProgress when work remains.
+        let has_ip = self.items.iter().any(|i| i.status == TodoStatus::InProgress);
+        if !has_ip {
+            if let Some(ready_id) = self
+                .ready_items()
+                .first()
+                .map(|i| i.id.clone())
+                .or_else(|| {
+                    self.items
+                        .iter()
+                        .find(|i| i.status == TodoStatus::Pending)
+                        .map(|i| i.id.clone())
+                })
+            {
+                let _ = self.update_status(&ready_id, TodoStatus::InProgress);
+            }
+        }
+
+        self.persist();
+    }
+
+    /// Ensure there is an active (InProgress) step; return its id.
+    pub fn ensure_active_step(&mut self) -> Option<String> {
+        if let Some(ip) = self.in_progress().first() {
+            return Some(ip.id.clone());
+        }
+        let next = self
+            .ready_items()
+            .first()
+            .map(|i| i.id.clone())
+            .or_else(|| {
+                self.items
+                    .iter()
+                    .find(|i| i.status == TodoStatus::Pending)
+                    .map(|i| i.id.clone())
+            })?;
+        let _ = self.update_status(&next, TodoStatus::InProgress);
+        Some(next)
+    }
+
+    /// Mark `id` completed and promote the next ready item to InProgress.
+    pub fn complete_and_advance(&mut self, id: &str) -> Result<(), String> {
+        self.update_status(id, TodoStatus::Completed)?;
+        let _ = self.ensure_active_step();
+        Ok(())
     }
 
     pub fn update_status(&mut self, id: &str, status: TodoStatus) -> Result<(), String> {
@@ -222,6 +298,10 @@ impl TodoList {
     }
 }
 
+fn normalize_desc(s: &str) -> String {
+    s.trim().to_lowercase()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,5 +356,35 @@ mod tests {
 
         list.update_status("1", TodoStatus::Completed).unwrap();
         assert!((list.completion_rate() - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn merge_replace_preserves_completed() {
+        let mut list = TodoList::new();
+        list.replace_all(vec!["Write models".into(), "Write tests".into()]);
+        list.update_status("1", TodoStatus::Completed).unwrap();
+        list.update_status("2", TodoStatus::InProgress).unwrap();
+
+        list.merge_replace(vec![
+            "Write models".into(),
+            "Write tests".into(),
+            "Write README".into(),
+        ]);
+
+        assert_eq!(list.items.len(), 3);
+        assert_eq!(list.get("1").unwrap().status, TodoStatus::Completed);
+        assert_eq!(list.get("2").unwrap().status, TodoStatus::InProgress);
+        assert_eq!(list.get("3").unwrap().status, TodoStatus::Pending);
+    }
+
+    #[test]
+    fn merge_replace_promotes_next_when_none_in_progress() {
+        let mut list = TodoList::new();
+        list.replace_all(vec!["A".into(), "B".into()]);
+        list.update_status("1", TodoStatus::Completed).unwrap();
+        // leave 2 pending
+        list.merge_replace(vec!["A".into(), "B".into()]);
+        assert_eq!(list.get("1").unwrap().status, TodoStatus::Completed);
+        assert_eq!(list.get("2").unwrap().status, TodoStatus::InProgress);
     }
 }

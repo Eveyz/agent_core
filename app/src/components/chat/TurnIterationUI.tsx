@@ -79,6 +79,22 @@ const TurnIterationUI = memo(function TurnIterationUI({
           const approvalStatus: 'approved' | 'denied' | undefined = approvalBlock?.status as 'approved' | 'denied' | undefined;
 
           if (name === 'edit') {
+            if (b.phase === 'preparing') {
+              return (
+                <ToolBlockUI
+                  key={b.call_id || idx}
+                  name={name}
+                  args={b.args}
+                  result={b.result}
+                  active={b.active}
+                  is_error={b.is_error}
+                  startTime={b.startTime}
+                  endTime={b.endTime}
+                  phase={b.phase}
+                  hint_path={b.hint_path}
+                />
+              );
+            }
             return (
               <EditFileWidget
                 key={b.call_id || idx}
@@ -89,6 +105,22 @@ const TurnIterationUI = memo(function TurnIterationUI({
               />
             );
           } else if (name === 'read_file') {
+            if (b.phase === 'preparing') {
+              return (
+                <ToolBlockUI
+                  key={b.call_id || idx}
+                  name={name}
+                  args={b.args}
+                  result={b.result}
+                  active={b.active}
+                  is_error={b.is_error}
+                  startTime={b.startTime}
+                  endTime={b.endTime}
+                  phase={b.phase}
+                  hint_path={b.hint_path}
+                />
+              );
+            }
             return (
               <ReadFileWidget
                 key={b.call_id || idx}
@@ -98,6 +130,22 @@ const TurnIterationUI = memo(function TurnIterationUI({
               />
             );
           } else if (name === 'bash' || name === 'grep_search' || name === 'glob_search' || name === 'grep' || name === 'glob') {
+            if (b.phase === 'preparing') {
+              return (
+                <ToolBlockUI
+                  key={b.call_id || idx}
+                  name={name}
+                  args={b.args}
+                  result={b.result}
+                  active={b.active}
+                  is_error={b.is_error}
+                  startTime={b.startTime}
+                  endTime={b.endTime}
+                  phase={b.phase}
+                  hint_path={b.hint_path}
+                />
+              );
+            }
             return (
               <BashWidget
                 key={b.call_id || idx}
@@ -120,6 +168,8 @@ const TurnIterationUI = memo(function TurnIterationUI({
               startTime={b.startTime}
               endTime={b.endTime}
               approvalStatus={approvalStatus}
+              phase={b.phase}
+              hint_path={b.hint_path}
             />
           );
         } else if (b.type === 'approval') {

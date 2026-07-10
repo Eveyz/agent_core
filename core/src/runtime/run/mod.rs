@@ -59,6 +59,7 @@ use crate::runtime::input::InputResolver;
 use crate::runtime::brain::Brain;
 use crate::runtime::command::{RunCommand, SteerEntry};
 use crate::runtime::event::{CacheMetrics, Envelope, RunEvent, RunId};
+use crate::runtime::execution::ExecutionState;
 use crate::runtime::state::RunState;
 use crate::runtime::supervisor::ProcessSupervisor;
 use crate::tools::ToolRegistry;
@@ -155,6 +156,10 @@ pub struct Run {
     /// How many times we've nudged the model to keep working a pinned goal
     /// after it tried to end with text-only while todos were still pending.
     goal_continue_nudges: u8,
+
+    /// Runtime-owned task execution phase + active step + artifacts.
+    /// Orthogonal to [`RunState`] (run lifetime).
+    execution: ExecutionState,
 
     /// Last stable prefix fingerprint — used to detect drift across turns.
     last_prefix_fingerprint: String,
@@ -336,6 +341,7 @@ impl Run {
             goal: initial_goal,
             goal_completed: initial_goal_completed,
             goal_continue_nudges: 0,
+            execution: ExecutionState::new(),
         })
     }
 

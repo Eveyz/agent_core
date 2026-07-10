@@ -265,6 +265,19 @@ struct PartialToolCall {
     id: Option<String>,
     function_name: Option<String>,
     arguments: String,
+    /// Last path hint we already notified the UI about (dedupe).
+    notified_hint_path: Option<String>,
+    /// Whether we have emitted at least one preparing notification for this slot.
+    notified_once: bool,
+}
+
+/// Snapshot of a partial tool call worth surfacing to the UI mid-stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolPreparingNotify {
+    pub index: usize,
+    pub call_id: Option<String>,
+    pub name: Option<String>,
+    pub hint_path: Option<String>,
 }
 
 impl Default for ToolCallAccumulator {
@@ -280,25 +293,56 @@ impl ToolCallAccumulator {
         }
     }
 
-    pub fn push(&mut self, event: StreamEvent) {
-        if let StreamEvent::ToolCallDelta {
+    /// Push a tool-call delta. Returns a notify snapshot when name, call_id, or
+    /// hint_path first becomes available / changes — so callers can emit
+    /// `tool_preparing` without flooding on every args fragment.
+    pub fn push(&mut self, event: StreamEvent) -> Option<ToolPreparingNotify> {
+        let StreamEvent::ToolCallDelta {
             index,
             id,
             function_name,
             arguments_delta,
         } = event
-        {
-            let entry = self.calls.entry(index).or_default();
-            if let Some(id) = id {
+        else {
+            return None;
+        };
+
+        let entry = self.calls.entry(index).or_default();
+        let mut changed = !entry.notified_once;
+
+        if let Some(id) = id {
+            if entry.id.as_ref() != Some(&id) {
                 entry.id = Some(id);
-            }
-            if let Some(name) = function_name {
-                entry.function_name = Some(name);
-            }
-            if let Some(delta) = arguments_delta {
-                entry.arguments.push_str(&delta);
+                changed = true;
             }
         }
+        if let Some(name) = function_name {
+            if entry.function_name.as_ref() != Some(&name) {
+                entry.function_name = Some(name);
+                changed = true;
+            }
+        }
+        if let Some(delta) = arguments_delta {
+            entry.arguments.push_str(&delta);
+        }
+
+        let hint = extract_path_hint(&entry.arguments);
+        if hint.is_some() && hint != entry.notified_hint_path {
+            entry.notified_hint_path = hint.clone();
+            changed = true;
+        }
+
+        if !changed {
+            return None;
+        }
+
+        entry.notified_once = true;
+        Some(ToolPreparingNotify {
+            index,
+            call_id: entry.id.clone(),
+            name: entry.function_name.clone(),
+            hint_path: entry.notified_hint_path.clone(),
+        })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -333,6 +377,44 @@ impl ToolCallAccumulator {
             })
             .collect()
     }
+}
+
+/// Best-effort extract of `"path"` / `"file_path"` from a partial JSON args
+/// string. Does not require the full object to be valid JSON.
+pub fn extract_path_hint(partial_args: &str) -> Option<String> {
+    for key in ["\"path\"", "\"file_path\"", "\"file\""] {
+        if let Some(v) = extract_json_string_after_key(partial_args, key) {
+            if !v.is_empty() {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
+fn extract_json_string_after_key(s: &str, key: &str) -> Option<String> {
+    let mut rest = s;
+    while let Some(pos) = rest.find(key) {
+        rest = &rest[pos + key.len()..];
+        let trimmed = rest.trim_start();
+        let after_colon = trimmed.strip_prefix(':')?.trim_start();
+        let after_quote = after_colon.strip_prefix('"')?;
+        let mut out = String::new();
+        let mut chars = after_quote.chars();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => match chars.next() {
+                    Some(n) => out.push(n),
+                    None => return None, // incomplete escape
+                },
+                '"' => return Some(out), // complete string only
+                _ => out.push(c),
+            }
+        }
+        // Incomplete string — wait for the closing quote before notifying.
+        return None;
+    }
+    None
 }
 
 // ── Token accumulator (IPC debouncer) ───────────────────────────────
@@ -450,5 +532,95 @@ mod accumulator_tests {
         let mut acc = TokenAccumulator::with_params(std::time::Duration::from_secs(60), 1000);
         acc.push_text("short");
         assert!(!acc.should_flush());
+    }
+}
+
+#[cfg(test)]
+mod tool_preparing_tests {
+    use super::*;
+
+    #[test]
+    fn extract_path_from_partial_json() {
+        assert_eq!(
+            extract_path_hint(r#"{"path": "src/App.tsx", "content":"#),
+            Some("src/App.tsx".into())
+        );
+        assert_eq!(
+            extract_path_hint(r#"{"file_path":"/tmp/a.rs""#),
+            Some("/tmp/a.rs".into())
+        );
+        assert_eq!(extract_path_hint(r#"{"content":"hello"}"#), None);
+    }
+
+    #[test]
+    fn extract_path_incomplete_string() {
+        // Incomplete quote — wait until closed
+        assert_eq!(extract_path_hint(r#"{"path": "src/App"#), None);
+        assert_eq!(
+            extract_path_hint(r#"{"path": "src/App.tsx""#),
+            Some("src/App.tsx".into())
+        );
+    }
+
+    #[test]
+    fn notify_on_first_name_then_path_not_every_delta() {
+        let mut acc = ToolCallAccumulator::new();
+        let n1 = acc.push(StreamEvent::ToolCallDelta {
+            index: 0,
+            id: Some("c1".into()),
+            function_name: Some("write_file".into()),
+            arguments_delta: Some(r#"{"pa"#.into()),
+        });
+        assert!(n1.is_some());
+        assert_eq!(n1.as_ref().unwrap().name.as_deref(), Some("write_file"));
+        assert!(n1.as_ref().unwrap().hint_path.is_none());
+
+        // Incomplete path — no notify
+        let n2 = acc.push(StreamEvent::ToolCallDelta {
+            index: 0,
+            id: None,
+            function_name: None,
+            arguments_delta: Some(r#"th": "src/main.rs"#.into()),
+        });
+        assert!(n2.is_none());
+
+        // Closing quote completes path — notify once
+        let n3 = acc.push(StreamEvent::ToolCallDelta {
+            index: 0,
+            id: None,
+            function_name: None,
+            arguments_delta: Some(r#"""#.into()),
+        });
+        assert!(n3.is_some());
+        assert_eq!(n3.as_ref().unwrap().hint_path.as_deref(), Some("src/main.rs"));
+
+        // Content deltas — no further notify
+        let n4 = acc.push(StreamEvent::ToolCallDelta {
+            index: 0,
+            id: None,
+            function_name: None,
+            arguments_delta: Some(r#", "content": "aaaa""#.into()),
+        });
+        assert!(n4.is_none());
+    }
+
+    #[test]
+    fn second_tool_index_notifies_separately() {
+        let mut acc = ToolCallAccumulator::new();
+        let _ = acc.push(StreamEvent::ToolCallDelta {
+            index: 0,
+            id: Some("c0".into()),
+            function_name: Some("write_file".into()),
+            arguments_delta: Some(r#"{"path":"a.ts"}"#.into()),
+        });
+        let n = acc.push(StreamEvent::ToolCallDelta {
+            index: 1,
+            id: Some("c1".into()),
+            function_name: Some("write_file".into()),
+            arguments_delta: Some(r#"{"path":"b.ts"}"#.into()),
+        });
+        let n = n.expect("second index should notify");
+        assert_eq!(n.index, 1);
+        assert_eq!(n.hint_path.as_deref(), Some("b.ts"));
     }
 }

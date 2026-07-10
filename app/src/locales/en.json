@@ -66,7 +66,14 @@
       "retryingDelay": "Retrying model call after {{delay}}ms",
       "switchingModel": "Switching to fallback model: {{model}}",
       "retrying": "Retrying model call...",
-      "retryingIn": "Retrying in {{time}}"
+      "retryingIn": "Retrying in {{time}}",
+      "remoteRetry": {
+        "rate_limit": "The remote model service is rate-limiting requests. Retrying in {{time}}s (attempt {{attempt}}/{{maxAttempts}})...",
+        "network_error": "Connection to the remote model failed due to a network error. Retrying in {{time}}s (attempt {{attempt}}/{{maxAttempts}})...",
+        "server_error": "The remote model service returned a temporary server error. Retrying in {{time}}s (attempt {{attempt}}/{{maxAttempts}})...",
+        "stream_failed": "The remote model stream connection was interrupted. Retrying in {{time}}s (attempt {{attempt}}/{{maxAttempts}})...",
+        "generic": "Remote model request failed. Retrying in {{time}}s (attempt {{attempt}}/{{maxAttempts}})..."
+      }
     },
     "subagent": {
       "spawning": "Spawning {{count}} agent...",

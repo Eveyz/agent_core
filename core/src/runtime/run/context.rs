@@ -218,39 +218,29 @@ impl Run {
             }
         }
 
-        // Segment 7: EXECUTION PLAN — inject pinned goal (if any) + current todo list
-        let todo_str = self.brain.todo_list.lock().to_context_string();
-        let plan_str = if let Some(ref g) = self.goal {
-            if self.goal_completed {
-                todo_str
-            } else {
-                let mut s = format!(
-                    "## PRIMARY GOAL (pinned)\n{g}\n\n\
-                     This is a pinned goal. Drive it to completion — do not stop after a high-level overview.\n\
-                     Protocol:\n\
-                     1. If the goal is ambiguous (scope, success criteria, or multiple valid paths), \
-                        call `ask_user` FIRST. Do not invent a plan while guessing.\n\
-                     2. Once clear, call `todo_write` with concrete, actionable steps.\n\
-                     3. Execute the steps with tools (`todo_update` as you go). Prefer doing real work \
-                        over narrating advice. Keep going until todos are completed or you are blocked \
-                        and need another `ask_user`.\n\
-                     4. Do not end the turn with only prose while todos are still pending — either \
-                        call tools to make progress, or `ask_user` if you need a decision.\n\n"
-                );
-                if !todo_str.is_empty() {
-                    s.push_str(&todo_str);
-                } else {
-                    s.push_str(
-                        "(No plan yet — clarify with ask_user if needed, then todo_write.)\n",
-                    );
+        // Segment 7: EXECUTION PLAN — runtime phase dashboard + todos (+ optional goal)
+        {
+            let list = self.brain.todo_list.lock();
+            self.execution.sync_from_todos(&list);
+            let mut plan_str = String::new();
+
+            if let Some(ref g) = self.goal {
+                if !self.goal_completed {
+                    plan_str.push_str(&format!(
+                        "## PRIMARY GOAL (pinned)\n{g}\n\n\
+                         Drive it to completion. Prefer tools over prose. \
+                         If ambiguous, ask_user first.\n\n"
+                    ));
                 }
-                s
             }
-        } else {
-            todo_str
-        };
-        if !plan_str.is_empty() {
-            self.context.set_execution_plan(&plan_str);
+
+            plan_str.push_str(&self.execution.to_injection(&list));
+            // Clear one-shot resume hint after it has been injected once.
+            let _ = self.execution.take_resume_hint();
+
+            if !plan_str.is_empty() {
+                self.context.set_execution_plan(&plan_str);
+            }
         }
     }
 
