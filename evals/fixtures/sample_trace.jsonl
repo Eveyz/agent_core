@@ -1,0 +1,10 @@
+{"seq":0,"event_id":"e0","run_id":"run-fixture-1","ts":"2026-07-10T05:00:00Z","event":"run_created","id":"run-fixture-1","session_id":null}
+{"seq":1,"event_id":"e1","run_id":"run-fixture-1","ts":"2026-07-10T05:00:00Z","event":"run_started"}
+{"seq":2,"event_id":"e2","run_id":"run-fixture-1","ts":"2026-07-10T05:00:01Z","event":"turn_started","index":0}
+{"seq":3,"event_id":"e3","run_id":"run-fixture-1","ts":"2026-07-10T05:00:01Z","event":"model_call_started"}
+{"seq":4,"event_id":"e4","run_id":"run-fixture-1","ts":"2026-07-10T05:00:02Z","event":"model_call_ended","text":"reading file","tool_count":1}
+{"seq":5,"event_id":"e5","run_id":"run-fixture-1","ts":"2026-07-10T05:00:02Z","event":"tool_started","subagent_id":null,"call_id":"call_1","name":"read_file","args":{"path":"README.md"}}
+{"seq":6,"event_id":"e6","run_id":"run-fixture-1","ts":"2026-07-10T05:00:03Z","event":"tool_ended","subagent_id":null,"call_id":"call_1","name":"read_file","result":"# hello","is_error":false}
+{"seq":7,"event_id":"e7","run_id":"run-fixture-1","ts":"2026-07-10T05:00:03Z","event":"turn_ended","index":0}
+{"seq":8,"event_id":"e8","run_id":"run-fixture-1","ts":"2026-07-10T05:00:04Z","event":"cache_summary","total_turns":1,"total_hit_tokens":100,"total_miss_tokens":50,"turns_with_hits":1,"cumulative_hit_rate":0.6666667}
+{"seq":9,"event_id":"e9","run_id":"run-fixture-1","ts":"2026-07-10T05:00:05Z","event":"run_completed","final_text":"done"}

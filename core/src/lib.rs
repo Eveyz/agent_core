@@ -7,6 +7,7 @@ pub mod config;
 pub mod context;
 pub mod context_processor;
 pub mod cron;
+pub mod eval;
 pub mod error_recovery;
 pub mod hooks;
 pub mod hygiene;
@@ -51,6 +52,11 @@ pub use types::{
 pub use background::{BackgroundPool, Notification};
 pub use compressor::{CompressionResult, Compressor, SummarizeRequest, TurnSummary};
 pub use cron::{CronJob, CronJobRun, CronjobStore};
+pub use eval::{
+    collect_ledger, load_trace_jsonl, matrix_from_summaries, render_report_md, summarize_suite,
+    write_matrix, write_report, CollectOpts, EvalMode, HarnessConfig, ModelInfo, RunLedger,
+    SuiteSummary, HARNESS_FAIL_TAGS,
+};
 pub use error_recovery::{RecoveryAction, RecoveryContext, RecoveryEngine};
 pub use hooks::{Hook, HookAction, HookEvent, HookRegistry};
 pub use mcp::{

@@ -8,7 +8,7 @@
 |------|-------|-------------|
 | ADR | 1 | Architecture Decision Records |
 | RFC | 2 | Requests for Comments |
-| PLAN | 8 | Development Plans |
+| PLAN | 10 | Development Plans |
 | RUN | 0 | Runbooks |
 | POST | 0 | Post-mortems |
 | AI-NOTE | 3 | AI Analysis Notes |
@@ -41,6 +41,7 @@
 | PLAN-0007 | Cronjob System Implementation | Draft | agent_core | 2026-06-29 |
 | PLAN-0008 | Truncation Architecture Redesign + Read File Segmented Reading | In Progress | zniverse | 2026-06-30 |
 | PLAN-0009 | User-Defined Agents & Multi-Agent Workflow System | Draft | agent_core | 2026-06-30 |
+| PLAN-0010 | Harness Evaluation — Ledger, Report & Model Matrix | Draft | zniverse | 2026-07-10 |
 
 ## RUN (Runbooks)
 
