@@ -10,13 +10,16 @@ See [PLAN-0010](../docs/active/PLAN-0010_harness_evaluation.md).
 # or:
 cargo run -p agent-cli -- eval run --suite contract_v1 --mode mock --gate
 
-# Live single model (needs OPENAI_API_KEY / EVAL_API_KEY)
-cargo run -p agent-cli -- eval run --suite golden_v1 --mode live \
-  --model openai/gpt-4.1 --price-profile evals/prices/openai_2026_07.toml
+# Live single model (reuses config.toml model keys — e.g. deepseek)
+cargo run -p agent-cli -- eval run --suite golden_v1 --mode live --model deepseek
 
-# Multi-model compare
+# Optional explicit config path
 cargo run -p agent-cli -- eval run --suite golden_v1 --mode live \
-  --compare openai/gpt-4.1,deepseek/v3 --price-profile evals/prices/openai_2026_07.toml
+  --model deepseek --config ./config.toml
+
+# Multi-model compare (config keys)
+cargo run -p agent-cli -- eval run --suite golden_v1 --mode live \
+  --compare deepseek,gpt4o --price-profile evals/prices/openai_2026_07.toml
 
 # Harness ablation
 cargo run -p agent-cli -- eval run --suite golden_v1 --mode live \

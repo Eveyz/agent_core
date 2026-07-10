@@ -211,9 +211,13 @@ struct EvalRunCommand {
     #[argh(option, short = 'm', default = "String::from(\"mock\")")]
     mode: String,
 
-    /// model id (live) or eval/mock (mock)
+    /// model key from config.toml (e.g. deepseek) or provider/model
     #[argh(option, default = "String::from(\"eval/mock\")")]
     model: String,
+
+    /// path to config.toml (default: ./config.toml or EVAL_CONFIG)
+    #[argh(option)]
+    config: Option<String>,
 
     /// output directory (default: evals/out/<timestamp>)
     #[argh(option, short = 'o')]
@@ -343,6 +347,7 @@ async fn run_eval_suite(run: EvalRunCommand) -> anyhow::Result<()> {
 
     let mode: EvalMode = run.mode.parse().map_err(anyhow::Error::msg)?;
     let suite_dir = resolve_suite_dir(&run.suite)?;
+    let config_path = run.config.as_ref().map(std::path::PathBuf::from);
     let stamp = Utc::now().format("%Y%m%d_%H%M%S");
     let out_root = run
         .out
@@ -365,6 +370,7 @@ async fn run_eval_suite(run: EvalRunCommand) -> anyhow::Result<()> {
                 out_dir: out_dir.clone(),
                 mode,
                 model: model.clone(),
+                config_path: config_path.clone(),
                 price_profile: run.price_profile.as_ref().map(std::path::PathBuf::from),
                 git_sha: None,
                 variant: Some(model.clone()),
@@ -442,6 +448,7 @@ async fn run_eval_suite(run: EvalRunCommand) -> anyhow::Result<()> {
                 out_dir,
                 mode,
                 model: run.model.clone(),
+                config_path: config_path.clone(),
                 price_profile: run.price_profile.as_ref().map(std::path::PathBuf::from),
                 git_sha: None,
                 variant: Some(label.to_string()),
@@ -473,6 +480,7 @@ async fn run_eval_suite(run: EvalRunCommand) -> anyhow::Result<()> {
         out_dir: out_root.clone(),
         mode,
         model: run.model,
+        config_path,
         price_profile: run.price_profile.map(std::path::PathBuf::from),
         git_sha: None,
         variant: run.variant,
