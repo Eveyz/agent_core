@@ -121,6 +121,12 @@ pub fn default_rules_with_danger() -> Vec<(ToolPermissionPattern, DangerLevel, A
             DangerLevel::ReadOnly,
             ApprovalLevel::Allow,
         ),
+        // ── Localhost preview (serves workspace files on loopback) ─
+        (
+            ToolPermissionPattern::simple("preview"),
+            DangerLevel::ReadOnly,
+            ApprovalLevel::Allow,
+        ),
         // ── Todo / Task / Skill (safe metadata ops) ──────────────────
         (
             ToolPermissionPattern::simple("todo_write"),

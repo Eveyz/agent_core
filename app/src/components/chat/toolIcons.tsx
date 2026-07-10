@@ -20,6 +20,7 @@ import WandIcon from 'lucide-react/dist/esm/icons/wand.mjs';
 import BookOpenIcon from 'lucide-react/dist/esm/icons/book-open.mjs';
 import ListTodoIcon from 'lucide-react/dist/esm/icons/list-todo.mjs';
 import CalendarIcon from 'lucide-react/dist/esm/icons/calendar.mjs';
+import MonitorIcon from 'lucide-react/dist/esm/icons/monitor.mjs';
 import WrenchIcon from 'lucide-react/dist/esm/icons/wrench.mjs';
 
 // ── Per-tool icon mapping ───────────────────────────────────────────
@@ -60,6 +61,7 @@ const TOOL_ICONS: Record<string, React.ComponentType<{ size?: number; color?: st
   todo_read: ListTodoIcon,
   todo_write: ListTodoIcon,
   todo_update: ListTodoIcon,
+  preview: MonitorIcon,
 };
 
 export function getToolIcon(name: string): React.ComponentType<{ size?: number; color?: string; className?: string; style?: React.CSSProperties }> {

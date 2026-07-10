@@ -1,9 +1,12 @@
 import PanelRightOpenIcon from 'lucide-react/dist/esm/icons/panel-right-open.mjs';
 import PanelLeftOpenIcon from 'lucide-react/dist/esm/icons/panel-left-open.mjs';
 import PlusIcon from 'lucide-react/dist/esm/icons/plus.mjs';
+import MonitorIcon from 'lucide-react/dist/esm/icons/monitor.mjs';
 import { SessionTitle } from './SessionTitle';
 import { useAppDispatch } from '../../hooks/useAppDispatch';
+import { useSelector } from 'react-redux';
 import { createSession } from '../../features/project/projectSlice';
+import { selectDormantPreview, showPreviewPanel } from '../../features/preview/previewSlice';
 
 interface AppHeaderProps {
   sessionTitle: string;
@@ -29,6 +32,18 @@ export function AppHeader({
   hideTitle,
 }: AppHeaderProps) {
   const dispatch = useAppDispatch();
+  const dormantPreview = useSelector(selectDormantPreview);
+
+  const reopenPreview = () => {
+    if (!dormantPreview) return;
+    void dispatch(showPreviewPanel(dormantPreview.id));
+    window.dispatchEvent(
+      new CustomEvent('open-right-sidebar', { detail: { tab: 'preview' } }),
+    );
+    if (!rightSidebarExpanded && onToggleRightSidebar) {
+      onToggleRightSidebar();
+    }
+  };
 
   return (
     <header className={`main-header ${hideTitle ? 'floating' : ''}`}>
@@ -62,6 +77,11 @@ export function AppHeader({
         )}
       </div>
       <div className="header-actions">
+        {dormantPreview && (
+          <button className="icon-btn" onClick={reopenPreview} title="重新打开预览">
+            <MonitorIcon size={16} />
+          </button>
+        )}
         {onToggleRightSidebar && !rightSidebarExpanded && (
           <button className="icon-btn" onClick={onToggleRightSidebar} title="展开右侧栏">
             <PanelRightOpenIcon size={16} />

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "preview-deny",
+  "description": "Preview child/popout webviews must not receive any Tauri IPC permissions",
+  "webviews": ["preview-*"],
+  "permissions": []
+}

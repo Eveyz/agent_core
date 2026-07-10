@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useSelector } from 'react-redux';
+import { useAppDispatch } from '../../hooks/useAppDispatch';
 import PanelRightCloseIcon from 'lucide-react/dist/esm/icons/panel-right-close.mjs';
 import FilePlusIcon from 'lucide-react/dist/esm/icons/file-plus.mjs';
 import ListIcon from 'lucide-react/dist/esm/icons/list.mjs';
@@ -8,8 +9,11 @@ import BookOpenIcon from 'lucide-react/dist/esm/icons/book-open.mjs';
 import { ReviewTab } from '../review/ReviewTab';
 import { OverviewTab } from '../review/OverviewTab';
 import { DocumentTab } from '../review/DocumentTab';
+import { PreviewPanel } from '../preview/PreviewPanel';
 import { RootState } from '../../store';
 import { selectActiveSessionEntries } from '../../features/chat/selectors';
+import { selectHasPreviewSession, selectPreviewPanelOpen, showPreviewPanel } from '../../features/preview/previewSlice';
+import MonitorIcon from 'lucide-react/dist/esm/icons/monitor.mjs';
 
 interface RightSidebarProps {
   sidebarRef: React.RefObject<HTMLDivElement | null>;
@@ -18,7 +22,11 @@ interface RightSidebarProps {
 }
 
 export function RightSidebar({ sidebarRef, isExpanded, onToggle }: RightSidebarProps) {
-  const [activeTab, setActiveTab] = useState<'overview' | 'review' | 'plan' | 'walkthrough'>('overview');
+  const dispatch = useAppDispatch();
+  const [activeTab, setActiveTab] = useState<'overview' | 'review' | 'plan' | 'walkthrough' | 'preview'>('overview');
+  const previewPanelOpen = useSelector(selectPreviewPanelOpen);
+  const hasPreviewSession = useSelector(selectHasPreviewSession);
+  const activePreviewId = useSelector((state: RootState) => state.preview.activePreviewId);
 
   const activeProjectId = useSelector((state: RootState) => state.project.activeProjectId);
   const projects = useSelector((state: RootState) => state.project.projects);
@@ -51,18 +59,31 @@ export function RightSidebar({ sidebarRef, isExpanded, onToggle }: RightSidebarP
     return Array.from(artifacts).some(path => path.includes('walkthrough.md'));
   }, [artifacts]);
 
+  useEffect(() => {
+    if (previewPanelOpen) {
+      setActiveTab('preview');
+    }
+  }, [previewPanelOpen]);
+
+  const reopenPreview = () => {
+    if (!activePreviewId) return;
+    void dispatch(showPreviewPanel(activePreviewId));
+  };
+
   // Reset tab if it disappears
   useEffect(() => {
     if (activeTab === 'plan' && !hasPlan) {
       setActiveTab('overview');
     } else if (activeTab === 'walkthrough' && !hasWalkthrough) {
       setActiveTab('overview');
+    } else if (activeTab === 'preview' && !hasPreviewSession) {
+      setActiveTab('overview');
     }
-  }, [activeTab, hasPlan, hasWalkthrough]);
+  }, [activeTab, hasPlan, hasWalkthrough, hasPreviewSession]);
 
   useEffect(() => {
     const handleOpen = (e: Event) => {
-      const customEvent = e as CustomEvent<{ tab: 'overview' | 'review' | 'plan' | 'walkthrough' }>;
+      const customEvent = e as CustomEvent<{ tab: 'overview' | 'review' | 'plan' | 'walkthrough' | 'preview' }>;
       if (customEvent.detail?.tab) {
         setActiveTab(customEvent.detail.tab);
       }
@@ -95,6 +116,18 @@ export function RightSidebar({ sidebarRef, isExpanded, onToggle }: RightSidebarP
             <FilePlusIcon size={14} className="tab-icon" />
             Review
           </button>
+          {hasPreviewSession && (
+            <button
+              className={`tab-btn ${activeTab === 'preview' ? 'active' : ''}`}
+              onClick={() => {
+                setActiveTab('preview');
+                reopenPreview();
+              }}
+            >
+              <MonitorIcon size={14} className="tab-icon" />
+              Preview
+            </button>
+          )}
           {hasPlan && (
             <button 
               className={`tab-btn ${activeTab === 'plan' ? 'active' : ''}`} 
@@ -121,6 +154,7 @@ export function RightSidebar({ sidebarRef, isExpanded, onToggle }: RightSidebarP
       <div className="right-sidebar-content">
         {activeTab === 'overview' && <OverviewTab />}
         {activeTab === 'review' && <ReviewTab />}
+        {activeTab === 'preview' && hasPreviewSession && <PreviewPanel />}
         {activeTab === 'plan' && (
           <DocumentTab
             projectPath={activeProject?.path}

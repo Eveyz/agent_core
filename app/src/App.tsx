@@ -33,6 +33,8 @@ import {
 } from './features/project/projectSlice';
 import { useAppDispatch } from './hooks/useAppDispatch';
 import { useAgentEventListener } from './hooks/useAgentEventListener';
+import { usePreviewEvents } from './hooks/usePreviewEvents';
+import { usePreviewToolHandler } from './hooks/usePreviewToolHandler';
 import { useAutoSaveSession } from './hooks/useAutoSaveSession';
 import { useAutoScroll } from './hooks/useAutoScroll';
 import { useThemeEffect } from './hooks/useThemeEffect';
@@ -148,6 +150,8 @@ function App() {
   });
 
   useAgentEventListener();
+  usePreviewEvents();
+  usePreviewToolHandler();
 
   useAutoSaveSession({
     activeSessionId,

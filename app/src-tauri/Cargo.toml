@@ -30,3 +30,27 @@ uuid = { version = "1.23.4", features = ["v4"] }
 chrono = "0.4.45"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures = "0.3"
+anyhow = "1"
+async-trait = "0.1"
+thiserror = "2"
+axum = { version = "0.8", features = ["ws"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "set-header", "trace"] }
+notify = "8"
+notify-debouncer-mini = "0.6"
+mime_guess = "2"
+url = "2"
+secrecy = { version = "0.10", features = ["serde"] }
+tokio-util = { version = "0.7", features = ["io"] }
+hyper = { version = "1", features = ["client", "http1", "http2", "server"] }
+hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+rand = "0.9"
+base64 = "0.22"
+libc = "0.2"
+percent-encoding = "2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+[dev-dependencies]
+tempfile = "3"

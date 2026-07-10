@@ -4,6 +4,7 @@ import settingsReducer from './features/settings/settingsSlice';
 import projectReducer, { findProjectIdForSession, saveSessionMessages, fetchProjectSessions, touchSessionActivity } from './features/project/projectSlice';
 import agentReducer from './features/agents/agentSlice';
 import workflowReducer from './features/workflow/workflowSlice';
+import previewReducer from './features/preview/previewSlice';
 
 import { getFullMessagesForSession, getTimingMetrics } from './features/chat/chatSlice';
 
@@ -163,6 +164,7 @@ export const store = configureStore({
     project: projectReducer,
     agents: agentReducer,
     workflow: workflowReducer,
+    preview: previewReducer,
   },
   middleware: (getDefaultMiddleware) =>
     getDefaultMiddleware().prepend(listenerMiddleware.middleware),

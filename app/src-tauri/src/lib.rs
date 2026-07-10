@@ -1,11 +1,13 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+mod preview;
+
 use agent_core::{
     AgentMode, Brain, RunCommand, RunEvent, RunManager, RunState,
     permission::ApprovalChoice,
     McpClientManager, McpTool,
 };
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Listener, Manager, State};
 use std::sync::Arc;
 use parking_lot::Mutex;
 use tokio::sync::Mutex as AsyncMutex;
@@ -28,6 +30,8 @@ struct AppState {
     /// connect/reconnect.  Read synchronously by the per-Run registration
     /// callback so `build_tool_registry` never races with `connect_all`.
     mcp_tool_defs: Arc<parking_lot::RwLock<Vec<agent_core::McpToolDef>>>,
+    /// Localhost preview subsystem (static + framework dev servers).
+    preview_manager: Arc<preview::PreviewManager>,
 }
 
 // ── Frontend message type for session save/load ──────────────────────
@@ -2071,6 +2075,20 @@ pub fn run() {
                     }));
             }
 
+            let preview_manager = preview::create_manager();
+
+            // Per-Run callback: register the localhost preview agent tool.
+            {
+                let pm = preview_manager.clone();
+                let proj = project_manager.clone();
+                run_manager.brain().register_tool_fn(Box::new(move |registry| {
+                    registry.register(Box::new(preview::tool::PreviewTool::new(
+                        pm.clone(),
+                        proj.clone(),
+                    )));
+                }));
+            }
+
             // Grab handles BEFORE run_manager is moved into AppState —
             // used for deferred background warmup and index building below.
             let embed_model = run_manager
@@ -2093,6 +2111,16 @@ pub fn run() {
                 workflow_cancels: Arc::new(AsyncMutex::new(std::collections::HashMap::new())),
                 mcp_manager,
                 mcp_tool_defs,
+                preview_manager,
+            });
+
+            let preview_mgr = {
+                let state = app.state::<AppState>();
+                state.preview_manager.clone()
+            };
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::block_on(async {
+                preview_mgr.set_app_handle(app_handle).await;
             });
 
             // Deferred warmup: wait for the UI to render, then preload the
@@ -2160,8 +2188,21 @@ pub fn run() {
             validate_workflow,
             create_workflow, list_workflows, get_workflow, save_workflow, delete_workflow,
             run_workflow, cancel_workflow_run, list_workflow_runs, get_workflow_run_results,
-            generate_agent_skill_drafts, list_skill_drafts, approve_skill_draft, reject_skill_draft
+            generate_agent_skill_drafts, list_skill_drafts, approve_skill_draft, reject_skill_draft,
+            preview::preview_start, preview::preview_stop, preview::preview_restart,
+            preview::preview_get, preview::preview_list, preview::preview_set_visibility,
+            preview::preview_open_popout, preview::preview_close_popout, preview::preview_logs,
+            preview::preview_detect_framework
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                let state = app.state::<AppState>();
+                let mgr = state.preview_manager.clone();
+                tauri::async_runtime::block_on(async {
+                    mgr.shutdown_all().await;
+                });
+            }
+        });
 }
