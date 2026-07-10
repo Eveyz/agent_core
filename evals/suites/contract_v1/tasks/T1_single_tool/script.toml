@@ -1,0 +1,9 @@
+[[steps]]
+type = "tool_calls"
+tools = [{ name = "read_file", arguments = { path = "README.md" } }]
+
+[[steps]]
+type = "text"
+text = "README contains hello world."
+cache_hit = 20
+cache_miss = 10

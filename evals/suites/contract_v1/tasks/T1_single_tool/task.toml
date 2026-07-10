@@ -1,0 +1,13 @@
+id = "T1_single_tool"
+bucket = "tools"
+prompt = "Read README.md then finish."
+driver = "run"
+approval = "yolo"
+max_iterations = 5
+timeout_secs = 60
+
+[grader]
+kind = "expect_events"
+require_events = ["tool_started", "tool_ended", "run_completed"]
+require_terminal = "RunCompleted"
+forbid_fail_tags = ["tool_unpaired", "hung_no_terminal"]

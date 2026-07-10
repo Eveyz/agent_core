@@ -1,0 +1,11 @@
+id = "L3_model_error"
+bucket = "lifecycle"
+driver = "trace"
+trace = "trace.jsonl"
+expect_harness_fail = true
+
+[grader]
+kind = "expect_events"
+require_events = ["run_started", "error", "run_failed"]
+require_terminal = "RunFailed"
+require_fail_tags = ["recovery_exhausted"]

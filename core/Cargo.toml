@@ -37,6 +37,4 @@ parking_lot = "0.12"
 tiktoken-rs = "0.12"
 robotstxt = "0.3.0"
 tokio-cron-scheduler = "0.15.1"
-
-[dev-dependencies]
 tempfile = "3"

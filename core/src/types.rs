@@ -312,6 +312,13 @@ pub enum AgentEvent {
         danger_level: String,
         explanation: String,
     },
+    /// Emitted when an approval oneshot is resolved (Allow/Deny), including
+    /// programmatic `resolve_approval` paths that bypass `RunCommand::Approve`.
+    ApprovalResolved {
+        prompt_id: String,
+        /// Debug string of [`crate::permission::ApprovalChoice`].
+        choice: String,
+    },
 
     // ── Human clarification (ask_user) ──────────────────────────────
     InputRequested {

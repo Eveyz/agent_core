@@ -1,0 +1,7 @@
+[[steps]]
+type = "tool_calls"
+tools = [{ name = "write_file", arguments = { path = "out.txt", content = "bye" } }]
+
+[[steps]]
+type = "text"
+text = "acknowledged deny"

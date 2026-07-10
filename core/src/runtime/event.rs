@@ -414,6 +414,22 @@ impl RunEvent {
                 danger_level,
                 explanation,
             },
+            AgentEvent::ApprovalResolved { prompt_id, choice } => {
+                let choice = match choice.as_str() {
+                    s if s.contains("DenyPersistent") => {
+                        crate::permission::ApprovalChoice::DenyPersistent
+                    }
+                    s if s.contains("Deny") => crate::permission::ApprovalChoice::Deny,
+                    s if s.contains("AllowSession") => {
+                        crate::permission::ApprovalChoice::AllowSession
+                    }
+                    s if s.contains("AllowPersistent") => {
+                        crate::permission::ApprovalChoice::AllowPersistent
+                    }
+                    _ => crate::permission::ApprovalChoice::AllowOnce,
+                };
+                RunEvent::ApprovalResolved { prompt_id, choice }
+            },
             AgentEvent::InputRequested {
                 prompt_id,
                 title,
@@ -581,6 +597,10 @@ impl RunEvent {
                     explanation: explanation.clone(),
                 }
             }
+            RunEvent::ApprovalResolved { prompt_id, choice } => AgentEvent::ApprovalResolved {
+                prompt_id: prompt_id.clone(),
+                choice: format!("{choice:?}"),
+            },
             RunEvent::InputRequested {
                 prompt_id,
                 title,

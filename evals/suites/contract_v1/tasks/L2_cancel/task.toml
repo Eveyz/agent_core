@@ -1,0 +1,17 @@
+id = "L2_cancel"
+bucket = "lifecycle"
+prompt = "Start working on a long task."
+driver = "run"
+approval = "yolo"
+max_iterations = 10
+timeout_secs = 60
+
+[actions]
+cancel_after_event = "run_started"
+action_delay_ms = 50
+
+[grader]
+kind = "expect_events"
+require_events = ["run_started", "run_cancelled"]
+require_terminal = "RunCancelled"
+forbid_fail_tags = ["hung_no_terminal", "tool_unpaired"]

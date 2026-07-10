@@ -1,0 +1,18 @@
+id = "S1_steer_inject"
+bucket = "steer"
+prompt = "Read a file then continue."
+driver = "run"
+approval = "yolo"
+max_iterations = 6
+timeout_secs = 90
+
+[actions]
+steer_after_event = "turn_ended"
+steer_message = "Stop after this and say steered."
+action_delay_ms = 20
+
+[grader]
+kind = "expect_events"
+require_events = ["steer_queued", "steer_injected", "run_completed"]
+require_terminal = "RunCompleted"
+forbid_fail_tags = ["steer_dropped", "hung_no_terminal"]

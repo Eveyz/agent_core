@@ -171,6 +171,13 @@ impl<'a> ToolOrchestrator<'a> {
 
                     match outcome {
                         Ok(choice) => {
+                            on_event(
+                                AgentEvent::ApprovalResolved {
+                                    prompt_id: prompt.prompt_id.clone(),
+                                    choice: format!("{choice:?}"),
+                                },
+                                &call.id,
+                            );
                             match &choice {
                                 ApprovalChoice::Deny | ApprovalChoice::DenyPersistent => {
                                     results[i] = format!(

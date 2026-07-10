@@ -1,0 +1,14 @@
+id = "P2_approval_allow"
+bucket = "permission"
+prompt = "Write hello to out.txt"
+driver = "run"
+approval = "auto_allow"
+permission_mode = "standard"
+max_iterations = 5
+timeout_secs = 60
+
+[grader]
+kind = "expect_events"
+require_events = ["approval_required", "approval_resolved", "run_completed"]
+require_terminal = "RunCompleted"
+forbid_fail_tags = ["approval_deadlock", "hung_no_terminal"]

@@ -1,0 +1,13 @@
+id = "L1_happy_text"
+bucket = "lifecycle"
+prompt = "Say hello and finish."
+driver = "run"
+approval = "yolo"
+max_iterations = 5
+timeout_secs = 60
+
+[grader]
+kind = "expect_events"
+require_events = ["run_started", "run_completed"]
+require_terminal = "RunCompleted"
+forbid_fail_tags = ["hung_no_terminal", "double_terminal", "tool_unpaired"]

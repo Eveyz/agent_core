@@ -1,0 +1,7 @@
+[[steps]]
+type = "tool_calls"
+tools = [{ name = "bash", arguments = { command = "sleep 3" } }]
+
+[[steps]]
+type = "text"
+text = "done"

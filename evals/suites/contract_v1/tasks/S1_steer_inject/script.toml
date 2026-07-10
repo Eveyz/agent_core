@@ -1,0 +1,7 @@
+[[steps]]
+type = "tool_calls"
+tools = [{ name = "read_file", arguments = { path = "x.txt" } }]
+
+[[steps]]
+type = "text"
+text = "steered ok"

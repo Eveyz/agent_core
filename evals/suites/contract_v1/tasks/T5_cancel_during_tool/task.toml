@@ -1,0 +1,17 @@
+id = "T5_cancel_during_tool"
+bucket = "tools"
+prompt = "Run a long sleep."
+driver = "run"
+approval = "yolo"
+max_iterations = 5
+timeout_secs = 60
+
+[actions]
+cancel_after_event = "tool_started"
+action_delay_ms = 100
+
+[grader]
+kind = "expect_events"
+require_events = ["tool_started", "run_cancelled"]
+require_terminal = "RunCancelled"
+forbid_fail_tags = ["hung_no_terminal"]

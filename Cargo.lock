@@ -15,6 +15,7 @@ dependencies = [
  "agent_core",
  "anyhow",
  "argh",
+ "chrono",
  "crossterm",
  "parking_lot",
  "pulldown-cmark",

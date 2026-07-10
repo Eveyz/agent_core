@@ -57,14 +57,19 @@ pub fn summarize_suite(
 }
 
 fn compute_harness_health(runs: &[RunLedger]) -> HarnessHealth {
-    let n = runs.len().max(1) as f64;
+    let gated: Vec<_> = runs
+        .iter()
+        .filter(|r| !r.expect_harness_fail)
+        .collect();
+    let n = gated.len().max(1) as f64;
     let tag_rate = |tag: &str| {
-        runs.iter()
+        gated
+            .iter()
             .filter(|r| r.result.fail_tags.iter().any(|t| t == tag))
             .count() as f64
             / n
     };
-    let harness_fail_rate = runs
+    let harness_fail_rate = gated
         .iter()
         .filter(|r| taxonomy::harness_fail_count(&r.result.fail_tags) > 0)
         .count() as f64
@@ -449,6 +454,7 @@ mod tests {
             },
             trace_path: None,
             bucket: Some("edit".into()),
+            expect_harness_fail: false,
         }
     }
 

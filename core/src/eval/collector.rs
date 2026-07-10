@@ -337,6 +337,7 @@ pub fn collect_ledger(envelopes: &[Envelope], opts: CollectOpts) -> RunLedger {
         metrics,
         trace_path: opts.trace_path,
         bucket: opts.bucket,
+        expect_harness_fail: false,
     }
 }
 

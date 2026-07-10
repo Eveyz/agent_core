@@ -1,0 +1,11 @@
+[[steps]]
+type = "tool_calls"
+tools = [{ name = "read_file", arguments = { path = "a.txt" } }]
+
+[[steps]]
+type = "tool_calls"
+tools = [{ name = "read_file", arguments = { path = "b.txt" } }]
+
+[[steps]]
+type = "tool_calls"
+tools = [{ name = "read_file", arguments = { path = "c.txt" } }]

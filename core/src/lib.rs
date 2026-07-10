@@ -53,9 +53,9 @@ pub use background::{BackgroundPool, Notification};
 pub use compressor::{CompressionResult, Compressor, SummarizeRequest, TurnSummary};
 pub use cron::{CronJob, CronJobRun, CronjobStore};
 pub use eval::{
-    collect_ledger, load_trace_jsonl, matrix_from_summaries, render_report_md, summarize_suite,
-    write_matrix, write_report, CollectOpts, EvalMode, HarnessConfig, ModelInfo, RunLedger,
-    SuiteSummary, HARNESS_FAIL_TAGS,
+    collect_ledger, load_trace_jsonl, matrix_from_summaries, render_report_md, resolve_suite_dir,
+    run_suite, summarize_suite, write_matrix, write_report, CollectOpts, EvalMode, EvalRunOptions,
+    HarnessConfig, ModelInfo, RunLedger, SuiteSummary, HARNESS_FAIL_TAGS,
 };
 pub use error_recovery::{RecoveryAction, RecoveryContext, RecoveryEngine};
 pub use hooks::{Hook, HookAction, HookEvent, HookRegistry};

@@ -103,6 +103,9 @@ pub struct RunLedger {
     pub trace_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bucket: Option<String>,
+    /// When true, this run is a taxonomy self-check and excluded from harness_fail_rate.
+    #[serde(default)]
+    pub expect_harness_fail: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

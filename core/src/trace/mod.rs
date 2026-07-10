@@ -144,6 +144,7 @@ fn event_tag(event: &AgentEvent) -> &'static str {
         AgentEvent::SubagentEnd { .. } => "SubagentEnd",
         AgentEvent::SubagentApprovalRequired { .. } => "SubagentApprovalRequired",
         AgentEvent::ApprovalRequired { .. } => "ApprovalRequired",
+        AgentEvent::ApprovalResolved { .. } => "ApprovalResolved",
         AgentEvent::InputRequested { .. } => "InputRequested",
         AgentEvent::Error(_) => "Error",
         AgentEvent::Aborted { .. } => "Aborted",

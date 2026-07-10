@@ -1,0 +1,5 @@
+[[steps]]
+type = "text"
+text = "Hello from mock harness."
+cache_hit = 10
+cache_miss = 5

@@ -1,0 +1,12 @@
+id = "L4_max_iterations"
+bucket = "lifecycle"
+prompt = "Keep calling tools forever."
+driver = "run"
+approval = "yolo"
+max_iterations = 2
+timeout_secs = 90
+
+[grader]
+kind = "expect_events"
+require_events = ["run_started"]
+forbid_fail_tags = ["hung_no_terminal", "tool_unpaired"]

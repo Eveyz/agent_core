@@ -174,7 +174,80 @@ struct Args {
     /// launch TUI mode
     #[argh(switch, short = 't')]
     tui: bool,
+
+    #[argh(subcommand)]
+    nested: Option<SubCommand>,
 }
+
+#[derive(FromArgs, Debug)]
+#[argh(subcommand)]
+enum SubCommand {
+    Eval(EvalCommand),
+}
+
+#[derive(FromArgs, Debug)]
+#[argh(subcommand, name = "eval")]
+/// Run harness evaluation suites
+struct EvalCommand {
+    #[argh(subcommand)]
+    nested: EvalSubCommand,
+}
+
+#[derive(FromArgs, Debug)]
+#[argh(subcommand)]
+enum EvalSubCommand {
+    Run(EvalRunCommand),
+}
+
+#[derive(FromArgs, Debug)]
+#[argh(subcommand, name = "run")]
+/// Execute an eval suite and write a scorecard report
+struct EvalRunCommand {
+    /// suite name or path (e.g. contract_v1)
+    #[argh(option, short = 's')]
+    suite: String,
+
+    /// mock | live
+    #[argh(option, short = 'm', default = "String::from(\"mock\")")]
+    mode: String,
+
+    /// model id (live) or eval/mock (mock)
+    #[argh(option, default = "String::from(\"eval/mock\")")]
+    model: String,
+
+    /// output directory (default: evals/out/<timestamp>)
+    #[argh(option, short = 'o')]
+    out: Option<String>,
+
+    /// price table toml path
+    #[argh(option)]
+    price_profile: Option<String>,
+
+    /// fail if harness_fail_rate > 0
+    #[argh(switch)]
+    gate: bool,
+
+    /// permission mode override
+    #[argh(option)]
+    permission: Option<String>,
+
+    /// max iterations override
+    #[argh(option)]
+    max_iterations: Option<u32>,
+
+    /// harness variant label
+    #[argh(option)]
+    variant: Option<String>,
+
+    /// comma-separated models for compare matrix (live)
+    #[argh(option)]
+    compare: Option<String>,
+
+    /// comma-separated ablation axes: permission,compression,max_iterations
+    #[argh(option)]
+    ablate: Option<String>,
+}
+
 
 /// Try to load config.toml; if the file doesn't exist, generate a template and
 /// still attempt the env-var fallback.
@@ -254,6 +327,173 @@ async fn run_tui_mode() -> anyhow::Result<()> {
     eprintln!("TUI mode not yet ported to CliState. Use CLI mode instead.");
     std::process::exit(1);
 }
+
+async fn run_eval_command(cmd: EvalCommand) -> anyhow::Result<()> {
+    match cmd.nested {
+        EvalSubCommand::Run(run) => run_eval_suite(run).await,
+    }
+}
+
+async fn run_eval_suite(run: EvalRunCommand) -> anyhow::Result<()> {
+    use agent_core::{
+        matrix_from_summaries, resolve_suite_dir, run_suite, write_matrix, EvalMode, EvalRunOptions,
+        SuiteSummary,
+    };
+    use chrono::Utc;
+
+    let mode: EvalMode = run.mode.parse().map_err(anyhow::Error::msg)?;
+    let suite_dir = resolve_suite_dir(&run.suite)?;
+    let stamp = Utc::now().format("%Y%m%d_%H%M%S");
+    let out_root = run
+        .out
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(format!("evals/out/{stamp}")));
+
+    // Multi-model compare
+    if let Some(compare) = &run.compare {
+        let models: Vec<_> = compare
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let mut summaries: Vec<SuiteSummary> = Vec::new();
+        for model in &models {
+            let out_dir = out_root.join(model.replace('/', "_"));
+            eprintln!("==> compare model={model} out={}", out_dir.display());
+            let result = run_suite(EvalRunOptions {
+                suite_dir: suite_dir.clone(),
+                out_dir: out_dir.clone(),
+                mode,
+                model: model.clone(),
+                price_profile: run.price_profile.as_ref().map(std::path::PathBuf::from),
+                git_sha: None,
+                variant: Some(model.clone()),
+                permission_mode: run.permission.clone(),
+                max_iterations: run.max_iterations,
+                compression: true,
+                gate_harness: false,
+            })
+            .await?;
+            eprintln!(
+                "    pass@1={:.0}% harness_fail={:.0}%",
+                result.summary.pass_at_1 * 100.0,
+                result.summary.harness_health.harness_fail_rate * 100.0
+            );
+            summaries.push(result.summary);
+        }
+        let matrix = matrix_from_summaries(
+            suite_dir
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("suite"),
+            "model_compare",
+            &summaries,
+        );
+        write_matrix(&matrix, &out_root)?;
+        eprintln!("Wrote matrix to {}", out_root.join("matrix.md").display());
+        if run.gate {
+            let bad = summaries
+                .iter()
+                .any(|s| s.harness_health.harness_fail_rate > 0.0);
+            if bad {
+                anyhow::bail!("compare gate failed: harness_fail_rate > 0 for at least one model");
+            }
+        }
+        return Ok(());
+    }
+
+    // Harness ablation
+    if let Some(ablate) = &run.ablate {
+        let axes: Vec<_> = ablate
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        let mut summaries = Vec::new();
+        let baselines = vec![
+            ("baseline", run.permission.clone().unwrap_or_else(|| "yolo".into()), true, run.max_iterations.unwrap_or(20)),
+        ];
+        let mut variants = baselines;
+        for axis in &axes {
+            match axis.as_str() {
+                "permission" => {
+                    variants.push(("permission=standard", "standard".into(), true, run.max_iterations.unwrap_or(20)));
+                    variants.push(("permission=yolo", "yolo".into(), true, run.max_iterations.unwrap_or(20)));
+                }
+                "compression" => {
+                    variants.push(("compress=off", run.permission.clone().unwrap_or_else(|| "yolo".into()), false, run.max_iterations.unwrap_or(20)));
+                }
+                "max_iterations" => {
+                    variants.push(("max_iter=5", run.permission.clone().unwrap_or_else(|| "yolo".into()), true, 5));
+                    variants.push(("max_iter=10", run.permission.clone().unwrap_or_else(|| "yolo".into()), true, 10));
+                }
+                other => eprintln!("unknown ablate axis: {other}"),
+            }
+        }
+        // dedupe by label
+        variants.sort_by(|a, b| a.0.cmp(b.0));
+        variants.dedup_by(|a, b| a.0 == b.0);
+
+        for (label, perm, compress, max_iter) in variants {
+            let out_dir = out_root.join(label.replace('=', "_"));
+            eprintln!("==> ablate {label} out={}", out_dir.display());
+            let result = run_suite(EvalRunOptions {
+                suite_dir: suite_dir.clone(),
+                out_dir,
+                mode,
+                model: run.model.clone(),
+                price_profile: run.price_profile.as_ref().map(std::path::PathBuf::from),
+                git_sha: None,
+                variant: Some(label.to_string()),
+                permission_mode: Some(perm),
+                max_iterations: Some(max_iter),
+                compression: compress,
+                gate_harness: false,
+            })
+            .await?;
+            summaries.push(result.summary);
+        }
+        let matrix = matrix_from_summaries(
+            suite_dir
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("suite"),
+            "harness_ablation",
+            &summaries,
+        );
+        write_matrix(&matrix, &out_root)?;
+        eprintln!("Wrote ablation matrix to {}", out_root.join("matrix.md").display());
+        return Ok(());
+    }
+
+    // Single run
+    std::fs::create_dir_all(&out_root)?;
+    let result = run_suite(EvalRunOptions {
+        suite_dir,
+        out_dir: out_root.clone(),
+        mode,
+        model: run.model,
+        price_profile: run.price_profile.map(std::path::PathBuf::from),
+        git_sha: None,
+        variant: run.variant,
+        permission_mode: run.permission,
+        max_iterations: run.max_iterations,
+        compression: true,
+        gate_harness: run.gate,
+    })
+    .await?;
+
+    println!(
+        "Eval done: pass@1={:.0}% ({}/{}) harness_fail={:.0}%\nReport: {}",
+        result.summary.pass_at_1 * 100.0,
+        result.summary.n_pass,
+        result.summary.n_tasks,
+        result.summary.harness_health.harness_fail_rate * 100.0,
+        out_root.join("report.md").display()
+    );
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize tracing
@@ -264,6 +504,11 @@ async fn main() -> anyhow::Result<()> {
         .ok();
 
     let args: Args = argh::from_env();
+
+    if let Some(SubCommand::Eval(eval)) = args.nested {
+        return run_eval_command(eval).await;
+    }
+
     // ── TUI mode ──────────────────────────────────────────────────
     if args.tui {
         return run_tui_mode().await;

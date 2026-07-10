@@ -1,0 +1,7 @@
+[[steps]]
+type = "tool_calls"
+tools = [{ name = "read_file", arguments = { path = "README.md" } }]
+
+[[steps]]
+type = "text"
+text = "should not reach if cancelled early"

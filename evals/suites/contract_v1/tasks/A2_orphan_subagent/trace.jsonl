@@ -1,0 +1,3 @@
+{"seq":0,"event_id":"e0","run_id":"run-a2","ts":"2026-07-10T05:00:00Z","event":"run_started"}
+{"seq":1,"event_id":"e1","run_id":"run-a2","ts":"2026-07-10T05:00:01Z","event":"subagent_started","subagent_id":"sa1","role_name":"worker","task":"do thing"}
+{"seq":2,"event_id":"e2","run_id":"run-a2","ts":"2026-07-10T05:00:02Z","event":"run_completed","final_text":"done without subagent end"}

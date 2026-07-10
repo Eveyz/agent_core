@@ -1,0 +1,10 @@
+id = "A2_orphan_subagent"
+bucket = "subagent"
+driver = "trace"
+trace = "trace.jsonl"
+expect_harness_fail = true
+
+[grader]
+kind = "expect_events"
+require_fail_tags = ["orphan_subagent"]
+forbid_fail_tags = []
