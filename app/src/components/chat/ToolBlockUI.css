@@ -11,10 +11,13 @@
   font-size: 13px !important;
 }
 .scrollable-markdown {
-  max-height: 400px;
+  max-height: 360px;
   overflow-y: auto;
 }
-.tool-result-content {
-  background: var(--overlay-0_02) !important;
-  border: 1px solid var(--border-color) !important;
+
+/* Keep search results readable (not mono code panel) */
+.tool-io-panel .search-tool-result {
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--text-primary);
 }

@@ -454,6 +454,11 @@
   color: var(--tool-color);
 }
 
+.step-row:hover .tool-name,
+.step-row-active .tool-name {
+  color: var(--text-primary);
+}
+
 .tool-status-icon {
   display: flex;
   align-items: center;
@@ -481,36 +486,115 @@
 .tool-section {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 0;
+}
+
+/* Quiet I/O panel — hairline frame, no heavy gray card */
+.tool-io-panel {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--code-bg);
+  overflow: hidden;
+}
+
+.tool-io-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-default);
+  background: transparent;
+  min-height: 28px;
+}
+
+.tool-io-label {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-tertiary);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.tool-io-header .code-block-copy-btn {
+  padding: 2px;
+  color: var(--text-tertiary);
+  background: none;
+  border: none;
+}
+
+.tool-io-header .code-block-copy-btn:hover {
+  color: var(--text-secondary);
+  background: var(--overlay-0_04);
+}
+
+.tool-io-body {
+  margin: 0;
+  padding: 10px 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--code-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 360px;
+  overflow: auto;
+  background: transparent;
+}
+
+/* Embedded CodeBlock inside tool I/O — drop chrome, keep tokens */
+.tool-io-panel .code-block-wrapper {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+}
+
+.tool-io-panel .code-block-header {
+  display: none;
+}
+
+.tool-io-panel .code-block-content pre {
+  padding: 10px 12px;
+  background: transparent;
+}
+
+.tool-io-panel .code-block-content {
+  max-height: 360px;
 }
 
 .tool-section-label {
   font-size: 10px;
-  font-weight: 700;
-  color: var(--text-secondary);
-  letter-spacing: 0.5px;
+  font-weight: 500;
+  color: var(--text-tertiary);
+  letter-spacing: 0.08em;
   user-select: none;
 }
 
 .tool-args-pre {
   margin: 0;
-  padding: 10px 14px;
-  background: var(--overlay-0_08);
-  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  background: transparent;
+  border-radius: 0;
   border: none;
   font-family: var(--font-mono);
   font-size: 12px;
-  color: var(--text-primary);
+  line-height: 1.55;
+  color: var(--code-text);
   white-space: pre-wrap;
-  word-break: break-all;
+  word-break: break-word;
 }
 
 .tool-result-content {
-  background: var(--overlay-0_08);
-  padding: 10px 14px;
-  border-radius: var(--radius-md);
+  background: transparent;
+  padding: 10px 12px;
+  border-radius: 0;
   border: none;
-  color: var(--text-primary);
+  color: var(--code-text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
 }
 
 /* Animations */
@@ -844,18 +928,19 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
-  background-color: var(--code-header-bg);
+  padding: 6px 10px;
+  background-color: transparent;
   border-bottom: 1px solid var(--border-default);
+  min-height: 28px;
 }
 
 .code-block-language {
-  font-family: var(--font-mono);
-  font-size: 12px;
+  font-family: var(--font-sans, inherit);
+  font-size: 10px;
   font-weight: 500;
   color: var(--code-lang-color);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.08em;
 }
 
 .code-block-copy-btn {
@@ -940,33 +1025,87 @@
   color: inherit;
 }
 
-/* Markdown Table Styles */
+/* Markdown Table — quiet ink frame */
+.assistant-msg .md-table-wrap {
+  margin: 14px 0;
+  overflow-x: auto;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  -webkit-overflow-scrolling: touch;
+}
+
+.assistant-msg .md-table-wrap table,
 .assistant-msg table {
   width: 100%;
   border-collapse: collapse;
-  margin: 16px 0;
+  margin: 0;
   font-size: 13px;
+  line-height: 1.45;
+  background: transparent;
+}
+
+/* Unwrapped tables (fallback) still get a soft frame */
+.assistant-msg > table {
+  margin: 14px 0;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  border-collapse: separate;
+  border-spacing: 0;
+  overflow: hidden;
 }
 
 .assistant-msg th,
 .assistant-msg td {
-  border: 1px solid var(--border-default);
-  padding: 8px 12px;
+  border: none;
+  border-bottom: 1px solid var(--border-default);
+  padding: 10px 14px;
   text-align: left;
+  vertical-align: middle;
+  font-variant-numeric: tabular-nums;
 }
 
 .assistant-msg th {
-  background-color: var(--bg-hover);
-  font-weight: 600;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.assistant-msg td {
   color: var(--text-primary);
+  font-size: 13px;
 }
 
-.assistant-msg tr:nth-child(even) {
-  background-color: var(--overlay-0_02);
+/* Category / first column reads as quiet labels */
+.assistant-msg td:first-child {
+  color: var(--text-secondary);
+  font-weight: 500;
+  white-space: nowrap;
 }
 
-.assistant-msg tr:hover {
-  background-color: var(--bg-hover);
+.assistant-msg tbody tr:last-child th,
+.assistant-msg tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.assistant-msg thead tr:last-child th {
+  border-bottom: 1px solid var(--border-default);
+}
+
+.assistant-msg tbody tr:hover td {
+  background: var(--overlay-0_03);
+}
+
+/* Soft positive / negative cues when model emits signed % */
+.assistant-msg td.md-cell-pos {
+  color: var(--success);
+}
+
+.assistant-msg td.md-cell-neg {
+  color: var(--danger);
 }
 
 /* Error Message */

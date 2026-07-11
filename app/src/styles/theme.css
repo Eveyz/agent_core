@@ -101,7 +101,7 @@
   --diff-del-text:  #e57373;
 
   /* ── Semantic: Special ── */
-  --tool-color:     #60a5fa;
+  --tool-color:     #a1a1aa; /* gray-400 — muted ink, not accent blue */
   --thinking-color: #a78bfa;
   --subagent-color: #a78bfa;
 
@@ -153,14 +153,14 @@
   --spinner-corona-2: rgba(59, 130, 246, 0.4);
   --spinner-corona-3: rgba(236, 72, 153, 0.3);
 
-  /* ── Code Block (GitHub dark) ── */
-  --code-bg: #0d1117;
-  --code-header-bg: #161b22;
-  --code-text: #c9d1d9;
-  --code-lang-color: #8b949e;
-  --code-scrollbar-track: #0d1117;
-  --code-scrollbar-thumb: #30363d;
-  --code-scrollbar-thumb-hover: #484f58;
+  /* ── Code Block (ink / zinc) ── */
+  --code-bg: #121214;
+  --code-header-bg: #18181b;
+  --code-text: #e4e4e7;
+  --code-lang-color: #71717a;
+  --code-scrollbar-track: #121214;
+  --code-scrollbar-thumb: #3f3f46;
+  --code-scrollbar-thumb-hover: #52525b;
 
   /* ── Shiki Token Switching ── */
   --shiki-active: var(--shiki-dark);
@@ -258,7 +258,7 @@
   --diff-del-text:  #dc2626;
 
   /* ── Semantic: Special ── */
-  --tool-color:     #2563eb;
+  --tool-color:     #52525b; /* gray-600 — muted ink, not accent blue */
   --thinking-color: #7c3aed;
   --subagent-color: #7c3aed;
 
@@ -294,14 +294,14 @@
   --spinner-corona-2: rgba(249, 115, 22, 0.4);
   --spinner-corona-3: rgba(245, 158, 11, 0.3);
 
-  /* ── Code Block (GitHub light) ── */
-  --code-bg: #f6f8fa;
-  --code-header-bg: #eaeef2;
-  --code-text: #24292e;
-  --code-lang-color: #57606a;
-  --code-scrollbar-track: #f6f8fa;
-  --code-scrollbar-thumb: #d0d7de;
-  --code-scrollbar-thumb-hover: #afb8c1;
+  /* ── Code Block (ink / zinc) ── */
+  --code-bg: #fafafa;
+  --code-header-bg: #f4f4f5;
+  --code-text: #27272a;
+  --code-lang-color: #a1a1aa;
+  --code-scrollbar-track: #fafafa;
+  --code-scrollbar-thumb: #d4d4d8;
+  --code-scrollbar-thumb-hover: #a1a1aa;
 
   /* ── Shiki Token Switching ── */
   --shiki-active: var(--shiki-light);

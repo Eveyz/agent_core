@@ -27,7 +27,28 @@ const PURIFY_CONFIG = {
 export function parseMarkdown(raw: string): { __html: string } {
   const html = markedInstance.parse(raw);
   const htmlStr = typeof html === 'string' ? html : '';
-  return { __html: DOMPurify.sanitize(htmlStr, PURIFY_CONFIG) };
+  const sanitized = DOMPurify.sanitize(htmlStr, PURIFY_CONFIG);
+  return { __html: enhanceMarkdownTables(sanitized) };
+}
+
+/** Wrap tables for scroll/frame, and softly tint signed % cells. */
+function enhanceMarkdownTables(html: string): string {
+  let out = html
+    .replace(/<table(\s[^>]*)?>/gi, '<div class="md-table-wrap"><table$1>')
+    .replace(/<\/table>/gi, '</table></div>');
+
+  out = out.replace(
+    /<td([^>]*)>(\s*[+-]\d+(?:\.\d+)?%\s*)<\/td>/gi,
+    (_match, attrs: string, content: string) => {
+      const cls = content.trim().startsWith('-') ? 'md-cell-neg' : 'md-cell-pos';
+      const nextAttrs = /class\s*=/i.test(attrs)
+        ? attrs.replace(/class\s*=\s*(["'])/i, `class=$1${cls} `)
+        : `${attrs} class="${cls}"`;
+      return `<td${nextAttrs}>${content}</td>`;
+    },
+  );
+
+  return out;
 }
 
 /**

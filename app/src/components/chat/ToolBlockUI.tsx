@@ -3,6 +3,7 @@ import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
 import ChevronRightIcon from 'lucide-react/dist/esm/icons/chevron-right.mjs';
 import { formatTime } from '../../utils/format';
 import { MarkdownContent } from './MarkdownContent';
+import { CodeBlock } from './CodeBlock';
 import { useTranslation } from 'react-i18next';
 import { getToolIcon } from './toolIcons';
 import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
@@ -12,6 +13,17 @@ import CircleIcon from 'lucide-react/dist/esm/icons/circle.mjs';
 import LoaderIcon from 'lucide-react/dist/esm/icons/loader.mjs';
 import AlertCircleIcon from 'lucide-react/dist/esm/icons/alert-circle.mjs';
 import './ToolBlockUI.css';
+
+/** Returns pretty-printed JSON if `text` is a pure JSON value, else null. */
+function tryFormatJson(text: string): string | null {
+  const trimmed = text.trim();
+  if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) return null;
+  try {
+    return JSON.stringify(JSON.parse(trimmed), null, 2);
+  } catch {
+    return null;
+  }
+}
 
 interface TodoItem {
   id: string;
@@ -309,6 +321,11 @@ const ToolBlockUI = memo(function ToolBlockUI({
   const isSearch = name === 'tavily_search' || name === 'webfetch';
   const hideInput = isSearch || name.startsWith('todo_') || name.startsWith('skill_') || name === 'archival_memory_search' || name === 'conversation_search';
 
+  const jsonResult = useMemo(() => {
+    if (!result || isSearch) return null;
+    return tryFormatJson(result);
+  }, [result, isSearch]);
+
   const ToolIcon = getToolIcon(name);
   const isSearching = active && (name === 'tavily_search' || name === 'webfetch');
 
@@ -351,39 +368,64 @@ const ToolBlockUI = memo(function ToolBlockUI({
         <div className="step-body">
           {formattedArgs && !hideInput && (
             <div className="tool-section">
-              <div className="tool-section-label">{t('chat.tools.input')}</div>
-              <pre className="tool-args-pre">{formattedArgs}</pre>
+              <div className="tool-io-panel">
+                <div className="tool-io-header">
+                  <span className="tool-io-label">{t('chat.tools.input')}</span>
+                </div>
+                <CodeBlock code={formattedArgs} language="json" className="tool-io-code" />
+              </div>
             </div>
           )}
           {!active && (
             <div className="tool-section">
-              {!hideInput && <div className="tool-section-label">{t('chat.tools.output')}</div>}
               {result ? (
                 name === 'skill_load' ? (
-                  <div style={{ position: 'relative' }}>
-                    <div style={{ padding: '12px', background: 'var(--overlay-0_02)', borderRadius: '8px', border: '1px solid var(--border-color)', fontSize: '13px' }}>
-                       <div style={{ marginBottom: '8px', color: 'var(--text-primary)' }}><strong>{t('chat.tools.name')}:</strong> {((args as Record<string, unknown> | undefined)?.name as string) || ''}</div>
-                       <div style={{ color: 'var(--text-muted)' }}><strong>{t('chat.tools.description')}:</strong> {result.match(/Description:\s*(.*?)\n/)?.[1]?.trim() || t('chat.tools.noDescription')}</div>
+                  <div className="tool-io-panel">
+                    {!hideInput && (
+                      <div className="tool-io-header">
+                        <span className="tool-io-label">{t('chat.tools.output')}</span>
+                      </div>
+                    )}
+                    <div className="tool-io-body" style={{ fontFamily: 'inherit' }}>
+                      <div style={{ marginBottom: '8px', color: 'var(--text-primary)' }}><strong>{t('chat.tools.name')}:</strong> {((args as Record<string, unknown> | undefined)?.name as string) || ''}</div>
+                      <div style={{ color: 'var(--text-muted)' }}><strong>{t('chat.tools.description')}:</strong> {result.match(/Description:\s*(.*?)\n/)?.[1]?.trim() || t('chat.tools.noDescription')}</div>
                     </div>
                   </div>
                 ) : name === 'archival_memory_search' || name === 'conversation_search' ? (
-                  <div style={{ position: 'relative' }}>
-                    <div style={{ padding: '12px', background: 'var(--overlay-0_02)', borderRadius: '8px', border: '1px solid var(--border-color)', fontSize: '13px' }}>
+                  <div className="tool-io-panel">
+                    {!hideInput && (
+                      <div className="tool-io-header">
+                        <span className="tool-io-label">{t('chat.tools.output')}</span>
+                      </div>
+                    )}
+                    <div className="tool-io-body" style={{ fontFamily: 'inherit' }}>
                       <MemorySearchResults result={result} />
                     </div>
                   </div>
                 ) : name.startsWith('todo_') && parseTodoResult(result) ? (
                   <TodoResultDisplay result={result} />
                 ) : (
-                  <div style={{ position: 'relative' }}>
-                    <button className="code-block-copy-btn" onClick={handleCopy} title={t('chat.tools.copyOutput')} style={{ position: 'absolute', top: '8px', right: '12px', display: 'flex', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '4px', padding: '4px', cursor: 'pointer', color: 'var(--text-muted)', zIndex: 10 }}>
-                      {copied ? <CheckIcon size={14} color="var(--success)" /> : <CopyIcon size={14} />}
-                    </button>
-                    <MarkdownContent 
-                      content={result} 
-                      className={`tool-result-content assistant-msg scrollable-markdown ${isSearch ? 'search-tool-result' : ''}`} 
-                      plainText={!isSearch} 
-                    />
+                  <div className="tool-io-panel">
+                    <div className="tool-io-header">
+                      <span className="tool-io-label">{t('chat.tools.output')}</span>
+                      <button
+                        className="code-block-copy-btn"
+                        onClick={handleCopy}
+                        title={t('chat.tools.copyOutput')}
+                        type="button"
+                      >
+                        {copied ? <CheckIcon size={14} color="var(--success)" /> : <CopyIcon size={14} />}
+                      </button>
+                    </div>
+                    {jsonResult ? (
+                      <CodeBlock code={jsonResult} language="json" className="tool-io-code" />
+                    ) : (
+                      <MarkdownContent
+                        content={result}
+                        className={`tool-io-body tool-result-content assistant-msg scrollable-markdown ${isSearch ? 'search-tool-result' : ''}`}
+                        plainText={!isSearch}
+                      />
+                    )}
                   </div>
                 )
               ) : (
@@ -395,6 +437,6 @@ const ToolBlockUI = memo(function ToolBlockUI({
       )}
     </div>
   );
-});;
+});
 
 export default ToolBlockUI;

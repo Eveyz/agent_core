@@ -17,7 +17,7 @@ let highlighterPromise: ReturnType<typeof createHighlighter> | null = null;
 function getShikiHighlighter(): Promise<Highlighter> {
   if (!highlighterPromise) {
     highlighterPromise = createHighlighter({
-      themes: ['github-dark', 'github-light'],
+      themes: ['vitesse-dark', 'vitesse-light'],
       langs: CORE_LANGS,
     });
   }
@@ -77,7 +77,7 @@ function runDrain(): void {
         const html = ok
           ? highlighter.codeToHtml(job.code, {
               lang: (job.lang || 'plaintext') as BundledLanguage,
-              themes: { light: 'github-light', dark: 'github-dark' },
+              themes: { light: 'vitesse-light', dark: 'vitesse-dark' },
               defaultColor: false,
               colorsRendering: 'css-vars',
             })
