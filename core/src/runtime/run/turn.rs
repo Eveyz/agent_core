@@ -393,9 +393,7 @@ impl Run {
         let mut todo_write_forced = false;
 
         for (call, result) in tool_calls.iter().zip(&tool_results) {
-            let is_error = result.starts_with("Error")
-                || result.starts_with("Permission denied")
-                || result.starts_with("Hook vetoed");
+            let is_error = crate::runtime::execution::tool_result_is_error(result);
             let aborted = result.starts_with("Aborted")
                 || result.contains("aborted (guard cleanup)");
 

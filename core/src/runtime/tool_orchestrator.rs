@@ -440,10 +440,7 @@ impl<'a> ToolOrchestrator<'a> {
         // Post-tool hooks
         for (i, call, args) in &allowed {
             let output = results[*i].clone();
-            let is_error = output.starts_with("Error")
-                || output.starts_with("Permission denied")
-                || output.starts_with("Hook vetoed")
-                || output == "Aborted";
+            let is_error = crate::runtime::execution::tool_result_is_error(&output);
 
             if !is_error {
                 let final_output =

@@ -1,13 +1,14 @@
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState } from '../../store';
 import InfoIcon from 'lucide-react/dist/esm/icons/info.mjs';
-import { setAppearance } from '../../features/settings/settingsSlice';
+import { setAppearance, setAgentTrace } from '../../features/settings/settingsSlice';
 import { useTranslation } from 'react-i18next';
 
 export default function GeneralTab() {
   const { t, i18n } = useTranslation();
   const config = useSelector((state: RootState) => state.settings.config);
   const appearance = useSelector((state: RootState) => state.settings.appearance);
+  const agentTrace = useSelector((state: RootState) => state.settings.agentTrace);
   const dispatch = useDispatch();
 
   if (!config) {
@@ -65,6 +66,23 @@ export default function GeneralTab() {
         </div>
 
         <div className="settings-field">
+          <label className="settings-label">{t('settings.general.showThinking')}</label>
+          <div className="settings-value" style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={agentTrace === 'verbose'}
+                onChange={(e) => dispatch(setAgentTrace(e.target.checked ? 'verbose' : 'concise'))}
+              />
+              <span>{t('settings.general.showThinkingEnabled')}</span>
+            </label>
+            <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', lineHeight: 1.4 }}>
+              {t('settings.general.showThinkingHint')}
+            </span>
+          </div>
+        </div>
+
+        <div className="settings-field">
           <label className="settings-label">{t('settings.general.defaultModel')}</label>
           <div className="settings-value">{config.default_model}</div>
         </div>
@@ -78,10 +96,9 @@ export default function GeneralTab() {
       </div>
 
       <div className="settings-info-box">
-        <InfoIcon size={14} />
+        <InfoIcon size={16} style={{ flexShrink: 0, marginTop: '2px' }} />
         <span>{t('settings.general.tip')}</span>
       </div>
     </div>
   );
 }
-

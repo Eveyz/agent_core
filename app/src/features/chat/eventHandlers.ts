@@ -11,6 +11,7 @@ import type {
 } from './types';
 import {
   closeStreamingBlock,
+  closeStreamingThinking,
   processThinkBuffer,
   appendDeltaToBlocks,
   truncateResult,
@@ -109,7 +110,7 @@ function pushToolStart(blocks: AnyBlock[], callId: string, name: string, args?: 
     }
   }
 
-  closeStreamingBlock(blocks);
+  closeStreamingThinking(blocks);
   blocks.push({
     type: 'tool',
     call_id: callId,
@@ -148,7 +149,7 @@ function upsertToolPreparing(
     return;
   }
 
-  closeStreamingBlock(blocks);
+  closeStreamingThinking(blocks);
   blocks.push({
     type: 'tool',
     call_id: callId || `preparing_${streamIndex}`,

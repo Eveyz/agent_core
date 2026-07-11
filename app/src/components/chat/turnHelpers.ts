@@ -63,12 +63,50 @@ export function groupBlocksIntoItems(blocks: TurnBlock[]): TurnRenderItem[] {
 
   pushCurrentIter();
 
-  const lastIter = items.slice().reverse().find(i => i.type === 'iteration');
+  // Trailing model text after tool_calls inserts an assistant block between the
+  // spawn tool and its subagent_ref, splitting them across iterations. Reattach
+  // orphaned refs to the iteration that owns the parent spawn tool.
+  const iterations = items.filter(
+    (i): i is { type: 'iteration'; data: TurnIteration } => i.type === 'iteration'
+  );
+  for (const iter of iterations) {
+    const orphanRefs = iter.data.toolBlocks.filter(isSubagentRefBlock);
+    if (orphanRefs.length === 0) continue;
+    if (iter.data.toolBlocks.some(isSubagentTool)) continue;
+
+    for (const ref of orphanRefs) {
+      const home =
+        iterations.find((i) =>
+          i.data.toolBlocks.some(
+            (b) => isSubagentTool(b) && !!b.call_id && b.call_id === ref.parent_call_id
+          )
+        ) ?? iterations.find((i) => i.data.toolBlocks.some(isSubagentTool));
+      if (home && home !== iter) {
+        iter.data.toolBlocks = iter.data.toolBlocks.filter((b) => b !== ref);
+        home.data.toolBlocks.push(ref);
+      }
+    }
+  }
+
+  const cleaned = items.filter((i) => {
+    if (i.type !== 'iteration') return true;
+    const hasThinking = !!i.data.thinkingBlock?.text?.trim();
+    return hasThinking || i.data.toolBlocks.length > 0;
+  });
+
+  const lastIter = cleaned.slice().reverse().find((i) => i.type === 'iteration');
   if (lastIter && lastIter.type === 'iteration') {
     lastIter.data.isLast = true;
   }
 
-  return items;
+  return cleaned;
+}
+
+/** Progress narrations that are punctuation-only (e.g. stray "." after tool_calls). */
+export function isTrivialAssistantText(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed) return true;
+  return /^[.\u00B7\u2026…\s]+$/.test(trimmed);
 }
 
 /** Count subagents from the tool args: single = 1, batch = tasks.length. */

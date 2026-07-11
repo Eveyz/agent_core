@@ -18,8 +18,11 @@ import { useTranslation } from 'react-i18next';
 
 const TurnIterationUI = memo(function TurnIterationUI({
   iteration,
+  showThinking = true,
 }: {
   iteration: TurnIteration;
+  /** When false (concise mode), thinking is still stored but not rendered. */
+  showThinking?: boolean;
 }) {
   const { t } = useTranslation();
   const thinkingBlock = iteration.thinkingBlock;
@@ -42,7 +45,8 @@ const TurnIterationUI = memo(function TurnIterationUI({
     return iteration.toolBlocks.filter(b => b.type === 'tool' && !isSubagentTool(b)).length;
   }, [iteration.toolBlocks]);
 
-  const hasThinkingContent = thinkingBlock?.text && thinkingBlock.text.trim().length > 0;
+  const hasThinkingContent =
+    showThinking && !!thinkingBlock?.text && thinkingBlock.text.trim().length > 0;
 
   const hasRegularTools = iteration.toolBlocks.some(b => (b.type === 'tool' && !isSubagentTool(b)) || (b.type === 'approval' && b.status === 'pending'));
   const hasSubagents = iteration.toolBlocks.some(b => (b.type === 'tool' && isSubagentTool(b)) || b.type === 'subagent_ref');
@@ -281,7 +285,8 @@ const TurnIterationUI = memo(function TurnIterationUI({
          prev.iteration.isLast === next.iteration.isLast &&
          prev.iteration.thinkingBlock === next.iteration.thinkingBlock &&
          prev.iteration.toolBlocks.length === next.iteration.toolBlocks.length &&
-         prev.iteration.toolBlocks.every((b, i) => b === next.iteration.toolBlocks[i]);
+         prev.iteration.toolBlocks.every((b, i) => b === next.iteration.toolBlocks[i]) &&
+         prev.showThinking === next.showThinking;
 });
 
 export default TurnIterationUI;

@@ -16,6 +16,9 @@
       "application": "应用程序",
       "appearance": "主题外观",
       "language": "语言",
+      "showThinking": "显示思考过程",
+      "showThinkingEnabled": "在对话时间线中显示思考过程",
+      "showThinkingHint": "仅影响界面显示，思考内容仍会照常存储。与 Provider 里模型的 Thinking 开关无关。",
       "defaultModel": "默认模型",
       "availableModels": "可用模型",
       "modelsConfigured": "已配置 {{count}} 个",
@@ -67,7 +70,9 @@
       "longWorkWarning": "该任务已执行较长时间。",
       "continue": "继续",
       "interruptedTitle": "执行已中断",
-      "interruptedSubtitle": "任务在完成前被取消"
+      "interruptedSubtitle": "任务在完成前被取消",
+      "showMore": "展开",
+      "showLess": "收起"
     },
     "recovery": {
       "compacting": "上下文过长；重试前将压缩至 {{percentage}}%",

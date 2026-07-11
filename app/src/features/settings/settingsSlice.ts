@@ -86,6 +86,14 @@ export interface AppConfig {
   mcp: McpConfig;
 }
 
+/** UI-only: whether to render thinking blocks. Does not affect storage or model APIs. */
+export type AgentTraceMode = 'concise' | 'verbose';
+
+function loadAgentTrace(): AgentTraceMode {
+  const raw = localStorage.getItem('agent_core_agent_trace');
+  return raw === 'verbose' ? 'verbose' : 'concise';
+}
+
 interface SettingsState {
   isOpen: boolean;
   activeTab: 'general' | 'provider' | 'memory' | 'mcp' | 'skills' | 'permissions';
@@ -94,6 +102,7 @@ interface SettingsState {
   saving: boolean;
   error: string | null;
   appearance: 'system' | 'dark' | 'light';
+  agentTrace: AgentTraceMode;
 }
 
 const initialState: SettingsState = {
@@ -104,6 +113,7 @@ const initialState: SettingsState = {
   saving: false,
   error: null,
   appearance: (localStorage.getItem('agent_core_appearance') as 'system' | 'dark' | 'light') || 'system',
+  agentTrace: loadAgentTrace(),
 };
 
 function normalizeProviderModel(raw: Record<string, unknown>): ProviderModelEntry {
@@ -234,6 +244,10 @@ export const settingsSlice = createSlice({
       state.appearance = action.payload;
       localStorage.setItem('agent_core_appearance', action.payload);
     },
+    setAgentTrace: (state, action: PayloadAction<AgentTraceMode>) => {
+      state.agentTrace = action.payload;
+      localStorage.setItem('agent_core_agent_trace', action.payload);
+    },
     openSettings: (state) => {
       state.isOpen = true;
     },
@@ -334,5 +348,5 @@ export const settingsSlice = createSlice({
   },
 });
 
-export const { setAppearance, openSettings, closeSettings, setActiveTab, upsertProvider, deleteProvider, setDefaultModel, updateProvider, upsertMcpServer, deleteMcpServer, toggleMcpServer } = settingsSlice.actions;
+export const { setAppearance, setAgentTrace, openSettings, closeSettings, setActiveTab, upsertProvider, deleteProvider, setDefaultModel, updateProvider, upsertMcpServer, deleteMcpServer, toggleMcpServer } = settingsSlice.actions;
 export default settingsSlice.reducer;

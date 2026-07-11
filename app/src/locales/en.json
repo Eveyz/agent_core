@@ -16,6 +16,9 @@
       "application": "Application",
       "appearance": "Appearance",
       "language": "Language",
+      "showThinking": "Show thinking",
+      "showThinkingEnabled": "Show thinking process in the chat timeline",
+      "showThinkingHint": "UI only — thinking is always stored. Unrelated to the Provider model Thinking toggle.",
       "defaultModel": "Default Model",
       "availableModels": "Available Models",
       "modelsConfigured": "{{count}} configured",
@@ -67,7 +70,9 @@
       "longWorkWarning": "You have been working in this project for a while.",
       "continue": "Continue",
       "interruptedTitle": "Execution Interrupted",
-      "interruptedSubtitle": "The task was cancelled before completion"
+      "interruptedSubtitle": "The task was cancelled before completion",
+      "showMore": "Show more",
+      "showLess": "Show less"
     },
     "recovery": {
       "compacting": "Context too long; compacting to {{percentage}}% before retry",

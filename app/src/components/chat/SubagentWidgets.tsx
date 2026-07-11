@@ -80,7 +80,7 @@ const SubagentCard = memo(function SubagentCard({ subagentId }: { subagentId: st
       const elapsed = subagent.endTime
         ? formatTime(subagent.endTime - subagent.startTime)
         : formatTime(now - subagent.startTime);
-      return t('chat.subagent.workingState', { toolCount, elapsed });
+      return t('chat.subagent.workingState', { count: toolCount, elapsed });
     }
     const iterText = subagent.iterations_used 
       ? t(subagent.iterations_used > 1 ? 'chat.subagent.iterations_plural' : 'chat.subagent.iterations', { count: subagent.iterations_used }) 

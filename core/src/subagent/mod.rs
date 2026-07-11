@@ -340,6 +340,7 @@ impl Subagent {
             let mut thinking = String::new();
             let mut reasoning_blob = crate::types::ReasoningState::default();
             let mut tool_calls = Vec::new();
+            let mut message_id = String::new();
 
             for attempt in 0..MAX_STREAM_ATTEMPTS {
                 let stream = match self
@@ -369,11 +370,12 @@ impl Subagent {
                 };
 
                 match self.collect_stream(stream, event_sender.as_ref()).await {
-                    Ok((t, th, blob, tc)) => {
+                    Ok((t, th, blob, tc, mid)) => {
                         text = t;
                         thinking = th;
                         reasoning_blob = blob;
                         tool_calls = tc;
+                        message_id = mid;
                         stream_error = None;
                         break;
                     }
@@ -399,6 +401,20 @@ impl Subagent {
 
             if let Some(e) = stream_error {
                 return Err(e);
+            }
+
+            // Some reasoning-heavy models (e.g. DeepSeek via NVIDIA) put the
+            // entire final answer in `reasoning_content` with an empty `content`
+            // field.  Promote thinking → text so the UI and parent agent see it.
+            if tool_calls.is_empty() && text.trim().is_empty() && !thinking.trim().is_empty() {
+                text = thinking.trim().to_string();
+                if let Some(ref tx) = event_sender {
+                    let _ = tx.send(AgentEvent::SubagentMessageUpdate {
+                        subagent_id: self.id.clone(),
+                        message_id: message_id.clone(),
+                        delta: MessageDelta::Text(text.clone()),
+                    });
+                }
             }
 
             last_text = text.clone();
@@ -517,9 +533,7 @@ impl Subagent {
             // state. (executor::execute_tools does not emit ToolExecutionEnd
             // itself; it is emitted by the caller, mirroring agent/mod.rs.)
             for (call, result) in tool_calls.iter().zip(&results) {
-                let is_error = result.starts_with("Error")
-                    || result.starts_with("Permission denied")
-                    || result.starts_with("Hook vetoed");
+                let is_error = crate::runtime::execution::tool_result_is_error(result);
                 if let Some(ref tx) = event_sender {
                     let _ = tx.send(AgentEvent::SubagentToolEnd {
                         subagent_id: self.id.clone(),
@@ -583,7 +597,7 @@ impl Subagent {
         &self,
         stream: impl futures::Stream<Item = Result<StreamEvent>>,
         event_sender: Option<&EventSender>,
-    ) -> Result<(String, String, crate::types::ReasoningState, Vec<ToolCall>)> {
+    ) -> Result<(String, String, crate::types::ReasoningState, Vec<ToolCall>, String)> {
         use crate::client::streaming::{TokenAccumulator, ToolCallAccumulator};
         use futures::StreamExt;
 
@@ -714,7 +728,7 @@ impl Subagent {
             vec![]
         };
 
-        Ok((text_buffer, thinking_buffer, reasoning_blob, tool_calls))
+        Ok((text_buffer, thinking_buffer, reasoning_blob, tool_calls, message_id))
     }
 
     /// Inject relevant memories from the per-agent store into the context's

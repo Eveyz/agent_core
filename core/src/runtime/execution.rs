@@ -295,6 +295,29 @@ impl ExecutionState {
     }
 }
 
+/// Whether a tool result should be treated as a failure for UI / hooks / artifacts.
+///
+/// Covers explicit error prefixes and bash-style `[exit code: N]` trailers
+/// (non-zero). Exit code 0 is never an error.
+pub fn tool_result_is_error(result: &str) -> bool {
+    if result.starts_with("Error")
+        || result.starts_with("Permission denied")
+        || result.starts_with("Hook vetoed")
+        || result.starts_with("Aborted")
+        || result.contains("aborted (guard cleanup)")
+    {
+        return true;
+    }
+    parse_exit_code(result).is_some_and(|code| code != 0)
+}
+
+/// Parse the last `[exit code: N]` marker appended by the bash tool.
+pub fn parse_exit_code(result: &str) -> Option<i32> {
+    let (_, after) = result.rsplit_once("[exit code: ")?;
+    let digits = after.split(']').next()?.trim();
+    digits.parse().ok()
+}
+
 /// Parse tool success into a short artifact fact (best-effort).
 pub fn artifact_from_tool(name: &str, args_json: &str, result: &str, is_error: bool) -> Option<String> {
     if is_error || result.starts_with("Aborted") {
@@ -389,5 +412,20 @@ mod tests {
         assert!(text.contains("NEXT:"));
         assert!(text.contains("Artifacts"));
         assert!(text.contains("Do NOT call todo_write"));
+    }
+
+    #[test]
+    fn tool_result_is_error_detects_prefixes_and_exit_codes() {
+        assert!(!tool_result_is_error("ok\n"));
+        assert!(!tool_result_is_error("tests passed\n[exit code: 0]"));
+        assert!(tool_result_is_error("Error: boom"));
+        assert!(tool_result_is_error("Permission denied: sandbox"));
+        assert!(tool_result_is_error("Aborted"));
+        assert!(tool_result_is_error(
+            "FAILED tests/test_surface.py\n[exit code: 1]"
+        ));
+        assert!(tool_result_is_error("killed\n[exit code: -1]"));
+        assert_eq!(parse_exit_code("a\n[exit code: 42]\n"), Some(42));
+        assert_eq!(parse_exit_code("no marker"), None);
     }
 }

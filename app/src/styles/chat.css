@@ -722,6 +722,26 @@
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
 }
 
+.assistant-msg--progress-collapsed {
+  margin: 6px 0;
+}
+
+.progress-expand-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.progress-expand-btn:hover {
+  color: var(--text-secondary);
+}
+
 .assistant-msg p {
   margin: 0 0 12px 0;
 }

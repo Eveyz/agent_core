@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, memo } from 'react';
+import { useSelector } from 'react-redux';
 import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
 import ChevronRightIcon from 'lucide-react/dist/esm/icons/chevron-right.mjs';
 import LoaderIcon from 'lucide-react/dist/esm/icons/loader.mjs';
@@ -7,12 +8,13 @@ import BanIcon from 'lucide-react/dist/esm/icons/ban.mjs';
 import FileCheckIcon from 'lucide-react/dist/esm/icons/file-check.mjs';
 import type { ChatEntry, TurnBlock } from '../../features/chat/chatSlice';
 import { isRecoveryMessage } from '../../features/chat/utils';
+import type { RootState } from '../../store';
 import { formatTime } from '../../utils/format';
 import { MarkdownContent } from './MarkdownContent';
 import ProcessingTimer from './ProcessingTimer';
 import TurnIterationUI from './TurnIterationUI';
 import TurnFooter from './TurnFooter';
-import { isSubagentTool, groupBlocksIntoItems, basename, parseEditSummary, parseUnifiedDiff } from './turnHelpers';
+import { isSubagentTool, groupBlocksIntoItems, basename, parseEditSummary, parseUnifiedDiff, isTrivialAssistantText } from './turnHelpers';
 import { getFileIcon } from '../layout/FileTree';
 import { useTranslation } from 'react-i18next';
 
@@ -22,6 +24,67 @@ interface FileChangeItem {
   additions: number;
   deletions: number;
   isNew: boolean;
+}
+
+/** Mid-turn narration should be short; if the model dumps a long essay into
+ *  content, collapse it so the timeline stays scannable. */
+const PROGRESS_COLLAPSE_CHARS = 160;
+
+function ProgressNarration({
+  text,
+  isStreaming,
+}: {
+  text: string;
+  isStreaming: boolean;
+}) {
+  const { t } = useTranslation();
+  const trimmed = text.trim();
+  const isLong =
+    trimmed.length > PROGRESS_COLLAPSE_CHARS ||
+    trimmed.split(/\n/).filter(Boolean).length > 2;
+  const [expanded, setExpanded] = useState(false);
+
+  if (isStreaming || !isLong || expanded) {
+    if (isStreaming) {
+      return (
+        <div className="assistant-msg" style={{ whiteSpace: 'pre-wrap' }}>
+          {text}
+        </div>
+      );
+    }
+    return (
+      <div>
+        <MarkdownContent content={text} className="assistant-msg" />
+        {isLong && (
+          <button
+            type="button"
+            className="progress-expand-btn"
+            onClick={() => setExpanded(false)}
+          >
+            {t('chat.turn.showLess')}
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  const preview =
+    trimmed.length <= PROGRESS_COLLAPSE_CHARS
+      ? trimmed
+      : `${trimmed.slice(0, PROGRESS_COLLAPSE_CHARS).replace(/\s+\S*$/, '')}…`;
+
+  return (
+    <div className="assistant-msg assistant-msg--progress-collapsed">
+      <span>{preview}</span>{' '}
+      <button
+        type="button"
+        className="progress-expand-btn"
+        onClick={() => setExpanded(true)}
+      >
+        {t('chat.turn.showMore')}
+      </button>
+    </div>
+  );
 }
 
 
@@ -167,6 +230,8 @@ export const AgentTurnUI = memo(function AgentTurnUI({
   onSend?: (msg: string) => void;
 }) {
   const { t } = useTranslation();
+  const agentTrace = useSelector((state: RootState) => state.settings.agentTrace);
+  const showThinking = agentTrace === 'verbose';
   const isProcessing = !!(entry.startTime && !entry.endTime);
   const isDone = !!(entry.endTime);
 
@@ -199,15 +264,17 @@ export const AgentTurnUI = memo(function AgentTurnUI({
       const suffix = toolCount > 1 ? '_plural' : '';
       parts.push(t(`chat.turn.tools${suffix}`, { count: toolCount }));
     }
-    if (thoughtCount > 0) {
+    // Only mention thoughts in the collapsed summary when thinking is visible.
+    if (showThinking && thoughtCount > 0) {
       const suffix = thoughtCount > 1 ? '_plural' : '';
       parts.push(t(`chat.turn.thoughts${suffix}`, { count: thoughtCount }));
     }
     return parts;
-  }, [totalTimeText, toolCount, thoughtCount, t]);
+  }, [totalTimeText, toolCount, thoughtCount, showThinking, t]);
 
-  // Check if there are any intermediate blocks at all
-  const hasIntermediateSteps = toolCount > 0 || thoughtCount > 0;
+  // Intermediate steps: tools always count; thoughts only matter for the header when verbose
+  // (or when tools exist — thinking is still stored either way).
+  const hasIntermediateSteps = toolCount > 0 || (showThinking && thoughtCount > 0);
 
   const hasInterruptedBlock = useMemo(() => {
     return entry.blocks?.some(
@@ -335,18 +402,34 @@ export const AgentTurnUI = memo(function AgentTurnUI({
       )}
 
       {renderItems.map((item, idx) => {
+        const isFinalAssistant = lastIterIdx === -1 || idx > lastIterIdx;
+        // Expanded (or still streaming): show all assistant narrations.
+        // Collapsed when done: only the final answer.
+        const showAssistant =
+          item.type === 'assistant' &&
+          (isProcessing || !collapsed || isFinalAssistant) &&
+          !isTrivialAssistantText(item.data.text || '') &&
+          (!!item.data.text?.trim() || item.data.isStreaming);
+
         return (
           <React.Fragment key={item.type === 'iteration' ? item.data.id : `block-${idx}`}>
             {item.type === 'assistant' ? (
-              (lastIterIdx === -1 || idx > lastIterIdx) && (
-                item.data.isStreaming ? (
-                  <div className="assistant-msg" style={{ whiteSpace: 'pre-wrap' }}>
-                    {item.data.text}
-                  </div>
+              showAssistant && (
+                isFinalAssistant ? (
+                  item.data.isStreaming ? (
+                    <div className="assistant-msg" style={{ whiteSpace: 'pre-wrap' }}>
+                      {item.data.text}
+                    </div>
+                  ) : (
+                    <MarkdownContent
+                      content={item.data.text}
+                      className="assistant-msg"
+                    />
+                  )
                 ) : (
-                  <MarkdownContent
-                    content={item.data.text}
-                    className="assistant-msg"
+                  <ProgressNarration
+                    text={item.data.text}
+                    isStreaming={!!item.data.isStreaming}
                   />
                 )
               )
@@ -418,7 +501,7 @@ export const AgentTurnUI = memo(function AgentTurnUI({
                 return null;
               })()
             ) : (
-              !collapsed && <TurnIterationUI iteration={item.data} />
+              !collapsed && <TurnIterationUI iteration={item.data} showThinking={showThinking} />
             )}
           </React.Fragment>
         );

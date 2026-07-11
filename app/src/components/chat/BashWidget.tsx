@@ -40,7 +40,6 @@ function cleanTerminalOutput(text: string): string {
       }
     }
 
-    // Fill gaps with space
     for (let i = 0; i < chars.length; i++) {
       if (chars[i] === undefined) {
         chars[i] = ' ';
@@ -51,6 +50,14 @@ function cleanTerminalOutput(text: string): string {
   });
 
   return processedLines.join('\n');
+}
+
+/** Parse trailing `[exit code: N]` from bash tool output. */
+function parseExitCode(result: string): number | null {
+  const match = result.match(/\[exit code:\s*(-?\d+)\]\s*$/m);
+  if (!match) return null;
+  const code = Number(match[1]);
+  return Number.isFinite(code) ? code : null;
 }
 
 const BashWidget = memo(function BashWidget({
@@ -73,6 +80,9 @@ const BashWidget = memo(function BashWidget({
   const cleanedResult = useMemo(() => {
     return cleanTerminalOutput(result || '');
   }, [result]);
+
+  const exitCode = useMemo(() => parseExitCode(cleanedResult), [cleanedResult]);
+  const failed = Boolean(is_error) || (exitCode !== null && exitCode !== 0);
 
   const toolName = name || 'bash';
   let command = (args as Record<string, unknown> | undefined)?.command as string || '';
@@ -98,7 +108,7 @@ const BashWidget = memo(function BashWidget({
   }
 
   const displayCommand = command.length > 50 ? command.substring(0, 50) + '...' : command;
-  
+
   const labelPrefix = active ? 'Running' : 'Ran';
   const ToolIcon = getToolIcon(toolName);
 
@@ -118,13 +128,17 @@ const BashWidget = memo(function BashWidget({
     return () => clearTimeout(timer);
   }, [copied]);
 
+  const statusLabel = failed
+    ? (exitCode !== null ? `✗ Fail (exit ${exitCode})` : '✗ Fail')
+    : '✓ Success';
+
   return (
     <div className="step-block bash-block">
       <div
-        className={`step-row ${active ? 'step-row-active' : ''} ${is_error ? 'step-row-error' : ''} step-row-pointer`}
+        className={`step-row ${active ? 'step-row-active' : ''} ${failed ? 'step-row-error' : ''} step-row-pointer`}
         onClick={() => setCollapsed(!collapsed)}
       >
-        <ToolIcon size={13} className="step-icon tool-icon-margin" color={is_error ? 'var(--danger)' : 'var(--text-muted)'} />
+        <ToolIcon size={13} className="step-icon tool-icon-margin" color={failed ? 'var(--danger)' : 'var(--text-muted)'} />
         <span className="step-label bash-label">
           {customLabel ? (
             customLabel
@@ -137,79 +151,47 @@ const BashWidget = memo(function BashWidget({
         </div>
       </div>
       {!collapsed && (
-        <div className="bash-details-wrapper" style={{ marginLeft: '19px', marginTop: '8px', marginBottom: '8px', marginRight: '12px', borderRadius: '8px', background: 'var(--bg-secondary)', overflow: 'hidden', border: '1px solid var(--border-color)' }}>
-          <div className="bash-details-header" style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-color)' }}>
-            <span style={{ fontSize: '12px', color: 'var(--text-muted)', fontWeight: 500 }}>Shell</span>
+        <div className="bash-details-wrapper">
+          <div className="bash-details-header">
+            <span className="bash-details-header-label">Shell</span>
           </div>
-          <div className="bash-details-body" style={{ fontSize: '12px', fontFamily: 'var(--font-mono)' }}>
-            <div className="bash-details-command" style={{ padding: '12px', color: 'var(--text-primary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-              <span style={{ color: 'var(--text-muted)', marginRight: '8px' }}>$</span>
+          <div className="bash-details-body">
+            <pre className="bash-details-command">
+              <span className="bash-prompt">$ </span>
               {command}
-            </div>
+            </pre>
             {result && (
-              <div className="bash-details-output-wrapper" style={{ position: 'relative', borderTop: '1px solid var(--border-color)' }}>
+              <div className="bash-details-output-wrapper">
                 <button
-                  className="code-block-wrap-btn"
+                  className="code-block-wrap-btn bash-output-btn"
                   onClick={() => setWrapLines(!wrapLines)}
-                  title={wrapLines ? "Unwrap lines (allow horizontal scroll)" : "Wrap lines"}
+                  title={wrapLines ? 'Unwrap lines (allow horizontal scroll)' : 'Wrap lines'}
                   style={{
-                    position: 'absolute',
-                    top: '8px',
                     right: '40px',
-                    display: 'flex',
                     background: wrapLines ? 'var(--overlay-0_08)' : 'var(--bg-secondary)',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: '4px',
-                    padding: '4px',
-                    cursor: 'pointer',
                     color: wrapLines ? 'var(--accent)' : 'var(--text-muted)',
-                    zIndex: 10
                   }}
                 >
                   <WrapTextIcon size={14} />
                 </button>
                 <button
-                  className="code-block-copy-btn"
+                  className="code-block-copy-btn bash-output-btn"
                   onClick={handleCopy}
                   title="Copy output"
-                  style={{
-                    position: 'absolute',
-                    top: '8px',
-                    right: '12px',
-                    display: 'flex',
-                    background: 'var(--bg-secondary)',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: '4px',
-                    padding: '4px',
-                    cursor: 'pointer',
-                    color: 'var(--text-muted)',
-                    zIndex: 10
-                  }}
+                  style={{ right: '12px' }}
                 >
                   {copied ? <CheckIcon size={14} color="var(--success)" /> : <CopyIcon size={14} />}
                 </button>
-                <div
-                  className="bash-details-output"
-                  style={{
-                    padding: '12px',
-                    paddingRight: '68px',
-                    color: 'var(--text-muted)',
-                    whiteSpace: wrapLines ? 'pre-wrap' : 'pre',
-                    wordBreak: wrapLines ? 'break-word' : 'normal',
-                    overflowX: wrapLines ? 'hidden' : 'auto',
-                    maxHeight: '400px',
-                    overflowY: 'auto',
-                    background: 'var(--overlay-0_02)',
-                    lineHeight: '1.6'
-                  }}
+                <pre
+                  className={`bash-details-output ${wrapLines ? 'bash-details-output-wrap' : 'bash-details-output-scroll'}`}
                 >
                   {cleanedResult}
-                </div>
+                </pre>
               </div>
             )}
             {!active && (
-              <div className="bash-details-status" style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', padding: '8px 12px', color: is_error ? 'var(--error)' : 'var(--success)', fontWeight: 500, fontSize: '12px', borderTop: '1px solid var(--border-color)' }}>
-                {is_error ? '✗ Fail' : '✓ Success'}
+              <div className={`bash-details-status ${failed ? 'bash-details-status-fail' : 'bash-details-status-ok'}`}>
+                {statusLabel}
               </div>
             )}
           </div>

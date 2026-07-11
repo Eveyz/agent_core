@@ -9,7 +9,7 @@ You have access to a set of tools, including Model Context Protocol (MCP) tools.
 
 /// Default PRINCIPLES segment — rules, conventions, boundaries.
 pub const DEFAULT_PRINCIPLES: &str = r#"Rules:
-- Use tools directly when needed — no need to narrate your reasoning in text before acting.
+- **Progress narration (content channel):** On multi-step work, before tool calls write at most 1–2 short sentences in plain text: what you will do next (user-facing). Examples: "Next I'll read the Option constructors." / "Checking why those rows are nan, then fixing the harness." Do NOT put analysis, root-cause essays, step-by-step reasoning, or post-mortems in content — that belongs in the thinking/reasoning channel only. Skip narration for trivial single-tool actions.
 - If a tool call fails, try an alternative approach.
 - Be concise and focused in your responses. No greetings, no filler, no summaries of what you just did.
 - Identify the active repo from Working Directory (and Project Instructions for that cwd) before applying any project-specific knowledge from Global Memory. Global Memory may list multiple user projects as a catalog — never assume a catalog entry is the current project unless cwd matches.
@@ -69,7 +69,7 @@ When learning durable facts, use the correct store:
 pub const DEFAULT_REACT_PROMPT: &str = r#"You are a helpful assistant with access to tools. Use them directly when you need to gather information or perform actions. When you have enough information, respond to the user.
 
 Rules:
-- Use tools directly when needed — no need to narrate your reasoning in text before acting.
+- **Progress narration:** On multi-step work, before tools write at most 1–2 short user-facing sentences about the next action. Keep analysis and chain-of-thought in the thinking/reasoning channel — never dump long reasoning into content. Skip narration for trivial single-tool actions.
 - If a tool call fails, try an alternative approach.
 - Be concise and focused in your responses.
 

@@ -42,6 +42,20 @@ export function closeStreamingBlock(blocks: AnyBlock[] | undefined, messageId?: 
   }
 }
 
+/** Close thinking only — keep assistant text open so late content deltas
+ *  after tool_call markers still append to the same narration block
+ *  (avoids splitting "near-zero" across a tool row). */
+export function closeStreamingThinking(blocks: AnyBlock[] | undefined): void {
+  if (!blocks || blocks.length === 0) return;
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const block = blocks[i];
+    if (block.type === 'thinking' && 'isStreaming' in block && block.isStreaming) {
+      block.isStreaming = false;
+      block.endTime = Date.now();
+    }
+  }
+}
+
 // ── Cross-chunk <think> tag reassembly (P0-4) ────────────────────────
 
 const THINK_OPEN = '<think>';
@@ -92,6 +106,20 @@ export function appendDeltaToBlocks(
       }
     }
 
+    // Same message may keep streaming text after tool_call markers. Reuse the
+    // existing assistant block (even if closed) so narration stays one piece
+    // before tools instead of splitting mid-sentence.
+    if (!targetBlock && targetType === 'assistant' && messageId) {
+      for (let i = blocks.length - 1; i >= 0; i--) {
+        const b = blocks[i];
+        if (b.type === 'assistant' && blockMessageId(b) === messageId) {
+          targetBlock = b;
+          if ('isStreaming' in b) b.isStreaming = true;
+          break;
+        }
+      }
+    }
+
     if (!targetBlock) {
       if (targetType === 'thinking') {
         const lastBlock = blocks[blocks.length - 1];
@@ -103,8 +131,20 @@ export function appendDeltaToBlocks(
           targetBlock = blocks[blocks.length - 1];
         }
       } else {
-        blocks.push({ type: 'assistant', text: '', isStreaming: true, message_id: messageId });
-        targetBlock = blocks[blocks.length - 1];
+        // Prefer inserting assistant before any trailing tool placeholders for
+        // this turn, so text renders above tools even if tools arrived first.
+        let insertAt = blocks.length;
+        for (let i = blocks.length - 1; i >= 0; i--) {
+          const b = blocks[i];
+          if (b.type === 'tool' && (b.phase === 'preparing' || b.active)) {
+            insertAt = i;
+            continue;
+          }
+          break;
+        }
+        const newBlock: AnyBlock = { type: 'assistant', text: '', isStreaming: true, message_id: messageId };
+        blocks.splice(insertAt, 0, newBlock);
+        targetBlock = newBlock;
       }
     }
 

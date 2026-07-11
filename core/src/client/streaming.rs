@@ -226,21 +226,12 @@ fn parse_sse_data(data: &str) -> Result<StreamEvent> {
         });
     }
 
-    // finish_reason AFTER tool_calls — when they share a chunk the
-    // tool delta above takes priority.  Usage info is best-effort:
-    // if finish_reason is alone (empty delta) or follows a tool_call
-    // in a separate chunk, we still capture it here.
-    if let Some(finish_reason) = choice["finish_reason"].as_str()
-        && (finish_reason == "stop" || finish_reason == "tool_calls")
-    {
-        let hit = v["usage"]["prompt_cache_hit_tokens"].as_u64();
-        let miss = v["usage"]["prompt_cache_miss_tokens"].as_u64();
-        return Ok(StreamEvent::CompleteWithUsage {
-            prompt_cache_hit_tokens: hit,
-            prompt_cache_miss_tokens: miss,
-        });
-    }
-
+    // Text/thinking BEFORE finish_reason — NVIDIA's DeepSeek gateway (and
+    // some other OpenAI-compat providers) pack the last content delta and
+    // `finish_reason: "stop"` into a single SSE chunk.  If we short-circuit
+    // on finish_reason first the final answer is silently dropped, which is
+    // why subagents (and main-agent turns) can end after a tool call with
+    // no visible final response.
     if let Some(thinking) = delta["reasoning_content"].as_str()
         && !thinking.is_empty()
     {
@@ -251,6 +242,19 @@ fn parse_sse_data(data: &str) -> Result<StreamEvent> {
         && !content.is_empty()
     {
         return Ok(StreamEvent::TextDelta(content.to_string()));
+    }
+
+    // finish_reason AFTER tool_calls and content — when they share a chunk
+    // the tool/text delta above takes priority.  Usage info is best-effort.
+    if let Some(finish_reason) = choice["finish_reason"].as_str()
+        && (finish_reason == "stop" || finish_reason == "tool_calls")
+    {
+        let hit = v["usage"]["prompt_cache_hit_tokens"].as_u64();
+        let miss = v["usage"]["prompt_cache_miss_tokens"].as_u64();
+        return Ok(StreamEvent::CompleteWithUsage {
+            prompt_cache_hit_tokens: hit,
+            prompt_cache_miss_tokens: miss,
+        });
     }
 
     Ok(StreamEvent::TextDelta(String::new()))
@@ -486,6 +490,38 @@ impl TokenAccumulator {
 impl Default for TokenAccumulator {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod parse_sse_tests {
+    use super::*;
+
+    #[test]
+    fn finish_reason_stop_with_content_returns_text_not_usage() {
+        let data = r#"{"choices":[{"index":0,"delta":{"content":"Shenzhen is 28°C."},"finish_reason":"stop"}]}"#;
+        let ev = parse_sse_data(data).unwrap();
+        assert!(matches!(ev, StreamEvent::TextDelta(ref s) if s == "Shenzhen is 28°C."));
+    }
+
+    #[test]
+    fn finish_reason_stop_with_reasoning_returns_thinking_not_usage() {
+        let data = r#"{"choices":[{"index":0,"delta":{"reasoning_content":"Let me summarize."},"finish_reason":"stop"}]}"#;
+        let ev = parse_sse_data(data).unwrap();
+        assert!(matches!(ev, StreamEvent::ThinkingDelta(ref s) if s == "Let me summarize."));
+    }
+
+    #[test]
+    fn finish_reason_alone_returns_complete_with_usage() {
+        let data = r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_cache_hit_tokens":10,"prompt_cache_miss_tokens":5}}"#;
+        let ev = parse_sse_data(data).unwrap();
+        assert!(matches!(
+            ev,
+            StreamEvent::CompleteWithUsage {
+                prompt_cache_hit_tokens: Some(10),
+                prompt_cache_miss_tokens: Some(5),
+            }
+        ));
     }
 }
 
