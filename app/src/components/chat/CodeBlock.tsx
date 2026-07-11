@@ -112,6 +112,11 @@ function enqueueHighlight(code: string, lang: string): Promise<string> {
   });
 }
 
+/** Highlight code via the shared Shiki queue (no UI chrome). */
+export function highlightCode(code: string, lang: string): Promise<string> {
+  return enqueueHighlight(code, lang);
+}
+
 // Language display name mapping
 const LANGUAGE_NAMES: Record<string, string> = {
   rust: 'Rust',
@@ -128,6 +133,9 @@ const LANGUAGE_NAMES: Record<string, string> = {
   bash: 'Bash',
   sh: 'Shell',
   shell: 'Shell',
+  powershell: 'PowerShell',
+  ps1: 'PowerShell',
+  pwsh: 'PowerShell',
   c: 'C',
   cpp: 'C++',
   'c++': 'C++',

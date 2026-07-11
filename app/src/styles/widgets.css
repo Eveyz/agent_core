@@ -867,8 +867,11 @@
   margin: 8px 12px 8px 19px;
   border-radius: 8px;
   background: var(--bg-secondary);
-  overflow: hidden;
+  /* clip corners without killing child overflow-x scrollbars */
+  overflow: clip;
   border: 1px solid var(--border-color);
+  min-width: 0;
+  max-width: 100%;
 }
 
 .bash-details-header {
@@ -886,6 +889,7 @@
   font-size: 12px;
   font-family: var(--font-mono);
   line-height: 1.45;
+  min-width: 0;
 }
 
 .bash-details-command,
@@ -894,12 +898,17 @@
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.45;
-  tab-size: 4;
+  tab-size: 8; /* terminal-default; keeps progress bars / columns aligned */
+  font-variant-ligatures: none; /* prevent --- === collapsing into fancy dashes */
+  font-feature-settings: "liga" 0, "calt" 0;
   /* Critical: preserve spaces / newlines; never collapse like normal text */
   white-space: pre;
 }
 
 .bash-details-command {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
   padding: 12px;
   color: var(--text-primary);
   white-space: pre-wrap;
@@ -909,16 +918,81 @@
 
 .bash-prompt {
   color: var(--text-muted);
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.bash-details-command-fallback {
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.bash-details-command-code {
+  flex: 1;
+  min-width: 0;
+}
+
+.bash-details-command-code .shiki,
+.bash-details-command-code .shiki span {
+  background: transparent !important;
+  color: var(--shiki-dark) !important;
+}
+
+[data-theme="light"] .bash-details-command-code .shiki,
+[data-theme="light"] .bash-details-command-code .shiki span {
+  color: var(--shiki-light) !important;
+}
+
+.bash-details-command-code pre {
+  margin: 0;
+  padding: 0;
+  background: transparent !important;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.bash-details-command-code code {
+  font-family: inherit;
+  font-size: inherit;
+  background: transparent;
+  padding: 0;
 }
 
 .bash-details-output-wrapper {
   position: relative;
   border-top: 1px solid var(--border-color);
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.bash-output-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 6px 10px 0;
+  flex-shrink: 0;
+  background: var(--overlay-0_02);
+}
+
+.bash-output-scroll-area {
+  min-width: 0;
+  max-height: 400px;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  background: var(--overlay-0_02);
+}
+
+.bash-output-scroll-area.is-wrapping {
+  overflow-x: hidden;
 }
 
 .bash-output-btn {
-  position: absolute;
-  top: 8px;
   display: flex;
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
@@ -926,30 +1000,87 @@
   padding: 4px;
   cursor: pointer;
   color: var(--text-muted);
-  z-index: 10;
+  flex-shrink: 0;
+}
+
+.bash-output-btn:hover {
+  color: var(--text-secondary);
+  background: var(--overlay-0_04);
 }
 
 .bash-details-output {
   display: block;
-  padding: 12px;
-  padding-right: 68px;
+  padding: 8px 12px 12px;
   color: var(--text-muted);
-  max-height: 400px;
-  overflow-y: auto;
-  background: var(--overlay-0_02);
+  background: transparent;
+  box-sizing: border-box;
+  overflow: visible;
+  max-height: none;
 }
 
+.bash-stream + .bash-stream {
+  border-top: 1px solid var(--border-color);
+}
+
+.bash-stream-label {
+  padding: 6px 12px 0;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  font-family: var(--font-sans);
+  user-select: none;
+}
+
+.bash-stream-stderr {
+  background: color-mix(in srgb, var(--danger) 5%, transparent);
+}
+
+.bash-stream-stderr .bash-stream-label {
+  color: color-mix(in srgb, var(--danger) 70%, var(--text-tertiary));
+}
+
+.bash-line {
+  font-family: inherit;
+}
+
+.bash-line-default {
+  color: var(--text-muted);
+}
+
+.bash-line-error {
+  color: var(--danger);
+}
+
+.bash-line-warn {
+  color: var(--warning);
+}
+
+.bash-line-meta {
+  color: var(--text-secondary);
+}
+
+.bash-line-sep {
+  color: var(--text-tertiary);
+  opacity: 0.85;
+}
+
+/* Default: no wrap — keep --- / ==== / columns / indent exact; parent scrolls X */
 .bash-details-output-scroll {
   white-space: pre;
-  overflow-x: auto;
   word-break: normal;
+  overflow-wrap: normal;
+  width: max-content;
+  min-width: 100%;
 }
 
 .bash-details-output-wrap {
   white-space: pre-wrap;
-  overflow-x: hidden;
   word-break: break-word;
   overflow-wrap: anywhere;
+  width: 100%;
+  min-width: 0;
 }
 
 .bash-details-status {

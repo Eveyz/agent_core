@@ -5,6 +5,7 @@ import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
 import CopyIcon from 'lucide-react/dist/esm/icons/copy.mjs';
 import WrapTextIcon from 'lucide-react/dist/esm/icons/wrap-text.mjs';
 import { getToolIcon } from './toolIcons';
+import { highlightCode } from './CodeBlock';
 
 function cleanTerminalOutput(text: string): string {
   if (!text) return '';
@@ -52,12 +53,114 @@ function cleanTerminalOutput(text: string): string {
   return processedLines.join('\n');
 }
 
+/** Heuristic: PowerShell vs bash for syntax highlighting. */
+function detectShellLanguage(command: string): 'bash' | 'powershell' {
+  const c = command.trim();
+  if (!c) return 'bash';
+  if (/^\s*(pwsh|powershell)(\.exe)?\b/i.test(c)) return 'powershell';
+  if (/\.(ps1|psm1)\b/i.test(c)) return 'powershell';
+  // Verb-Noun cmdlets and common PS idioms
+  if (/\b(Get|Set|New|Remove|Add|Clear|Write|Import|Export|Select|Where|ForEach|Invoke|Start|Stop|Out|ConvertTo|ConvertFrom)-[A-Za-z]/.test(c)) {
+    return 'powershell';
+  }
+  if (/\$_\b|\$PSVersionTable\b|\$env:[A-Za-z]|-eq\b|-ne\b|-gt\b|-lt\b|-like\b|-match\b|Out-Null|Out-File|ForEach-Object|Where-Object/.test(c)) {
+    return 'powershell';
+  }
+  return 'bash';
+}
+
 /** Parse trailing `[exit code: N]` from bash tool output. */
 function parseExitCode(result: string): number | null {
   const match = result.match(/\[exit code:\s*(-?\d+)\]\s*$/m);
   if (!match) return null;
   const code = Number(match[1]);
   return Number.isFinite(code) ? code : null;
+}
+
+type ShellStream = 'stdout' | 'stderr';
+
+interface ShellOutputSection {
+  stream: ShellStream;
+  text: string;
+}
+
+/** Split tool output into stdout / stderr; drop the exit-code trailer (shown in status). */
+function parseShellOutputSections(text: string): ShellOutputSection[] {
+  if (!text) return [];
+
+  let body = text.replace(/\n?\[exit code:\s*-?\d+\]\s*$/m, '');
+  // Normalize occasional "--- stderr--" typos from older formatters
+  body = body.replace(/\n--- stderr-+\n/g, '\n--- stderr ---\n');
+
+  const parts = body.split(/\n--- stderr ---\n/);
+  const sections: ShellOutputSection[] = [];
+
+  const stdout = (parts[0] ?? '').replace(/^\n+/, '').replace(/\n+$/, '');
+  if (stdout) sections.push({ stream: 'stdout', text: stdout });
+
+  if (parts.length > 1) {
+    const stderr = parts.slice(1).join('\n--- stderr ---\n').replace(/^\n+/, '').replace(/\n+$/, '');
+    if (stderr) sections.push({ stream: 'stderr', text: stderr });
+  }
+
+  return sections;
+}
+
+type LineTone = 'default' | 'error' | 'warn' | 'meta' | 'sep';
+
+function classifyOutputLine(line: string, stream: ShellStream): LineTone {
+  const t = line.trim();
+  if (!t) return 'default';
+  if (/^-{2,}\s*\w/.test(t) || /^-{3,}$/.test(t) || /^={3,}/.test(t)) return 'sep';
+  if (
+    /^(Traceback|Exception|Error|Fatal|panic:|FAILED|FAIL:)/i.test(t) ||
+    /^\w*(Error|Exception|Panic):/.test(t) ||
+    (stream === 'stderr' && /error|failed|fatal/i.test(t) && t.length < 200)
+  ) {
+    return 'error';
+  }
+  if (/^(warning|warn)\b/i.test(t) || /\bWARN\b/.test(t)) return 'warn';
+  if (/^\s*File ".+", line \d+/.test(line) || /^\s+at\s+\S+/.test(line)) return 'meta';
+  return 'default';
+}
+
+function ShellOutputBody({
+  sections,
+  wrapLines,
+}: {
+  sections: ShellOutputSection[];
+  wrapLines: boolean;
+}) {
+  if (sections.length === 0) {
+    return (
+      <pre className={`bash-details-output ${wrapLines ? 'bash-details-output-wrap' : 'bash-details-output-scroll'}`} />
+    );
+  }
+
+  return (
+    <>
+      {sections.map((section, idx) => (
+        <div key={`${section.stream}-${idx}`} className={`bash-stream bash-stream-${section.stream}`}>
+          {sections.length > 1 && (
+            <div className="bash-stream-label">{section.stream}</div>
+          )}
+          <pre
+            className={`bash-details-output ${wrapLines ? 'bash-details-output-wrap' : 'bash-details-output-scroll'}`}
+          >
+            {section.text.split('\n').map((line, lineIdx) => {
+              const tone = classifyOutputLine(line, section.stream);
+              return (
+                <span key={lineIdx} className={`bash-line bash-line-${tone}`}>
+                  {line}
+                  {'\n'}
+                </span>
+              );
+            })}
+          </pre>
+        </div>
+      ))}
+    </>
+  );
 }
 
 const BashWidget = memo(function BashWidget({
@@ -76,6 +179,7 @@ const BashWidget = memo(function BashWidget({
   const [collapsed, setCollapsed] = useState(!active);
   const [copied, setCopied] = useState(false);
   const [wrapLines, setWrapLines] = useState(false);
+  const [commandHtml, setCommandHtml] = useState('');
 
   const cleanedResult = useMemo(() => {
     return cleanTerminalOutput(result || '');
@@ -83,6 +187,7 @@ const BashWidget = memo(function BashWidget({
 
   const exitCode = useMemo(() => parseExitCode(cleanedResult), [cleanedResult]);
   const failed = Boolean(is_error) || (exitCode !== null && exitCode !== 0);
+  const outputSections = useMemo(() => parseShellOutputSections(cleanedResult), [cleanedResult]);
 
   const toolName = name || 'bash';
   let command = (args as Record<string, unknown> | undefined)?.command as string || '';
@@ -106,6 +211,24 @@ const BashWidget = memo(function BashWidget({
       command = typeof args === 'string' ? args : JSON.stringify(args);
     }
   }
+
+  const shellLang = useMemo(() => detectShellLanguage(command), [command]);
+  const shellLabel = shellLang === 'powershell' ? 'PowerShell' : 'Bash';
+  const shellPrompt = shellLang === 'powershell' ? 'PS> ' : '$ ';
+
+  useEffect(() => {
+    let mounted = true;
+    if (!command) {
+      setCommandHtml('');
+      return;
+    }
+    highlightCode(command, shellLang).then((html) => {
+      if (mounted) setCommandHtml(html);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [command, shellLang]);
 
   const displayCommand = command.length > 50 ? command.substring(0, 50) + '...' : command;
 
@@ -153,40 +276,47 @@ const BashWidget = memo(function BashWidget({
       {!collapsed && (
         <div className="bash-details-wrapper">
           <div className="bash-details-header">
-            <span className="bash-details-header-label">Shell</span>
+            <span className="bash-details-header-label">{shellLabel}</span>
           </div>
           <div className="bash-details-body">
-            <pre className="bash-details-command">
-              <span className="bash-prompt">$ </span>
-              {command}
-            </pre>
+            <div className="bash-details-command">
+              <span className="bash-prompt">{shellPrompt}</span>
+              {commandHtml ? (
+                <div
+                  className="bash-details-command-code"
+                  dangerouslySetInnerHTML={{ __html: commandHtml }}
+                />
+              ) : (
+                <span className="bash-details-command-fallback">{command}</span>
+              )}
+            </div>
             {result && (
               <div className="bash-details-output-wrapper">
-                <button
-                  className="code-block-wrap-btn bash-output-btn"
-                  onClick={() => setWrapLines(!wrapLines)}
-                  title={wrapLines ? 'Unwrap lines (allow horizontal scroll)' : 'Wrap lines'}
-                  style={{
-                    right: '40px',
-                    background: wrapLines ? 'var(--overlay-0_08)' : 'var(--bg-secondary)',
-                    color: wrapLines ? 'var(--accent)' : 'var(--text-muted)',
-                  }}
-                >
-                  <WrapTextIcon size={14} />
-                </button>
-                <button
-                  className="code-block-copy-btn bash-output-btn"
-                  onClick={handleCopy}
-                  title="Copy output"
-                  style={{ right: '12px' }}
-                >
-                  {copied ? <CheckIcon size={14} color="var(--success)" /> : <CopyIcon size={14} />}
-                </button>
-                <pre
-                  className={`bash-details-output ${wrapLines ? 'bash-details-output-wrap' : 'bash-details-output-scroll'}`}
-                >
-                  {cleanedResult}
-                </pre>
+                <div className="bash-output-toolbar">
+                  <button
+                    className="code-block-wrap-btn bash-output-btn"
+                    onClick={() => setWrapLines(!wrapLines)}
+                    title={wrapLines ? 'Unwrap lines (allow horizontal scroll)' : 'Wrap lines'}
+                    type="button"
+                    style={{
+                      background: wrapLines ? 'var(--overlay-0_08)' : 'var(--bg-secondary)',
+                      color: wrapLines ? 'var(--accent)' : 'var(--text-muted)',
+                    }}
+                  >
+                    <WrapTextIcon size={14} />
+                  </button>
+                  <button
+                    className="code-block-copy-btn bash-output-btn"
+                    onClick={handleCopy}
+                    title="Copy output"
+                    type="button"
+                  >
+                    {copied ? <CheckIcon size={14} color="var(--success)" /> : <CopyIcon size={14} />}
+                  </button>
+                </div>
+                <div className={`bash-output-scroll-area ${wrapLines ? 'is-wrapping' : ''}`}>
+                  <ShellOutputBody sections={outputSections} wrapLines={wrapLines} />
+                </div>
               </div>
             )}
             {!active && (
