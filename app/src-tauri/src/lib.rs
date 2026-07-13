@@ -990,6 +990,62 @@ async fn create_project(state: State<'_, AppState>, path: String) -> Result<agen
 }
 
 #[tauri::command]
+async fn create_new_project(
+    state: State<'_, AppState>,
+    name: String,
+    path: String,
+) -> Result<agent_core::Project, String> {
+    let pm = state.project_manager.clone();
+    tokio::task::spawn_blocking(move || {
+        let pm = pm.lock();
+        pm.create_new(&name, &path).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("create_new_project task failed: {e}"))?
+}
+
+#[tauri::command]
+fn get_documents_dir() -> Result<String, String> {
+    agent_core::documents_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_default_project_path(name: String) -> Result<String, String> {
+    agent_core::default_project_path(&name).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn set_project_pinned(
+    state: State<'_, AppState>,
+    project_id: String,
+    pinned: bool,
+) -> Result<bool, String> {
+    let pm = state.project_manager.clone();
+    tokio::task::spawn_blocking(move || {
+        let pm = pm.lock();
+        pm.set_pinned(&project_id, pinned).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("set_project_pinned task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn set_session_pinned(
+    state: State<'_, AppState>,
+    session_id: String,
+    pinned: bool,
+) -> Result<bool, String> {
+    let sm = state.session_manager.clone();
+    tokio::task::spawn_blocking(move || {
+        sm.set_pinned(&session_id, pinned).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("set_session_pinned task failed: {e}"))?
+}
+
+#[tauri::command]
 async fn delete_project(state: State<'_, AppState>, project_id: String) -> Result<bool, String> {
     let pm = state.project_manager.clone();
     tokio::task::spawn_blocking(move || {
@@ -2208,7 +2264,9 @@ pub fn run() {
             get_config, save_config, switch_model, set_mode, get_mode,
             create_session, delete_session, rename_session,
             save_session_messages, resume_session,
-            list_projects, create_project, delete_project, rename_project, open_in_explorer,
+            list_projects, create_project, create_new_project, get_documents_dir, get_default_project_path,
+            set_project_pinned, set_session_pinned,
+            delete_project, rename_project, open_in_explorer,
             list_git_branches, switch_git_branch, get_project_sessions,
             get_agverse_md, read_file, get_skills, invalidate_skills_cache,
             list_cronjobs, create_cronjob, update_cronjob, delete_cronjob, toggle_cronjob,

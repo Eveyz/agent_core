@@ -4,6 +4,8 @@ import { SessionMeta } from "../../features/project/projectSlice";
 import { formatTimeAgo } from "../../utils/time";
 import TrashIcon from "lucide-react/dist/esm/icons/trash.mjs";
 import MoreHorizontalIcon from "lucide-react/dist/esm/icons/more-horizontal.mjs";
+import PinIcon from "lucide-react/dist/esm/icons/pin.mjs";
+import PinOffIcon from "lucide-react/dist/esm/icons/pin-off.mjs";
 
 // ── Context menu hook ────────────────────────────────────────────────
 
@@ -71,10 +73,19 @@ interface SessionRowProps {
   isProcessing: boolean;
   onSelect: (sessionId: string) => void;
   onDelete: (sessionId: string) => void;
+  onTogglePin?: (sessionId: string) => void;
 }
 
-function SessionRow({ session, isActive, isProcessing, onSelect, onDelete }: SessionRowProps) {
+function SessionRow({
+  session,
+  isActive,
+  isProcessing,
+  onSelect,
+  onDelete,
+  onTogglePin,
+}: SessionRowProps) {
   const { t } = useTranslation();
+  const isPinned = Boolean(session.pinned);
 
   return (
     <div
@@ -92,6 +103,18 @@ function SessionRow({ session, isActive, isProcessing, onSelect, onDelete }: Ses
         )}
       </span>
       <span className="session-row-actions">
+        {onTogglePin && (
+          <button
+            className="sidebar-context-trigger sidebar-pin-btn"
+            onClick={(e) => {
+              e.stopPropagation();
+              onTogglePin(session.id);
+            }}
+            title={isPinned ? t("sidebar.actions.unpin") : t("sidebar.actions.pin")}
+          >
+            {isPinned ? <PinOffIcon size={12} /> : <PinIcon size={12} />}
+          </button>
+        )}
         <SessionContextMenu
           sessionId={session.id}
           onDelete={onDelete}
@@ -121,6 +144,7 @@ interface SessionListProps {
   emptyMessage: string;
   processingBySession: Record<string, boolean>;
   onDeleteSession: (sessionId: string) => void;
+  onTogglePinSession?: (sessionId: string) => void;
   paddingLeft?: string;
 }
 
@@ -131,6 +155,7 @@ export function SessionList({
   emptyMessage,
   processingBySession,
   onDeleteSession,
+  onTogglePinSession,
   paddingLeft,
 }: SessionListProps) {
   const { t } = useTranslation();
@@ -162,6 +187,7 @@ export function SessionList({
           isProcessing={processingBySession[session.id] ?? false}
           onSelect={onSelectSession}
           onDelete={onDeleteSession}
+          onTogglePin={onTogglePinSession}
         />
       ))}
       {!fullyExpanded && hiddenCount > 0 && (

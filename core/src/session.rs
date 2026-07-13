@@ -93,6 +93,11 @@ pub struct SessionMeta {
     pub pinned_goal: Option<String>,
     #[serde(default)]
     pub goal_completed: bool,
+    /// Sidebar pin (distinct from pinned_goal).
+    #[serde(default)]
+    pub pinned: bool,
+    #[serde(default)]
+    pub pinned_at: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -153,6 +158,7 @@ pub const META_SELECT: &str = "SELECT id, title, summary, start_time, end_time, 
     COALESCE(process_time_ms, 0), COALESCE(thought_time_ms, 0), \
     COALESCE(mode, 'build'), \
     COALESCE(pinned_goal, ''), COALESCE(goal_completed, 0), \
+    COALESCE(pinned, 0), COALESCE(pinned_at, ''), \
     created_at, updated_at FROM sessions";
 
 pub fn row_to_meta(row: &rusqlite::Row) -> rusqlite::Result<SessionMeta> {
@@ -160,7 +166,7 @@ pub fn row_to_meta(row: &rusqlite::Row) -> rusqlite::Result<SessionMeta> {
     let tags: Vec<String> = serde_json::from_str(&tags_str).unwrap_or_default();
     let parent: String = row.get(11)?;
     let stype: String = row.get(12)?;
-    let pinned: String = row.get(16)?;
+    let pinned_goal: String = row.get(16)?;
     Ok(SessionMeta {
         id: row.get(0)?,
         title: row.get(1)?,
@@ -182,10 +188,12 @@ pub fn row_to_meta(row: &rusqlite::Row) -> rusqlite::Result<SessionMeta> {
         process_time_ms: row.get::<_, i64>(13)? as u64,
         thought_time_ms: row.get::<_, i64>(14)? as u64,
         mode: row.get(15)?,
-        pinned_goal: if pinned.is_empty() { None } else { Some(pinned) },
+        pinned_goal: if pinned_goal.is_empty() { None } else { Some(pinned_goal) },
         goal_completed: row.get::<_, i32>(17)? != 0,
-        created_at: row.get(18)?,
-        updated_at: row.get(19)?,
+        pinned: row.get::<_, i32>(18)? != 0,
+        pinned_at: row.get(19)?,
+        created_at: row.get(20)?,
+        updated_at: row.get(21)?,
     })
 }
 
@@ -782,6 +790,18 @@ impl SessionManager {
         let changed = db.execute(
             "UPDATE sessions SET summary = ?1, updated_at = ?2 WHERE id = ?3",
             rusqlite::params![summary, now, session_id],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Pin or unpin a session in the sidebar.
+    pub fn set_pinned(&self, session_id: &str, pinned: bool) -> Result<bool> {
+        let db = self.storage.conn();
+        let now = Utc::now().to_rfc3339();
+        let pinned_at = if pinned { now.as_str() } else { "" };
+        let changed = db.execute(
+            "UPDATE sessions SET pinned = ?1, pinned_at = ?2, updated_at = ?3 WHERE id = ?4",
+            rusqlite::params![if pinned { 1 } else { 0 }, pinned_at, now, session_id],
         )?;
         Ok(changed > 0)
     }
@@ -1423,6 +1443,8 @@ mod tests {
             mode: "build".to_string(),
             pinned_goal: None,
             goal_completed: false,
+            pinned: false,
+            pinned_at: String::new(),
             created_at: "2026-06-07T12:00:00Z".to_string(),
             updated_at: "2026-06-07T12:30:00Z".to_string(),
         };
@@ -1454,6 +1476,8 @@ mod tests {
             mode: "build".to_string(),
             pinned_goal: None,
             goal_completed: false,
+            pinned: false,
+            pinned_at: String::new(),
             created_at: "".to_string(),
             updated_at: "".to_string(),
         };
@@ -1482,6 +1506,8 @@ mod tests {
             mode: "build".to_string(),
             pinned_goal: None,
             goal_completed: false,
+            pinned: false,
+            pinned_at: String::new(),
             created_at: "".to_string(),
             updated_at: "".to_string(),
         };

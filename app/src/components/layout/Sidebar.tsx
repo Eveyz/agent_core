@@ -1,4 +1,4 @@
-import { memo, useState, useCallback, useRef, useEffect } from "react";
+import { memo, useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { useSelector } from "react-redux";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
@@ -6,6 +6,7 @@ import { useTranslation } from "react-i18next";
 import { RootState } from "../../store";
 import {
   createProject,
+  createNewProject,
   fetchProjectSessions,
   deleteProject,
   renameProject,
@@ -13,20 +14,26 @@ import {
   setActiveSession,
   createSession,
   deleteSession,
+  setProjectPinned,
+  setSessionPinned,
+  Project,
+  SessionMeta,
 } from "../../features/project/projectSlice";
 import { selectIsResumingActive } from "../../features/chat/chatSlice";
 import { useAppDispatch } from "../../hooks/useAppDispatch";
 import { useSaveSession } from "../../hooks/useSaveSession";
 import { useConfirmDialog } from "../ui/DialogManager";
+import { NewProjectDialog } from "../ui/NewProjectDialog";
 import { SessionList } from "./SessionList";
 import PlusIcon from "lucide-react/dist/esm/icons/plus.mjs";
 import MessageSquareIcon from "lucide-react/dist/esm/icons/message-square.mjs";
 import FolderIcon from "lucide-react/dist/esm/icons/folder.mjs";
+import FolderPlusIcon from "lucide-react/dist/esm/icons/folder-plus.mjs";
+import FolderOpenIconLucide from "lucide-react/dist/esm/icons/folder-open.mjs";
 import SettingsIcon from "lucide-react/dist/esm/icons/settings.mjs";
 import SmartphoneIcon from "lucide-react/dist/esm/icons/smartphone.mjs";
 import BotIcon from "lucide-react/dist/esm/icons/bot.mjs";
 import WorkflowIcon from "lucide-react/dist/esm/icons/workflow.mjs";
-
 import TrashIcon from "lucide-react/dist/esm/icons/trash.mjs";
 import PencilIcon from "lucide-react/dist/esm/icons/pencil.mjs";
 import ExternalLinkIcon from "lucide-react/dist/esm/icons/external-link.mjs";
@@ -34,6 +41,8 @@ import ChevronRightIcon from "lucide-react/dist/esm/icons/chevron-right.mjs";
 import ChevronDownIcon from "lucide-react/dist/esm/icons/chevron-down.mjs";
 import MoreHorizontalIcon from "lucide-react/dist/esm/icons/more-horizontal.mjs";
 import ClockIcon from "lucide-react/dist/esm/icons/clock.mjs";
+import PinIcon from "lucide-react/dist/esm/icons/pin.mjs";
+import PinOffIcon from "lucide-react/dist/esm/icons/pin-off.mjs";
 import { CronjobModal } from "../ui/CronjobModal";
 
 // ── Context menu hook ────────────────────────────────────────────────
@@ -137,6 +146,10 @@ function ProjectContextMenu({
   );
 }
 
+type PinnedItem =
+  | { kind: "project"; project: Project; pinnedAt: string }
+  | { kind: "session"; session: SessionMeta; projectId: string; pinnedAt: string };
+
 // ── Sidebar ──────────────────────────────────────────────────────────
 
 export type AppView = "chat" | "agents" | "workflows";
@@ -179,8 +192,24 @@ export const Sidebar = memo(function Sidebar({
   const [creatingSession, setCreatingSession] = useState(false);
   const [isCronModalOpen, setIsCronModalOpen] = useState(false);
   const [projectsCollapsed, setProjectsCollapsed] = useState(false);
+  const [pinnedCollapsed, setPinnedCollapsed] = useState(false);
   const [chatCollapsed, setChatCollapsed] = useState(false);
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [creatingProject, setCreatingProject] = useState(false);
+  const addMenuRef = useRef<HTMLDivElement>(null);
   const { confirm, prompt, dialogElement } = useConfirmDialog();
+
+  useEffect(() => {
+    if (!addMenuOpen) return;
+    function handleClick(e: MouseEvent) {
+      if (addMenuRef.current && !addMenuRef.current.contains(e.target as Node)) {
+        setAddMenuOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [addMenuOpen]);
 
   // Auto-expand active project when it changes
   const lastAutoExpanded = useRef<string | null>(null);
@@ -199,7 +228,7 @@ export const Sidebar = memo(function Sidebar({
 
   // Fetch default project sessions on mount for the Chat section
   useEffect(() => {
-    dispatch(fetchProjectSessions('__adhoc_chat__'));
+    dispatch(fetchProjectSessions("__adhoc_chat__"));
   }, [dispatch]);
 
   const toggleProject = useCallback(
@@ -213,7 +242,6 @@ export const Sidebar = memo(function Sidebar({
         }
         return next;
       });
-      // We can optimistically fetch sessions when toggled.
       dispatch(fetchProjectSessions(projectId));
     },
     [dispatch],
@@ -225,6 +253,21 @@ export const Sidebar = memo(function Sidebar({
       dispatch(createProject(selected));
     }
   }, [dispatch]);
+
+  const handleCreateNewProject = useCallback(
+    async (name: string, path: string) => {
+      setCreatingProject(true);
+      try {
+        await dispatch(createNewProject({ name, path })).unwrap();
+        setNewProjectOpen(false);
+      } catch {
+        // Keep dialog open; error surfaces via project slice if needed
+      } finally {
+        setCreatingProject(false);
+      }
+    },
+    [dispatch],
+  );
 
   const handleDeleteProject = useCallback(
     async (projectId: string) => {
@@ -257,6 +300,26 @@ export const Sidebar = memo(function Sidebar({
     [dispatch, prompt, t],
   );
 
+  const handleToggleProjectPin = useCallback(
+    (projectId: string, currentlyPinned: boolean) => {
+      dispatch(setProjectPinned({ projectId, pinned: !currentlyPinned }));
+    },
+    [dispatch],
+  );
+
+  const handleToggleSessionPin = useCallback(
+    (sessionId: string, projectId: string, currentlyPinned: boolean) => {
+      dispatch(
+        setSessionPinned({
+          sessionId,
+          projectId,
+          pinned: !currentlyPinned,
+        }),
+      );
+    },
+    [dispatch],
+  );
+
   // Save current session to backend + memory cache (P2-3: uses shared useSaveSession hook)
   const { saveSession } = useSaveSession();
   const saveAndCacheCurrent = useCallback(() => {
@@ -274,9 +337,6 @@ export const Sidebar = memo(function Sidebar({
       setCreatingSession(true);
       try {
         saveAndCacheCurrent();
-        // createSession.fulfilled sets activeProjectId + activeSessionId atomically.
-        // Do not null the session first — that raced with useSessionLoader and
-        // wiped the previous session's in-memory cache.
         await dispatch(createSession(projectId));
       } finally {
         setCreatingSession(false);
@@ -312,7 +372,130 @@ export const Sidebar = memo(function Sidebar({
     [dispatch, confirm, t],
   );
 
-  const regularProjects = projects.filter((p) => p.id !== '__adhoc_chat__');
+  const unpinnedProjects = useMemo(
+    () => projects.filter((p) => p.id !== "__adhoc_chat__" && !p.pinned),
+    [projects],
+  );
+
+  const pinnedItems = useMemo(() => {
+    const items: PinnedItem[] = [];
+    for (const project of projects) {
+      if (project.id === "__adhoc_chat__") continue;
+      if (project.pinned) {
+        items.push({
+          kind: "project",
+          project,
+          pinnedAt: project.pinned_at || project.updated_at,
+        });
+      }
+    }
+    for (const [projectId, list] of Object.entries(sessions)) {
+      for (const session of list) {
+        if (session.pinned) {
+          items.push({
+            kind: "session",
+            session,
+            projectId,
+            pinnedAt: session.pinned_at || session.updated_at,
+          });
+        }
+      }
+    }
+    items.sort((a, b) => {
+      const diff =
+        new Date(b.pinnedAt).getTime() - new Date(a.pinnedAt).getTime();
+      if (diff !== 0) return diff;
+      const aId = a.kind === "project" ? a.project.id : a.session.id;
+      const bId = b.kind === "project" ? b.project.id : b.session.id;
+      return bId.localeCompare(aId);
+    });
+    return items;
+  }, [projects, sessions]);
+
+  const renderProjectGroup = (project: Project) => {
+    const isExpanded = expandedProjects.has(project.id);
+    const projectSessions = (sessions[project.id] ?? []).filter((s) => !s.pinned);
+    const isPinned = Boolean(project.pinned);
+
+    return (
+      <div key={project.id} className="project-group">
+        <div
+          className="sidebar-project-row"
+          onClick={() => {
+            toggleProject(project.id);
+          }}
+        >
+          <span className="sidebar-row-content">
+            <FolderOpenIcon isOpen={isExpanded} size={15} />
+            <span className="sidebar-row-text">{project.name}</span>
+          </span>
+          <span className="sidebar-row-actions">
+            <button
+              className="sidebar-context-trigger sidebar-pin-btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleToggleProjectPin(project.id, isPinned);
+              }}
+              title={isPinned ? t("sidebar.actions.unpin") : t("sidebar.actions.pin")}
+            >
+              {isPinned ? <PinOffIcon size={13} /> : <PinIcon size={13} />}
+            </button>
+            <button
+              className="sidebar-context-trigger"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleNewSession(project.id);
+              }}
+              title={t("sidebar.actions.newSession")}
+            >
+              <PlusIcon size={13} />
+            </button>
+            <ProjectContextMenu
+              projectId={project.id}
+              projectName={project.name}
+              projectPath={project.path}
+              onDelete={handleDeleteProject}
+              onRename={handleRenameProject}
+            />
+          </span>
+        </div>
+
+        <div
+          className={`session-list-container ${isExpanded ? "expanded" : ""}`}
+        >
+          <div className="session-list">
+            <SessionList
+              sessions={projectSessions}
+              activeSessionId={
+                activeView === "chat" && activeProjectId === project.id
+                  ? activeSessionId
+                  : null
+              }
+              onSelectSession={(sessionId) =>
+                handleSelectSession(sessionId, project.id)
+              }
+              title={project.name}
+              emptyMessage={t("sidebar.projectsSection.emptySessions")}
+              processingBySession={processingBySession}
+              onDeleteSession={(sessionId) =>
+                handleDeleteSession(sessionId, project.id)
+              }
+              onTogglePinSession={(sessionId) => {
+                const session = (sessions[project.id] ?? []).find(
+                  (s) => s.id === sessionId,
+                );
+                handleToggleSessionPin(
+                  sessionId,
+                  project.id,
+                  Boolean(session?.pinned),
+                );
+              }}
+            />
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <aside className={`sidebar ${collapsed ? "sidebar-collapsed" : ""} ${isResuming ? "sidebar-resuming" : ""}`}>
@@ -362,173 +545,256 @@ export const Sidebar = memo(function Sidebar({
       </div>
 
       <div className="sidebar-scrollable">
-        {/* Projects list */}
-        <div className={`projects-section ${projectsCollapsed ? "section-collapsed" : ""}`}>
-        <div className="projects-header" role="button" tabIndex={0} aria-expanded={!projectsCollapsed} onClick={() => setProjectsCollapsed(!projectsCollapsed)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setProjectsCollapsed(!projectsCollapsed); } }}>
-          <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            {projectsCollapsed ? (
-              <ChevronRightIcon size={12} style={{ opacity: 0.7 }} />
-            ) : (
-              <ChevronDownIcon size={12} style={{ opacity: 0.7 }} />
-            )}
-            {t("sidebar.projects")}
-          </span>
-          <button
-            className="icon-btn"
-            onClick={(e) => {
-              e.stopPropagation();
-              handleOpenFolder();
-            }}
-            title="Import project"
-          >
-            <PlusIcon size={13} />
-          </button>
-        </div>
-
-        {!projectsCollapsed && (
-          <div className="projects-list">
-          {regularProjects.length === 0 && (
+        {/* Pinned section */}
+        {pinnedItems.length > 0 && (
+          <div className={`projects-section ${pinnedCollapsed ? "section-collapsed" : ""}`}>
             <div
-              style={{ padding: "16px 20px", color: "var(--text-tertiary)", fontSize: "12px" }}
+              className="projects-header"
+              role="button"
+              tabIndex={0}
+              aria-expanded={!pinnedCollapsed}
+              onClick={() => setPinnedCollapsed(!pinnedCollapsed)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setPinnedCollapsed(!pinnedCollapsed);
+                }
+              }}
             >
-              {t("sidebar.projectsSection.noProjects")}
+              <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                {pinnedCollapsed ? (
+                  <ChevronRightIcon size={12} style={{ opacity: 0.7 }} />
+                ) : (
+                  <ChevronDownIcon size={12} style={{ opacity: 0.7 }} />
+                )}
+                {t("sidebar.pinned")}
+              </span>
+            </div>
+
+            {!pinnedCollapsed && (
+              <div className="projects-list">
+                {pinnedItems.map((item) => {
+                  if (item.kind === "project") {
+                    return renderProjectGroup(item.project);
+                  }
+                  const { session, projectId } = item;
+                  return (
+                    <div key={`pinned-session-${session.id}`} className="pinned-session-wrap">
+                      <SessionList
+                        sessions={[session]}
+                        activeSessionId={
+                          activeView === "chat" && activeSessionId === session.id
+                            ? activeSessionId
+                            : null
+                        }
+                        onSelectSession={(sessionId) =>
+                          handleSelectSession(sessionId, projectId)
+                        }
+                        title={session.title}
+                        emptyMessage=""
+                        processingBySession={processingBySession}
+                        onDeleteSession={(sessionId) =>
+                          handleDeleteSession(sessionId, projectId)
+                        }
+                        onTogglePinSession={(sessionId) =>
+                          handleToggleSessionPin(sessionId, projectId, true)
+                        }
+                        paddingLeft="16px"
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Projects list */}
+        <div
+          className={`projects-section ${projectsCollapsed ? "section-collapsed" : ""}`}
+          style={pinnedItems.length > 0 ? { marginTop: "12px" } : undefined}
+        >
+          <div
+            className="projects-header"
+            role="button"
+            tabIndex={0}
+            aria-expanded={!projectsCollapsed}
+            onClick={() => setProjectsCollapsed(!projectsCollapsed)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                setProjectsCollapsed(!projectsCollapsed);
+              }
+            }}
+          >
+            <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              {projectsCollapsed ? (
+                <ChevronRightIcon size={12} style={{ opacity: 0.7 }} />
+              ) : (
+                <ChevronDownIcon size={12} style={{ opacity: 0.7 }} />
+              )}
+              {t("sidebar.projects")}
+            </span>
+            <div className="projects-add-wrap" ref={addMenuRef}>
+              <button
+                className="icon-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setAddMenuOpen((v) => !v);
+                }}
+                title={t("sidebar.actions.addProject")}
+                aria-haspopup="menu"
+                aria-expanded={addMenuOpen}
+              >
+                <PlusIcon size={13} />
+              </button>
+              {addMenuOpen && (
+                <div
+                  className="projects-add-menu"
+                  role="menu"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <button
+                    className="projects-add-menu-item"
+                    role="menuitem"
+                    onClick={() => {
+                      setAddMenuOpen(false);
+                      setNewProjectOpen(true);
+                    }}
+                  >
+                    <FolderPlusIcon size={14} />
+                    {t("sidebar.actions.newProject")}
+                  </button>
+                  <button
+                    className="projects-add-menu-item"
+                    role="menuitem"
+                    onClick={() => {
+                      setAddMenuOpen(false);
+                      handleOpenFolder();
+                    }}
+                  >
+                    <FolderOpenIconLucide size={14} />
+                    {t("sidebar.actions.existingProjectFolder")}
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {!projectsCollapsed && (
+            <div className="projects-list">
+              {unpinnedProjects.length === 0 && (
+                <div
+                  style={{ padding: "16px 20px", color: "var(--text-tertiary)", fontSize: "12px" }}
+                >
+                  {t("sidebar.projectsSection.noProjects")}
+                </div>
+              )}
+              {unpinnedProjects.map((project) => renderProjectGroup(project))}
             </div>
           )}
-          {regularProjects.map((project) => {
-            const isExpanded = expandedProjects.has(project.id);
-            const projectSessions = sessions[project.id] ?? [];
-
-            return (
-              <div key={project.id} className="project-group">
-                {/* Project row: folder icon + name + chevron + context menu */}
-                <div
-                  className="sidebar-project-row"
-                  onClick={() => {
-                    toggleProject(project.id);
-                  }}
-                >
-                  <span className="sidebar-row-content">
-                    {isExpanded ? (
-                      <ChevronDownIcon size={14} className="sidebar-chevron" />
-                    ) : (
-                      <ChevronRightIcon size={14} className="sidebar-chevron" />
-                    )}
-                    <FolderOpenIcon isOpen={isExpanded} size={15} />
-                    <span className="sidebar-row-text">{project.name}</span>
-                  </span>
-                  <span className="sidebar-row-actions">
-                    <button
-                      className="sidebar-context-trigger"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleNewSession(project.id);
-                      }}
-                      title="New session"
-                    >
-                      <PlusIcon size={13} />
-                    </button>
-                    <ProjectContextMenu
-                      projectId={project.id}
-                      projectName={project.name}
-                      projectPath={project.path}
-                      onDelete={handleDeleteProject}
-                      onRename={handleRenameProject}
-                    />
-                  </span>
-                </div>
-
-                {/* Sessions under this project */}
-                <div
-                  className={`session-list-container ${isExpanded ? "expanded" : ""}`}
-                >
-                  <div className="session-list">
-                    <SessionList
-                      sessions={projectSessions}
-                      activeSessionId={
-                        activeView === "chat" && activeProjectId === project.id
-                          ? activeSessionId
-                          : null
-                      }
-                      onSelectSession={(sessionId) =>
-                        handleSelectSession(sessionId, project.id)
-                      }
-                      title={project.name}
-                      emptyMessage={t("sidebar.projectsSection.emptySessions")}
-                      processingBySession={processingBySession}
-                      onDeleteSession={(sessionId) =>
-                        handleDeleteSession(sessionId, project.id)
-                      }
-                    />
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-          </div>
-        )}
-      </div>
-
-      {/* Chat section */}
-      <div className={`projects-section ${chatCollapsed ? "section-collapsed" : ""}`} style={{ marginTop: "12px" }}>
-        <div className="projects-header" role="button" tabIndex={0} aria-expanded={!chatCollapsed} onClick={() => setChatCollapsed(!chatCollapsed)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setChatCollapsed(!chatCollapsed); } }}>
-          <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            {chatCollapsed ? (
-              <ChevronRightIcon size={12} style={{ opacity: 0.7 }} />
-            ) : (
-              <ChevronDownIcon size={12} style={{ opacity: 0.7 }} />
-            )}
-            {t("sidebar.chat")}
-          </span>
-          <button
-            className="icon-btn"
-            onClick={(e) => {
-              e.stopPropagation();
-              handleNewSession('__adhoc_chat__');
-            }}
-            title="New chat"
-          >
-            <PlusIcon size={13} />
-          </button>
         </div>
 
-        {!chatCollapsed && (
-          <div className="projects-list">
-            <div className="session-list">
-              <SessionList
-                sessions={sessions['__adhoc_chat__'] ?? []}
-                activeSessionId={
-                  activeView === "chat" && activeProjectId === '__adhoc_chat__'
-                    ? activeSessionId
-                    : null
-                }
-                onSelectSession={(sessionId) =>
-                  handleSelectSession(sessionId, '__adhoc_chat__')
-                }
-                title={t("sidebar.chat")}
-                emptyMessage={t("sidebar.projectsSection.noChats")}
-                processingBySession={processingBySession}
-                onDeleteSession={(sessionId) =>
-                  handleDeleteSession(sessionId, '__adhoc_chat__')
-                }
-                paddingLeft="16px"
-              />
-            </div>
+        {/* Chat section */}
+        <div className={`projects-section ${chatCollapsed ? "section-collapsed" : ""}`} style={{ marginTop: "12px" }}>
+          <div
+            className="projects-header"
+            role="button"
+            tabIndex={0}
+            aria-expanded={!chatCollapsed}
+            onClick={() => setChatCollapsed(!chatCollapsed)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                setChatCollapsed(!chatCollapsed);
+              }
+            }}
+          >
+            <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              {chatCollapsed ? (
+                <ChevronRightIcon size={12} style={{ opacity: 0.7 }} />
+              ) : (
+                <ChevronDownIcon size={12} style={{ opacity: 0.7 }} />
+              )}
+              {t("sidebar.chat")}
+            </span>
+            <button
+              className="icon-btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleNewSession("__adhoc_chat__");
+              }}
+              title={t("sidebar.actions.newChat")}
+            >
+              <PlusIcon size={13} />
+            </button>
           </div>
-        )}
-      </div>
-    </div>
 
-    {/* Bottom */}
+          {!chatCollapsed && (
+            <div className="projects-list">
+              <div className="session-list">
+                <SessionList
+                  sessions={(sessions["__adhoc_chat__"] ?? []).filter((s) => !s.pinned)}
+                  activeSessionId={
+                    activeView === "chat" && activeProjectId === "__adhoc_chat__"
+                      ? activeSessionId
+                      : null
+                  }
+                  onSelectSession={(sessionId) =>
+                    handleSelectSession(sessionId, "__adhoc_chat__")
+                  }
+                  title={t("sidebar.chat")}
+                  emptyMessage={t("sidebar.projectsSection.noChats")}
+                  processingBySession={processingBySession}
+                  onDeleteSession={(sessionId) =>
+                    handleDeleteSession(sessionId, "__adhoc_chat__")
+                  }
+                  onTogglePinSession={(sessionId) => {
+                    const session = (sessions["__adhoc_chat__"] ?? []).find(
+                      (s) => s.id === sessionId,
+                    );
+                    handleToggleSessionPin(
+                      sessionId,
+                      "__adhoc_chat__",
+                      Boolean(session?.pinned),
+                    );
+                  }}
+                  paddingLeft="16px"
+                />
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Bottom */}
       <div className="sidebar-bottom">
         <div className="nav-item">
           <SmartphoneIcon size={14} /> {t("sidebar.nav.connectPhone")}
         </div>
-        <div className="nav-item" role="button" tabIndex={0} onClick={onOpenSettings} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenSettings(); } }}>
+        <div
+          className="nav-item"
+          role="button"
+          tabIndex={0}
+          onClick={onOpenSettings}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              onOpenSettings();
+            }
+          }}
+        >
           <SettingsIcon size={14} /> {t("sidebar.nav.settings")}
         </div>
       </div>
 
       <CronjobModal isOpen={isCronModalOpen} onClose={() => setIsCronModalOpen(false)} />
+      <NewProjectDialog
+        open={newProjectOpen}
+        onClose={() => setNewProjectOpen(false)}
+        onCreate={handleCreateNewProject}
+        creating={creatingProject}
+      />
       {dialogElement}
     </aside>
   );
@@ -540,6 +806,5 @@ function FolderOpenIcon({ isOpen, size }: { isOpen: boolean; size: number }) {
   if (!isOpen) {
     return <FolderIcon size={size} color="var(--text-tertiary)" />;
   }
-  // Open folder: use a different color or style
-  return <FolderIcon size={size} color="var(--warning)" />;
+  return <FolderOpenIconLucide size={size} color="var(--text-tertiary)" />;
 }

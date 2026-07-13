@@ -214,6 +214,7 @@
     "agents": "智能体",
     "workflows": "工作流",
     "projects": "项目",
+    "pinned": "已固定",
     "tabs": {
       "code": "代码模式",
       "write": "自由创作"
@@ -226,7 +227,7 @@
       "comingSoon": "敬请期待"
     },
     "projectsSection": {
-      "noProjects": "暂无项目。点击上方文件夹图标添加一个项目。",
+      "noProjects": "暂无项目。点击上方加号图标添加一个项目。",
       "emptySessions": "暂无会话。",
       "noChats": "暂无会话。点击上方加号图标开始新的会话。",
       "untitledSession": "未命名",
@@ -238,7 +239,26 @@
       "rename": "重命名",
       "openInExplorer": "在访达/资源管理器中打开",
       "delete": "删除",
-      "cancel": "取消"
+      "cancel": "取消",
+      "addProject": "添加项目",
+      "newProject": "新建项目",
+      "existingProjectFolder": "已有项目文件夹",
+      "newSession": "新建会话",
+      "newChat": "新建对话",
+      "pin": "固定",
+      "unpin": "取消固定"
+    },
+    "newProject": {
+      "title": "新建项目",
+      "message": "创建一个空的项目文件夹并在此打开。",
+      "nameLabel": "项目名称",
+      "namePlaceholder": "my-project",
+      "pathLabel": "位置",
+      "browse": "浏览…",
+      "create": "创建",
+      "creating": "创建中…",
+      "nameRequired": "请输入项目名称。",
+      "pathRequired": "请输入项目路径。"
     },
     "prompts": {
       "deleteProjectTitle": "删除项目",

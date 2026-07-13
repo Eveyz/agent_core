@@ -266,6 +266,36 @@
   margin-top: 8px;
 }
 
+.new-project-dialog {
+  min-width: min(420px, 92vw);
+  max-width: 480px;
+}
+.new-project-label {
+  display: block;
+  margin: 4px 0 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-dim);
+}
+.new-project-path-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.new-project-path-row .dialog-input {
+  flex: 1;
+  min-width: 0;
+}
+.new-project-browse {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.new-project-error {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--danger);
+}
+
 .btn-cancel, .btn-confirm {
   padding: 6px 14px;
   border-radius: var(--radius-md);

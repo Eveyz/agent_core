@@ -1,13 +1,11 @@
-import i18n from '../i18n';
-
 /**
- * Format a timestamp as a relative "time ago" string.
- * e.g., "2 minutes ago" / "2分钟前"
+ * Format a timestamp as a short relative age.
+ * e.g., "1s", "1m", "1h", "1d"
  */
 export function formatTimeAgo(timestamp: string): string {
-  const now = new Date();
-  const time = new Date(timestamp);
-  const diffMs = now.getTime() - time.getTime();
+  const now = Date.now();
+  const time = new Date(timestamp).getTime();
+  const diffMs = Math.max(0, now - time);
   const diffSec = Math.floor(diffMs / 1000);
   const diffMin = Math.floor(diffSec / 60);
   const diffHour = Math.floor(diffMin / 60);
@@ -15,19 +13,10 @@ export function formatTimeAgo(timestamp: string): string {
   const diffMonth = Math.floor(diffDay / 30);
   const diffYear = Math.floor(diffDay / 365);
 
-  const plural = (count: number) => (count > 1 ? '_plural' : '');
-
-  if (diffSec < 60) {
-    return i18n.t('timeAgo.justNow');
-  } else if (diffMin < 60) {
-    return i18n.t(`timeAgo.minutes${plural(diffMin)}`, { count: diffMin });
-  } else if (diffHour < 24) {
-    return i18n.t(`timeAgo.hours${plural(diffHour)}`, { count: diffHour });
-  } else if (diffDay < 30) {
-    return i18n.t(`timeAgo.days${plural(diffDay)}`, { count: diffDay });
-  } else if (diffMonth < 12) {
-    return i18n.t(`timeAgo.months${plural(diffMonth)}`, { count: diffMonth });
-  } else {
-    return i18n.t(`timeAgo.years${plural(diffYear)}`, { count: diffYear });
-  }
+  if (diffSec < 60) return `${diffSec}s`;
+  if (diffMin < 60) return `${diffMin}m`;
+  if (diffHour < 24) return `${diffHour}h`;
+  if (diffDay < 30) return `${diffDay}d`;
+  if (diffMonth < 12) return `${diffMonth}mo`;
+  return `${diffYear}y`;
 }

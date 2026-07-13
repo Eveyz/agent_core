@@ -81,6 +81,8 @@ impl Storage {
             for (column, definition) in [
                 ("pinned_goal", "TEXT NOT NULL DEFAULT ''"),
                 ("goal_completed", "INTEGER NOT NULL DEFAULT 0"),
+                ("pinned", "INTEGER NOT NULL DEFAULT 0"),
+                ("pinned_at", "TEXT NOT NULL DEFAULT ''"),
             ] {
                 if !existing.iter().any(|c| c == column) {
                     conn.execute(
@@ -88,6 +90,35 @@ impl Storage {
                         [],
                     )
                     .with_context(|| format!("failed to add {column} to sessions"))?;
+                }
+            }
+        }
+
+        // Sidebar pin for projects.
+        let projects_exist: bool = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='projects'",
+                [],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
+        if projects_exist {
+            let mut stmt = conn.prepare("PRAGMA table_info(projects)")?;
+            let existing: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .collect();
+            drop(stmt);
+            for (column, definition) in [
+                ("pinned", "INTEGER NOT NULL DEFAULT 0"),
+                ("pinned_at", "TEXT NOT NULL DEFAULT ''"),
+            ] {
+                if !existing.iter().any(|c| c == column) {
+                    conn.execute(
+                        &format!("ALTER TABLE projects ADD COLUMN {column} {definition}"),
+                        [],
+                    )
+                    .with_context(|| format!("failed to add {column} to projects"))?;
                 }
             }
         }
@@ -152,6 +183,8 @@ impl Storage {
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 path TEXT NOT NULL,
+                pinned INTEGER NOT NULL DEFAULT 0,
+                pinned_at TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -176,6 +209,8 @@ impl Storage {
                 mode TEXT NOT NULL DEFAULT 'build',
                 pinned_goal TEXT NOT NULL DEFAULT '',
                 goal_completed INTEGER NOT NULL DEFAULT 0,
+                pinned INTEGER NOT NULL DEFAULT 0,
+                pinned_at TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );

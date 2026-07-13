@@ -214,6 +214,7 @@
     "agents": "Agents",
     "workflows": "Workflows",
     "projects": "Projects",
+    "pinned": "Pinned",
     "tabs": {
       "code": "Code",
       "write": "Write"
@@ -226,7 +227,7 @@
       "comingSoon": "Coming soon"
     },
     "projectsSection": {
-      "noProjects": "No projects yet. Click the folder icon above to add one.",
+      "noProjects": "No projects yet. Click the plus icon above to add one.",
       "emptySessions": "No sessions yet.",
       "noChats": "No chats yet. Click the plus icon above to start one.",
       "untitledSession": "Untitled",
@@ -238,7 +239,26 @@
       "rename": "Rename",
       "openInExplorer": "Open in Explorer",
       "delete": "Delete",
-      "cancel": "Cancel"
+      "cancel": "Cancel",
+      "addProject": "Add project",
+      "newProject": "New Project",
+      "existingProjectFolder": "Existing Project Folder",
+      "newSession": "New session",
+      "newChat": "New chat",
+      "pin": "Pin",
+      "unpin": "Unpin"
+    },
+    "newProject": {
+      "title": "New Project",
+      "message": "Create an empty project folder and open it here.",
+      "nameLabel": "Project name",
+      "namePlaceholder": "my-project",
+      "pathLabel": "Location",
+      "browse": "Browse…",
+      "create": "Create",
+      "creating": "Creating…",
+      "nameRequired": "Enter a project name.",
+      "pathRequired": "Enter a project path."
     },
     "prompts": {
       "deleteProjectTitle": "Delete Project",

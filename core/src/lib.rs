@@ -68,7 +68,9 @@ pub use permission::{
     PermissionPolicy, PermissionRule, RuleSource, ToolPermissionPattern, WhitelistEntry,
     WhitelistManager, is_destructive_command,
 };
-pub use project::{Project, ProjectManager};
+pub use project::{
+    default_project_path, documents_dir, sanitize_project_folder_name, Project, ProjectManager,
+};
 pub use reflector::{Digester, Reflector, Suggestion, SuggestionAction, SuggestionKind};
 pub use runtime::{
     ApprovalResolver, Brain, ChildId, ClarificationAnswers, ClarificationOption,

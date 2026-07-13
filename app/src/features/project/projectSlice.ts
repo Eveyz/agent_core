@@ -5,6 +5,8 @@ export interface Project {
   id: string;
   name: string;
   path: string;
+  pinned?: boolean;
+  pinned_at?: string;
   created_at: string;
   updated_at: string;
 }
@@ -26,6 +28,8 @@ export interface SessionMeta {
   thought_time_ms: number;
   pinned_goal?: string | null;
   goal_completed?: boolean;
+  pinned?: boolean;
+  pinned_at?: string;
   created_at: string;
   updated_at: string;
 }
@@ -153,6 +157,45 @@ export const createProject = createAsyncThunk('project/createProject', async (pa
   }
 });
 
+export const createNewProject = createAsyncThunk(
+  'project/createNewProject',
+  async ({ name, path }: { name: string; path: string }, { rejectWithValue }) => {
+    try {
+      const raw = await invoke<Record<string, unknown>>('create_new_project', { name, path });
+      return normalizeProject(raw);
+    } catch (e) {
+      return rejectWithValue(String(e));
+    }
+  }
+);
+
+export const setProjectPinned = createAsyncThunk(
+  'project/setProjectPinned',
+  async ({ projectId, pinned }: { projectId: string; pinned: boolean }, { rejectWithValue }) => {
+    try {
+      await invoke('set_project_pinned', { projectId, pinned });
+      return { projectId, pinned, pinnedAt: pinned ? new Date().toISOString() : '' };
+    } catch (e) {
+      return rejectWithValue(String(e));
+    }
+  }
+);
+
+export const setSessionPinned = createAsyncThunk(
+  'project/setSessionPinned',
+  async (
+    { sessionId, projectId, pinned }: { sessionId: string; projectId: string; pinned: boolean },
+    { rejectWithValue }
+  ) => {
+    try {
+      await invoke('set_session_pinned', { sessionId, pinned });
+      return { sessionId, projectId, pinned, pinnedAt: pinned ? new Date().toISOString() : '' };
+    } catch (e) {
+      return rejectWithValue(String(e));
+    }
+  }
+);
+
 export const deleteProject = createAsyncThunk('project/deleteProject', async (projectId: string, { rejectWithValue }) => {
   try {
     await invoke('delete_project', { projectId });
@@ -279,6 +322,8 @@ function normalizeProject(raw: Record<string, unknown>): Project {
     id: (raw.id as string) ?? '',
     name: (raw.name as string) ?? '',
     path: (raw.path as string) ?? '',
+    pinned: Boolean(raw.pinned),
+    pinned_at: (raw.pinned_at as string) ?? '',
     created_at: (raw.created_at as string) ?? '',
     updated_at: (raw.updated_at as string) ?? '',
   };
@@ -300,6 +345,10 @@ function normalizeSession(raw: Record<string, unknown>): SessionMeta {
     session_type: (raw.session_type as string) ?? 'main',
     process_time_ms: (raw.process_time_ms as number) ?? 0,
     thought_time_ms: (raw.thought_time_ms as number) ?? 0,
+    pinned_goal: (raw.pinned_goal as string | null | undefined) ?? null,
+    goal_completed: Boolean(raw.goal_completed),
+    pinned: Boolean(raw.pinned),
+    pinned_at: (raw.pinned_at as string) ?? '',
     created_at: (raw.created_at as string) ?? '',
     updated_at: (raw.updated_at as string) ?? '',
   };
@@ -371,11 +420,41 @@ export const projectSlice = createSlice({
         state.error = action.payload as string;
       })
       .addCase(createProject.fulfilled, (state, action) => {
-        state.projects.unshift(action.payload);
+        const existing = state.projects.find((p) => p.id === action.payload.id);
+        if (!existing) {
+          state.projects.unshift(action.payload);
+        }
         state.activeProjectId = action.payload.id;
         state.activeSessionId = null;
         localStorage.setItem(STORAGE_KEY, action.payload.id);
         localStorage.removeItem(SESSION_KEY);
+      })
+      .addCase(createNewProject.fulfilled, (state, action) => {
+        const existing = state.projects.find((p) => p.id === action.payload.id);
+        if (!existing) {
+          state.projects.unshift(action.payload);
+        }
+        state.activeProjectId = action.payload.id;
+        state.activeSessionId = null;
+        localStorage.setItem(STORAGE_KEY, action.payload.id);
+        localStorage.removeItem(SESSION_KEY);
+      })
+      .addCase(setProjectPinned.fulfilled, (state, action) => {
+        const p = state.projects.find((proj) => proj.id === action.payload.projectId);
+        if (p) {
+          p.pinned = action.payload.pinned;
+          p.pinned_at = action.payload.pinnedAt;
+        }
+      })
+      .addCase(setSessionPinned.fulfilled, (state, action) => {
+        const { sessionId, projectId, pinned, pinnedAt } = action.payload;
+        const list = state.sessions[projectId];
+        if (!list) return;
+        const session = list.find((s) => s.id === sessionId);
+        if (session) {
+          session.pinned = pinned;
+          session.pinned_at = pinnedAt;
+        }
       })
       .addCase(deleteProject.fulfilled, (state, action) => {
         state.projects = state.projects.filter((p) => p.id !== action.payload);
