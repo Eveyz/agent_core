@@ -411,7 +411,7 @@ async fn execute_agent_node(
     event_tx: Option<EventSender>,
 ) -> Result<(serde_json::Value, (i64, i64))> {
     use crate::runtime::supervisor::ProcessSupervisor;
-    use crate::tools::subagent::re_wire_subagent_tools;
+    use crate::tools::subagent::re_wire_subagent_tools_with_skills;
 
     // Fetch the agent definition.
     let agent_id = node.agent_id.clone();
@@ -423,9 +423,16 @@ async fn execute_agent_node(
 
     // Build runtime components.
     let mut subagent_config = agent_registry::build_subagent_config(&def);
+    let effective_skills = if let Some(ref sm) = brain.skill_manager {
+        let mgr = sm.lock();
+        mgr.resolve_subagent_skills(&def.skills, Some(session_id))
+    } else {
+        def.skills.clone()
+    };
+    subagent_config.skills = effective_skills.clone();
     subagent_config.system_prompt = SkillManager::inject_skill_content_into(
         brain.skill_manager.as_ref(),
-        &def.skills,
+        &effective_skills,
         &subagent_config.system_prompt,
     );
 
@@ -453,7 +460,7 @@ async fn execute_agent_node(
     // — those would otherwise spawn grand-subagents with NO cancel
     // propagation. Subject to the recursion depth cap enforced by
     // spawn_single; this node is at depth 1 (workflow parent → agent node).
-    re_wire_subagent_tools(
+    re_wire_subagent_tools_with_skills(
         &mut registry,
         model_config.clone(),
         None,
@@ -461,6 +468,7 @@ async fn execute_agent_node(
         Some(supervisor.clone()),
         Some(cancel_token.clone()),
         1,
+        brain.skill_manager.clone(),
     );
 
     // Also ensure ShellTool (when present) is the supervised version so the
@@ -472,13 +480,10 @@ async fn execute_agent_node(
         )));
     }
 
-    // P0-3: register skill scripts for the agent's declared skills so that
-    // the subagent can call them as tools. Only the agent's `def.skills`
-    // get wired — Brain-wide active_skills are deliberately NOT inherited
-    // here (avoids leaking unrelated script tools to a workflow node).
+    // Register skill scripts for declared skills ∪ parent session actives.
     SkillManager::sync_skill_scripts_for_skills(
         brain.skill_manager.as_ref(),
-        &def.skills,
+        &effective_skills,
         &mut registry,
         Some(supervisor.clone()),
     );

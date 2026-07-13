@@ -6,14 +6,13 @@ import WrenchIcon from 'lucide-react/dist/esm/icons/wrench.mjs';
 import type { TurnBlock } from '../../features/chat/chatSlice';
 import { formatTime } from '../../utils/format';
 import type { TurnIteration, ApprovalBlock, SubagentRefBlock } from './turnHelpers';
-import { isSubagentTool, isSubagentRefBlock } from './turnHelpers';
+import { isSubagentTool, isSubagentRefBlock, generateSmartToolsLabel } from './turnHelpers';
 import ToolBlockUI from './ToolBlockUI';
 import EditFileWidget from './EditFileWidget';
 import ReadFileWidget from './ReadFileWidget';
 import BashWidget from './BashWidget';
 import SubagentSpawnWidget, { SubagentCard } from './SubagentWidgets';
 import ClarificationOverlay from './ClarificationOverlay';
-import { generateSmartToolsLabel } from './turnHelpers';
 import { useTranslation } from 'react-i18next';
 
 const TurnIterationUI = memo(function TurnIterationUI({
@@ -63,13 +62,7 @@ const TurnIterationUI = memo(function TurnIterationUI({
     return generateSmartToolsLabel(iteration.toolBlocks, isStreaming, t);
   }, [iteration.toolBlocks, isStreaming, t]);
 
-  const singleTopLevelTool = useMemo(() => {
-    if (regularToolCount !== 1) return false;
-    const regularTools = iteration.toolBlocks.filter(b => b.type === 'tool' && !isSubagentTool(b));
-    if (regularTools.length !== 1) return false;
-    const name = (regularTools[0] as Extract<TurnBlock, { type: 'tool' }>).name;
-    return name === 'edit' || name === 'read_file' || name === 'shell' || name === 'bash' || name === 'grep_search' || name === 'glob_search' || name === 'grep' || name === 'glob' || name.startsWith('todo_') || name === 'write_file' || name === 'write_to_file' || name.startsWith('skill_') || name === 'archival_memory_search' || name === 'conversation_search';
-  }, [regularToolCount, iteration.toolBlocks]);
+  const singleTopLevelTool = useMemo(() => regularToolCount === 1, [regularToolCount]);
 
   const renderRegularTools = () => (
     <>

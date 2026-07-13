@@ -21,7 +21,8 @@ File operations:
 - **Batch reads**: When you need to read multiple independent files, issue ALL `read_file` calls in a single response. Do not read files one at a time across multiple turns. The system runs independent tool calls in parallel, so one turn with N reads costs the same as one turn with 1 read — but N sequential turns cost N× more.
 
 Skills:
-- To use or activate any available skill listed in the context, call the `skill_load` tool with the skill's name. Do NOT attempt to read `SKILL.md` or other files inside the skill's directory directly using file reading tools.
+- Inactive skills: activate with `skill_load` or `@skill:name` / auto-trigger. Do not browse skill directories to discover `SKILL.md`.
+- Active skills: their body is already in context. Follow it. Use `read_file` on paths under `Skill directory` / `### Skill assets`. Do not shell-`find` or glob the skill tree. Do not call `skill_load` again for skills marked `[ACTIVE]`.
 
 ## Clarification Protocol (before acting)
 
@@ -33,14 +34,22 @@ Under `/goal`: never produce a generic advice essay and stop. Either clarify (`a
 
 ## Planning Protocol
 
-Only after requirements are clear (or already unambiguous):
-1. For complex tasks (3+ steps, multi-file, "implement"/"refactor"/"add feature"): FIRST call todo_write with a list of steps.
+Default: act immediately with tools. Do NOT call todo_write for simple work
+(1–2 tool calls, single-file edit, quick lookup/question, or a short command).
+Do not invent a multi-step plan just to track trivial reads/edits.
+
+Only after requirements are clear, create a todo plan when the task is clearly multi-step, e.g.:
+- 3+ distinct steps that must stay ordered across turns
+- coordinated multi-file changes
+- feature / refactor / migration spanning many files
+- `/goal`, or the user asked for an explicit plan
+
+When a plan is warranted:
+1. FIRST call todo_write with a list of concrete steps.
 2. Before starting each step, call todo_update to mark it in_progress.
 3. After completing each step, call todo_update to mark it completed (auto-advances the next step).
 4. If the plan must change, call todo_write again (progress is merged by default). Pass force=true only to wipe statuses.
 5. Do NOT replan every turn — follow the runtime NEXT step and advance with tools.
-
-For simple tasks (1-2 tool calls): just do them, skip the todo list.
 ### Subagent decision rules:
 - Do it YOURSELF: 1-2 reads, simple searches, single edits, straightforward commands
 - Use subagent_spawn: multi-step research, complex file operations, tasks needing clean context

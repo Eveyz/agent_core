@@ -311,12 +311,13 @@ impl ContextEngine {
         );
         self.segments.insert("active_memory".to_string(), memory);
 
-        // Segment 6: LOADED SKILLS — active skill descriptions
+        // Segment 6: LOADED SKILLS — catalog + active skill content (no hard truncate;
+        // max_tokens=0 means unlimited — skill bodies are instructions, not disposable data)
         let skills = ContextSegment::new(
             "loaded_skills",
             "Loaded Skills",
             5,
-            2000,
+            0,
             RefreshPolicy::PerTurn,
             Stability::Dynamic,
         );
@@ -1153,6 +1154,23 @@ mod tests {
         }
         let prompt = engine.assemble_system_prompt();
         assert!(!prompt.contains("should not appear"));
+    }
+
+    #[test]
+    fn loaded_skills_segment_does_not_hard_truncate() {
+        let mut engine = ContextEngine::new("test", 128000);
+        // ~3000 tokens of content if budget were still 2000
+        let big = "skill-body-line\n".repeat(800);
+        assert!(rough_token_count(&big) > 2000);
+        engine.set_loaded_skills(&big);
+        let injection = engine.assemble_context_injection();
+        assert!(injection.contains("skill-body-line"));
+        assert!(
+            !injection.contains("segment truncated"),
+            "loaded_skills must not hard-truncate (max_tokens=0)"
+        );
+        // Full body should survive (minus header framing)
+        assert!(injection.matches("skill-body-line").count() >= 700);
     }
 
     #[test]

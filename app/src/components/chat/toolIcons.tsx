@@ -22,10 +22,12 @@ import ListTodoIcon from 'lucide-react/dist/esm/icons/list-todo.mjs';
 import CalendarIcon from 'lucide-react/dist/esm/icons/calendar.mjs';
 import MonitorIcon from 'lucide-react/dist/esm/icons/monitor.mjs';
 import WrenchIcon from 'lucide-react/dist/esm/icons/wrench.mjs';
+import PlugIcon from 'lucide-react/dist/esm/icons/plug.mjs';
 
 // ── Per-tool icon mapping ───────────────────────────────────────────
 // Each tool gets a distinct icon so the user can tell at a glance what the
-// agent is doing. Falls back to WrenchIcon for unknown tools.
+// agent is doing. Falls back to WrenchIcon for unknown tools; MCP tools
+// (mcp_… / mcp__…) use PlugIcon.
 const TOOL_ICONS: Record<string, React.ComponentType<{ size?: number; color?: string; className?: string; style?: React.CSSProperties }>> = {
   bash: TerminalIcon,
   shell: TerminalIcon,
@@ -66,5 +68,7 @@ const TOOL_ICONS: Record<string, React.ComponentType<{ size?: number; color?: st
 };
 
 export function getToolIcon(name: string): React.ComponentType<{ size?: number; color?: string; className?: string; style?: React.CSSProperties }> {
-  return TOOL_ICONS[name] || WrenchIcon;
+  if (TOOL_ICONS[name]) return TOOL_ICONS[name];
+  if (name.startsWith('mcp_')) return PlugIcon;
+  return WrenchIcon;
 }

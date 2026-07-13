@@ -249,6 +249,7 @@ impl Run {
                 Some(supervisor.clone()),
                 Some(cancel_token.clone()),
                 0,
+                brain.skill_manager.clone(),
             );
         }
 

@@ -1,6 +1,8 @@
+import i18n from '../i18n';
+
 /**
- * Format a timestamp as "多久之前" (time ago)
- * e.g., "2分钟前", "1小时前", "3天前", "1个月前", "1年前"
+ * Format a timestamp as a relative "time ago" string.
+ * e.g., "2 minutes ago" / "2分钟前"
  */
 export function formatTimeAgo(timestamp: string): string {
   const now = new Date();
@@ -13,17 +15,19 @@ export function formatTimeAgo(timestamp: string): string {
   const diffMonth = Math.floor(diffDay / 30);
   const diffYear = Math.floor(diffDay / 365);
 
+  const plural = (count: number) => (count > 1 ? '_plural' : '');
+
   if (diffSec < 60) {
-    return '刚刚';
+    return i18n.t('timeAgo.justNow');
   } else if (diffMin < 60) {
-    return `${diffMin}分钟前`;
+    return i18n.t(`timeAgo.minutes${plural(diffMin)}`, { count: diffMin });
   } else if (diffHour < 24) {
-    return `${diffHour}小时前`;
+    return i18n.t(`timeAgo.hours${plural(diffHour)}`, { count: diffHour });
   } else if (diffDay < 30) {
-    return `${diffDay}天前`;
+    return i18n.t(`timeAgo.days${plural(diffDay)}`, { count: diffDay });
   } else if (diffMonth < 12) {
-    return `${diffMonth}个月前`;
+    return i18n.t(`timeAgo.months${plural(diffMonth)}`, { count: diffMonth });
   } else {
-    return `${diffYear}年前`;
+    return i18n.t(`timeAgo.years${plural(diffYear)}`, { count: diffYear });
   }
 }

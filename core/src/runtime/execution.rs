@@ -231,7 +231,10 @@ impl ExecutionState {
                 out.push_str(&format!("NEXT: step {id}\n"));
             }
         } else if total == 0 {
-            out.push_str("NEXT: create a plan with todo_write (or ask_user if unclear)\n");
+            out.push_str(
+                "NEXT: act with tools now. Use todo_write only if the task is clearly multi-step \
+                 (or ask_user if unclear)\n",
+            );
         } else if list
             .items
             .iter()
@@ -265,7 +268,10 @@ impl ExecutionState {
             }
             ExecutionPhase::Plan => {
                 out.push_str(
-                    "  - Call todo_write once with concrete steps, then execute.\n",
+                    "  - Default: execute immediately with tools. Skip todo_write for simple \
+                     1–2 step work (single-file edit, lookup, short command).\n\
+                      - Only call todo_write when the task needs an ordered multi-step plan \
+                     (3+ lasting steps, multi-file coordination, migration/feature, or /goal).\n",
                 );
             }
             ExecutionPhase::Execute => {
@@ -412,6 +418,25 @@ mod tests {
         assert!(text.contains("NEXT:"));
         assert!(text.contains("Artifacts"));
         assert!(text.contains("Do NOT call todo_write"));
+    }
+
+    #[test]
+    fn empty_plan_injection_prefers_direct_action() {
+        let list = TodoList::new();
+        let st = ExecutionState::new();
+        assert_eq!(st.phase, ExecutionPhase::Plan);
+        let text = st.to_injection(&list);
+        assert!(text.contains("act with tools now"));
+        assert!(text.contains("Skip todo_write for simple"));
+        assert!(
+            !text.contains("Call todo_write once with concrete steps"),
+            "empty Plan phase must not mandate todo_write"
+        );
+        assert!(
+            !text.contains("Create a plan with todo_write"),
+            "empty list must not urge planning"
+        );
+        assert!(text.contains("No todo items."));
     }
 
     #[test]

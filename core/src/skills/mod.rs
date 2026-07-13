@@ -4,13 +4,33 @@ pub use manifest::{ScriptEntry, SkillManifest};
 
 use anyhow::Result;
 use parking_lot::Mutex;
+use regex::Regex;
 use serde_json;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// Backward-compatible alias.
 pub type SkillLoader = SkillManager;
+
+/// Parse `@skill:<name>` mentions from free text (mid-sentence / punctuation-safe).
+pub fn parse_skill_mentions(text: &str) -> Vec<String> {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| Regex::new(r"@skill:([A-Za-z0-9_-]+)").expect("skill mention regex"));
+    let mut seen = HashSet::new();
+    let mut names = Vec::new();
+    for cap in re.captures_iter(text) {
+        let name = cap[1].to_string();
+        if seen.insert(name.clone()) {
+            names.push(name);
+        }
+    }
+    names
+}
+
+const ASSET_DIRS: &[&str] = &["templates", "references", "assets"];
+const ASSET_MAX_FILES: usize = 40;
+const ASSET_MAX_DEPTH: usize = 2;
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -72,6 +92,8 @@ pub struct SkillManager {
     /// Active skill names keyed by session scope (`""` = anonymous / CLI).
     /// Keeps chat sessions from leaking loaded skills into each other.
     active_by_scope: HashMap<String, HashSet<String>>,
+    /// One-shot notes (e.g. unknown `@skill:`) drained into Segment 6 each turn.
+    pending_notes_by_scope: HashMap<String, Vec<String>>,
 }
 
 pub struct LoadedSkill {
@@ -85,6 +107,7 @@ impl SkillManager {
             search_dirs: vec![search_dir],
             manifests: Vec::new(),
             active_by_scope: HashMap::new(),
+            pending_notes_by_scope: HashMap::new(),
         }
     }
 
@@ -93,6 +116,7 @@ impl SkillManager {
             search_dirs: dirs,
             manifests: Vec::new(),
             active_by_scope: HashMap::new(),
+            pending_notes_by_scope: HashMap::new(),
         }
     }
 
@@ -129,6 +153,7 @@ impl SkillManager {
             search_dirs: dirs,
             manifests: Vec::new(),
             active_by_scope: HashMap::new(),
+            pending_notes_by_scope: HashMap::new(),
         }
     }
 
@@ -246,6 +271,48 @@ impl SkillManager {
         }
     }
 
+    /// Parse `@skill:` mentions in `text`, activate found skills, queue miss notes.
+    /// Returns `(activated_names, missing_names)`.
+    pub fn activate_mentions_in(
+        &mut self,
+        session_id: Option<&str>,
+        text: &str,
+    ) -> (Vec<String>, Vec<String>) {
+        let names = parse_skill_mentions(text);
+        let mut activated = Vec::new();
+        let mut missing = Vec::new();
+        for name in names {
+            if self.activate_for(session_id, &name) {
+                activated.push(name);
+            } else {
+                self.push_note(
+                    session_id,
+                    format!(
+                        "Skill '{name}' not found; use skill_list to see available skills."
+                    ),
+                );
+                missing.push(name);
+            }
+        }
+        (activated, missing)
+    }
+
+    fn push_note(&mut self, session_id: Option<&str>, note: String) {
+        let key = Self::scope_key(session_id);
+        self.pending_notes_by_scope
+            .entry(key)
+            .or_default()
+            .push(note);
+    }
+
+    /// Drain one-shot notes for injection into Segment 6 (clears the queue).
+    pub fn drain_notes(&mut self, session_id: Option<&str>) -> Vec<String> {
+        let key = Self::scope_key(session_id);
+        self.pending_notes_by_scope
+            .remove(&key)
+            .unwrap_or_default()
+    }
+
     /// Deactivate a skill in the anonymous/default scope.
     pub fn deactivate(&mut self, name: &str) -> bool {
         self.deactivate_for(None, name)
@@ -326,13 +393,16 @@ impl SkillManager {
         for skill in &self.manifests {
             if active.contains(&skill.manifest.name) {
                 if let Ok(content) = self.load_content(&skill.manifest) {
-                    parts.push(format!(
+                    let mut block = format!(
                         "## Skill: {} (v{})\nSkill directory: {}\n{}\n",
                         skill.manifest.name,
                         skill.manifest.version,
                         skill.source_dir.display(),
                         content,
-                    ));
+                    );
+                    let assets = self.discover_assets(&skill.manifest.name);
+                    block.push_str(&Self::assets_context(&assets));
+                    parts.push(block);
                 }
             }
         }
@@ -343,7 +413,9 @@ impl SkillManager {
 
         let mut result = format!(
             "The following skills are ACTIVE and loaded into your context. \
-             Use their knowledge to guide your responses:\n\n{}",
+             Use their knowledge to guide your responses. For files listed under \
+             Skill assets or under Skill directory, use `read_file` with the \
+             absolute path — do not shell-find or glob the skill tree:\n\n{}",
             parts.join("\n")
         );
 
@@ -368,7 +440,14 @@ impl SkillManager {
         }
 
         let mut lines: Vec<String> = Vec::new();
-        lines.push("Available skills (to use a skill, call the `skill_load` tool with its name to load and activate it. DO NOT try to read the SKILL.md file or files inside the skill directory directly using file tools):".to_string());
+        lines.push(
+            "Available skills (inactive: call `skill_load` with the name, or wait for \
+             `@skill:name` / auto-trigger. Do not browse skill directories to discover \
+             SKILL.md. Active skills are already injected below — follow their body \
+             and use `read_file` on listed asset paths; do not call `skill_load` again \
+             for [ACTIVE] skills):"
+                .to_string(),
+        );
 
         for skill in &self.manifests {
             let active_marker = if self.is_active_for(session_id, &skill.manifest.name) {
@@ -415,6 +494,104 @@ impl SkillManager {
             .iter()
             .find(|s| s.manifest.name == name)
             .map(|s| s.source_dir.as_path())
+    }
+
+    /// Discover non-script skill assets (templates/, references/, assets/, top-level files).
+    /// Returns `(relative_path, absolute_path)` pairs, capped for context size.
+    pub fn discover_assets(&self, name: &str) -> Vec<(String, PathBuf)> {
+        let Some(source_dir) = self.source_dir_of(name) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+
+        // Top-level files except SKILL.md
+        if let Ok(entries) = std::fs::read_dir(source_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let file_name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("");
+                if file_name.eq_ignore_ascii_case("SKILL.md") || file_name.starts_with('.') {
+                    continue;
+                }
+                let rel = file_name.to_string();
+                if seen.insert(rel.clone()) {
+                    out.push((rel, path));
+                    if out.len() >= ASSET_MAX_FILES {
+                        return out;
+                    }
+                }
+            }
+        }
+
+        for dir_name in ASSET_DIRS {
+            let dir = source_dir.join(dir_name);
+            if !dir.is_dir() {
+                continue;
+            }
+            Self::walk_asset_dir(&dir, source_dir, 1, &mut out, &mut seen);
+            if out.len() >= ASSET_MAX_FILES {
+                break;
+            }
+        }
+
+        out
+    }
+
+    fn walk_asset_dir(
+        dir: &Path,
+        root: &Path,
+        depth: usize,
+        out: &mut Vec<(String, PathBuf)>,
+        seen: &mut HashSet<String>,
+    ) {
+        if depth > ASSET_MAX_DEPTH || out.len() >= ASSET_MAX_FILES {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            if out.len() >= ASSET_MAX_FILES {
+                return;
+            }
+            let path = entry.path();
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+            if name.starts_with('.') {
+                continue;
+            }
+            if path.is_dir() {
+                Self::walk_asset_dir(&path, root, depth + 1, out, seen);
+            } else if path.is_file() {
+                let rel = path
+                    .strip_prefix(root)
+                    .ok()
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_else(|| name.to_string());
+                if seen.insert(rel.clone()) {
+                    out.push((rel, path));
+                }
+            }
+        }
+    }
+
+    fn assets_context(assets: &[(String, PathBuf)]) -> String {
+        if assets.is_empty() {
+            return String::new();
+        }
+        let mut lines = vec!["\n### Skill assets\n".to_string()];
+        for (rel, abs) in assets {
+            lines.push(format!("- {rel} → {}\n", abs.display()));
+        }
+        lines.join("")
     }
 
     // ── Scripts ─────────────────────────────────────────────────────
@@ -579,13 +756,15 @@ impl SkillManager {
         if let Some(skill) = self.manifests.iter().find(|s| s.manifest.name == name) {
             let content = self.load_content(&skill.manifest)?;
             let mut result = format!(
-                "== Skill: {} (v{}) ==\nSkill directory: {}\n{}\n== End Skill: {} ==\n",
+                "== Skill: {} (v{}) ==\nSkill directory: {}\n{}\n",
                 skill.manifest.name,
                 skill.manifest.version,
                 skill.source_dir.display(),
                 content,
-                skill.manifest.name
             );
+            let assets = self.discover_assets(&skill.manifest.name);
+            result.push_str(&Self::assets_context(&assets));
+            result.push_str(&format!("== End Skill: {} ==\n", skill.manifest.name));
             // Append available scripts.
             let scripts = self.discover_scripts(&skill.manifest.name);
             if !scripts.is_empty() {
@@ -601,6 +780,28 @@ impl SkillManager {
         } else {
             Ok(None)
         }
+    }
+
+    /// Union declared skill names with session-scoped actives (deduped, declared order first).
+    pub fn resolve_subagent_skills(
+        &self,
+        declared: &[String],
+        session_id: Option<&str>,
+    ) -> Vec<String> {
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        for name in declared {
+            if seen.insert(name.clone()) {
+                out.push(name.clone());
+            }
+        }
+        for name in self.active_skill_names_for(session_id) {
+            let owned = name.to_string();
+            if seen.insert(owned.clone()) {
+                out.push(owned);
+            }
+        }
+        out
     }
 
     pub fn search_dirs(&self) -> &[PathBuf] {
@@ -962,9 +1163,9 @@ Skill body for {}"#,
         let catalog = mgr.build_catalog();
         assert!(catalog.contains("high"));
         assert!(catalog.contains("low"));
-        // High priority should come first
-        let high_pos = catalog.find("high").unwrap();
-        let low_pos = catalog.find("low").unwrap();
+        // High priority should come first (match bold catalog names, not substrings like "below")
+        let high_pos = catalog.find("**high**").unwrap();
+        let low_pos = catalog.find("**low**").unwrap();
         assert!(high_pos < low_pos);
 
         let _ = fs::remove_dir_all(&dir);
@@ -994,5 +1195,96 @@ Skill body for {}"#,
         assert!(ctx.contains(&dir.join("my-skill").display().to_string()));
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_skill_mentions_mid_sentence_and_punctuation() {
+        let names = parse_skill_mentions("please use @skill:dividend-risk, thanks @skill:foo!");
+        assert_eq!(names, vec!["dividend-risk".to_string(), "foo".to_string()]);
+        // Dedup
+        let names2 = parse_skill_mentions("@skill:a @skill:a");
+        assert_eq!(names2, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn discover_assets_lists_templates() {
+        let dir = tempfile::tempdir().unwrap();
+        let skill = dir.path().join("risk");
+        fs::create_dir_all(skill.join("templates")).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: risk\ndescription: d\n---\nBody\n",
+        )
+        .unwrap();
+        fs::write(skill.join("templates/output_schema.json"), "{}").unwrap();
+
+        let mut mgr = SkillManager::new(dir.path().to_path_buf());
+        mgr.scan().unwrap();
+        let assets = mgr.discover_assets("risk");
+        assert!(
+            assets.iter().any(|(rel, abs)| {
+                rel.replace('\\', "/") == "templates/output_schema.json" && abs.exists()
+            }),
+            "assets={assets:?}"
+        );
+
+        mgr.activate("risk");
+        let ctx = mgr.build_active_context();
+        assert!(ctx.contains("### Skill assets"));
+        assert!(ctx.contains("templates/output_schema.json"));
+    }
+
+    #[test]
+    fn activate_mentions_queues_miss_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        write_skill(dir.path(), "known", "known");
+        let mut mgr = SkillManager::new(dir.path().to_path_buf());
+        mgr.scan().unwrap();
+
+        let (ok, missing) =
+            mgr.activate_mentions_in(Some("s1"), "run @skill:known and @skill:nope");
+        assert_eq!(ok, vec!["known".to_string()]);
+        assert_eq!(missing, vec!["nope".to_string()]);
+        assert!(mgr.is_active_for(Some("s1"), "known"));
+
+        let notes = mgr.drain_notes(Some("s1"));
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains("nope"));
+        assert!(mgr.drain_notes(Some("s1")).is_empty());
+    }
+
+    #[test]
+    fn resolve_subagent_skills_unions_session_actives() {
+        let dir = tempfile::tempdir().unwrap();
+        write_skill(dir.path(), "a", "a");
+        write_skill(dir.path(), "b", "b");
+        write_skill(dir.path(), "c", "c");
+        let mut mgr = SkillManager::new(dir.path().to_path_buf());
+        mgr.scan().unwrap();
+        mgr.activate_for(Some("sess"), "b");
+        mgr.activate_for(Some("other"), "c");
+
+        let resolved = mgr.resolve_subagent_skills(
+            &[String::from("a"), String::from("b")],
+            Some("sess"),
+        );
+        assert_eq!(resolved, vec!["a".to_string(), "b".to_string()]);
+
+        let resolved2 = mgr.resolve_subagent_skills(&[String::from("a")], Some("sess"));
+        assert_eq!(resolved2, vec!["a".to_string(), "b".to_string()]);
+        // other session's active not inherited
+        assert!(!resolved2.contains(&"c".to_string()));
+    }
+
+    #[test]
+    fn catalog_active_does_not_only_push_skill_load() {
+        let dir = tempfile::tempdir().unwrap();
+        write_skill(dir.path(), "x", "x");
+        let mut mgr = SkillManager::new(dir.path().to_path_buf());
+        mgr.scan().unwrap();
+        mgr.activate("x");
+        let catalog = mgr.build_catalog();
+        assert!(catalog.contains("[ACTIVE]"));
+        assert!(catalog.contains("do not call `skill_load` again"));
     }
 }

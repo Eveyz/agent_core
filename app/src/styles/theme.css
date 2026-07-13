@@ -4,6 +4,9 @@
 
 /* ── Dark Theme (default) ───────────────────────────────────────── */
 :root {
+  /* Tell the browser to use dark native form controls (select, scrollbars, etc.) */
+  color-scheme: dark;
+
   /* ── Primitive Palette ── */
   --gray-50:  #fafafa;
   --gray-100: #f4f4f5;
@@ -190,6 +193,8 @@
 
 /* ── Light Theme ────────────────────────────────────────────────── */
 [data-theme="light"] {
+  color-scheme: light;
+
   /* ── Primitive Palette ── */
   --gray-50:  #fafafa;
   --gray-100: #f4f4f5;

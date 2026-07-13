@@ -134,6 +134,7 @@ impl Run {
         }
 
         // Skill auto-trigger: check user message against skill triggers and @skill: tags
+        let mut skill_misses: Vec<String> = Vec::new();
         if let Some(ref sm) = self.brain.skill_manager {
             let mut mgr = sm.lock();
             let sid = self.session_id.as_deref();
@@ -146,13 +147,15 @@ impl Run {
                 mgr.activate_for(sid, &name);
             }
 
-            // Also explicitly activate any skills tagged with @skill:name
-            for word in user_input.split_whitespace() {
-                if let Some(skill_name) = word.strip_prefix("@skill:") {
-                    let clean_name = skill_name.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-');
-                    mgr.activate_for(sid, clean_name);
-                }
-            }
+            let (_activated, missing) = mgr.activate_mentions_in(sid, user_input);
+            skill_misses = missing;
+        }
+        for name in skill_misses {
+            self.emit(RunEvent::Error {
+                message: format!(
+                    "Skill '{name}' not found; use skill_list to see available skills."
+                ),
+            });
         }
 
         // /goal clear — drop session-level pin for this Run (persistence cleared by Tauri).
@@ -386,6 +389,20 @@ impl Run {
                     self.resolve_input(&prompt_id, &answer);
                 }
                 RunCommand::FollowUp { message } => {
+                    let mut skill_misses: Vec<String> = Vec::new();
+                    if let Some(ref sm) = self.brain.skill_manager {
+                        let mut mgr = sm.lock();
+                        let sid = self.session_id.as_deref();
+                        let (_activated, missing) = mgr.activate_mentions_in(sid, &message);
+                        skill_misses = missing;
+                    }
+                    for name in skill_misses {
+                        self.emit(RunEvent::Error {
+                            message: format!(
+                                "Skill '{name}' not found; use skill_list to see available skills."
+                            ),
+                        });
+                    }
                     self.follow_up_queue.push_back(Message::user(&message));
                 }
                 RunCommand::ClearQueues => {
@@ -432,6 +449,21 @@ impl Run {
                 steer_id: entry.id.clone(),
                 message: entry.raw_text.clone(),
             });
+            // Activate @skill: mentions in steer text the same as initial input.
+            let mut skill_misses: Vec<String> = Vec::new();
+            if let Some(ref sm) = self.brain.skill_manager {
+                let mut mgr = sm.lock();
+                let sid = self.session_id.as_deref();
+                let (_activated, missing) = mgr.activate_mentions_in(sid, &entry.raw_text);
+                skill_misses = missing;
+            }
+            for name in skill_misses {
+                self.emit(RunEvent::Error {
+                    message: format!(
+                        "Skill '{name}' not found; use skill_list to see available skills."
+                    ),
+                });
+            }
             self.context.add(entry.message);
             return Ok(true);
         }
@@ -471,6 +503,20 @@ impl Run {
                     self.resolve_input(&prompt_id, &answer);
                 }
                 Some(RunCommand::FollowUp { message }) => {
+                    let mut skill_misses: Vec<String> = Vec::new();
+                    if let Some(ref sm) = self.brain.skill_manager {
+                        let mut mgr = sm.lock();
+                        let sid = self.session_id.as_deref();
+                        let (_activated, missing) = mgr.activate_mentions_in(sid, &message);
+                        skill_misses = missing;
+                    }
+                    for name in skill_misses {
+                        self.emit(RunEvent::Error {
+                            message: format!(
+                                "Skill '{name}' not found; use skill_list to see available skills."
+                            ),
+                        });
+                    }
                     self.follow_up_queue.push_back(Message::user(&message));
                 }
                 Some(RunCommand::ClearQueues) => {

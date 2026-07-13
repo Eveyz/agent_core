@@ -117,7 +117,7 @@
       "noDescription": "暂无说明描述",
       "name": "名称",
       "description": "描述说明",
-      "noTodoItems": "暂无待办事项。请使用 todo_write 创建计划。",
+      "noTodoItems": "暂无待办事项。",
       "labels": {
         "calling": "正在调用工具...",
         "called": "已调用工具",
@@ -155,6 +155,10 @@
         "updatingTasks_plural": "正在更新 {{count}} 个任务",
         "updatedTasks": "已更新 {{count}} 个任务",
         "updatedTasks_plural": "已更新 {{count}} 个任务",
+        "callingMcp": "正在调用 {{count}} 个 MCP 工具",
+        "callingMcp_plural": "正在调用 {{count}} 个 MCP 工具",
+        "calledMcp": "已调用 {{count}} 个 MCP 工具",
+        "calledMcp_plural": "已调用 {{count}} 个 MCP 工具",
         "callingOthers": "正在调用 {{count}} 个其他工具",
         "callingOthers_plural": "正在调用 {{count}} 个其他工具",
         "calledOthers": "已调用 {{count}} 个其他工具",
@@ -184,9 +188,26 @@
         "searchMemoryQuery": "搜索记忆 \"{{query}}\"",
         "searchMemory": "搜索记忆",
         "searchConversationQuery": "搜索对话 \"{{query}}\"",
-        "searchConversation": "搜索对话"
+        "searchConversation": "搜索对话",
+        "callingMcp": "正在调用 MCP {{server}} · {{tool}}",
+        "calledMcp": "已调用 MCP {{server}} · {{tool}}",
+        "callingMcpSimple": "正在调用 MCP {{tool}}",
+        "calledMcpSimple": "已调用 MCP {{tool}}"
       }
     }
+  },
+  "timeAgo": {
+    "justNow": "刚刚",
+    "minutes": "{{count}}分钟前",
+    "minutes_plural": "{{count}}分钟前",
+    "hours": "{{count}}小时前",
+    "hours_plural": "{{count}}小时前",
+    "days": "{{count}}天前",
+    "days_plural": "{{count}}天前",
+    "months": "{{count}}个月前",
+    "months_plural": "{{count}}个月前",
+    "years": "{{count}}年前",
+    "years_plural": "{{count}}年前"
   },
   "sidebar": {
     "chat": "对话",
@@ -207,7 +228,11 @@
     "projectsSection": {
       "noProjects": "暂无项目。点击上方文件夹图标添加一个项目。",
       "emptySessions": "暂无会话。",
-      "noChats": "暂无会话。点击上方加号图标开始新的会话。"
+      "noChats": "暂无会话。点击上方加号图标开始新的会话。",
+      "untitledSession": "未命名",
+      "seeAll": "查看全部 ({{count}})",
+      "viewLess": "收起",
+      "deleteSession": "删除会话"
     },
     "actions": {
       "rename": "重命名",

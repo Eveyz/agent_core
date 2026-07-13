@@ -54,8 +54,8 @@ switching to Build mode to execute it.",
             Self::Build => "\
 MODE: Build — Full access.
 You can read, write, edit files, execute shell commands, commit
-to git, create plans, and spawn subagents. Use todo_write
-for complex multi-step tasks.",
+to git, create plans, and spawn subagents. Skip todo_write for
+simple 1–2 step tasks; use it only for complex multi-step work.",
         }
     }
 

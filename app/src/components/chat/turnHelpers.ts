@@ -12,6 +12,32 @@ export function isSubagentTool(b: TurnBlock): boolean {
   return b.type === 'tool' && SUBAGENT_TOOL_NAMES.includes(b.name);
 }
 
+/** MCP tools: internal `mcp__server__tool`, API-sanitized `mcp_server_tool`. */
+export function isMcpToolName(name: string): boolean {
+  return name.startsWith('mcp_');
+}
+
+/**
+ * Parse MCP tool name into server + tool when possible.
+ * Prefer `mcp__server__tool`; sanitized `mcp_…` form cannot reliably split
+ * server/tool, so the remainder is returned as `tool` with empty `server`.
+ */
+export function parseMcpToolName(name: string): { server: string; tool: string } | null {
+  if (!name.startsWith('mcp_')) return null;
+
+  if (name.startsWith('mcp__')) {
+    const rest = name.slice('mcp__'.length);
+    const sep = rest.indexOf('__');
+    if (sep > 0 && sep < rest.length - 2) {
+      return { server: rest.slice(0, sep), tool: rest.slice(sep + 2) };
+    }
+  }
+
+  const rest = name.slice('mcp_'.length);
+  if (!rest) return null;
+  return { server: '', tool: rest };
+}
+
 export function isSubagentRefBlock(b: TurnBlock): b is SubagentRefBlock {
   return b.type === 'subagent_ref';
 }
@@ -250,11 +276,19 @@ export function generateSmartToolsLabel(
   }
 
   let taskCount = 0;
+  let mcpCount = 0;
   let otherCount = 0;
+  const knownBuiltin = [
+    'edit', 'write_file', 'write_to_file', 'read_file', 'tavily_search', 'webfetch',
+    'shell', 'bash', 'grep_search', 'grep', 'glob_search', 'glob',
+    'archival_memory_search', 'conversation_search', 'conversation_search_date',
+  ];
   for (const [name, count] of Object.entries(counts)) {
     if (name.startsWith('todo_')) {
       taskCount += count;
-    } else if (!['edit', 'write_file', 'write_to_file', 'read_file', 'tavily_search', 'webfetch', 'shell', 'bash', 'grep_search', 'grep', 'glob_search', 'glob', 'archival_memory_search', 'conversation_search', 'conversation_search_date'].includes(name)) {
+    } else if (isMcpToolName(name)) {
+      mcpCount += count;
+    } else if (!knownBuiltin.includes(name)) {
       otherCount += count;
     }
   }
@@ -263,6 +297,12 @@ export function generateSmartToolsLabel(
     const key = isExecuting ? 'updatingTasks' : 'updatedTasks';
     const suffix = taskCount > 1 ? '_plural' : '';
     parts.push(t(`chat.tools.labels.${key}${suffix}`, { count: taskCount }));
+  }
+
+  if (mcpCount > 0) {
+    const key = isExecuting ? 'callingMcp' : 'calledMcp';
+    const suffix = mcpCount > 1 ? '_plural' : '';
+    parts.push(t(`chat.tools.labels.${key}${suffix}`, { count: mcpCount }));
   }
 
   if (otherCount > 0 || parts.length === 0) {

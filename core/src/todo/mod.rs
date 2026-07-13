@@ -269,7 +269,7 @@ impl TodoList {
 
     pub fn to_context_string(&self) -> String {
         if self.items.is_empty() {
-            return "No todo items. Create a plan with todo_write.".to_string();
+            return "No todo items.".to_string();
         }
 
         let mut out = String::from("== Current Plan ==\n");

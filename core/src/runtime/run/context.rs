@@ -200,10 +200,11 @@ impl Run {
 
         // Segment 6: LOADED SKILLS — catalog + active skill content
         if let Some(ref sm) = self.brain.skill_manager {
-            let mgr = sm.lock();
+            let mut mgr = sm.lock();
             let sid = self.session_id.as_deref();
             let catalog = mgr.build_catalog_for(sid);
             let active = mgr.build_active_context_for(sid);
+            let notes = mgr.drain_notes(sid);
             let mut skills_str = String::new();
             if !catalog.is_empty() {
                 skills_str.push_str(&catalog);
@@ -213,6 +214,15 @@ impl Run {
                     skills_str.push_str("\n\n");
                 }
                 skills_str.push_str(&active);
+            }
+            if !notes.is_empty() {
+                if !skills_str.is_empty() {
+                    skills_str.push_str("\n\n");
+                }
+                skills_str.push_str("### Skill activation notes\n");
+                for note in notes {
+                    skills_str.push_str(&format!("- {note}\n"));
+                }
             }
             if !skills_str.is_empty() {
                 self.context.set_loaded_skills(&skills_str);

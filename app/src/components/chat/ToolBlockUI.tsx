@@ -6,6 +6,7 @@ import { MarkdownContent } from './MarkdownContent';
 import { CodeBlock } from './CodeBlock';
 import { useTranslation } from 'react-i18next';
 import { getToolIcon } from './toolIcons';
+import { parseMcpToolName } from './turnHelpers';
 import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
 import CopyIcon from 'lucide-react/dist/esm/icons/copy.mjs';
 import CheckCircleIcon from 'lucide-react/dist/esm/icons/check-circle.mjs';
@@ -149,7 +150,7 @@ function MemorySearchResults({ result }: { result: string }) {
 
 function TodoResultDisplay({ result }: { result: string }) {
   const { t } = useTranslation();
-  if (result.trim() === "No todo items. Create a plan with todo_write.") {
+  if (result.trim().startsWith("No todo items.")) {
     return <div className="tool-result-content" style={{ padding: '12px 16px', color: 'var(--text-muted)' }}>{t('chat.tools.noTodoItems')}</div>;
   }
   const parsed = parseTodoResult(result);
@@ -314,6 +315,17 @@ const ToolBlockUI = memo(function ToolBlockUI({
     } else if (name === 'conversation_search') {
       const query = (args as Record<string, unknown> | undefined)?.query as string | undefined;
       return query ? t('chat.tools.display.searchConversationQuery', { query }) : t('chat.tools.display.searchConversation');
+    }
+    const mcp = parseMcpToolName(name);
+    if (mcp) {
+      if (mcp.server) {
+        return active
+          ? t('chat.tools.display.callingMcp', { server: mcp.server, tool: mcp.tool })
+          : t('chat.tools.display.calledMcp', { server: mcp.server, tool: mcp.tool });
+      }
+      return active
+        ? t('chat.tools.display.callingMcpSimple', { tool: mcp.tool })
+        : t('chat.tools.display.calledMcpSimple', { tool: mcp.tool });
     }
     return name;
   }, [name, args, active, result, t, phase, hint_path]);

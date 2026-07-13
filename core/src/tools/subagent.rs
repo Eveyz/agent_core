@@ -19,6 +19,7 @@ pub fn register_subagent_tools(
     supervisor: Option<Arc<Mutex<crate::runtime::supervisor::ProcessSupervisor>>>,
     cancel_token: Option<tokio_util::sync::CancellationToken>,
     parent_depth: u8,
+    skill_manager: Option<Arc<Mutex<crate::skills::SkillManager>>>,
 ) {
     let parent_max_iterations = model_config.max_iterations;
     let mut single = SubagentSpawnTool::new(
@@ -37,6 +38,10 @@ pub fn register_subagent_tools(
         parent_max_iterations,
     )
     .with_parent_depth(parent_depth);
+    if let Some(ref sm) = skill_manager {
+        single = single.with_skill_manager(sm.clone());
+        spawn_all = spawn_all.with_skill_manager(sm.clone());
+    }
     if let Some(sv) = supervisor {
         single = single.with_supervisor(sv.clone());
         spawn_all = spawn_all.with_supervisor(sv);
@@ -69,6 +74,30 @@ pub fn re_wire_subagent_tools(
     cancel_token: Option<tokio_util::sync::CancellationToken>,
     parent_depth: u8,
 ) {
+    re_wire_subagent_tools_with_skills(
+        registry,
+        model_config,
+        session_mgr,
+        permission_config,
+        supervisor,
+        cancel_token,
+        parent_depth,
+        None,
+    );
+}
+
+/// Like [`re_wire_subagent_tools`], but also wires a shared [`SkillManager`]
+/// so spawned subagents inherit parent session actives.
+pub fn re_wire_subagent_tools_with_skills(
+    registry: &mut ToolRegistry,
+    model_config: ModelConfig,
+    session_mgr: Option<Arc<Mutex<SessionManager>>>,
+    permission_config: PermissionConfig,
+    supervisor: Option<Arc<Mutex<crate::runtime::supervisor::ProcessSupervisor>>>,
+    cancel_token: Option<tokio_util::sync::CancellationToken>,
+    parent_depth: u8,
+    skill_manager: Option<Arc<Mutex<crate::skills::SkillManager>>>,
+) {
     if !registry.has("subagent") && !registry.has("subagents") {
         return;
     }
@@ -87,6 +116,7 @@ pub fn re_wire_subagent_tools(
         supervisor,
         cancel_token,
         parent_depth,
+        skill_manager,
     );
 }
 
@@ -104,6 +134,7 @@ pub(crate) struct SubagentSpawnTool {
     /// spawns a subagent, the child gets `parent_depth + 1` and the spawn
     /// is refused past `MAX_SUBAGENT_DEPTH`.
     parent_depth: u8,
+    skill_manager: Option<Arc<Mutex<crate::skills::SkillManager>>>,
 }
 
 impl SubagentSpawnTool {
@@ -123,6 +154,7 @@ impl SubagentSpawnTool {
             supervisor: None,
             cancel_token: None,
             parent_depth: 0,
+            skill_manager: None,
         }
     }
 
@@ -138,6 +170,11 @@ impl SubagentSpawnTool {
 
     pub fn with_parent_depth(mut self, depth: u8) -> Self {
         self.parent_depth = depth;
+        self
+    }
+
+    pub fn with_skill_manager(mut self, sm: Arc<Mutex<crate::skills::SkillManager>>) -> Self {
+        self.skill_manager = Some(sm);
         self
     }
 }
@@ -214,6 +251,7 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
             self.supervisor.clone(),
             self.cancel_token.clone(),
             self.parent_depth,
+            self.skill_manager.clone(),
         )
         .await?;
 
@@ -246,6 +284,7 @@ pub(crate) struct SubagentSpawnAllTool {
     cancel_token: Option<tokio_util::sync::CancellationToken>,
     /// Recursion depth of the agent that owns this tool.
     parent_depth: u8,
+    skill_manager: Option<Arc<Mutex<crate::skills::SkillManager>>>,
 }
 
 impl SubagentSpawnAllTool {
@@ -265,6 +304,7 @@ impl SubagentSpawnAllTool {
             supervisor: None,
             cancel_token: None,
             parent_depth: 0,
+            skill_manager: None,
         }
     }
 
@@ -280,6 +320,11 @@ impl SubagentSpawnAllTool {
 
     pub fn with_parent_depth(mut self, depth: u8) -> Self {
         self.parent_depth = depth;
+        self
+    }
+
+    pub fn with_skill_manager(mut self, sm: Arc<Mutex<crate::skills::SkillManager>>) -> Self {
+        self.skill_manager = Some(sm);
         self
     }
 }
@@ -391,6 +436,7 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
             let sv_clone = self.supervisor.clone();
             let ct_clone = self.cancel_token.clone();
             let parent_depth = self.parent_depth;
+            let skill_manager = self.skill_manager.clone();
 
             join_set.spawn(async move {
                 let args = serde_json::json!({
@@ -411,6 +457,7 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                     sv_clone,
                     ct_clone,
                     parent_depth,
+                    skill_manager,
                 )
                 .await;
 
@@ -855,7 +902,9 @@ async fn spawn_single(
     supervisor: Option<Arc<Mutex<crate::runtime::supervisor::ProcessSupervisor>>>,
     cancel_token: Option<tokio_util::sync::CancellationToken>,
     parent_depth: u8,
+    skill_manager: Option<Arc<Mutex<crate::skills::SkillManager>>>,
 ) -> Result<(SpawnResult, Vec<crate::types::Message>)> {
+    use crate::skills::SkillManager;
     use crate::subagent::MAX_SUBAGENT_DEPTH;
 
     let id = args["id"]
@@ -925,7 +974,33 @@ Do NOT attempt to read or process image files.";
     // because the process CWD is often a nested directory (e.g. app/) while
     // sibling crates (core/, cli/) live at the workspace level.
     let ws_root = workspace_root.to_string_lossy().to_string();
-    let system_prompt = format!("{system_prompt}\n\nWorking Directory: {ws_root}");
+    let mut system_prompt = format!("{system_prompt}\n\nWorking Directory: {ws_root}");
+
+    let session_id = args.get("_session_id").and_then(|v| v.as_str());
+
+    // Inherit parent session actives ∪ any declared skills on the spawn args.
+    let declared: Vec<String> = args
+        .get("skills")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let effective_skills = if let Some(ref sm) = skill_manager {
+        let mgr = sm.lock();
+        mgr.resolve_subagent_skills(&declared, session_id)
+    } else {
+        declared
+    };
+    if !effective_skills.is_empty() {
+        system_prompt = SkillManager::inject_skill_content_into(
+            skill_manager.as_ref(),
+            &effective_skills,
+            &system_prompt,
+        );
+    }
 
     let max_iterations = args["max_iterations"].as_u64().unwrap_or(parent_max_iterations as u64) as usize;
 
@@ -986,7 +1061,15 @@ Do NOT attempt to read or process image files.";
     let tool_count = final_tool_names.len();
 
     // Build real ToolRegistry with factory
-    let tool_registry = ToolRegistry::from_names(&final_tool_names);
+    let mut tool_registry = ToolRegistry::from_names(&final_tool_names);
+    if !effective_skills.is_empty() {
+        SkillManager::sync_skill_scripts_for_skills(
+            skill_manager.as_ref(),
+            &effective_skills,
+            &mut tool_registry,
+            supervisor.clone(),
+        );
+    }
 
     let config = SubagentConfig {
         system_prompt,
@@ -998,10 +1081,9 @@ Do NOT attempt to read or process image files.";
         result_strategy,
         working_dir: Some(workspace_root.clone()),
         recursion_depth: child_depth,
+        skills: effective_skills,
         ..SubagentConfig::default()
     };
-
-    let session_id = args.get("_session_id").and_then(|v| v.as_str()).map(|s| s.to_string());
 
     let mut subagent = Subagent::new(
         id,
@@ -1010,7 +1092,7 @@ Do NOT attempt to read or process image files.";
         tool_registry,
         permission_config.clone(),
     );
-    subagent.session_id = session_id;
+    subagent.session_id = session_id.map(|s| s.to_string());
     if let Some(sv) = supervisor {
         subagent = subagent.with_supervisor(sv);
     }

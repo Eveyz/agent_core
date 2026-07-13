@@ -831,6 +831,10 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
     case 'tool_ended':
       if (ev.subagent_id) handleSubagentToolEnd(state, sessionId, ev.subagent_id, ev.call_id ?? '', ev.result ?? '', ev.is_error ?? false);
       else handleToolEnd(state, sessionId, ev.call_id ?? '', ev.result ?? '', ev.is_error ?? false);
+      // skill_reload rescans Brain — drop Redux TTL so the selector refreshes.
+      if (ev.name === 'skill_reload' && !ev.is_error) {
+        state.skillsCache = null;
+      }
       break;
     case 'approval_required':
       if (ev.subagent_id) handleSubagentApprovalRequired(state, sessionId, ev.subagent_id, ev.prompt_id ?? '', ev.tool_name ?? '', ev.tool_input, ev.danger_level ?? '', ev.explanation ?? '');

@@ -55,21 +55,11 @@ Later (context grows large):
         效果: 保留前 4000 chars + "[... truncated from N chars]"
 ```
 
-### Path B: Auto-Trigger (Segment 6) — Secondary Concern
+### Path B: Auto-Trigger (Segment 6) — Fixed by PLAN-0012
 
-```
-run.rs: refresh_context_segments()
-  → check_triggers(user_input) → find_by_triggers()
-  → mgr.load_content() → full body
-  → ctx.set_loaded_skills(text) → Segment 6
-  ↓
-Turn N:
-  context.messages()
-    → assemble_context_injection()
-      → seg.assemble() for "loaded_skills"
-        → truncate_to_token_budget(&content, 500)  [500 tokens ≈ 2000 chars]
-```
+`loaded_skills.max_tokens` is now **0** (unlimited). Auto-injected catalog + active skill bodies are no longer hard-truncated at assemble time. Global `maybe_compact` remains the safety net.
 
+~~Previously: truncate_to_token_budget(..., 2000)~~
 ## 3. Root Cause
 
 | Layer | Location | Budget | Effect on skill_load |

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 import { SessionMeta } from "../../features/project/projectSlice";
 import { formatTimeAgo } from "../../utils/time";
 import TrashIcon from "lucide-react/dist/esm/icons/trash.mjs";
@@ -22,6 +23,7 @@ function SessionContextMenu({
   sessionId: string;
   onDelete: (sessionId: string) => void;
 }) {
+  const { t } = useTranslation();
   const { open, setOpen, pos, setPos } = useContextMenu();
 
   return (
@@ -52,7 +54,7 @@ function SessionContextMenu({
                 onDelete(sessionId);
               }}
             >
-              <TrashIcon size={13} /> Delete
+              <TrashIcon size={13} /> {t("sidebar.actions.delete")}
             </div>
           </div>
         </>
@@ -72,13 +74,15 @@ interface SessionRowProps {
 }
 
 function SessionRow({ session, isActive, isProcessing, onSelect, onDelete }: SessionRowProps) {
+  const { t } = useTranslation();
+
   return (
     <div
       className={`session-row ${isActive ? "session-row-active" : ""}`}
       onClick={() => onSelect(session.id)}
     >
       <span className="session-row-text">
-        {session.title || "Untitled"}
+        {session.title || t("sidebar.projectsSection.untitledSession")}
       </span>
       <span className="session-row-time">
         {isProcessing ? (
@@ -98,7 +102,7 @@ function SessionRow({ session, isActive, isProcessing, onSelect, onDelete }: Ses
             e.stopPropagation();
             onDelete(session.id);
           }}
-          title="Delete session"
+          title={t("sidebar.projectsSection.deleteSession")}
         >
           <TrashIcon size={12} />
         </button>
@@ -129,6 +133,7 @@ export function SessionList({
   onDeleteSession,
   paddingLeft,
 }: SessionListProps) {
+  const { t } = useTranslation();
   const maxInitial = 6;
   const [fullyExpanded, setFullyExpanded] = useState(false);
 
@@ -165,7 +170,7 @@ export function SessionList({
           style={paddingLeft ? { paddingLeft } : undefined}
           onClick={() => setFullyExpanded(true)}
         >
-          See all ({hiddenCount})
+          {t("sidebar.projectsSection.seeAll", { count: hiddenCount })}
         </div>
       )}
       {fullyExpanded && hiddenCount > 0 && (
@@ -174,7 +179,7 @@ export function SessionList({
           style={paddingLeft ? { paddingLeft } : undefined}
           onClick={() => setFullyExpanded(false)}
         >
-          View less
+          {t("sidebar.projectsSection.viewLess")}
         </div>
       )}
     </>

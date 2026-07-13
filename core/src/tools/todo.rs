@@ -76,10 +76,11 @@ impl Tool for TodoWriteTool {
     }
 
     fn description(&self) -> &str {
-        "Create or update the todo plan. By default MERGES with existing progress \
-         (completed/in_progress items with the same description are preserved). \
-         Pass force=true only when you must fully replace the plan (wipes statuses). \
-         Prefer todo_update to advance steps; do not replan every turn."
+        "Create or update a todo plan for complex multi-step work only. \
+         Skip this tool for simple 1–2 step tasks — just execute with other tools. \
+         By default MERGES with existing progress (completed/in_progress items with the \
+         same description are preserved). Pass force=true only when you must fully replace \
+         the plan (wipes statuses). Prefer todo_update to advance steps; do not replan every turn."
     }
 
     fn parameters_schema(&self) -> Value {

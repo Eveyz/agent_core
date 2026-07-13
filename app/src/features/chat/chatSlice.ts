@@ -672,6 +672,9 @@ export const chatSlice = createSlice({
 
   },
   extraReducers: (builder) => {
+    builder.addCase(invalidateSkillsCache.fulfilled, (state) => {
+      state.skillsCache = null;
+    });
     builder.addCase(resumeSession.pending, (state, action) => {
       const sessionId = action.meta.arg;
       state.isResuming[sessionId] = true;

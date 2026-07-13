@@ -117,7 +117,7 @@
       "noDescription": "No description available",
       "name": "Name",
       "description": "Description",
-      "noTodoItems": "No todo items. Create a plan with todo_write.",
+      "noTodoItems": "No todo items.",
       "labels": {
         "calling": "Calling tool...",
         "called": "Called tool",
@@ -155,6 +155,10 @@
         "updatingTasks_plural": "Updating {{count}} tasks",
         "updatedTasks": "Updated {{count}} task",
         "updatedTasks_plural": "Updated {{count}} tasks",
+        "callingMcp": "calling {{count}} MCP tool",
+        "callingMcp_plural": "calling {{count}} MCP tools",
+        "calledMcp": "called {{count}} MCP tool",
+        "calledMcp_plural": "called {{count}} MCP tools",
         "callingOthers": "calling {{count}} other tool",
         "callingOthers_plural": "calling {{count}} other tools",
         "calledOthers": "called {{count}} other tool",
@@ -184,9 +188,26 @@
         "searchMemoryQuery": "Search memory \"{{query}}\"",
         "searchMemory": "Search memory",
         "searchConversationQuery": "Search conversation \"{{query}}\"",
-        "searchConversation": "Search conversation"
+        "searchConversation": "Search conversation",
+        "callingMcp": "Calling MCP {{server}} · {{tool}}",
+        "calledMcp": "Called MCP {{server}} · {{tool}}",
+        "callingMcpSimple": "Calling MCP {{tool}}",
+        "calledMcpSimple": "Called MCP {{tool}}"
       }
     }
+  },
+  "timeAgo": {
+    "justNow": "Just now",
+    "minutes": "{{count}} minute ago",
+    "minutes_plural": "{{count}} minutes ago",
+    "hours": "{{count}} hour ago",
+    "hours_plural": "{{count}} hours ago",
+    "days": "{{count}} day ago",
+    "days_plural": "{{count}} days ago",
+    "months": "{{count}} month ago",
+    "months_plural": "{{count}} months ago",
+    "years": "{{count}} year ago",
+    "years_plural": "{{count}} years ago"
   },
   "sidebar": {
     "chat": "Chat",
@@ -207,7 +228,11 @@
     "projectsSection": {
       "noProjects": "No projects yet. Click the folder icon above to add one.",
       "emptySessions": "No sessions yet.",
-      "noChats": "No chats yet. Click the plus icon above to start one."
+      "noChats": "No chats yet. Click the plus icon above to start one.",
+      "untitledSession": "Untitled",
+      "seeAll": "See all ({{count}})",
+      "viewLess": "View less",
+      "deleteSession": "Delete session"
     },
     "actions": {
       "rename": "Rename",

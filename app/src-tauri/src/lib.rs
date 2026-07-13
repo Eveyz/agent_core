@@ -1118,26 +1118,40 @@ static SKILL_CACHE: Mutex<Option<(Instant, Vec<agent_core::skills::manifest::Ski
 const SKILL_CACHE_TTL: u64 = 30; // seconds
 
 #[tauri::command]
-async fn get_skills() -> Result<Vec<agent_core::skills::manifest::SkillManifest>, String> {
-    // Check cache hit
+async fn get_skills(state: State<'_, AppState>) -> Result<Vec<agent_core::skills::manifest::SkillManifest>, String> {
+    // Prefer Brain's SkillManager (runtime source of truth) over a separate scan.
+    {
+        let run_manager = state.run_manager.lock().await;
+        if let Some(ref sm) = run_manager.brain().skill_manager {
+            let mgr = sm.lock();
+            let skills: Vec<_> = mgr.list().into_iter().cloned().collect();
+            *SKILL_CACHE.lock() = Some((Instant::now(), skills.clone()));
+            return Ok(skills);
+        }
+    }
+
+    // Fallback: independent scan (Brain has no skill_manager).
     if let Some((cached_at, cached)) = SKILL_CACHE.lock().as_ref() {
         if cached_at.elapsed().as_secs() < SKILL_CACHE_TTL {
             return Ok(cached.clone());
         }
     }
-    // Cache miss — scan from disk
     let mut manager = agent_core::skills::SkillManager::with_defaults();
     manager.scan().map_err(|e| e.to_string())?;
     let skills: Vec<agent_core::skills::manifest::SkillManifest> = manager.list().into_iter().cloned().collect();
-    // Update cache
     *SKILL_CACHE.lock() = Some((Instant::now(), skills.clone()));
     Ok(skills)
 }
 
 #[tauri::command]
-fn invalidate_skills_cache() -> Result<(), String> {
-    // Clear the cache
+async fn invalidate_skills_cache(state: State<'_, AppState>) -> Result<(), String> {
     *SKILL_CACHE.lock() = None;
+    // Rescan Brain so newly installed skills are activatable without skill_reload.
+    let run_manager = state.run_manager.lock().await;
+    if let Some(ref sm) = run_manager.brain().skill_manager {
+        let mut mgr = sm.lock();
+        let _ = mgr.reload_preserving_active().map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -1454,7 +1468,7 @@ async fn run_agent_standalone(
     use agent_core::runtime::supervisor::ProcessSupervisor;
     use agent_core::skills::SkillManager;
     use agent_core::subagent::Subagent;
-    use agent_core::tools::subagent::re_wire_subagent_tools;
+    use agent_core::tools::subagent::re_wire_subagent_tools_with_skills;
     use agent_core::CancellationToken;
 
     let run_manager = state.run_manager.lock().await;
@@ -1474,10 +1488,17 @@ async fn run_agent_standalone(
 
     // Build runtime components from the Brain.
     let mut subagent_config = agent_core::agent_registry::build_subagent_config(&def);
+    let effective_skills = if let Some(ref sm) = brain.skill_manager {
+        let mgr = sm.lock();
+        mgr.resolve_subagent_skills(&def.skills, session_id.as_deref())
+    } else {
+        def.skills.clone()
+    };
+    subagent_config.skills = effective_skills.clone();
     // Inject skill content into the system prompt (content path).
     subagent_config.system_prompt = SkillManager::inject_skill_content_into(
         brain.skill_manager.as_ref(),
-        &def.skills,
+        &effective_skills,
         &subagent_config.system_prompt,
     );
 
@@ -1501,7 +1522,7 @@ async fn run_agent_standalone(
 
     // Re-wire subagent meta tools with our supervisor + cancel so spawned
     // grand-subagents are cancellable. (depth 0: standalone agent itself).
-    re_wire_subagent_tools(
+    re_wire_subagent_tools_with_skills(
         &mut registry,
         model_config.clone(),
         None,
@@ -1509,6 +1530,7 @@ async fn run_agent_standalone(
         Some(supervisor.clone()),
         Some(cancel_token.clone()),
         0,
+        brain.skill_manager.clone(),
     );
 
     // Ensure ShellTool (when present) is the supervised version.
@@ -1518,11 +1540,10 @@ async fn run_agent_standalone(
         ));
     }
 
-    // P0-3: register script tools ONLY for the agent's declared skills
-    // (Brain active_skills deliberately NOT inherited).
+    // Register script tools for declared skills ∪ session actives.
     SkillManager::sync_skill_scripts_for_skills(
         brain.skill_manager.as_ref(),
-        &def.skills,
+        &effective_skills,
         &mut registry,
         Some(supervisor.clone()),
     );
@@ -1838,7 +1859,7 @@ async fn list_skill_drafts() -> Result<Vec<agent_core::agent_registry::SkillDraf
 }
 
 #[tauri::command]
-async fn approve_skill_draft(name: String) -> Result<(), String> {
+async fn approve_skill_draft(state: State<'_, AppState>, name: String) -> Result<(), String> {
     let drafts_dir = skill_drafts_dir();
     let skills_dir = user_skills_dir();
     tokio::task::spawn_blocking(move || {
@@ -1846,7 +1867,9 @@ async fn approve_skill_draft(name: String) -> Result<(), String> {
             .map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| format!("approve_skill_draft task failed: {e}"))?
+    .map_err(|e| format!("approve_skill_draft task failed: {e}"))??;
+    // Keep UI + Brain in sync after promoting a draft.
+    invalidate_skills_cache(state).await
 }
 
 #[tauri::command]
