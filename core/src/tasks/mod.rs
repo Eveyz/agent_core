@@ -500,7 +500,7 @@ impl Tool for TaskExecuteTool {
                 "tools": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Tools to give the sub-agent (default: read_file, glob, grep, bash)"
+                    "description": "Tools to give the sub-agent (default: read_file, glob, grep, shell)"
                 },
                 "system_prompt": {
                     "type": "string",
@@ -528,7 +528,7 @@ impl Tool for TaskExecuteTool {
                     "read_file".to_string(),
                     "glob".to_string(),
                     "grep".to_string(),
-                    "bash".to_string(),
+                    "shell".to_string(),
                     "edit".to_string(),
                 ]
             });
@@ -596,7 +596,7 @@ impl Tool for TaskExecuteTool {
         // always the real model output.
         //
         // Each task_execute owns its own ProcessSupervisor + CancellationToken
-        // so the subagent's bash children are process-group isolated and can
+        // so the subagent's shell children are process-group isolated and can
         // be cancelled cleanly. (P0-1: same treatment as workflow agent nodes.)
         use crate::runtime::supervisor::ProcessSupervisor;
 

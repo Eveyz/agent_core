@@ -10,7 +10,7 @@ use crate::context::ContextEngine as Context;
 use crate::memory::{format_recall_results, intent_for_mode, route_recall_intent, RecallIntent, RECALL_HINT};
 use crate::types::{Message, Role};
 
-use super::{Run, RunError};
+use super::Run;
 
 impl Run {
     // ── Context management ────────────────────────────────────────
@@ -201,8 +201,9 @@ impl Run {
         // Segment 6: LOADED SKILLS — catalog + active skill content
         if let Some(ref sm) = self.brain.skill_manager {
             let mgr = sm.lock();
-            let catalog = mgr.build_catalog();
-            let active = mgr.build_active_context();
+            let sid = self.session_id.as_deref();
+            let catalog = mgr.build_catalog_for(sid);
+            let active = mgr.build_active_context_for(sid);
             let mut skills_str = String::new();
             if !catalog.is_empty() {
                 skills_str.push_str(&catalog);
@@ -220,7 +221,8 @@ impl Run {
 
         // Segment 7: EXECUTION PLAN — runtime phase dashboard + todos (+ optional goal)
         {
-            let list = self.brain.todo_list.lock();
+            let todos = self.session_todos();
+            let list = todos.lock();
             self.execution.sync_from_todos(&list);
             let mut plan_str = String::new();
 
@@ -250,13 +252,14 @@ impl Run {
         
         use crate::tools::script::SkillScriptTool;
 
-        let sm = match self.brain.skill_manager.as_ref() {
+        let mgr = match self.brain.skill_manager.as_ref() {
             Some(sm) => sm,
             None => return,
         };
 
-        let mgr = sm.lock();
-        let active_scripts = mgr.get_active_scripts();
+        let mgr = mgr.lock();
+        let sid = self.session_id.as_deref();
+        let active_scripts = mgr.get_active_scripts_for(sid);
 
         // Build the set of tool names we *should* have registered.
         let expected: std::collections::HashSet<String> = active_scripts
@@ -340,19 +343,27 @@ impl Run {
                     return;
                 };
 
-                let results = if let Some(ref emb) = embedding {
+                // Over-fetch then keep only this session's recall — never inject
+                // other sessions' conversations into the active memory segment.
+                let fetch_k = 12;
+                let mut results = if let Some(ref emb) = embedding {
                     guard
-                        .search_conversation_precomputed(emb, query, 3)
+                        .search_conversation_precomputed(emb, query, fetch_k)
                         .unwrap_or_else(|_| {
                             guard
-                                .search_conversation_bm25_with_salience(query, 3)
+                                .search_conversation_bm25_with_salience(query, fetch_k)
                                 .unwrap_or_default()
                         })
                 } else {
                     guard
-                        .search_conversation_bm25_with_salience(query, 3)
+                        .search_conversation_bm25_with_salience(query, fetch_k)
                         .unwrap_or_default()
                 };
+
+                if let Some(ref sid) = self.session_id {
+                    results.retain(|r| r.session_id == *sid);
+                }
+                results.truncate(3);
 
                 let formatted = format_recall_results(&results, 1200);
                 if formatted.is_empty() {

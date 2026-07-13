@@ -228,11 +228,11 @@ export function generateSmartToolsLabel(
     parts.push(t(`chat.tools.labels.${key}${suffix}`, { count: searchCount }));
   }
 
-  const bashCount = counts['bash'] || 0;
-  if (bashCount > 0) {
+  const shellCount = (counts['shell'] || 0) + (counts['bash'] || 0);
+  if (shellCount > 0) {
     const key = isExecuting ? 'runningCommands' : 'ranCommands';
-    const suffix = bashCount > 1 ? '_plural' : '';
-    parts.push(t(`chat.tools.labels.${key}${suffix}`, { count: bashCount }));
+    const suffix = shellCount > 1 ? '_plural' : '';
+    parts.push(t(`chat.tools.labels.${key}${suffix}`, { count: shellCount }));
   }
 
   const grepCount = (counts['grep_search'] || 0) + (counts['grep'] || 0) + (counts['glob_search'] || 0) + (counts['glob'] || 0);
@@ -254,7 +254,7 @@ export function generateSmartToolsLabel(
   for (const [name, count] of Object.entries(counts)) {
     if (name.startsWith('todo_')) {
       taskCount += count;
-    } else if (!['edit', 'write_file', 'write_to_file', 'read_file', 'tavily_search', 'webfetch', 'bash', 'grep_search', 'grep', 'glob_search', 'glob', 'archival_memory_search', 'conversation_search', 'conversation_search_date'].includes(name)) {
+    } else if (!['edit', 'write_file', 'write_to_file', 'read_file', 'tavily_search', 'webfetch', 'shell', 'bash', 'grep_search', 'grep', 'glob_search', 'glob', 'archival_memory_search', 'conversation_search', 'conversation_search_date'].includes(name)) {
       otherCount += count;
     }
   }

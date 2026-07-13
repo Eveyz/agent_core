@@ -69,7 +69,7 @@ function detectShellLanguage(command: string): 'bash' | 'powershell' {
   return 'bash';
 }
 
-/** Parse trailing `[exit code: N]` from bash tool output. */
+/** Parse trailing `[exit code: N]` from shell tool output. */
 function parseExitCode(result: string): number | null {
   const match = result.match(/\[exit code:\s*(-?\d+)\]\s*$/m);
   if (!match) return null;
@@ -189,7 +189,7 @@ const BashWidget = memo(function BashWidget({
   const failed = Boolean(is_error) || (exitCode !== null && exitCode !== 0);
   const outputSections = useMemo(() => parseShellOutputSections(cleanedResult), [cleanedResult]);
 
-  const toolName = name || 'bash';
+  const toolName = name || 'shell';
   let command = (args as Record<string, unknown> | undefined)?.command as string || '';
 
   let customLabel: React.ReactNode = null;

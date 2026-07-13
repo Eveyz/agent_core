@@ -621,10 +621,10 @@ async fn clear_session_goal(
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
 
-    // Clear in-memory Brain todos so the Plan panel empties immediately.
+    // Clear in-memory session todos so the Plan panel empties immediately.
     {
         let manager = state.run_manager.lock().await;
-        manager.brain().todo_list.lock().replace_all(Vec::new());
+        manager.brain().todo_lists.clear_session(&session_id);
     }
     Ok(())
 }
@@ -859,6 +859,13 @@ async fn create_session(state: State<'_, AppState>, project_id: String) -> Resul
 
 #[tauri::command]
 async fn delete_session(state: State<'_, AppState>, session_id: String) -> Result<bool, String> {
+    {
+        let manager = state.run_manager.lock().await;
+        manager.brain().todo_lists.remove_session(&session_id);
+        if let Some(ref sm) = manager.brain().skill_manager {
+            sm.lock().clear_session(&session_id);
+        }
+    }
     let sm = state.session_manager.clone();
     tokio::task::spawn_blocking(move || {
         sm.delete(&session_id).map_err(|e| e.to_string())
@@ -1479,7 +1486,7 @@ async fn run_agent_standalone(
         agent_core::agent_registry::build_permission_config(&def, &brain.config.permissions);
 
     // Standalone agent gets its own ProcessSupervisor + cancel token so:
-    //  - its bash children are process-group isolated and killed on cancel
+    //  - its shell children are process-group isolated and killed on cancel
     //  - any subagent it spawns (path D) inherits the supervisor+cancel
     //    via re_wire_subagent_tools (vs. the Brain-built registry's None,None)
     let supervisor = std::sync::Arc::new(parking_lot::Mutex::new(ProcessSupervisor::new()));
@@ -1504,10 +1511,10 @@ async fn run_agent_standalone(
         0,
     );
 
-    // Ensure BashTool (when present) is the supervised version.
-    if registry.has("bash") {
+    // Ensure ShellTool (when present) is the supervised version.
+    if registry.has("shell") {
         registry.register(Box::new(
-            agent_core::tools::bash::BashTool::with_supervisor(supervisor.clone(), None),
+            agent_core::tools::shell::ShellTool::with_supervisor(supervisor.clone(), None),
         ));
     }
 

@@ -32,7 +32,7 @@ pub struct SupervisedChild {
     /// Process group ID. On Unix this equals the child PID (because we use
     /// `process_group(0)`). `None` on non-Unix or if we failed to get the PID.
     pgid: Option<i32>,
-    /// Human-readable label for debugging / events (e.g. `"bash: cargo build"`).
+    /// Human-readable label for debugging / events (e.g. `"shell: cargo build"`).
     pub label: String,
     /// When the process was spawned.
     pub spawned_at: std::time::Instant,
@@ -117,15 +117,14 @@ impl ProcessSupervisor {
         self.children.len()
     }
 
-    /// Spawn a bash command (`sh -c`) under supervision.
+    /// Spawn a platform shell command under supervision.
     ///
-    /// The command runs in its own process group so that `kill` can terminate
-    /// the entire process tree (including piped commands like `a | b`).
-    pub fn spawn_bash(&mut self, command: &str, cwd: &str) -> Result<String> {
-        let mut cmd = tokio::process::Command::new("sh");
-        cmd.arg("-c")
-            .arg(command)
-            .current_dir(cwd)
+    /// Windows: PowerShell; Unix: `sh -c`. The command runs in its own process
+    /// group (Unix) so that `kill` can terminate the entire process tree
+    /// (including piped commands like `a | b`).
+    pub fn spawn_shell(&mut self, command: &str, cwd: &str) -> Result<String> {
+        let mut cmd = crate::runtime::platform_shell::shell_command(command);
+        cmd.current_dir(cwd)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -133,15 +132,18 @@ impl ProcessSupervisor {
 
         self.apply_process_group(&mut cmd);
 
-        let child = cmd
-            .spawn()
-            .with_context(|| format!("failed to spawn bash command: {command}"))?;
+        let child = cmd.spawn().with_context(|| {
+            format!(
+                "failed to spawn {} command: {command}",
+                crate::runtime::platform_shell::shell_label()
+            )
+        })?;
 
         let pid = child.id();
         let pgid = self.derive_pgid(pid);
 
         let child_id = Uuid::new_v4().to_string();
-        let label = format!("bash: {}", truncate_label(command, 80));
+        let label = format!("shell: {}", truncate_label(command, 80));
 
         tracing::debug!(child_id = %child_id, pid = ?pid, pgid = ?pgid, label = %label, "spawned supervised process");
 
@@ -156,6 +158,12 @@ impl ProcessSupervisor {
         );
 
         Ok(child_id)
+    }
+
+    /// Backward-compatible alias for [`Self::spawn_shell`].
+    #[deprecated(note = "use spawn_shell instead")]
+    pub fn spawn_bash(&mut self, command: &str, cwd: &str) -> Result<String> {
+        self.spawn_shell(command, cwd)
     }
 
     /// Spawn an arbitrary command (used by MCP stdio transport).
@@ -321,11 +329,16 @@ fn truncate_label(s: &str, max: usize) -> &str {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
+    const LONG_SLEEP: &str = "Start-Sleep -Seconds 100";
+    #[cfg(not(windows))]
+    const LONG_SLEEP: &str = "sleep 100";
+
     #[tokio::test]
-    async fn spawn_and_kill_bash() {
+    async fn spawn_and_kill_shell() {
         let mut sup = ProcessSupervisor::new();
-        // `sleep 100` would hang if not killed — we kill it immediately.
-        let id = sup.spawn_bash("sleep 100", ".").unwrap();
+        // Long sleep would hang if not killed — we kill it immediately.
+        let id = sup.spawn_shell(LONG_SLEEP, ".").unwrap();
         assert_eq!(sup.active_count(), 1);
         sup.kill(&id).unwrap();
         assert_eq!(sup.active_count(), 0);
@@ -334,8 +347,8 @@ mod tests {
     #[tokio::test]
     async fn kill_all_clears_everything() {
         let mut sup = ProcessSupervisor::new();
-        let _id1 = sup.spawn_bash("sleep 100", ".").unwrap();
-        let _id2 = sup.spawn_bash("sleep 100", ".").unwrap();
+        let _id1 = sup.spawn_shell(LONG_SLEEP, ".").unwrap();
+        let _id2 = sup.spawn_shell(LONG_SLEEP, ".").unwrap();
         assert_eq!(sup.active_count(), 2);
         sup.kill_all();
         assert_eq!(sup.active_count(), 0);
@@ -344,7 +357,7 @@ mod tests {
     #[tokio::test]
     async fn drop_kills_all_processes() {
         let mut sup = ProcessSupervisor::new();
-        let _id = sup.spawn_bash("sleep 100", ".").unwrap();
+        let _id = sup.spawn_shell(LONG_SLEEP, ".").unwrap();
         assert_eq!(sup.active_count(), 1);
         // Drop should kill the process without hanging.
         drop(sup);
@@ -353,12 +366,12 @@ mod tests {
     #[tokio::test]
     async fn quick_command_completes() {
         let mut sup = ProcessSupervisor::new();
-        let id = sup.spawn_bash("echo hello", ".").unwrap();
+        let id = sup.spawn_shell("echo hello", ".").unwrap();
         let child = sup.get_child(&id).unwrap();
         // Take stdout and read it
         let _stdout = child.take_stdout();
         // Let it finish
-        let _ = child.wait();
+        let _ = child.wait().await;
     }
 
     #[test]

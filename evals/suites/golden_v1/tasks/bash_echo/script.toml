@@ -1,6 +1,6 @@
 [[steps]]
 type = "tool_calls"
-tools = [{ name = "bash", arguments = { command = "echo ok > out.txt" } }]
+tools = [{ name = "shell", arguments = { command = "echo ok > out.txt" } }]
 cache_hit = 30
 cache_miss = 30
 

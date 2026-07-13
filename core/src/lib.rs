@@ -83,7 +83,7 @@ pub use skills::{SkillLoader, SkillManager, SkillManifest};
 pub use subagent::{Subagent, SubagentConfig, SubagentManager, SubagentResult};
 pub use tasks::{TaskBoard, TaskRecord, TaskStatus};
 pub use teams::{AgentTeam, MessageBus, TeamMessage, TeamMessageType};
-pub use todo::{TodoItem, TodoList, TodoStatus};
+pub use todo::{SessionTodoStore, TodoItem, TodoList, TodoStatus};
 pub use trace::TraceCollector;
 pub use worktree::{WorktreeManager, WorktreeRecord, WorktreeStatus};
 pub use rusqlite;

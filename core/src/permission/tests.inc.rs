@@ -17,7 +17,7 @@ mod tests {
     fn test_destructive_command_denied() {
         let mut policy = make_policy();
         let result = policy.check(
-            "bash",
+            "shell",
             r#"{"command":"rm -rf /"}"#,
             Some("rm -rf /"),
             None,
@@ -32,7 +32,7 @@ mod tests {
         // built-in readonly-command whitelist — they no longer prompt.
         let mut policy = make_policy();
         let result = policy.check(
-            "bash",
+            "shell",
             r#"{"command":"ls -la"}"#,
             Some("ls -la"),
             None,
@@ -42,12 +42,12 @@ mod tests {
     }
 
     #[test]
-    fn test_unknown_bash_command_asks_by_default() {
+    fn test_unknown_shell_command_asks_by_default() {
         // Non-readonly, non-destructive commands fall through to the
         // System→Ask catch-all and prompt for approval.
         let mut policy = make_policy();
         let result = policy.check(
-            "bash",
+            "shell",
             r#"{"command":"make build"}"#,
             Some("make build"),
             None,
@@ -60,10 +60,10 @@ mod tests {
     fn test_whitelist_overrides_default() {
         let mut policy = make_policy();
         policy.whitelist_mut().add(WhitelistEntry::new(
-            ToolPermissionPattern::simple("bash"),
+            ToolPermissionPattern::simple("shell"),
             ApprovalScope::Session,
         ));
-        let result = policy.check("bash", r#"{"command":"ls"}"#, Some("ls"), None, None);
+        let result = policy.check("shell", r#"{"command":"ls"}"#, Some("ls"), None, None);
         assert!(result.is_allowed());
     }
 
@@ -72,7 +72,7 @@ mod tests {
         let mut policy = make_policy();
         policy.mode = PermissionMode::Yolo;
         let result = policy.check(
-            "bash",
+            "shell",
             r#"{"command":"rm -rf /"}"#,
             Some("rm -rf /"),
             None,
@@ -93,11 +93,11 @@ mod tests {
     fn test_blacklist_overrides_whitelist() {
         let mut policy = make_policy();
         policy.whitelist_mut().add(WhitelistEntry::new(
-            ToolPermissionPattern::simple("bash"),
+            ToolPermissionPattern::simple("shell"),
             ApprovalScope::Persistent,
         ));
-        policy.blacklist.push(ToolPermissionPattern::simple("bash"));
-        let result = policy.check("bash", r#"{"command":"ls"}"#, Some("ls"), None, None);
+        policy.blacklist.push(ToolPermissionPattern::simple("shell"));
+        let result = policy.check("shell", r#"{"command":"ls"}"#, Some("ls"), None, None);
         assert!(result.is_denied());
     }
 
@@ -207,7 +207,7 @@ mod tests {
         let mut policy = PermissionPolicy::with_builtin_defaults()
             .with_auto_allow_up_to(DangerLevel::Destructive);
         let result = policy.check(
-            "bash",
+            "shell",
             r#"{"command":"rm -rf /"}"#,
             Some("rm -rf /"),
             None,
@@ -216,7 +216,7 @@ mod tests {
         assert!(result.is_denied());
         // A safe command at or below the auto-allow level is still allowed.
         let safe = policy.check(
-            "bash",
+            "shell",
             r#"{"command":"ls -la"}"#,
             Some("ls -la"),
             None,

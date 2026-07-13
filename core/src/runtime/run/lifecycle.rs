@@ -136,19 +136,21 @@ impl Run {
         // Skill auto-trigger: check user message against skill triggers and @skill: tags
         if let Some(ref sm) = self.brain.skill_manager {
             let mut mgr = sm.lock();
-            let matched_names: Vec<String> = mgr.check_triggers(user_input)
+            let sid = self.session_id.as_deref();
+            let matched_names: Vec<String> = mgr
+                .check_triggers_for(sid, user_input)
                 .iter()
                 .map(|s| s.name.clone())
                 .collect();
             for name in matched_names {
-                mgr.activate(&name);
+                mgr.activate_for(sid, &name);
             }
 
             // Also explicitly activate any skills tagged with @skill:name
             for word in user_input.split_whitespace() {
                 if let Some(skill_name) = word.strip_prefix("@skill:") {
                     let clean_name = skill_name.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-');
-                    mgr.activate(clean_name);
+                    mgr.activate_for(sid, clean_name);
                 }
             }
         }
@@ -159,7 +161,8 @@ impl Run {
             self.goal_completed = false;
             self.goal_continue_nudges = 0;
             {
-                let mut list = self.brain.todo_list.lock();
+                let todos = self.session_todos();
+                let mut list = todos.lock();
                 list.replace_all(Vec::new());
             }
             self.emit(RunEvent::GoalCleared);
@@ -174,7 +177,8 @@ impl Run {
             self.goal_completed = false;
             self.goal_continue_nudges = 0;
             {
-                let mut list = self.brain.todo_list.lock();
+                let todos = self.session_todos();
+                let mut list = todos.lock();
                 list.replace_all(Vec::new());
             }
             self.emit(RunEvent::GoalSet { goal: g.clone() });
@@ -300,7 +304,8 @@ impl Run {
                     {
                         use crate::runtime::execution::ExecutionPhase;
                         let all_done = {
-                            let list = self.brain.todo_list.lock();
+                            let todos = self.session_todos();
+                            let list = todos.lock();
                             !list.items.is_empty()
                                 && list.items.iter().all(|i| {
                                     i.status == crate::todo::TodoStatus::Completed
@@ -321,7 +326,8 @@ impl Run {
             if let Some(ref goal) = self.goal {
                 if !self.goal_completed {
                     let all_done = {
-                        let list = self.brain.todo_list.lock();
+                        let todos = self.session_todos();
+                        let list = todos.lock();
                         !list.items.is_empty()
                             && list
                                 .items
@@ -537,7 +543,8 @@ impl Run {
     /// Whether a text-only Final should be rejected so the agent keeps working.
     /// Uses runtime ExecutionPhase (not only pinned goal).
     fn should_block_premature_final(&self) -> bool {
-        let list = self.brain.todo_list.lock();
+        let todos = self.session_todos();
+        let list = todos.lock();
         if self.execution.should_block_final(&list) {
             return true;
         }

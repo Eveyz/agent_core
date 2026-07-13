@@ -260,26 +260,26 @@ mod tests {
         ));
         assert!(wl.query("git_status", None, None, None).is_some());
         assert!(wl.query("git_commit", None, None, None).is_some());
-        assert!(wl.query("bash", None, None, None).is_none());
+        assert!(wl.query("shell", None, None, None).is_none());
     }
 
     #[test]
     fn test_command_filter() {
         let mut wl = WhitelistManager::new();
         wl.add(WhitelistEntry::new(
-            ToolPermissionPattern::simple("bash").with_commands(vec!["git".into(), "npm".into()]),
+            ToolPermissionPattern::simple("shell").with_commands(vec!["git".into(), "npm".into()]),
             ApprovalScope::Persistent,
         ));
-        assert!(wl.query("bash", Some("git status"), None, None).is_some());
-        assert!(wl.query("bash", Some("npm test"), None, None).is_some());
-        assert!(wl.query("bash", Some("rm -rf /"), None, None).is_none());
+        assert!(wl.query("shell", Some("git status"), None, None).is_some());
+        assert!(wl.query("shell", Some("npm test"), None, None).is_some());
+        assert!(wl.query("shell", Some("rm -rf /"), None, None).is_none());
     }
 
     #[test]
     fn test_purge_once_entries() {
         let mut wl = WhitelistManager::new();
         wl.add(WhitelistEntry::new(
-            ToolPermissionPattern::simple("bash"),
+            ToolPermissionPattern::simple("shell"),
             ApprovalScope::Once,
         ));
         wl.add(WhitelistEntry::new(
@@ -288,7 +288,7 @@ mod tests {
         ));
         assert_eq!(wl.len(), 2);
         // Query triggers auto-purge: Once-scoped entries are removed
-        wl.query("bash", None, None, None);
+        wl.query("shell", None, None, None);
         // Once entry should be purged, session entry remains
         assert_eq!(wl.len(), 1);
         // Explicit purge should keep session entry

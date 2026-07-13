@@ -15,6 +15,11 @@ pub fn register_skill_tools(
     registry.register(Box::new(SkillReloadTool::new(manager)));
 }
 
+/// Session scope injected by the tool orchestrator (`_session_id`).
+fn session_scope(args: &Value) -> Option<&str> {
+    args.get("_session_id").and_then(|v| v.as_str())
+}
+
 // ── SkillListTool ────────────────────────────────────────────────────
 
 struct SkillListTool {
@@ -42,7 +47,8 @@ Use this to discover what skills are available before loading one."
         serde_json::json!({"type": "object", "properties": {}, "required": []})
     }
 
-    async fn execute(&self, _args: Value) -> Result<String> {
+    async fn execute(&self, args: Value) -> Result<String> {
+        let sid = session_scope(&args);
         let mgr = self.manager.lock();
         let skills = mgr.list();
         if skills.is_empty() {
@@ -54,7 +60,7 @@ Use this to discover what skills are available before loading one."
 
         let mut out = String::from("Available skills:\n");
         for skill in skills {
-            let active = if mgr.is_active(&skill.name) {
+            let active = if mgr.is_active_for(sid, &skill.name) {
                 " [ACTIVE]"
             } else {
                 ""
@@ -108,6 +114,7 @@ Args: name (string). The skill's knowledge will guide your responses."
     }
 
     async fn execute(&self, args: Value) -> Result<String> {
+        let sid = session_scope(&args);
         let name = args["name"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("missing 'name'"))?;
@@ -125,7 +132,7 @@ Args: name (string). The skill's knowledge will guide your responses."
             }
         };
 
-        mgr.activate(name);
+        mgr.activate_for(sid, name);
         Ok(format!(
             "Skill '{}' loaded and activated.\nDescription: {}\n\n{}",
             name, description, content
@@ -167,18 +174,19 @@ Args: name (string). Use 'all' to deactivate all active skills."
     }
 
     async fn execute(&self, args: Value) -> Result<String> {
+        let sid = session_scope(&args);
         let name = args["name"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("missing 'name'"))?;
         let mut mgr = self.manager.lock();
 
         if name == "all" {
-            let count = mgr.active_skill_names().len();
-            mgr.deactivate_all();
+            let count = mgr.active_skill_names_for(sid).len();
+            mgr.deactivate_all_for(sid);
             return Ok(format!("Deactivated all {} active skills.", count));
         }
 
-        if mgr.deactivate(name) {
+        if mgr.deactivate_for(sid, name) {
             Ok(format!("Skill '{}' deactivated.", name))
         } else {
             Ok(format!("Skill '{}' was not active.", name))
@@ -215,22 +223,7 @@ Use this after adding or modifying SKILL.md files. Active skills are preserved."
 
     async fn execute(&self, _args: Value) -> Result<String> {
         let mut mgr = self.manager.lock();
-        let old_active: Vec<String> = mgr
-            .active_skill_names()
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-
-        let count = mgr.scan()?;
-
-        // Re-activate skills that still exist
-        let mut reactivated = 0usize;
-        for name in &old_active {
-            if mgr.activate(name) {
-                reactivated += 1;
-            }
-        }
-
+        let (count, reactivated) = mgr.reload_preserving_active()?;
         Ok(format!(
             "Reloaded {} skills from disk. {} previously active skills restored.",
             count, reactivated

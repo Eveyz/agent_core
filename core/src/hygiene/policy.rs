@@ -333,7 +333,7 @@ mod tests {
         })
         .to_string();
         assert!(args.len() > TOOL_ARG_MAX_CHARS);
-        let out = truncate_args("bash", &args).unwrap();
+        let out = truncate_args("shell", &args).unwrap();
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["command"], "echo hello");
         let stdin = v["stdin"].as_str().unwrap();
@@ -344,13 +344,13 @@ mod tests {
     #[test]
     fn short_args_untouched() {
         let args = r#"{"command":"ls"}"#;
-        assert_eq!(truncate_args("bash", args), None);
+        assert_eq!(truncate_args("shell", args), None);
     }
 
     #[test]
     fn invalid_json_args_get_preview_stub() {
         let junk = format!("not-json {}", "z".repeat(5_000));
-        let out = truncate_args("bash", &junk).unwrap();
+        let out = truncate_args("shell", &junk).unwrap();
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["_truncated"], true);
         assert!(v["_original_bytes"].as_u64().unwrap() > 5000);

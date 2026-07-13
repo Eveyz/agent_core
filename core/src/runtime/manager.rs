@@ -575,7 +575,7 @@ impl RunManager {
     ///
     /// This creates a new git worktree with a fresh branch, then creates a
     /// Run with `working_dir` set to the worktree path. The Run's tools
-    /// (bash, file operations) execute in the worktree, not the main repo.
+    /// (shell, file operations) execute in the worktree, not the main repo.
     ///
     /// When the Run completes (or is cancelled), the worktree is NOT
     /// automatically removed — the caller should inspect the result first

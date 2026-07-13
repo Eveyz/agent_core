@@ -39,6 +39,7 @@ pub mod execution;
 pub mod guard;
 pub mod input;
 pub mod manager;
+pub mod platform_shell;
 pub mod run;
 pub mod state;
 pub mod supervisor;
@@ -59,4 +60,5 @@ pub use input::{
 pub use manager::{RunHandle, RunManager};
 pub use run::Run;
 pub use state::RunState;
+pub use platform_shell::{is_shell_tool, shell_command, shell_label, shell_program};
 pub use supervisor::{ProcessSupervisor, SupervisedChild};

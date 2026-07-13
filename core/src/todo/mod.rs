@@ -1,6 +1,9 @@
 use chrono::{DateTime, Utc};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum TodoStatus {
@@ -302,6 +305,54 @@ fn normalize_desc(s: &str) -> String {
     s.trim().to_lowercase()
 }
 
+/// Per-session todo lists shared across Runs of the same session.
+///
+/// Brain holds one store; each chat/project session gets its own
+/// [`TodoList`] so plans from session A never inject into session B.
+pub struct SessionTodoStore {
+    by_session: Mutex<HashMap<String, Arc<Mutex<TodoList>>>>,
+}
+
+impl Default for SessionTodoStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SessionTodoStore {
+    pub fn new() -> Self {
+        Self {
+            by_session: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn scope_key(session_id: Option<&str>) -> String {
+        session_id.unwrap_or("").to_string()
+    }
+
+    /// Return (creating if needed) the todo list for a session.
+    /// `None` / empty session id uses the anonymous default scope (CLI / evals).
+    pub fn for_session(&self, session_id: Option<&str>) -> Arc<Mutex<TodoList>> {
+        let key = Self::scope_key(session_id);
+        let mut map = self.by_session.lock();
+        map.entry(key)
+            .or_insert_with(|| Arc::new(Mutex::new(TodoList::new())))
+            .clone()
+    }
+
+    /// Wipe todos for a session (e.g. `/goal clear` or session delete).
+    pub fn clear_session(&self, session_id: &str) {
+        if let Some(list) = self.by_session.lock().get(session_id) {
+            list.lock().replace_all(Vec::new());
+        }
+    }
+
+    /// Drop the session entry entirely (frees the Arc if unused).
+    pub fn remove_session(&self, session_id: &str) {
+        self.by_session.lock().remove(session_id);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,6 +366,29 @@ mod tests {
         assert_eq!(list.items.len(), 2);
         assert!(list.get("1").is_some());
         assert!(list.get("3").is_none());
+    }
+
+    #[test]
+    fn session_todo_store_isolates_sessions() {
+        let store = SessionTodoStore::new();
+        {
+            let a = store.for_session(Some("s1"));
+            a.lock().replace_all(vec!["from s1".into()]);
+        }
+        {
+            let b = store.for_session(Some("s2"));
+            assert!(b.lock().items.is_empty());
+            b.lock().replace_all(vec!["from s2".into()]);
+        }
+        let a_again = store.for_session(Some("s1"));
+        assert_eq!(a_again.lock().items.len(), 1);
+        assert_eq!(a_again.lock().items[0].description, "from s1");
+        store.clear_session("s1");
+        assert!(store.for_session(Some("s1")).lock().items.is_empty());
+        assert_eq!(
+            store.for_session(Some("s2")).lock().items[0].description,
+            "from s2"
+        );
     }
 
     #[test]

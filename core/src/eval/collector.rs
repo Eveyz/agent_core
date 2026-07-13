@@ -479,7 +479,7 @@ mod tests {
                 RunEvent::ToolStarted {
                     subagent_id: None,
                     call_id: "c1".into(),
-                    name: "bash".into(),
+                    name: "shell".into(),
                     args: serde_json::json!({}),
                 },
             ),

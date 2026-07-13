@@ -82,7 +82,7 @@ impl<'a> ToolOrchestrator<'a> {
             // Permission check — layered: Deny → Ask(with approval) → Allow
             // Extract command/path/host for fine-grained matching; these are
             // also reused below to scope any approval the user grants, so that
-            // e.g. allowing one `bash` command does not allow every command.
+            // e.g. allowing one `shell` command does not allow every command.
             let command = args.get("command").and_then(|v| v.as_str());
             let path = args
                 .get("path")
@@ -663,10 +663,10 @@ impl<'a> ToolOrchestrator<'a> {
 }
 
 /// Build a `ToolPermissionPattern` for an approval that is scoped to the exact
-/// invocation the user approved — the `command` (bash), `path` (file tools),
+/// invocation the user approved — the `command` (shell), `path` (file tools),
 /// and `host` (network) — rather than the bare tool name.
 ///
-/// Without this, approving a single `bash` call would whitelist every `bash`
+/// Without this, approving a single `shell` call would whitelist every `shell`
 /// command for the rest of the session (including `rm -rf ~`).
 fn scoped_pattern(
     tool_name: &str,

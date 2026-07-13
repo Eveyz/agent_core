@@ -396,14 +396,14 @@ mod tests {
             event: serde_json::json!({
                 "ToolExecutionEnd": {
                     "tool_call_id": "c1",
-                    "tool_name": "bash",
+                    "tool_name": "shell",
                     "result": "Error: command not found",
                     "is_error": true
                 }
             }),
         };
         let snap = r.as_tool_end().unwrap();
-        assert_eq!(snap.tool_name, "bash");
+        assert_eq!(snap.tool_name, "shell");
         assert!(snap.is_error);
         assert!(snap.result.starts_with("Error"));
     }
@@ -488,7 +488,7 @@ mod guard_tests {
         assert!(matches!(action, SuggestionAction::NeedsApproval(_)));
     }
 
-    /// End-to-end: synthesize a trace with 3 consecutive bash errors, load it,
+    /// End-to-end: synthesize a trace with 3 consecutive shell errors, load it,
     /// analyze, and verify the emitted suggestion auto-applies as a skill.
     #[tokio::test]
     async fn end_to_end_trace_to_skill() {
@@ -496,9 +496,9 @@ mod guard_tests {
         let trace_path = dir.path().join("t.jsonl");
         let lines = vec![
             r#"{"ts":"2026-06-18T10:00:00Z","event":"TurnStart","turn_index":0}"#,
-            r#"{"ts":"2026-06-18T10:00:01Z","event":{"ToolExecutionEnd":{"tool_call_id":"c1","tool_name":"bash","result":"Error: not found","is_error":true}}}"#,
-            r#"{"ts":"2026-06-18T10:00:02Z","event":{"ToolExecutionEnd":{"tool_call_id":"c2","tool_name":"bash","result":"Error: not found","is_error":true}}}"#,
-            r#"{"ts":"2026-06-18T10:00:03Z","event":{"ToolExecutionEnd":{"tool_call_id":"c3","tool_name":"bash","result":"Error: not found","is_error":true}}}"#,
+            r#"{"ts":"2026-06-18T10:00:01Z","event":{"ToolExecutionEnd":{"tool_call_id":"c1","tool_name":"shell","result":"Error: not found","is_error":true}}}"#,
+            r#"{"ts":"2026-06-18T10:00:02Z","event":{"ToolExecutionEnd":{"tool_call_id":"c2","tool_name":"shell","result":"Error: not found","is_error":true}}}"#,
+            r#"{"ts":"2026-06-18T10:00:03Z","event":{"ToolExecutionEnd":{"tool_call_id":"c3","tool_name":"shell","result":"Error: not found","is_error":true}}}"#,
         ];
         std::fs::write(&trace_path, lines.join("\n") + "\n").unwrap();
 

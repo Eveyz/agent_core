@@ -434,7 +434,7 @@ async fn execute_agent_node(
         .trust_mode
         .build_permission_config(&brain.config.permissions, &def);
 
-    // Each workflow agent node owns its own ProcessSupervisor so its bash
+    // Each workflow agent node owns its own ProcessSupervisor so its shell
     // children are process-group isolated and killed when the node finishes
     // (or when the workflow is cancelled — the cancel_token is propagated
     // to the subagent below, which stops the turn loop and lets Drop reap).
@@ -463,10 +463,10 @@ async fn execute_agent_node(
         1,
     );
 
-    // Also ensure BashTool (when present) is the supervised version so the
-    // node's own bash commands are process-group isolated.
-    if registry.has("bash") {
-        registry.register(Box::new(crate::tools::bash::BashTool::with_supervisor(
+    // Also ensure ShellTool (when present) is the supervised version so the
+    // node's own shell commands are process-group isolated.
+    if registry.has("shell") {
+        registry.register(Box::new(crate::tools::shell::ShellTool::with_supervisor(
             supervisor.clone(),
             None,
         )));

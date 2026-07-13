@@ -207,7 +207,7 @@ mod tests {
         let big = "x".repeat(50_000);
         tc.record(&AgentEvent::ToolExecutionEnd {
             tool_call_id: "c1".to_string(),
-            tool_name: "bash".to_string(),
+            tool_name: "shell".to_string(),
             result: big,
             is_error: false,
         });

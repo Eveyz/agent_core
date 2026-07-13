@@ -297,7 +297,7 @@ impl ExecutionState {
 
 /// Whether a tool result should be treated as a failure for UI / hooks / artifacts.
 ///
-/// Covers explicit error prefixes and bash-style `[exit code: N]` trailers
+/// Covers explicit error prefixes and shell-style `[exit code: N]` trailers
 /// (non-zero). Exit code 0 is never an error.
 pub fn tool_result_is_error(result: &str) -> bool {
     if result.starts_with("Error")
@@ -311,7 +311,7 @@ pub fn tool_result_is_error(result: &str) -> bool {
     parse_exit_code(result).is_some_and(|code| code != 0)
 }
 
-/// Parse the last `[exit code: N]` marker appended by the bash tool.
+/// Parse the last `[exit code: N]` marker appended by the shell tool.
 pub fn parse_exit_code(result: &str) -> Option<i32> {
     let (_, after) = result.rsplit_once("[exit code: ")?;
     let digits = after.split(']').next()?.trim();
@@ -329,12 +329,12 @@ pub fn artifact_from_tool(name: &str, args_json: &str, result: &str, is_error: b
                 .or_else(|| extract_json_str(args_json, "file_path"));
             path.map(|p| format!("{name}: {p}"))
         }
-        "bash" => {
+        "shell" | "bash" => {
             let cmd = extract_json_str(args_json, "command").unwrap_or_default();
             if cmd.contains("mkdir") {
-                Some(format!("bash mkdir: {}", truncate(&cmd, 80)))
+                Some(format!("shell mkdir: {}", truncate(&cmd, 80)))
             } else if !cmd.is_empty() {
-                Some(format!("bash ok: {}", truncate(&cmd, 60)))
+                Some(format!("shell ok: {}", truncate(&cmd, 60)))
             } else {
                 None
             }

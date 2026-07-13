@@ -129,7 +129,7 @@ pub struct Subagent {
     /// Optional cancel token — propagated from the parent Run so canceling the
     /// parent also stops the subagent. When `None`, a new token is created.
     pub cancel_token: Option<CancellationToken>,
-    /// Optional process supervisor — when set, the subagent's BashTool is
+    /// Optional process supervisor — when set, the subagent's ShellTool is
     /// replaced with a supervised version for process-group isolation.
     pub supervisor: Option<Arc<Mutex<ProcessSupervisor>>>,
 }
@@ -172,7 +172,7 @@ impl Subagent {
     }
 
     /// Builder: attach a `ProcessSupervisor` (propagated from the parent Run)
-    /// so the subagent's bash commands are managed within the same process group.
+    /// so the subagent's shell commands are managed within the same process group.
     pub fn with_supervisor(mut self, sv: Arc<Mutex<ProcessSupervisor>>) -> Self {
         self.wire_supervisor_to_registry(&sv);
         self.supervisor = Some(sv);
@@ -185,16 +185,16 @@ impl Subagent {
         self
     }
 
-    /// Replace the BashTool in the registry with a supervised version.
+    /// Replace the ShellTool in the registry with a supervised version.
     fn wire_supervisor_to_registry(&mut self, supervisor: &Arc<Mutex<ProcessSupervisor>>) {
-        if self.registry.has("bash") {
+        if self.registry.has("shell") {
             let working_dir = self
                 .config
                 .working_dir
                 .as_ref()
                 .map(|p| p.to_string_lossy().to_string());
             self.registry.register(Box::new(
-                crate::tools::bash::BashTool::with_supervisor(
+                crate::tools::shell::ShellTool::with_supervisor(
                     supervisor.clone(),
                     working_dir,
                 ),
@@ -202,16 +202,16 @@ impl Subagent {
         }
     }
 
-    /// Replace the BashTool in `registry` with one whose
+    /// Replace the ShellTool in `registry` with one whose
     /// `default_working_dir` is set to the subagent's `working_dir`, if any.
-    /// This is how the subagent's bash commands execute in the intended
+    /// This is how the subagent's shell commands execute in the intended
     /// directory WITHOUT touching the process-global CWD (which would race
     /// with concurrent subagents on the same tokio runtime).
     fn wire_working_dir(mut registry: ToolRegistry, config: &SubagentConfig) -> ToolRegistry {
         if let Some(ref wd) = config.working_dir {
-            if registry.has("bash") {
+            if registry.has("shell") {
                 registry.register(Box::new(
-                    crate::tools::bash::BashTool::with_default_working_dir(Some(
+                    crate::tools::shell::ShellTool::with_default_working_dir(Some(
                         wd.to_string_lossy().to_string(),
                     )),
                 ));
@@ -252,7 +252,7 @@ impl Subagent {
         // NOTE: We intentionally do NOT touch the process-global CWD here.
         // Modifying std::env::set_current_dir() races with concurrent
         // subagents sharing the same tokio runtime. The subagent's working
-        // directory is instead plumbed into the BashTool via
+        // directory is instead plumbed into the ShellTool via
         // `default_working_dir` (set in Subagent::new). File-based tools
         // (edit/read_file/write_file/grep) take absolute paths anyway.
 

@@ -375,7 +375,7 @@ mod tests {
     }
 
     fn make_assistant_with_args(args: &str) -> Message {
-        make_assistant_with_named_args("bash", args)
+        make_assistant_with_named_args("shell", args)
     }
 
     // Incidental output large enough to exceed the 16K char budget.
@@ -605,12 +605,12 @@ mod tests {
                     id: "c1".into(),
                     call_type: "function".into(),
                     function: crate::types::FunctionCall {
-                        name: "bash".into(),
+                        name: "shell".into(),
                         arguments: "{}".into(),
                     },
                 }],
             ),
-            Message::tool("c1".into(), "ok".into(), Some("bash".into())),
+            Message::tool("c1".into(), "ok".into(), Some("shell".into())),
             // Trailing context injection must not count as the "last user".
             Message::user("<context_injection>\ncwd=/tmp\n</context_injection>"),
         ];

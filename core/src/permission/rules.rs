@@ -49,7 +49,7 @@ pub fn default_rules_with_danger() -> Vec<(ToolPermissionPattern, DangerLevel, A
         // ── Shell commands ───────────────────────────────────────────
         // Read-only shell commands (safe to auto-approve)
         (
-            ToolPermissionPattern::simple("bash").with_commands(vec![
+            ToolPermissionPattern::simple("shell").with_commands(vec![
                 "ls ".to_string(), "ls".to_string(),
                 "find ".to_string(), "find".to_string(),
                 "wc ".to_string(), "wc".to_string(),
@@ -68,6 +68,21 @@ pub fn default_rules_with_danger() -> Vec<(ToolPermissionPattern, DangerLevel, A
                 "stat ".to_string(), "stat".to_string(),
                 "du ".to_string(), "du".to_string(),
                 "df ".to_string(), "df".to_string(),
+                // PowerShell read-only prefixes (Windows)
+                "Get-ChildItem".to_string(),
+                "gci".to_string(),
+                "dir".to_string(),
+                "Get-Content".to_string(),
+                "gc".to_string(),
+                "cat".to_string(),
+                "Get-Location".to_string(),
+                "pwd".to_string(),
+                "Select-String".to_string(),
+                "Test-Path".to_string(),
+                "Get-Item".to_string(),
+                "gi".to_string(),
+                "Get-Process".to_string(),
+                "gps".to_string(),
             ]),
             DangerLevel::ReadOnly,
             ApprovalLevel::Allow,
@@ -78,7 +93,7 @@ pub fn default_rules_with_danger() -> Vec<(ToolPermissionPattern, DangerLevel, A
         // `chmod 0777`, …). See `core/src/permission/mod.rs`.
         // Catch-all shell commands: ask
         (
-            ToolPermissionPattern::simple("bash"),
+            ToolPermissionPattern::simple("shell"),
             DangerLevel::System,
             ApprovalLevel::Ask,
         ),
@@ -201,27 +216,27 @@ pub fn default_rules() -> Vec<super::PermissionRule> {
             level: ApprovalLevel::Allow,
         },
         super::PermissionRule {
-            tool_pattern: "bash".to_string(),
+            tool_pattern: "shell".to_string(),
             action_pattern: Some("rm ".to_string()),
             level: ApprovalLevel::Deny,
         },
         super::PermissionRule {
-            tool_pattern: "bash".to_string(),
+            tool_pattern: "shell".to_string(),
             action_pattern: Some("sudo ".to_string()),
             level: ApprovalLevel::Deny,
         },
         super::PermissionRule {
-            tool_pattern: "bash".to_string(),
+            tool_pattern: "shell".to_string(),
             action_pattern: Some("mkfs".to_string()),
             level: ApprovalLevel::Deny,
         },
         super::PermissionRule {
-            tool_pattern: "bash".to_string(),
+            tool_pattern: "shell".to_string(),
             action_pattern: Some("dd ".to_string()),
             level: ApprovalLevel::Deny,
         },
         super::PermissionRule {
-            tool_pattern: "bash".to_string(),
+            tool_pattern: "shell".to_string(),
             action_pattern: None,
             level: ApprovalLevel::Ask,
         },
@@ -306,8 +321,8 @@ mod tests {
     }
 
     #[test]
-    fn test_bash_defaults_to_ask() {
-        // Two built-in bash rules now exist: a readonly-command whitelist
+    fn test_shell_defaults_to_ask() {
+        // Two built-in shell rules now exist: a readonly-command whitelist
         // (ReadOnly/Allow) and a System→Ask catch-all for everything else.
         // Destructive commands are denied programmatically in
         // `PermissionPolicy::check` via `is_destructive_command`.
@@ -316,7 +331,7 @@ mod tests {
         // the whitelist rule carries `Some([...])`.
         let catch_all = rules
             .iter()
-            .find(|(p, _, _)| p.tool_pattern == "bash" && p.commands.is_none())
+            .find(|(p, _, _)| p.tool_pattern == "shell" && p.commands.is_none())
             .unwrap();
         assert_eq!(catch_all.1, DangerLevel::System);
         assert_eq!(catch_all.2, ApprovalLevel::Ask);

@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::{Tool, ToolUpdateFn};
+use crate::runtime::platform_shell::shell_command;
 use crate::runtime::ProcessSupervisor;
 use crate::skills::ScriptEntry;
 use crate::types::EventSender;
@@ -101,17 +102,14 @@ impl SkillScriptTool {
         flags
     }
 
-    /// Run the script synchronously via `sh -c` (legacy path, no supervisor).
+    /// Run the script synchronously via the platform shell (legacy path, no supervisor).
     async fn run_sync(&self, command: &str, working_dir: &str, timeout_secs: u64) -> Result<String> {
         use tokio::io::AsyncReadExt;
-        use tokio::process::Command;
 
         tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs),
             async {
-                let mut child = Command::new("sh")
-                    .arg("-c")
-                    .arg(command)
+                let mut child = shell_command(command)
                     .current_dir(working_dir)
                     .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::piped())
@@ -211,7 +209,7 @@ impl Tool for SkillScriptTool {
 /// Supervised script execution: spawn via ProcessSupervisor (process group),
 /// stream stdout line-by-line, kill on cancel.
 ///
-/// Follows the same pattern as BashTool::run_bash_supervised.
+/// Follows the same pattern as ShellTool::run_shell_supervised.
 async fn run_supervised(
     sup: &Arc<Mutex<ProcessSupervisor>>,
     command: &str,
@@ -221,7 +219,7 @@ async fn run_supervised(
 ) -> Result<String> {
     let child_id = {
         let mut supervisor = sup.lock();
-        supervisor.spawn_bash(command, working_dir)?
+        supervisor.spawn_shell(command, working_dir)?
     };
 
     let stdout_handle = {

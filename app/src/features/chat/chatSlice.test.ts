@@ -90,7 +90,7 @@ describe('chat reducer session routing', () => {
           run_id: 'run-1',
           turn_id: 'turn-1',
           prompt_id: 'ap-1',
-          tool_name: 'bash',
+          tool_name: 'shell',
           tool_input: {},
           danger_level: 'high',
           explanation: 'run cmd',

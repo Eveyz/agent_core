@@ -174,7 +174,7 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
                 "tools": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Tool names (default: read_file, glob, grep, bash). Use 'all' for all parent tools."
+                    "description": "Tool names (default: read_file, glob, grep, shell). Use 'all' for all parent tools."
                 },
                 "max_iterations": {
                     "type": "integer",
@@ -293,7 +293,7 @@ impl Tool for SubagentSpawnAllTool {
     fn description(&self) -> &str {
         "Spawn multiple sub-agents CONCURRENTLY (runs in parallel). \
 Use when task_ready returns multiple unblocked tasks that are independent. \
-Each sub-agent gets isolated context with access to: read_file, glob, grep, bash, edit, webfetch, git tools. \
+Each sub-agent gets isolated context with access to: read_file, glob, grep, shell, edit, webfetch, git tools. \
 Returns all results. \
 Args: tasks (array of {id, task, tools?, max_iterations?})"
     }
@@ -546,7 +546,7 @@ fn summarise_tool_content(tool_name: &str, content: &str) -> String {
         "grep" => summarise_grep(content),
         "glob" => summarise_glob(content),
         "read_file" | "read" => summarise_read_file(content),
-        "bash" => summarise_bash(content),
+        "shell" | "bash" => summarise_shell(content),
         "webfetch" | "web_fetch" => summarise_webfetch(content),
         "edit" | "write_file" => summarise_edit(content),
         "ls" | "list_files" => summarise_ls(content),
@@ -597,7 +597,7 @@ fn summarise_read_file(content: &str) -> String {
     )
 }
 
-fn summarise_bash(content: &str) -> String {
+fn summarise_shell(content: &str) -> String {
     let lines: Vec<&str> = content.lines().collect();
     let total = lines.len();
     let first: Vec<&str> = lines.iter().take(10).copied().collect();
@@ -879,8 +879,8 @@ async fn spawn_single(
     let child_depth = parent_depth + 1;
 
     let default_system_prompt = "You are a focused sub-agent. Complete the given task and return the result. Be concise. \
-You have access to tools: read_file, glob, grep, bash, edit, webfetch, and git tools. \
-CRITICAL: ALWAYS use the 'webfetch' tool to fetch web content. NEVER use bash with 'curl' or 'wget'. \
+You have access to tools: read_file, glob, grep, shell, edit, webfetch, and git tools. \
+CRITICAL: ALWAYS use the 'webfetch' tool to fetch web content. NEVER use shell with 'curl' or 'wget'. \
 Do NOT attempt to read or process image files.";
 
     let mut persona_content = String::new();
@@ -939,7 +939,7 @@ Do NOT attempt to read or process image files.";
             "read_file".to_string(),
             "glob".to_string(),
             "grep".to_string(),
-            "bash".to_string(),
+            "shell".to_string(),
             "edit".to_string(),
             "webfetch".to_string(),
         ]

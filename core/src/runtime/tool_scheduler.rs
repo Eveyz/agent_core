@@ -9,7 +9,7 @@
 //!
 //! Rules:
 //! - Two calls conflict if both *mutate* the same resource (write the same path,
-//!   run a bash command, …). Reads never conflict with anything, so a batch of
+//!   run a shell command, …). Reads never conflict with anything, so a batch of
 //!   `read_file` / `grep` calls always parallelizes.
 //! - Ties are broken by call order, so the schedule is deterministic for a given
 //!   batch — important for reproducible traces.
@@ -28,7 +28,7 @@ pub(crate) struct SchedNode {
     pub tool_name: String,
     pub tool_call_id: String,
     pub args: Value,
-    /// Resources this call *mutates* (writes/bash/network-POST-ish). Two calls
+    /// Resources this call *mutates* (writes/shell/network-POST-ish). Two calls
     /// sharing a mutable resource form an edge.
     pub mutations: Vec<ResourceKey>,
     /// Resources this call only *reads*. Reads never create edges.
@@ -40,7 +40,7 @@ pub(crate) struct SchedNode {
 pub(crate) enum ResourceKey {
     /// A filesystem path the tool writes to.
     Path(String),
-    /// A bash command — coarse-grained by the leading program so that
+    /// A shell command — coarse-grained by the leading program so that
     /// `git status` and `git diff` don't needlessly serialize, but two writes
     /// to the same file via `sed` still line up.
     BashProgram(String),
@@ -164,11 +164,11 @@ pub(crate) fn classify_resources(
             }
         }
         // Bash mutates the working tree (conservatively) and is keyed by program.
-        "bash" => {
+        "shell" | "bash" => {
             if let Some(cmd) = command {
                 mutations.push(ResourceKey::BashProgram(leading_program(cmd)));
             } else {
-                mutations.push(ResourceKey::BashProgram("(bash)".to_string()));
+                mutations.push(ResourceKey::BashProgram("(shell)".to_string()));
             }
         }
         // Network tools: keyed by host. GET is a read, everything else mutates.
@@ -213,7 +213,7 @@ fn normalize_path(p: &str) -> String {
     out.join("/")
 }
 
-/// First token of a shell command, for coarse bash conflict grouping.
+/// First token of a shell command, for coarse shell conflict grouping.
 fn leading_program(cmd: &str) -> String {
     let trimmed = cmd.trim_start();
     let first = trimmed.split_whitespace().next().unwrap_or("");
@@ -309,7 +309,7 @@ mod tests {
         assert_eq!(reads, vec![ResourceKey::Path("x/y.rs".into())]);
 
         let (mut_b, _) = classify_resources(
-            "bash",
+            "shell",
             &serde_json::json!({"command": "/usr/bin/git status"}),
         );
         assert_eq!(mut_b, vec![ResourceKey::BashProgram("git".into())]);

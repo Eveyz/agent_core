@@ -614,7 +614,7 @@ mod tests {
     fn test_turn_end_with_tool_results() {
         let results = vec![ToolResultRecord {
             tool_call_id: "c1".to_string(),
-            tool_name: "bash".to_string(),
+            tool_name: "shell".to_string(),
             result: "ok".to_string(),
             is_error: false,
         }];
@@ -631,7 +631,7 @@ mod tests {
             } => {
                 assert_eq!(turn_index, 2);
                 assert_eq!(tool_results.len(), 1);
-                assert_eq!(tool_results[0].tool_name, "bash");
+                assert_eq!(tool_results[0].tool_name, "shell");
             }
             _ => panic!("expected TurnEnd"),
         }

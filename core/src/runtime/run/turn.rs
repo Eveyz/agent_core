@@ -435,7 +435,8 @@ impl Run {
 
         // Sync execution phase from todos after tool batch.
         {
-            let mut list = self.brain.todo_list.lock();
+            let todos = self.session_todos();
+            let mut list = todos.lock();
             if todo_write_ok {
                 self.execution.on_plan_written(&list, todo_write_forced);
                 let _ = list.ensure_active_step();
@@ -486,9 +487,8 @@ impl Run {
             .iter()
             .any(|c| matches!(c.function.name.as_str(), "todo_write" | "todo_update"));
         if todo_changed {
-            let items: Vec<TodoItemPayload> = self
-                .brain
-                .todo_list
+            let list = self.session_todos();
+            let items: Vec<TodoItemPayload> = list
                 .lock()
                 .items
                 .iter()

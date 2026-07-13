@@ -1,6 +1,6 @@
 pub mod archival_memory;
 pub mod ask_user;
-pub mod bash;
+pub mod shell;
 pub mod core_memory;
 pub mod edit;
 pub mod glob;
@@ -136,7 +136,7 @@ impl ToolRegistry {
         registry.register(Box::new(edit::EditTool));
         registry.register(Box::new(grep::GrepTool));
         registry.register(Box::new(glob::GlobTool));
-        registry.register(Box::new(bash::BashTool::new()));
+        registry.register(Box::new(shell::ShellTool::new()));
         registry.register(Box::new(webfetch::WebFetchTool::new()));
         if let Some(tool) = tavily_search::TavilySearchTool::from_env() {
             registry.register(Box::new(tool));
@@ -336,7 +336,7 @@ pub fn build_tool_by_name(name: &str) -> Option<Box<dyn Tool>> {
         "edit" => Some(Box::new(edit::EditTool)),
         "grep" => Some(Box::new(grep::GrepTool)),
         "glob" => Some(Box::new(glob::GlobTool)),
-        "bash" => Some(Box::new(bash::BashTool::new())),
+        "shell" | "bash" => Some(Box::new(shell::ShellTool::new())),
         "ask_user" => Some(Box::new(ask_user::AskUserTool)),
         "webfetch" => Some(Box::new(webfetch::WebFetchTool::new())),
         "tavily_search" => {

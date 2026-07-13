@@ -233,25 +233,25 @@ mod tests {
     #[test]
     fn test_consecutive_errors_fires_skill() {
         let events = vec![
-            tool_end("bash", true),
-            tool_end("bash", true),
-            tool_end("bash", true),
+            tool_end("shell", true),
+            tool_end("shell", true),
+            tool_end("shell", true),
         ];
         let d = Digester;
         let s = d.analyze(&events);
         assert!(
             s.iter()
-                .any(|s| s.kind == SuggestionKind::AppendSkill && s.target.contains("bash"))
+                .any(|s| s.kind == SuggestionKind::AppendSkill && s.target.contains("shell"))
         );
     }
 
     #[test]
     fn test_consecutive_errors_resets_on_success() {
         let events = vec![
-            tool_end("bash", true),
-            tool_end("bash", true),
-            tool_end("bash", false), // resets
-            tool_end("bash", true),
+            tool_end("shell", true),
+            tool_end("shell", true),
+            tool_end("shell", false), // resets
+            tool_end("shell", true),
         ];
         let d = Digester;
         let s = d.analyze(&events);
@@ -287,7 +287,7 @@ mod tests {
     fn test_no_false_positives_on_clean_trace() {
         let events = vec![
             turn_start(0),
-            tool_end("bash", false),
+            tool_end("shell", false),
             tool_end("grep", false),
         ];
         let d = Digester;

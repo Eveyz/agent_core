@@ -380,7 +380,7 @@ mod tests {
                 id: "call_1".into(),
                 call_type: "function".into(),
                 function: FunctionCall {
-                    name: "bash".into(),
+                    name: "shell".into(),
                     arguments: "{}".into(),
                 },
             }],
@@ -393,7 +393,7 @@ mod tests {
         let msgs = vec![
             Message::user("do it"),
             assistant,
-            Message::tool("call_1".into(), "ok".into(), Some("bash".into())),
+            Message::tool("call_1".into(), "ok".into(), Some("shell".into())),
         ];
         let body = build_responses_body(
             "o3",

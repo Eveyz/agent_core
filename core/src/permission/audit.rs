@@ -179,11 +179,11 @@ mod tests {
         );
 
         log.record(
-            "bash",
+            "shell",
             r#"{"command": "rm -rf /"}"#,
             &ApprovalLevel::Deny,
             &RuleSource::Builtin,
-            "builtin: bash + rm → Deny",
+            "builtin: shell + rm → Deny",
             DangerLevel::Destructive,
             Some("Destructive command blocked"),
         );
@@ -210,7 +210,7 @@ mod tests {
             None,
         );
         log.record(
-            "bash",
+            "shell",
             "{}",
             &ApprovalLevel::Deny,
             &RuleSource::Builtin,

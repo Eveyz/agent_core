@@ -28,6 +28,7 @@ import WrenchIcon from 'lucide-react/dist/esm/icons/wrench.mjs';
 // agent is doing. Falls back to WrenchIcon for unknown tools.
 const TOOL_ICONS: Record<string, React.ComponentType<{ size?: number; color?: string; className?: string; style?: React.CSSProperties }>> = {
   bash: TerminalIcon,
+  shell: TerminalIcon,
   edit: PencilIcon,
   sed: ScanTextIcon,
   read_file: EyeIcon,

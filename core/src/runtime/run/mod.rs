@@ -216,17 +216,17 @@ impl Run {
         let max_iterations = model_config.max_iterations;
 
         // Build the supervisor BEFORE the registry so we can inject it
-        // into the BashTool. The supervisor is owned by the Run and
+        // into the ShellTool. The supervisor is owned by the Run and
         // shared with the tool via Arc<Mutex>.
         let supervisor = Arc::new(Mutex::new(ProcessSupervisor::new()));
         let working_dir_for_tool = working_dir.clone();
         let cancel_token = CancellationToken::new();
 
-        let mut registry = brain.build_tool_registry(mode);
-        // Replace the default BashTool with a supervised version
-        // (only present in Build mode — in other modes bash was already removed)
+        let mut registry = brain.build_tool_registry_for(mode, session_id.as_deref());
+        // Replace the default ShellTool with a supervised version
+        // (only present in Build mode — in other modes shell was already removed)
         if mode == AgentMode::Build {
-            registry.register(Box::new(crate::tools::bash::BashTool::with_supervisor(
+            registry.register(Box::new(crate::tools::shell::ShellTool::with_supervisor(
                 supervisor.clone(),
                 working_dir_for_tool,
             )));
@@ -366,6 +366,13 @@ impl Run {
     /// Refresh the shared context snapshot (read by side-channel `/btw` queries).
     pub(crate) fn refresh_context_snapshot(&self) {
         *self.context_snapshot.write() = self.context.messages();
+    }
+
+    /// Todo list for this Run's session (isolated from other sessions).
+    pub(crate) fn session_todos(&self) -> Arc<parking_lot::Mutex<crate::todo::TodoList>> {
+        self.brain
+            .todo_lists
+            .for_session(self.session_id.as_deref())
     }
 
     pub fn context_mut(&mut self) -> &mut Context {

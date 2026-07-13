@@ -42,7 +42,7 @@ impl Tool for PreviewTool {
          web files so the user can see the result immediately. Hot-reload is automatic \
          when files change. Works in default chat mode (files under the session folder) \
          and in registered project workspaces. For SPA frameworks (React, Svelte, Vite, etc.) \
-         that need a dev server, write the files first and use `bash` to start the dev server — \
+         that need a dev server, write the files first and use `shell` to start the dev server — \
          static preview serves files directly without Node."
     }
 

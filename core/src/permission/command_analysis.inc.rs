@@ -144,7 +144,11 @@ pub fn is_readonly_command(cmd: &str, sandbox_paths: &[std::path::PathBuf]) -> b
             "ls", "cat", "echo", "pwd", "grep", "find", "rg", "head", "tail", "less", "more",
             "wc", "stat", "file", "which", "whereis", "whoami", "id", "groups", "uname",
             "date", "cal", "uptime", "w", "who", "du", "df", "ps", "top", "htop", "env",
-            "printenv", "diff", "cmp", "tree", "sed", "awk"
+            "printenv", "diff", "cmp", "tree", "sed", "awk",
+            // PowerShell (Windows) — lowercase because `lower` is normalized
+            "get-childitem", "gci", "dir", "get-content", "gc", "get-location", "gl",
+            "select-string", "sls", "test-path", "get-item", "gi", "get-process", "gps",
+            "get-date", "measure-object", "write-output", "write-host",
         ];
         
         if readonly_programs.contains(&prog) {

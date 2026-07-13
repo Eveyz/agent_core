@@ -66,12 +66,12 @@ for complex multi-step tasks.",
     pub fn tools_to_remove(&self) -> &'static [&'static str] {
         match self {
             Self::Build => &[],
-            Self::Plan => &["write_file", "edit", "sed", "bash", "git_commit"],
+            Self::Plan => &["write_file", "edit", "sed", "shell", "git_commit"],
             Self::Ask => &[
                 "write_file",
                 "edit",
                 "sed",
-                "bash",
+                "shell",
                 "git_commit",
                 "todo_write",
                 "todo_update",

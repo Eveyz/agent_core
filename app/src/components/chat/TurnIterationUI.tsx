@@ -68,7 +68,7 @@ const TurnIterationUI = memo(function TurnIterationUI({
     const regularTools = iteration.toolBlocks.filter(b => b.type === 'tool' && !isSubagentTool(b));
     if (regularTools.length !== 1) return false;
     const name = (regularTools[0] as Extract<TurnBlock, { type: 'tool' }>).name;
-    return name === 'edit' || name === 'read_file' || name === 'bash' || name === 'grep_search' || name === 'glob_search' || name === 'grep' || name === 'glob' || name.startsWith('todo_') || name === 'write_file' || name === 'write_to_file' || name.startsWith('skill_') || name === 'archival_memory_search' || name === 'conversation_search';
+    return name === 'edit' || name === 'read_file' || name === 'shell' || name === 'bash' || name === 'grep_search' || name === 'glob_search' || name === 'grep' || name === 'glob' || name.startsWith('todo_') || name === 'write_file' || name === 'write_to_file' || name.startsWith('skill_') || name === 'archival_memory_search' || name === 'conversation_search';
   }, [regularToolCount, iteration.toolBlocks]);
 
   const renderRegularTools = () => (
@@ -133,7 +133,7 @@ const TurnIterationUI = memo(function TurnIterationUI({
                 is_error={b.is_error}
               />
             );
-          } else if (name === 'bash' || name === 'grep_search' || name === 'glob_search' || name === 'grep' || name === 'glob') {
+          } else if (name === 'shell' || name === 'bash' || name === 'grep_search' || name === 'glob_search' || name === 'grep' || name === 'glob') {
             if (b.phase === 'preparing') {
               return (
                 <ToolBlockUI

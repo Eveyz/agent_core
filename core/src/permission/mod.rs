@@ -294,7 +294,7 @@ impl PermissionPolicy {
     ///
     /// Returns `Allow`, `Deny(reason)`, or `Ask(reason, prompt)`.
     /// `tool_input_json` is the raw tool arguments as a JSON string.
-    /// `command` is extracted for `bash`; `path` for file ops; `host` for network.
+    /// `command` is extracted for `shell`; `path` for file ops; `host` for network.
     pub fn check(
         &mut self,
         tool_name: &str,
@@ -327,7 +327,9 @@ impl PermissionPolicy {
         // Whether a built-in safety rule unconditionally denies this call
         // (currently: destructive shell commands). Such denies must not be
         // bypassed by `auto_allow_up_to` — they are evaluated below at Layer 5.
-        let builtin_deny = tool_name == "bash" && danger == DangerLevel::Destructive;
+        let builtin_deny =
+            crate::runtime::platform_shell::is_shell_tool(tool_name)
+                && danger == DangerLevel::Destructive;
 
         // Layer 0: Yolo mode — everything allowed
         if self.mode == PermissionMode::Yolo {
@@ -635,11 +637,11 @@ impl PermissionPolicy {
         _tool_input_json: &str,
         command: Option<&str>,
     ) -> DangerLevel {
-        // bash danger depends on the actual command: destructive commands
+        // shell danger depends on the actual command: destructive commands
         // (rm, mkfs, sudo, …) are `Destructive`, everything else is `System`.
         // This is evaluated before the rule loop so the destructive deny in
-        // `check` fires precisely, instead of treating all bash as destructive.
-        if tool_name == "bash" {
+        // `check` fires precisely, instead of treating all shell as destructive.
+        if crate::runtime::platform_shell::is_shell_tool(tool_name) {
             if command.map_or(false, is_destructive_command) {
                 return DangerLevel::Destructive;
             }
@@ -657,7 +659,7 @@ impl PermissionPolicy {
         }
 
         // Skill script tools (skill.<skill_name>.<script_name>) — treat as
-        // System-level danger since they execute arbitrary commands, same as bash.
+        // System-level danger since they execute arbitrary commands, same as shell.
         if tool_name.starts_with("skill.") {
             return DangerLevel::System;
         }

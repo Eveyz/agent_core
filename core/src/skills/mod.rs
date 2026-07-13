@@ -5,7 +5,7 @@ pub use manifest::{ScriptEntry, SkillManifest};
 use anyhow::Result;
 use parking_lot::Mutex;
 use serde_json;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -69,8 +69,9 @@ fn collect_skills_dirs(root: &Path, dirs: &mut Vec<PathBuf>) {
 pub struct SkillManager {
     search_dirs: Vec<PathBuf>,
     manifests: Vec<LoadedSkill>,
-    /// Currently active skill names (loaded into context).
-    active_skills: HashSet<String>,
+    /// Active skill names keyed by session scope (`""` = anonymous / CLI).
+    /// Keeps chat sessions from leaking loaded skills into each other.
+    active_by_scope: HashMap<String, HashSet<String>>,
 }
 
 pub struct LoadedSkill {
@@ -83,7 +84,7 @@ impl SkillManager {
         Self {
             search_dirs: vec![search_dir],
             manifests: Vec::new(),
-            active_skills: HashSet::new(),
+            active_by_scope: HashMap::new(),
         }
     }
 
@@ -91,7 +92,7 @@ impl SkillManager {
         Self {
             search_dirs: dirs,
             manifests: Vec::new(),
-            active_skills: HashSet::new(),
+            active_by_scope: HashMap::new(),
         }
     }
 
@@ -127,7 +128,7 @@ impl SkillManager {
         Self {
             search_dirs: dirs,
             manifests: Vec::new(),
-            active_skills: HashSet::new(),
+            active_by_scope: HashMap::new(),
         }
     }
 
@@ -187,15 +188,37 @@ impl SkillManager {
 
     // ── Auto-trigger ────────────────────────────────────────────────
 
+    fn scope_key(session_id: Option<&str>) -> String {
+        session_id.unwrap_or("").to_string()
+    }
+
+    fn active_set(&self, session_id: Option<&str>) -> Option<&HashSet<String>> {
+        self.active_by_scope.get(&Self::scope_key(session_id))
+    }
+
+    fn active_set_mut(&mut self, session_id: Option<&str>) -> &mut HashSet<String> {
+        let key = Self::scope_key(session_id);
+        self.active_by_scope.entry(key).or_default()
+    }
+
     /// Check user message against all skill triggers.
     /// Returns list of skill names that should be auto-loaded.
     /// Does NOT modify state — caller should call `activate()` for matched skills.
     pub fn check_triggers(&self, user_message: &str) -> Vec<&SkillManifest> {
+        self.check_triggers_for(None, user_message)
+    }
+
+    /// Session-scoped trigger check (skips skills already active in that session).
+    pub fn check_triggers_for(
+        &self,
+        session_id: Option<&str>,
+        user_message: &str,
+    ) -> Vec<&SkillManifest> {
+        let active = self.active_set(session_id);
         let mut matched: Vec<&SkillManifest> = Vec::new();
 
         for skill in &self.manifests {
-            // Skip already active skills
-            if self.active_skills.contains(&skill.manifest.name) {
+            if active.is_some_and(|a| a.contains(&skill.manifest.name)) {
                 continue;
             }
             if skill.manifest.matches_trigger(user_message) {
@@ -208,34 +231,70 @@ impl SkillManager {
         matched
     }
 
-    /// Activate a skill (mark as loaded into context).
+    /// Activate a skill in the anonymous/default scope (CLI / tests).
     pub fn activate(&mut self, name: &str) -> bool {
+        self.activate_for(None, name)
+    }
+
+    /// Activate a skill for a specific session scope.
+    pub fn activate_for(&mut self, session_id: Option<&str>, name: &str) -> bool {
         if self.find_by_name(name).is_some() {
-            self.active_skills.insert(name.to_string());
+            self.active_set_mut(session_id).insert(name.to_string());
             true
         } else {
             false
         }
     }
 
-    /// Deactivate a skill (remove from context).
+    /// Deactivate a skill in the anonymous/default scope.
     pub fn deactivate(&mut self, name: &str) -> bool {
-        self.active_skills.remove(name)
+        self.deactivate_for(None, name)
     }
 
-    /// Check if a skill is currently active.
+    /// Deactivate a skill for a specific session scope.
+    pub fn deactivate_for(&mut self, session_id: Option<&str>, name: &str) -> bool {
+        self.active_set_mut(session_id).remove(name)
+    }
+
+    /// Check if a skill is active in the anonymous/default scope.
     pub fn is_active(&self, name: &str) -> bool {
-        self.active_skills.contains(name)
+        self.is_active_for(None, name)
     }
 
-    /// Get names of all currently active skills.
+    /// Check if a skill is active for a specific session scope.
+    pub fn is_active_for(&self, session_id: Option<&str>, name: &str) -> bool {
+        self.active_set(session_id)
+            .is_some_and(|a| a.contains(name))
+    }
+
+    /// Get names of skills active in the anonymous/default scope.
     pub fn active_skill_names(&self) -> Vec<&str> {
-        self.active_skills.iter().map(|s| s.as_str()).collect()
+        self.active_skill_names_for(None)
     }
 
-    /// Deactivate all skills.
+    /// Get names of skills active for a specific session scope.
+    pub fn active_skill_names_for(&self, session_id: Option<&str>) -> Vec<&str> {
+        match self.active_set(session_id) {
+            Some(a) => a.iter().map(|s| s.as_str()).collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Deactivate all skills in the anonymous/default scope.
     pub fn deactivate_all(&mut self) {
-        self.active_skills.clear();
+        self.deactivate_all_for(None);
+    }
+
+    /// Deactivate all skills for a specific session scope.
+    pub fn deactivate_all_for(&mut self, session_id: Option<&str>) {
+        if let Some(set) = self.active_by_scope.get_mut(&Self::scope_key(session_id)) {
+            set.clear();
+        }
+    }
+
+    /// Drop all active-skill state for a session (on session delete).
+    pub fn clear_session(&mut self, session_id: &str) {
+        self.active_by_scope.remove(session_id);
     }
 
     // ── Content loading ──────────────────────────────────────────────
@@ -249,15 +308,23 @@ impl SkillManager {
         SkillManifest::read_body(&manifest.content_path)
     }
 
-    /// Build context string for all active skills (for Segment 6).
+    /// Build context string for all active skills (anonymous/default scope).
     pub fn build_active_context(&self) -> String {
-        if self.active_skills.is_empty() {
+        self.build_active_context_for(None)
+    }
+
+    /// Build context string for skills active in a session scope.
+    pub fn build_active_context_for(&self, session_id: Option<&str>) -> String {
+        let Some(active) = self.active_set(session_id) else {
+            return String::new();
+        };
+        if active.is_empty() {
             return String::new();
         }
 
         let mut parts: Vec<String> = Vec::new();
         for skill in &self.manifests {
-            if self.active_skills.contains(&skill.manifest.name) {
+            if active.contains(&skill.manifest.name) {
                 if let Ok(content) = self.load_content(&skill.manifest) {
                     parts.push(format!(
                         "## Skill: {} (v{})\nSkill directory: {}\n{}\n",
@@ -281,7 +348,7 @@ impl SkillManager {
         );
 
         // Append script catalog for all active skills.
-        let active_scripts = self.get_active_scripts();
+        let active_scripts = self.get_active_scripts_for(session_id);
         if !active_scripts.is_empty() {
             result.push_str(&Self::scripts_context(&active_scripts));
         }
@@ -289,10 +356,13 @@ impl SkillManager {
         result
     }
 
-    /// Build a concise skill catalog for the system prompt.
-    /// Lists ALL available skills (not just active ones) so the agent
-    /// knows what's available and can use skill_load to pull one in.
+    /// Build a concise skill catalog for the system prompt (anonymous scope markers).
     pub fn build_catalog(&self) -> String {
+        self.build_catalog_for(None)
+    }
+
+    /// Build skill catalog with ACTIVE markers for a session scope.
+    pub fn build_catalog_for(&self, session_id: Option<&str>) -> String {
         if self.manifests.is_empty() {
             return String::new();
         }
@@ -301,7 +371,7 @@ impl SkillManager {
         lines.push("Available skills (to use a skill, call the `skill_load` tool with its name to load and activate it. DO NOT try to read the SKILL.md file or files inside the skill directory directly using file tools):".to_string());
 
         for skill in &self.manifests {
-            let active_marker = if self.active_skills.contains(&skill.manifest.name) {
+            let active_marker = if self.is_active_for(session_id, &skill.manifest.name) {
                 " [ACTIVE]"
             } else {
                 ""
@@ -314,6 +384,27 @@ impl SkillManager {
         }
 
         lines.join("\n")
+    }
+
+    /// Scan directories and re-activate skills that were active in each scope.
+    /// Returns `(skill_count, reactivated_count)`.
+    pub fn reload_preserving_active(&mut self) -> Result<(usize, usize)> {
+        let snapshot = self.active_by_scope.clone();
+        let count = self.scan()?;
+        self.active_by_scope.clear();
+        let mut reactivated = 0usize;
+        for (scope, names) in snapshot {
+            for name in names {
+                if self.find_by_name(&name).is_some() {
+                    self.active_by_scope
+                        .entry(scope.clone())
+                        .or_default()
+                        .insert(name);
+                    reactivated += 1;
+                }
+            }
+        }
+        Ok((count, reactivated))
     }
 
     // ── Lookup ──────────────────────────────────────────────────────
@@ -407,10 +498,21 @@ impl SkillManager {
         self.discover_scripts(name)
     }
 
-    /// Get all active skill scripts as (skill_name, ScriptEntry) pairs.
+    /// Get all active skill scripts as (skill_name, ScriptEntry) pairs (default scope).
     pub fn get_active_scripts(&self) -> Vec<(String, ScriptEntry)> {
+        self.get_active_scripts_for(None)
+    }
+
+    /// Get active skill scripts for a session scope.
+    pub fn get_active_scripts_for(
+        &self,
+        session_id: Option<&str>,
+    ) -> Vec<(String, ScriptEntry)> {
         let mut result = Vec::new();
-        for name in &self.active_skills {
+        let Some(active) = self.active_set(session_id) else {
+            return result;
+        };
+        for name in active {
             for script in self.discover_scripts(name) {
                 result.push((name.clone(), script));
             }
@@ -799,6 +901,27 @@ Skill body for {}"#,
 
         // Deactivating non-existent returns false
         assert!(!mgr.deactivate("nope"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn active_skills_are_session_scoped() {
+        let dir = PathBuf::from("/tmp/test_skills_session_scope");
+        let _ = fs::remove_dir_all(&dir);
+        write_skill(&dir, "s1", "skill-one");
+
+        let mut mgr = SkillManager::new(dir.clone());
+        mgr.scan().unwrap();
+
+        assert!(mgr.activate_for(Some("sess-a"), "skill-one"));
+        assert!(mgr.is_active_for(Some("sess-a"), "skill-one"));
+        assert!(!mgr.is_active_for(Some("sess-b"), "skill-one"));
+        assert!(mgr.build_active_context_for(Some("sess-b")).is_empty());
+        assert!(!mgr.build_active_context_for(Some("sess-a")).is_empty());
+
+        mgr.clear_session("sess-a");
+        assert!(!mgr.is_active_for(Some("sess-a"), "skill-one"));
 
         let _ = fs::remove_dir_all(&dir);
     }

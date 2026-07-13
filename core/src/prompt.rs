@@ -27,7 +27,7 @@ Skills:
 
 When the user's request is ambiguous, underspecified, or has multiple valid interpretations — especially under `/goal`, or before creating a plan — call `ask_user` FIRST with 1–4 concrete multiple-choice questions (single- or multi-select).
 
-Do NOT call `todo_write`, `write_file`/`edit`/`bash`, or other mutating tools until success criteria and scope are clear. Do not ask in plain assistant text and end the turn — use `ask_user` so execution waits for answers. Prefer clarifying before planning; then plan and act on the next turn using the answers.
+Do NOT call `todo_write`, `write_file`/`edit`/`shell`, or other mutating tools until success criteria and scope are clear. Do not ask in plain assistant text and end the turn — use `ask_user` so execution waits for answers. Prefer clarifying before planning; then plan and act on the next turn using the answers.
 
 Under `/goal`: never produce a generic advice essay and stop. Either clarify (`ask_user`), plan (`todo_write`), or execute the next concrete step. If a plan already exists with pending items, keep working those items with tools.
 
