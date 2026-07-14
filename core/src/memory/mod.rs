@@ -149,6 +149,11 @@ impl MemoryManager {
         &self.core
     }
 
+    /// Clone the shared SQLite storage handle for background memory workers.
+    pub fn storage(&self) -> Storage {
+        self.recall.storage()
+    }
+
     pub fn core_mut(&mut self) -> &mut CoreMemory {
         &mut self.core
     }

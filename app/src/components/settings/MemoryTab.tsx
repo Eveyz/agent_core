@@ -20,6 +20,16 @@ import RefreshIcon from 'lucide-react/dist/esm/icons/refresh-cw.mjs';
 
 type MemoryMode = 'stateless' | 'standard' | 'deep';
 
+interface ReflectionStatus {
+  enabled: boolean;
+  status: string;
+  pending_messages: number;
+  summaries_created: number;
+  durable_facts_created: number;
+  last_success_at: string;
+  last_error: string;
+}
+
 const MODE_DESCRIPTIONS: Record<MemoryMode, { label: string; desc: string }> = {
   stateless: {
     label: 'Stateless',
@@ -41,6 +51,7 @@ export default function MemoryTab() {
   const [agverseContent, setAgverseContent] = useState<string>('');
   const [loadingMd, setLoadingMd] = useState(true);
   const [switchingMode, setSwitchingMode] = useState(false);
+  const [reflectionStatus, setReflectionStatus] = useState<ReflectionStatus | null>(null);
 
   const loadAgverseMd = useCallback(async () => {
     setLoadingMd(true);
@@ -58,6 +69,20 @@ export default function MemoryTab() {
   useEffect(() => {
     loadAgverseMd();
   }, [loadAgverseMd]);
+
+  const loadReflectionStatus = useCallback(async () => {
+    try {
+      setReflectionStatus(await invoke<ReflectionStatus>('get_reflection_status'));
+    } catch (err) {
+      console.error('Failed to load reflection status', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadReflectionStatus();
+    const timer = window.setInterval(loadReflectionStatus, 10_000);
+    return () => window.clearInterval(timer);
+  }, [loadReflectionStatus]);
 
   if (!config) {
     return (
@@ -205,11 +230,43 @@ export default function MemoryTab() {
 
       {/* Reflection Model Selector (Deep mode only) */}
       {currentMode === 'deep' && (
-        <ReflectionModelSelector
-          config={config}
-          currentModel={memory.reflection?.reflection_model ?? ''}
-          onChange={handleReflectionModelChange}
-        />
+        <>
+          <ReflectionModelSelector
+            config={config}
+            currentModel={memory.reflection?.reflection_model ?? ''}
+            onChange={handleReflectionModelChange}
+          />
+          <div className="settings-section" style={{ marginTop: '16px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <h3 className="settings-section-title" style={{ marginBottom: 0 }}>
+                <BrainIcon size={14} /> Reflection Activity
+              </h3>
+              <button
+                onClick={loadReflectionStatus}
+                style={{ background: 'transparent', border: 0, color: 'var(--text-secondary)', cursor: 'pointer' }}
+                title="Refresh reflection status"
+              >
+                <RefreshIcon size={13} />
+              </button>
+            </div>
+            {reflectionStatus && (
+              <div style={{ marginTop: '12px', display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+                <ReflectionMetric label="Pending" value={reflectionStatus.pending_messages} />
+                <ReflectionMetric label="Summaries" value={reflectionStatus.summaries_created} />
+                <ReflectionMetric label="Durable facts" value={reflectionStatus.durable_facts_created} />
+                <div style={{ gridColumn: '1 / -1', fontSize: '11px', color: 'var(--text-secondary)' }}>
+                  Status: {reflectionStatus.enabled ? reflectionStatus.status || 'idle' : 'disabled'}
+                  {reflectionStatus.last_success_at && ` · Last success: ${new Date(reflectionStatus.last_success_at).toLocaleString()}`}
+                </div>
+                {reflectionStatus.last_error && (
+                  <div style={{ gridColumn: '1 / -1', fontSize: '11px', color: 'var(--danger, #ef4444)' }}>
+                    Last error: {reflectionStatus.last_error}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </>
       )}
 
       <div className="settings-section" style={{ marginTop: '24px' }}>
@@ -322,6 +379,15 @@ export default function MemoryTab() {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+function ReflectionMetric({ label, value }: { label: string; value: number }) {
+  return (
+    <div style={{ padding: '8px', borderRadius: '6px', background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)' }}>
+      <div style={{ fontSize: '16px', fontWeight: 600 }}>{value}</div>
+      <div style={{ fontSize: '10px', color: 'var(--text-secondary)', marginTop: '2px' }}>{label}</div>
     </div>
   );
 }

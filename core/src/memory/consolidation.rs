@@ -47,7 +47,11 @@ impl MemoryConsolidator {
         let records: Vec<(String, Vec<f32>)> = {
             let db = self.storage.conn();
             let mut stmt = db.prepare(
-                "SELECT id, embedding FROM recall_memory ORDER BY created_at DESC LIMIT 5000",
+                "SELECT r.id, r.embedding FROM recall_memory r \
+                 LEFT JOIN reflection_state s ON s.session_id = r.session_id \
+                 CROSS JOIN reflection_control c \
+                 WHERE c.enabled = 0 OR r.reflection_sequence <= COALESCE(s.last_reflected_sequence, 0) \
+                 ORDER BY r.created_at DESC LIMIT 5000",
             )?;
             let mut records = Vec::new();
             let rows = stmt.query_map([], |row| {

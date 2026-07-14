@@ -95,7 +95,10 @@ fn sanitize_interrupted_history(messages: &mut Vec<Message>) {
         .collect();
 
     let mut complete_call_ids = std::collections::HashSet::new();
-    for msg in messages.iter_mut().filter(|msg| msg.role == crate::types::Role::Assistant) {
+    for msg in messages
+        .iter_mut()
+        .filter(|msg| msg.role == crate::types::Role::Assistant)
+    {
         let Some(calls) = msg.tool_calls.as_mut() else {
             continue;
         };
@@ -236,7 +239,11 @@ pub fn row_to_meta(row: &rusqlite::Row) -> rusqlite::Result<SessionMeta> {
         process_time_ms: row.get::<_, i64>(13)? as u64,
         thought_time_ms: row.get::<_, i64>(14)? as u64,
         mode: row.get(15)?,
-        pinned_goal: if pinned_goal.is_empty() { None } else { Some(pinned_goal) },
+        pinned_goal: if pinned_goal.is_empty() {
+            None
+        } else {
+            Some(pinned_goal)
+        },
         goal_completed: row.get::<_, i32>(17)? != 0,
         pinned: row.get::<_, i32>(18)? != 0,
         pinned_at: row.get(19)?,
@@ -279,7 +286,9 @@ impl SessionManager {
         if !path.exists() {
             return Ok(false);
         }
-        if let (Some(meta), Ok(modified)) = (self.get_meta(session_id)?, path.metadata()?.modified()) {
+        if let (Some(meta), Ok(modified)) =
+            (self.get_meta(session_id)?, path.metadata()?.modified())
+        {
             let snapshot_time: chrono::DateTime<Utc> = modified.into();
             if let Ok(sqlite_time) = chrono::DateTime::parse_from_rfc3339(&meta.updated_at) {
                 if snapshot_time <= sqlite_time.with_timezone(&Utc) {
@@ -297,21 +306,12 @@ impl SessionManager {
 
     /// Replace a session with the exact raw runtime transcript. UI projections
     /// must never call this path.
-    pub fn save_canonical_transcript(
-        &self,
-        session_id: &str,
-        messages: &[Message],
-    ) -> Result<()> {
+    pub fn save_canonical_transcript(&self, session_id: &str, messages: &[Message]) -> Result<()> {
         validate_transcript(messages)?;
         let meta = self
             .get_meta(session_id)?
             .ok_or_else(|| anyhow::anyhow!("session '{session_id}' does not exist"))?;
-        self.save(
-            Some(session_id),
-            messages,
-            &meta.cwd,
-            &meta.model_used,
-        )?;
+        self.save(Some(session_id), messages, &meta.cwd, &meta.model_used)?;
         let snapshot = Self::snapshot_path(session_id);
         if snapshot.exists() {
             std::fs::remove_file(snapshot)?;
@@ -347,11 +347,7 @@ impl SessionManager {
     /// The prompt is later updated via [`finish_prompt`] when the Run
     /// completes / is cancelled / fails. On startup, any prompt still
     /// in 'running' state is repaired to 'interrupted' (zombie recovery).
-    pub fn create_prompt(
-        &self,
-        session_id: &str,
-        model: &str,
-    ) -> Result<(String, u32)> {
+    pub fn create_prompt(&self, session_id: &str, model: &str) -> Result<(String, u32)> {
         let db = self.storage.conn();
         let now = chrono::Utc::now().to_rfc3339();
         let prompt_id = uuid::Uuid::new_v4().to_string();
@@ -478,13 +474,16 @@ impl SessionManager {
         parent_call_id: Option<&str>,
     ) -> Result<String> {
         // Prepend a user message identifying the subagent
-        let mut full_messages = vec![
-            Message::user(&format!("Subagent task: {}", subagent_id)),
-        ];
+        let mut full_messages = vec![Message::user(&format!("Subagent task: {}", subagent_id))];
         full_messages.extend_from_slice(messages);
         let session_id = self.save_full(
             None,
-            &full_messages, "", "subagent", parent_session_id, "subagent", None,
+            &full_messages,
+            "",
+            "subagent",
+            parent_session_id,
+            "subagent",
+            None,
         )?;
         let child_run_id = uuid::Uuid::new_v4().to_string();
         self.storage.conn().execute(
@@ -561,7 +560,9 @@ impl SessionManager {
             )?;
             id.to_string()
         } else {
-            let new_id = session_id.map(|s| s.to_string()).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            let new_id = session_id
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             // Auto-generate title from first user message
             let title = Self::auto_title(messages);
             let parent = parent_session_id.unwrap_or("");
@@ -594,16 +595,19 @@ impl SessionManager {
         let mut global_msg_idx = 0;
         for (prompt_idx, group) in prompt_groups.iter().enumerate() {
             let turn_idx = prompt_idx as i64;
-            let prompt_model = group.iter()
+            let prompt_model = group
+                .iter()
                 .find_map(|m| m.model.as_deref())
                 .unwrap_or(model_used);
 
             // Check if a prompt already exists at this (session_id, turn_index).
-            let existing_id: Option<String> = tx.query_row(
-                "SELECT id FROM prompts WHERE session_id = ?1 AND turn_index = ?2",
-                rusqlite::params![id, turn_idx],
-                |row| row.get(0),
-            ).ok();
+            let existing_id: Option<String> = tx
+                .query_row(
+                    "SELECT id FROM prompts WHERE session_id = ?1 AND turn_index = ?2",
+                    rusqlite::params![id, turn_idx],
+                    |row| row.get(0),
+                )
+                .ok();
 
             let prompt_id = if let Some(pid) = existing_id {
                 // Update existing prompt (keep its lifecycle status + timestamps).
@@ -734,7 +738,8 @@ impl SessionManager {
     pub fn get_project_id(&self, session_id: &str) -> Result<Option<String>> {
         let db = self.storage.conn();
         let mut stmt = db.prepare("SELECT project_id FROM sessions WHERE id = ?1")?;
-        let mut rows = stmt.query_map(rusqlite::params![session_id], |row| row.get::<_, String>(0))?;
+        let mut rows =
+            stmt.query_map(rusqlite::params![session_id], |row| row.get::<_, String>(0))?;
         match rows.next() {
             Some(Ok(proj_id)) => Ok(Some(proj_id)),
             Some(Err(e)) => Err(e.into()),
@@ -783,9 +788,10 @@ impl SessionManager {
                             }
                         });
 
-                let metadata: Option<serde_json::Value> = serde_json::from_str::<serde_json::Value>(&metadata_json)
-                    .ok()
-                    .filter(|value| !value.is_null());
+                let metadata: Option<serde_json::Value> =
+                    serde_json::from_str::<serde_json::Value>(&metadata_json)
+                        .ok()
+                        .filter(|value| !value.is_null());
 
                 let (metadata, reasoning) = split_reasoning_from_metadata(metadata);
 
@@ -813,7 +819,8 @@ impl SessionManager {
                 ))
             })?;
 
-            let mut messages_by_prompt: std::collections::HashMap<String, Vec<(i64, Message)>> = std::collections::HashMap::new();
+            let mut messages_by_prompt: std::collections::HashMap<String, Vec<(i64, Message)>> =
+                std::collections::HashMap::new();
             let mut legacy_messages = Vec::new();
             for row in rows {
                 let (idx, msg, pid) = row?;
@@ -876,9 +883,7 @@ impl SessionManager {
             if prompts.is_empty() && !flat_messages.is_empty() {
                 let groups = Self::split_into_prompts(&flat_messages);
                 for (idx, group) in groups.iter().enumerate() {
-                    let model = group.iter()
-                        .find_map(|m| m.model.as_deref())
-                        .unwrap_or("");
+                    let model = group.iter().find_map(|m| m.model.as_deref()).unwrap_or("");
                     prompts.push(Prompt {
                         id: format!("legacy-prompt-{}", idx),
                         session_id: session_id.to_string(),
@@ -921,8 +926,6 @@ impl SessionManager {
         )?;
         Ok(())
     }
-
-
 
     /// Rename a session.
     pub fn rename(&self, session_id: &str, new_title: &str) -> Result<bool> {
@@ -1055,8 +1058,48 @@ impl SessionManager {
         }
 
         // 2. Delete all DB data for this session in a single transaction
+        let _reflection_guard = crate::memory::reflection::reflection_persistence_guard();
+        let reflected_facts: Vec<String> = {
+            let db = self.storage.conn();
+            let mut stmt = db.prepare(
+                "SELECT f.content FROM reflection_facts f \
+                 WHERE f.agverse_owned = 1 \
+                   AND EXISTS (SELECT 1 FROM reflection_fact_sources s WHERE s.fact_key = f.fact_key AND s.session_id = ?1) \
+                   AND NOT EXISTS (SELECT 1 FROM reflection_fact_sources s WHERE s.fact_key = f.fact_key AND s.session_id != ?1)",
+            )?;
+            stmt.query_map(rusqlite::params![session_id], |row| row.get(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let mut agverse_edit = crate::memory::reflection::remove_facts_from_agverse(
+            self.storage.clone(),
+            &reflected_facts,
+        )?;
         let mut db = self.storage.conn();
         let tx = db.transaction()?;
+        tx.execute(
+            "INSERT INTO deleted_reflection_sessions(session_id, deleted_at) VALUES (?1, ?2) \
+             ON CONFLICT(session_id) DO UPDATE SET deleted_at = excluded.deleted_at",
+            rusqlite::params![session_id, Utc::now().to_rfc3339()],
+        )?;
+        tx.execute(
+            "DELETE FROM reflection_fact_sources WHERE session_id = ?1",
+            rusqlite::params![session_id],
+        )?;
+        tx.execute(
+            "DELETE FROM archival_memory WHERE id IN \
+             (SELECT f.archival_id FROM reflection_facts f \
+              WHERE NOT EXISTS (SELECT 1 FROM reflection_fact_sources s WHERE s.fact_key = f.fact_key))",
+            [],
+        )?;
+        tx.execute(
+            "DELETE FROM reflection_facts WHERE NOT EXISTS \
+             (SELECT 1 FROM reflection_fact_sources s WHERE s.fact_key = reflection_facts.fact_key)",
+            [],
+        )?;
+        tx.execute(
+            "DELETE FROM reflection_state WHERE session_id = ?1",
+            rusqlite::params![session_id],
+        )?;
 
         tx.execute(
             "DELETE FROM recall_memory WHERE session_id = ?1",
@@ -1092,13 +1135,23 @@ impl SessionManager {
             rusqlite::params![session_id],
         )?;
 
+        if let Some(operation_id) = agverse_edit.id() {
+            tx.execute(
+                "UPDATE reflection_file_operations SET state = 'committed' WHERE id = ?1",
+                [operation_id],
+            )?;
+        }
+
         tx.commit()?;
+        agverse_edit.finish();
 
         // 3. Clean up associated files from the filesystem (best-effort)
         let agverse_dir = crate::paths::get_agverse_dir();
 
         // Delete mid-turn session snapshot file
-        let snapshot_file = agverse_dir.join("sessions").join(format!("{}.messages.json", session_id));
+        let snapshot_file = agverse_dir
+            .join("sessions")
+            .join(format!("{}.messages.json", session_id));
         if snapshot_file.exists() {
             if let Err(e) = std::fs::remove_file(&snapshot_file) {
                 tracing::warn!(path = %snapshot_file.display(), error = %e, "Failed to delete session snapshot file");
@@ -1225,8 +1278,6 @@ pub struct SessionCounts {
     pub archived: usize,
 }
 
-
-
 // ── Trait for subagent result compatibility ──────────────────────────
 
 /// Trait for subagent result types that can be saved as sessions.
@@ -1268,7 +1319,7 @@ mod tests {
                 name: None,
                 model: None,
                 metadata: None,
-            reasoning: None,
+                reasoning: None,
             },
             Message {
                 role: Role::Assistant,
@@ -1278,7 +1329,7 @@ mod tests {
                 name: None,
                 model: None,
                 metadata: None,
-            reasoning: None,
+                reasoning: None,
             },
             Message {
                 role: Role::Assistant,
@@ -1295,7 +1346,7 @@ mod tests {
                 name: None,
                 model: None,
                 metadata: None,
-            reasoning: None,
+                reasoning: None,
             },
             Message {
                 role: Role::Tool,
@@ -1305,7 +1356,7 @@ mod tests {
                 name: Some("read_file".to_string()),
                 model: None,
                 metadata: None,
-            reasoning: None,
+                reasoning: None,
             },
         ]
     }
@@ -1348,7 +1399,8 @@ mod tests {
         messages.push(Message::assistant("final answer"));
 
         let session_id = mgr.save(None, &messages, "/tmp", "test-model").unwrap();
-        mgr.save_canonical_transcript(&session_id, &messages).unwrap();
+        mgr.save_canonical_transcript(&session_id, &messages)
+            .unwrap();
         let resumed = mgr.resume(&session_id).unwrap().unwrap();
 
         assert_eq!(
@@ -1360,7 +1412,9 @@ mod tests {
     #[test]
     fn subagent_session_persists_full_lineage() {
         let (mgr, _dir) = make_manager();
-        let parent_id = mgr.save(None, &[Message::user("parent")], "/tmp", "m").unwrap();
+        let parent_id = mgr
+            .save(None, &[Message::user("parent")], "/tmp", "m")
+            .unwrap();
         let child_id = mgr
             .save_subagent_with_messages(
                 "researcher",
@@ -1390,7 +1444,8 @@ mod tests {
         let resumed = mgr.resume(&session_id).unwrap().unwrap();
         let second_prompt_id = resumed.prompts[1].id.clone();
 
-        mgr.truncate_before_prompt(&session_id, &second_prompt_id).unwrap();
+        mgr.truncate_before_prompt(&session_id, &second_prompt_id)
+            .unwrap();
         let rewound = mgr.resume(&session_id).unwrap().unwrap();
         assert_eq!(rewound.messages.len(), 2);
         assert_eq!(rewound.messages[0].content.as_deref(), Some("one"));
@@ -1490,12 +1545,14 @@ mod tests {
 
     #[test]
     fn snapshot_messages_preserve_opaque_reasoning_via_metadata() {
-        let messages = vec![Message::assistant("working").with_reasoning(ReasoningState {
-            text: Some("plain reasoning".into()),
-            encrypted_content: Some("opaque-blob".into()),
-            signature: Some("provider-signature".into()),
-            summary: None,
-        })];
+        let messages = vec![
+            Message::assistant("working").with_reasoning(ReasoningState {
+                text: Some("plain reasoning".into()),
+                encrypted_content: Some("opaque-blob".into()),
+                signature: Some("provider-signature".into()),
+                summary: None,
+            }),
+        ];
 
         let snapshot = messages_for_snapshot(&messages);
         let json = serde_json::to_string(&snapshot).unwrap();
@@ -1532,10 +1589,12 @@ mod tests {
             .unwrap();
 
         let resumed = mgr.resume(&id).unwrap().unwrap();
-        assert!(resumed
-            .messages
-            .iter()
-            .any(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("call_1")));
+        assert!(
+            resumed
+                .messages
+                .iter()
+                .any(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("call_1"))
+        );
         assert!(resumed.messages.iter().any(|m| {
             m.tool_calls
                 .as_ref()
@@ -1859,18 +1918,22 @@ mod tests {
         let (mgr, _dir) = make_manager();
 
         // 1. Create a parent session
-        let parent_id = mgr.save(None, &[Message::user("parent")], "/tmp", "gpt").unwrap();
+        let parent_id = mgr
+            .save(None, &[Message::user("parent")], "/tmp", "gpt")
+            .unwrap();
 
         // 2. Create a child session linked to parent
-        let child_id = mgr.save_full(
-            None,
-            &[Message::user("child")],
-            "/tmp",
-            "gpt",
-            Some(&parent_id),
-            "subagent",
-            None,
-        ).unwrap();
+        let child_id = mgr
+            .save_full(
+                None,
+                &[Message::user("child")],
+                "/tmp",
+                "gpt",
+                Some(&parent_id),
+                "subagent",
+                None,
+            )
+            .unwrap();
 
         // Populate dependent database tables
         let db = mgr.storage.conn();
@@ -1878,13 +1941,25 @@ mod tests {
         // Insert parent records to satisfy foreign key constraints
         db.execute(
             "INSERT INTO agents (id, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params!["agent-1", "test agent", "2026-07-06T12:00:00Z", "2026-07-06T12:00:00Z"],
-        ).unwrap();
+            rusqlite::params![
+                "agent-1",
+                "test agent",
+                "2026-07-06T12:00:00Z",
+                "2026-07-06T12:00:00Z"
+            ],
+        )
+        .unwrap();
 
         db.execute(
             "INSERT INTO workflows (id, name, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params!["wf-1", "test workflow", "2026-07-06T12:00:00Z", "2026-07-06T12:00:00Z"],
-        ).unwrap();
+            rusqlite::params![
+                "wf-1",
+                "test workflow",
+                "2026-07-06T12:00:00Z",
+                "2026-07-06T12:00:00Z"
+            ],
+        )
+        .unwrap();
 
         db.execute(
             "INSERT INTO cronjobs (id, name, cadence_type, cadence_value, prompt, permission_level, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
@@ -1942,11 +2017,51 @@ mod tests {
         assert!(mgr.get_meta(&child_id).unwrap().is_some());
 
         let db = mgr.storage.conn();
-        assert_eq!(db.query_row::<i64, _, _>("SELECT COUNT(*) FROM recall_memory WHERE session_id = ?1", rusqlite::params![parent_id], |r| r.get(0)).unwrap(), 1);
-        assert_eq!(db.query_row::<i64, _, _>("SELECT COUNT(*) FROM conversation_summaries WHERE session_id = ?1", rusqlite::params![parent_id], |r| r.get(0)).unwrap(), 1);
-        assert_eq!(db.query_row::<i64, _, _>("SELECT COUNT(*) FROM agent_history WHERE session_id = ?1", rusqlite::params![parent_id], |r| r.get(0)).unwrap(), 1);
-        assert_eq!(db.query_row::<i64, _, _>("SELECT COUNT(*) FROM workflow_runs WHERE session_id = ?1", rusqlite::params![parent_id], |r| r.get(0)).unwrap(), 1);
-        assert_eq!(db.query_row::<i64, _, _>("SELECT COUNT(*) FROM cronjob_runs WHERE session_id = ?1", rusqlite::params![parent_id], |r| r.get(0)).unwrap(), 1);
+        assert_eq!(
+            db.query_row::<i64, _, _>(
+                "SELECT COUNT(*) FROM recall_memory WHERE session_id = ?1",
+                rusqlite::params![parent_id],
+                |r| r.get(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row::<i64, _, _>(
+                "SELECT COUNT(*) FROM conversation_summaries WHERE session_id = ?1",
+                rusqlite::params![parent_id],
+                |r| r.get(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row::<i64, _, _>(
+                "SELECT COUNT(*) FROM agent_history WHERE session_id = ?1",
+                rusqlite::params![parent_id],
+                |r| r.get(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row::<i64, _, _>(
+                "SELECT COUNT(*) FROM workflow_runs WHERE session_id = ?1",
+                rusqlite::params![parent_id],
+                |r| r.get(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row::<i64, _, _>(
+                "SELECT COUNT(*) FROM cronjob_runs WHERE session_id = ?1",
+                rusqlite::params![parent_id],
+                |r| r.get(0)
+            )
+            .unwrap(),
+            1
+        );
         assert!(snapshot_file.exists());
         assert!(chat_dir.exists());
 
@@ -1962,11 +2077,51 @@ mod tests {
         assert!(mgr.get_meta(&child_id).unwrap().is_none()); // child deleted recursively!
 
         let db = mgr.storage.conn();
-        assert_eq!(db.query_row::<i64, _, _>("SELECT COUNT(*) FROM recall_memory WHERE session_id = ?1", rusqlite::params![parent_id], |r| r.get(0)).unwrap(), 0);
-        assert_eq!(db.query_row::<i64, _, _>("SELECT COUNT(*) FROM conversation_summaries WHERE session_id = ?1", rusqlite::params![parent_id], |r| r.get(0)).unwrap(), 0);
-        assert_eq!(db.query_row::<i64, _, _>("SELECT COUNT(*) FROM agent_history WHERE session_id = ?1", rusqlite::params![parent_id], |r| r.get(0)).unwrap(), 0);
-        assert_eq!(db.query_row::<i64, _, _>("SELECT COUNT(*) FROM workflow_runs WHERE session_id = ?1", rusqlite::params![parent_id], |r| r.get(0)).unwrap(), 0);
-        assert_eq!(db.query_row::<i64, _, _>("SELECT COUNT(*) FROM cronjob_runs WHERE session_id = ?1", rusqlite::params![parent_id], |r| r.get(0)).unwrap(), 0);
+        assert_eq!(
+            db.query_row::<i64, _, _>(
+                "SELECT COUNT(*) FROM recall_memory WHERE session_id = ?1",
+                rusqlite::params![parent_id],
+                |r| r.get(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row::<i64, _, _>(
+                "SELECT COUNT(*) FROM conversation_summaries WHERE session_id = ?1",
+                rusqlite::params![parent_id],
+                |r| r.get(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row::<i64, _, _>(
+                "SELECT COUNT(*) FROM agent_history WHERE session_id = ?1",
+                rusqlite::params![parent_id],
+                |r| r.get(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row::<i64, _, _>(
+                "SELECT COUNT(*) FROM workflow_runs WHERE session_id = ?1",
+                rusqlite::params![parent_id],
+                |r| r.get(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row::<i64, _, _>(
+                "SELECT COUNT(*) FROM cronjob_runs WHERE session_id = ?1",
+                rusqlite::params![parent_id],
+                |r| r.get(0)
+            )
+            .unwrap(),
+            0
+        );
         assert!(!snapshot_file.exists());
         assert!(!chat_dir.exists());
     }

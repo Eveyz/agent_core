@@ -1156,6 +1156,17 @@ async fn get_agverse_md() -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn get_reflection_status(
+    state: State<'_, AppState>,
+) -> Result<agent_core::memory::reflection::ReflectionStatus, String> {
+    let mut status = agent_core::memory::reflection::reflection_status(state.storage.clone())
+        .map_err(|e| e.to_string())?;
+    let manager = state.run_manager.lock().await;
+    status.enabled = manager.brain().reflection_daemon.is_some();
+    Ok(status)
+}
+
+#[tauri::command]
 async fn read_file(path: String) -> Result<String, String> {
     tokio::task::spawn_blocking(move || {
         let resolved_path = if path.starts_with("~/") {
@@ -2191,6 +2202,10 @@ pub fn run() {
                 .brain()
                 .memory
                 .clone();
+            let reflection_daemon = run_manager
+                .brain()
+                .reflection_daemon
+                .clone();
 
             app.manage(AppState {
                 run_manager: Arc::new(AsyncMutex::new(run_manager)),
@@ -2204,6 +2219,12 @@ pub fn run() {
                 mcp_tool_defs,
                 preview_manager,
             });
+
+            if let Some(daemon) = reflection_daemon {
+                tauri::async_runtime::spawn(async move {
+                    daemon.start();
+                });
+            }
 
             let preview_mgr = {
                 let state = app.state::<AppState>();
@@ -2273,7 +2294,7 @@ pub fn run() {
             set_project_pinned, set_session_pinned,
             delete_project, rename_project, open_in_explorer,
             list_git_branches, switch_git_branch, get_project_sessions,
-            get_agverse_md, read_file, get_skills, invalidate_skills_cache,
+            get_agverse_md, get_reflection_status, read_file, get_skills, invalidate_skills_cache,
             list_cronjobs, create_cronjob, update_cronjob, delete_cronjob, toggle_cronjob,
             list_available_tools,
             create_agent, list_agents, get_agent, update_agent, delete_agent,

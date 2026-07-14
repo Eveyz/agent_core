@@ -106,12 +106,19 @@ impl RecallMemory {
             MemoryCategory::Trivia => "Trivia",
         };
 
-        let db = self.storage.conn();
-        db.execute(
-            "INSERT INTO recall_memory (id, session_id, role, content, embedding, importance, memory_strength, access_count, category, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1.0, 0, ?7, ?8)",
-            rusqlite::params![id, session_id, role, content, embedding_bytes, importance, category_str, now],
+        let mut db = self.storage.conn();
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let reflection_sequence: i64 = tx.query_row(
+            "UPDATE reflection_sequence_counter SET value = value + 1 WHERE singleton = 1 RETURNING value",
+            [],
+            |row| row.get(0),
+        )?;
+        tx.execute(
+            "INSERT INTO recall_memory (id, session_id, role, content, embedding, importance, memory_strength, access_count, category, created_at, reflection_sequence) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1.0, 0, ?7, ?8, ?9)",
+            rusqlite::params![id, session_id, role, content, embedding_bytes, importance, category_str, now, reflection_sequence],
         )
         .context("failed to store recall memory")?;
+        tx.commit()?;
 
         Ok(id)
     }
@@ -697,11 +704,13 @@ impl RecallMemory {
 
         let mut stmt = db
             .prepare(
-                "SELECT id, importance, COALESCE(memory_strength, 1.0), \
-                 COALESCE(category, 'Conversation'), created_at \
-                 FROM recall_memory \
-                 WHERE importance < ?1 \
-                 ORDER BY created_at ASC LIMIT ?2",
+                "SELECT r.id, r.importance, COALESCE(r.memory_strength, 1.0), \
+                 COALESCE(r.category, 'Conversation'), r.created_at \
+                 FROM recall_memory r LEFT JOIN reflection_state s ON s.session_id = r.session_id \
+                 CROSS JOIN reflection_control c \
+                 WHERE (c.enabled = 0 OR r.reflection_sequence <= COALESCE(s.last_reflected_sequence, 0)) \
+                   AND importance < ?1 \
+                 ORDER BY r.created_at ASC LIMIT ?2",
             )
             .context("failed to prepare prune query")?;
 
@@ -773,11 +782,13 @@ impl RecallMemory {
 
         let mut stmt = db
             .prepare(
-                "SELECT id, content, embedding, role, session_id, importance, \
-                 COALESCE(category, 'Conversation') \
-                 FROM recall_memory \
-                 WHERE importance >= ?1 \
-                 ORDER BY created_at ASC LIMIT ?2",
+                "SELECT r.id, r.content, r.embedding, r.role, r.session_id, r.importance, \
+                 COALESCE(r.category, 'Conversation') \
+                 FROM recall_memory r LEFT JOIN reflection_state s ON s.session_id = r.session_id \
+                 CROSS JOIN reflection_control c \
+                 WHERE (c.enabled = 0 OR r.reflection_sequence <= COALESCE(s.last_reflected_sequence, 0)) \
+                   AND importance >= ?1 \
+                 ORDER BY r.created_at ASC LIMIT ?2",
             )
             .context("failed to prepare promote query")?;
 

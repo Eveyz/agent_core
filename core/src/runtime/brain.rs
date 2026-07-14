@@ -77,6 +77,11 @@ impl Brain {
     pub fn from_config(config: Config) -> Result<Self> {
         let memory = Self::build_memory(&config);
         let reflection_daemon = Self::build_reflection_daemon(&config, &memory);
+        if reflection_daemon.is_none()
+            && let Some(memory) = &memory
+        {
+            let _ = crate::memory::reflection::disable_reflection(memory.lock().storage());
+        }
         let skill_manager = Self::build_skill_manager(&config)?;
         let reflector = Self::build_reflector(&config);
 
@@ -131,27 +136,32 @@ impl Brain {
             return None;
         }
 
-        let default_db_path = crate::paths::get_memory_db_path().to_string_lossy().into_owned();
+        let default_db_path = crate::paths::get_memory_db_path()
+            .to_string_lossy()
+            .into_owned();
         let db_path = mem_config
             .map(|m| m.db_path.as_str())
             .unwrap_or(&default_db_path);
         let block_max_chars = mem_config
             .map(|m| m.default_block_max_chars)
             .unwrap_or(2000);
-        let embedding_enabled = mem_config
-            .map(|m| m.embedding_enabled)
-            .unwrap_or(true);
-        let salience_config = mem_config
-            .and_then(|m| m.salience.as_ref());
+        let embedding_enabled = mem_config.map(|m| m.embedding_enabled).unwrap_or(true);
+        let salience_config = mem_config.and_then(|m| m.salience.as_ref());
 
         let result = if embedding_enabled {
             let embedding_model = mem_config
                 .map(|m| m.embedding_model.as_str())
                 .unwrap_or("BAAI/bge-small-en-v1.5");
-            tracing::info!("initializing memory (mode={}) with embedding model: {embedding_model} (lazy — loaded on first use)", mode.as_str());
+            tracing::info!(
+                "initializing memory (mode={}) with embedding model: {embedding_model} (lazy — loaded on first use)",
+                mode.as_str()
+            );
             MemoryManager::new(db_path, embedding_model, block_max_chars, salience_config)
         } else {
-            tracing::info!("initializing memory (mode={}) without embedding (keyword search mode)", mode.as_str());
+            tracing::info!(
+                "initializing memory (mode={}) without embedding (keyword search mode)",
+                mode.as_str()
+            );
             MemoryManager::without_embedding(db_path, block_max_chars, salience_config)
         };
 
@@ -165,7 +175,9 @@ impl Brain {
                 Some(Arc::new(Mutex::new(m)))
             }
             Err(e) => {
-                tracing::warn!("failed to initialize memory system: {e}; continuing without memory");
+                tracing::warn!(
+                    "failed to initialize memory system: {e}; continuing without memory"
+                );
                 None
             }
         }
@@ -195,7 +207,8 @@ impl Brain {
             trigger_count
         );
 
-        let daemon = ReflectionDaemon::spawn(client, memory, trigger_count);
+        let claim_lease_seconds = model_config.request_timeout_secs.saturating_add(300);
+        let daemon = ReflectionDaemon::spawn(client, memory, trigger_count, claim_lease_seconds);
         Some(Arc::new(daemon))
     }
 
@@ -244,6 +257,13 @@ impl Brain {
 
     /// Update the brain's configuration in memory.
     pub fn update_config(&mut self, config: Config) {
+        self.reflection_daemon = Self::build_reflection_daemon(&config, &self.memory);
+        if let Some(ref daemon) = self.reflection_daemon {
+            daemon.start();
+        } else if let Some(memory) = &self.memory {
+            let _ = crate::memory::reflection::disable_reflection(memory.lock().storage());
+        }
+        self.reflector = Self::build_reflector(&config);
         self.config = config;
     }
 

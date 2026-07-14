@@ -107,6 +107,7 @@ impl Run {
         }
 
         // Store in memory if enabled
+        let mut reflected_session_id = self.session_id.clone();
         if let Some(ref mem) = self.brain.memory {
             if self.brain.memory_mode() != crate::config::MemoryMode::Stateless {
                 // Compute the embedding OUTSIDE the memory lock so other
@@ -118,6 +119,7 @@ impl Run {
                     .map(|model| model.embed_single(user_input).unwrap_or_default());
                 let m = mem.lock();
                 let memory_session_id = self.session_id.as_deref().unwrap_or_else(|| m.session_id());
+                reflected_session_id = Some(memory_session_id.to_string());
                 let _ = m.store_conversation_for_session_precomputed(
                     memory_session_id,
                     "user",
@@ -129,7 +131,9 @@ impl Run {
 
         // Feed to reflection daemon (non-blocking, Deep mode only)
         if let Some(ref daemon) = self.brain.reflection_daemon {
-            daemon.try_send("user", user_input);
+            if let Some(session_id) = reflected_session_id.as_deref() {
+                daemon.notify_session(session_id);
+            }
         }
 
         // Skill auto-trigger: check user message against skill triggers and @skill: tags

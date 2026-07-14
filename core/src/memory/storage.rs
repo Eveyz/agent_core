@@ -128,6 +128,33 @@ impl Storage {
         };
 
         storage.init_tables()?;
+        storage.add_column_if_not_exists(
+            "recall_memory",
+            "reflection_sequence",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        storage.add_column_if_not_exists(
+            "reflection_state",
+            "last_reflected_sequence",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        storage.add_column_if_not_exists(
+            "reflection_state",
+            "claim_token",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        storage.add_column_if_not_exists(
+            "reflection_state",
+            "last_error_at",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        storage.add_column_if_not_exists(
+            "reflection_facts",
+            "agverse_owned",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        storage.initialize_reflection_sequence()?;
+        storage.recover_reflection_file_operations()?;
         Ok(storage)
     }
 
@@ -156,7 +183,8 @@ impl Storage {
                 access_count INTEGER DEFAULT 0,
                 last_accessed_at TEXT,
                 category TEXT DEFAULT 'Conversation',
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                reflection_sequence INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE INDEX IF NOT EXISTS idx_recall_session ON recall_memory(session_id);
@@ -177,6 +205,60 @@ impl Storage {
                 message_range TEXT NOT NULL,
                 embedding BLOB,
                 created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS reflection_state (
+                session_id TEXT PRIMARY KEY,
+                last_reflected_sequence INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'idle',
+                last_attempt_at TEXT NOT NULL DEFAULT '',
+                last_success_at TEXT NOT NULL DEFAULT '',
+                last_error TEXT NOT NULL DEFAULT '',
+                last_error_at TEXT NOT NULL DEFAULT '',
+                claim_token TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_reflection_state_updated
+                ON reflection_state(updated_at);
+
+            CREATE TABLE IF NOT EXISTS reflection_facts (
+                fact_key TEXT PRIMARY KEY,
+                content TEXT NOT NULL,
+                section TEXT NOT NULL,
+                archival_id TEXT NOT NULL,
+                agverse_owned INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS reflection_fact_sources (
+                fact_key TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (fact_key, session_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS reflection_control (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                enabled INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            );
+
+            INSERT OR IGNORE INTO reflection_control(singleton, enabled, updated_at)
+                VALUES (1, 0, '');
+
+            CREATE TABLE IF NOT EXISTS reflection_file_operations (
+                id TEXT PRIMARY KEY,
+                path TEXT NOT NULL,
+                original_content TEXT,
+                updated_content TEXT NOT NULL,
+                state TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS deleted_reflection_sessions (
+                session_id TEXT PRIMARY KEY,
+                deleted_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS projects (
@@ -488,6 +570,64 @@ impl Storage {
 
     pub fn conn(&self) -> MutexGuard<'_, Connection> {
         self.db.lock()
+    }
+
+    fn initialize_reflection_sequence(&self) -> Result<()> {
+        let db = self.db.lock();
+        db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS reflection_sequence_counter (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                value INTEGER NOT NULL
+            );
+            INSERT OR IGNORE INTO reflection_sequence_counter(singleton, value) VALUES (1, 0);
+            UPDATE recall_memory SET reflection_sequence = rowid WHERE reflection_sequence = 0;
+            UPDATE reflection_sequence_counter SET value = MAX(
+                value,
+                COALESCE((SELECT MAX(reflection_sequence) FROM recall_memory), 0)
+            ) WHERE singleton = 1;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_recall_reflection_sequence
+                ON recall_memory(reflection_sequence);",
+        )?;
+        Ok(())
+    }
+
+    fn recover_reflection_file_operations(&self) -> Result<()> {
+        let operations: Vec<(String, String, Option<String>, String, String)> = {
+            let db = self.db.lock();
+            let mut stmt = db.prepare(
+                "SELECT id, path, original_content, updated_content, state \
+                 FROM reflection_file_operations ORDER BY created_at",
+            )?;
+            stmt.query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for (id, path, original, updated, state) in operations {
+            let path = std::path::PathBuf::from(path);
+            let target = if state == "committed" {
+                Some(updated)
+            } else {
+                original
+            };
+            if let Some(content) = target {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let temp = path.with_extension(format!("reflection-recovery-{}.tmp", uuid::Uuid::new_v4()));
+                std::fs::write(&temp, content)?;
+                std::fs::rename(temp, &path)?;
+            } else if let Err(e) = std::fs::remove_file(&path)
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                return Err(e.into());
+            }
+            self.db.lock().execute(
+                "DELETE FROM reflection_file_operations WHERE id = ?1",
+                [id],
+            )?;
+        }
+        Ok(())
     }
 
     /// Idempotently add a column to an existing table.
