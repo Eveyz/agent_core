@@ -292,7 +292,11 @@ impl ExecutionState {
         }
 
         if let Some(ref hint) = self.resume_hint {
-            out.push_str(&format!("RESUME: {hint}\n"));
+            out.push_str(&format!(
+                "NEXT ACTION OVERRIDE: {hint}\n\
+                 Continue directly with tools. {}\n",
+                crate::hygiene::NO_STATUS_ACKNOWLEDGEMENT
+            ));
         }
 
         out.push('\n');
@@ -418,6 +422,18 @@ mod tests {
         assert!(text.contains("NEXT:"));
         assert!(text.contains("Artifacts"));
         assert!(text.contains("Do NOT call todo_write"));
+    }
+
+    #[test]
+    fn continuation_hint_does_not_prompt_recovery_chatter() {
+        let list = TodoList::new();
+        let mut st = ExecutionState::new();
+        st.set_resume_hint("Continue step 2 with tools");
+        let text = st.to_injection(&list);
+        assert!(text.contains("NEXT ACTION OVERRIDE:"));
+        assert!(!text.contains("RESUME:"));
+        assert!(text.contains("no preamble or status acknowledgement"));
+        assert!(!text.contains("recovery"));
     }
 
     #[test]

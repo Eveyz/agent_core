@@ -1,4 +1,7 @@
-use agent_core::{Brain, Config, PermissionPolicy, ToolExecutionMode};
+use agent_core::{
+    Brain, Config, ContextEngine, FunctionCall, Message, PermissionPolicy, ReasoningState, Role,
+    ToolCall, ToolExecutionMode,
+};
 
 fn build_test_config() -> Config {
     let toml = r#"
@@ -63,4 +66,74 @@ fn test_permission_policy_modes() {
     drop(paranoid);
     drop(standard);
     drop(permissive);
+}
+
+#[test]
+fn active_react_context_survives_compaction_and_assembly() {
+    let mut context = ContextEngine::new("identity", 8_000);
+    context.add(Message::user("old completed task"));
+    context.add(Message::assistant_with_tools(
+        "",
+        vec![ToolCall {
+            id: "old_call".into(),
+            call_type: "function".into(),
+            function: FunctionCall {
+                name: "exec".into(),
+                arguments: "{}".into(),
+            },
+        }],
+    ));
+    context.add(Message::tool(
+        "old_call".into(),
+        "old-result".repeat(6_000),
+        Some("exec".into()),
+    ));
+    context.add(Message::user("inspect every result and finish the task"));
+    for i in 0..6 {
+        let id = format!("call_{i}");
+        context.add(
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: id.clone(),
+                    call_type: "function".into(),
+                    function: FunctionCall {
+                        name: "exec".into(),
+                        arguments: "{}".into(),
+                    },
+                }],
+            )
+            .with_reasoning(ReasoningState::from_text(format!("reasoning-{i}"))),
+        );
+        context.add(Message::tool(
+            id,
+            format!("tool-result-{i}"),
+            Some("exec".into()),
+        ));
+    }
+    let compacted = context.trim_to_fit();
+
+    assert!(!compacted.stages_ran.is_empty());
+    let outbound = context.messages();
+    let active_start = outbound
+        .iter()
+        .position(|message| {
+            message.role == Role::User
+                && message.content.as_deref() == Some("inspect every result and finish the task")
+        })
+        .expect("active user task must survive compaction");
+    for i in 0..6 {
+        let assistant = &outbound[active_start + 1 + i * 2];
+        let tool = &outbound[active_start + 2 + i * 2];
+        let expected_reasoning = format!("reasoning-{i}");
+        let expected_result = format!("tool-result-{i}");
+        assert_eq!(
+            assistant
+                .reasoning
+                .as_ref()
+                .and_then(|reasoning| reasoning.text.as_deref()),
+            Some(expected_reasoning.as_str())
+        );
+        assert_eq!(tool.content.as_deref(), Some(expected_result.as_str()));
+    }
 }

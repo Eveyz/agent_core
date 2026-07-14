@@ -198,7 +198,7 @@ impl ContextSegment {
         if !self.enabled || self.content.is_empty() {
             return String::new();
         }
-        let truncated = truncate_to_token_budget(&self.content, self.max_tokens);
+        let truncated = truncate_segment_content(&self.name, &self.content, self.max_tokens);
         if truncated.is_empty() {
             return String::new();
         }
@@ -218,7 +218,12 @@ impl ContextSegment {
             self.label, self.name, self.trust
         );
         let header_tokens = rough_token_count(&header);
-        let body_tokens = rough_token_count(&self.content).min(self.max_tokens);
+        let content_tokens = rough_token_count(&self.content);
+        let body_tokens = if self.max_tokens == 0 {
+            content_tokens
+        } else {
+            content_tokens.min(self.max_tokens)
+        };
         header_tokens + body_tokens
     }
 }
@@ -276,7 +281,7 @@ impl ContextEngine {
             "identity",
             "Identity",
             0,
-            200,
+            2_000, // P0-reviewed hard cap; default identity remains atomic
             RefreshPolicy::Never,
             Stability::Stable,
         );
@@ -289,7 +294,7 @@ impl ContextEngine {
             "principles",
             "Principles",
             1,
-            400,
+            7_000, // P0-reviewed hard cap; default protocols remain atomic
             RefreshPolicy::OnEvent,
             Stability::Stable,
         );
@@ -442,6 +447,19 @@ impl ContextEngine {
 
         let mut parts = Vec::new();
         let mut used_tokens = 0usize;
+        // One provider message must stay below 10K tokens and leave room for
+        // dynamic context on smaller models. Critical segments get priority
+        // within this hard envelope; overflow is explicitly marked.
+        let hard_cap = 10_000usize.min(self.max_tokens.saturating_sub(2_500).max(512));
+        let critical_tokens: usize = segments
+            .iter()
+            .filter(|seg| matches!(seg.name.as_str(), "identity" | "principles"))
+            .map(|seg| seg.token_estimate())
+            .sum();
+        let prefix_budget = self
+            .system_prefix_budget
+            .max(critical_tokens.min(hard_cap))
+            .min(hard_cap);
 
         for seg in &segments {
             if !seg.enabled || seg.content.is_empty() {
@@ -458,13 +476,21 @@ impl ContextEngine {
 
             let seg_tokens = rough_token_count(&text);
 
-            let remaining = self.system_prefix_budget.saturating_sub(used_tokens);
-            if remaining == 0 && !parts.is_empty() {
+            let remaining = prefix_budget.saturating_sub(used_tokens);
+            if remaining == 0 {
                 break;
             }
 
-            if seg_tokens > remaining && !parts.is_empty() {
-                let truncated = truncate_to_token_budget(&seg.content, remaining);
+            if seg_tokens > remaining {
+                let header_tokens = rough_token_count(&format!(
+                    "== {} [source={}, trust={:?}, truncated] ==\n\n",
+                    seg.label, seg.name, seg.trust
+                ));
+                let body_budget = remaining.saturating_sub(header_tokens);
+                if body_budget == 0 {
+                    break;
+                }
+                let truncated = truncate_to_token_budget(&seg.content, body_budget);
                 if !truncated.is_empty() {
                     parts.push(format!(
                         "== {} [source={}, trust={:?}, truncated] ==\n{}\n",
@@ -482,15 +508,16 @@ impl ContextEngine {
     }
 
     /// Assemble the **dynamic** context injection from non-Stable segments.
-    /// This content changes every turn and is injected into the last user
-    /// message to preserve the cacheability of the system prompt + conversation
-    /// history prefix.
+    /// This content changes every turn and is appended as a trailing System
+    /// message, preserving the cacheable system + conversation prefix.
     pub fn assemble_context_injection(&self) -> String {
         let mut segments: Vec<&ContextSegment> = self.segments.values().collect();
         segments.sort_by_key(|s| s.priority);
 
         let mut parts = Vec::new();
-        let dynamic_budget = ((self.max_tokens as f64 * 0.08) as usize).clamp(1_000, 16_000);
+        // Leave room for environment + memory + one active skill + execution
+        // state even on small-context models.
+        let dynamic_budget = ((self.max_tokens as f64 * 0.12) as usize).clamp(2_500, 24_000);
         let mut used_tokens = 0usize;
 
         for seg in &segments {
@@ -511,7 +538,11 @@ impl ContextEngine {
             }
             let text_tokens = rough_token_count(&text);
             if text_tokens > remaining {
-                let content = truncate_to_token_budget(&seg.content, remaining.saturating_sub(8));
+                let content = truncate_segment_content(
+                    &seg.name,
+                    &seg.content,
+                    remaining.saturating_sub(8),
+                );
                 if !content.is_empty() {
                     parts.push(format!(
                         "== {} [source={}, trust={:?}, truncated] ==\n{}\n",
@@ -531,17 +562,10 @@ impl ContextEngine {
         format!("<context_injection>\n{}\n</context_injection>", parts.join("\n"))
     }
 
-    /// Number of tokens in the stable prefix (identity + principles + env + tool_catalog).
+    /// Number of tokens in the exact stable system prefix sent to the provider.
     /// Useful for KV cache management in local models.
     pub fn stable_prefix_token_count(&self) -> usize {
-        let mut total = 0;
-        for name in &self.stable_segment_names {
-            if let Some(seg) = self.segments.get(name) {
-                total += seg.token_estimate();
-            }
-        }
-        // Add inter-segment separator tokens
-        total + self.stable_segment_names.len() * 2
+        rough_token_count(&self.assemble_system_prompt())
     }
 
     /// Compute a fingerprint (hash) of the stable prefix segments.
@@ -552,14 +576,7 @@ impl ContextEngine {
     pub fn stable_prefix_fingerprint(&self) -> String {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        let mut segments: Vec<&ContextSegment> = self.segments.values().collect();
-        segments.sort_by_key(|s| s.priority);
-        for seg in &segments {
-            if seg.enabled && !seg.content.is_empty() && seg.stability == Stability::Stable {
-                seg.name.hash(&mut hasher);
-                seg.content.hash(&mut hasher);
-            }
-        }
+        self.assemble_system_prompt().hash(&mut hasher);
         format!("{:016x}", hasher.finish())
     }
 
@@ -633,25 +650,7 @@ impl ContextEngine {
     /// changes every turn) here would make the priming text diverge from the
     /// real prefix and cause a KV cache miss on local models.
     pub fn stable_prefix_text(&self) -> String {
-        let mut segments: Vec<&ContextSegment> = self
-            .segments
-            .values()
-            .filter(|s| {
-                s.enabled
-                    && !s.content.is_empty()
-                    && s.stability == Stability::Stable
-            })
-            .collect();
-        segments.sort_by_key(|s| s.priority);
-
-        let mut parts = Vec::new();
-        for seg in segments {
-            let text = seg.assemble();
-            if !text.is_empty() {
-                parts.push(text);
-            }
-        }
-        parts.join("\n")
+        self.assemble_system_prompt()
     }
 
     // ── Message management (backward compatible with old Context) ───
@@ -700,7 +699,7 @@ impl ContextEngine {
     /// Strip plaintext thinking / opaque reasoning from conversation history
     /// after a compaction boundary (chunked drop or summary).
     pub fn strip_thinking_after_compact(&mut self) {
-        crate::hygiene::strip_all_thinking(&mut self.messages);
+        crate::hygiene::strip_historical_thinking(&mut self.messages);
     }
 
     /// Build the full message array: system (frozen) + conversation history
@@ -711,7 +710,7 @@ impl ContextEngine {
     /// - The system message is frozen (Stable segments only).
     /// - Conversation history is never modified → prefix is cacheable.
     /// - Dynamic content (environment, memory, skills, plan) is appended as
-    ///   a separate user message at the end, which is always a cache miss
+    ///   a separate system message at the end, which is always a cache miss
     ///   but does not invalidate the cacheable prefix.
     ///
     /// Keeping runtime-owned context in the system role preserves its trust
@@ -864,7 +863,9 @@ impl ContextEngine {
         );
 
         self.messages.drain(..split_point);
-        self.messages.insert(0, Message::system(&summary));
+        // Summaries contain user/tool previews and must not be promoted into
+        // trusted System instructions.
+        self.messages.insert(0, Message::assistant(&summary));
 
         Some(summary)
     }
@@ -896,11 +897,10 @@ impl ContextEngine {
     /// result with no preceding assistant `tool_calls` makes the API reject
     /// the request with a 400.
     ///
-    /// If no `User` boundary exists in the droppable range (e.g. a single
-    /// long ReAct episode with only one user turn), we only fall back to a
-    /// cut at `max_split_idx` when the first kept message would be a safe
-    /// head (never a bare `Tool`). Otherwise we leave the history untouched
-    /// rather than risk stranding a tool pair.
+    /// If no later `User` boundary exists in the droppable range (e.g. a
+    /// single long ReAct episode), the history is left untouched. Starting at
+    /// an Assistant may be syntactically valid but would discard the only task
+    /// instruction and silently destroy semantic continuity.
     ///
     /// Returns the number of messages removed from the front.
     pub fn chunked_drop(&mut self, keep_recent: usize) -> usize {
@@ -912,26 +912,13 @@ impl ContextEngine {
 
         // Preferred: cut at the last User message at or before max_split_idx
         // so entire conversation turns remain intact.
-        let mut drop_count = 0;
-        for i in (0..=max_split_idx).rev() {
-            if self.messages[i].role == crate::types::Role::User {
-                drop_count = i;
-                break;
-            }
-        }
+        let drop_count = (1..=max_split_idx)
+            .rev()
+            .find(|&i| self.messages[i].role == crate::types::Role::User);
 
-        // Fallback: no User boundary in range. Only cut if the first kept
-        // message would be a valid head — never a bare Tool (orphan → 400).
-        if drop_count == 0 {
-            if self
-                .messages
-                .get(max_split_idx)
-                .map_or(true, |m| m.role == crate::types::Role::Tool)
-            {
-                return 0; // unsafe to cut here — leave history intact
-            }
-            drop_count = max_split_idx;
-        }
+        let Some(drop_count) = drop_count else {
+            return 0;
+        };
 
         if drop_count > 0 {
             self.messages.drain(..drop_count);
@@ -1090,7 +1077,29 @@ fn truncate_to_token_budget(text: &str, max_tokens: usize) -> String {
         return text.to_string();
     }
 
-    // Binary search for the right char boundary
+    let marker = format!("\n[... segment truncated: budget {max_tokens} tokens]");
+    let marker_tokens = rough_token_count(&marker);
+    if max_tokens <= marker_tokens {
+        return prefix_to_token_budget(text, max_tokens);
+    }
+    let truncated = prefix_to_token_budget(text, max_tokens - marker_tokens);
+    format!("{truncated}{marker}")
+}
+
+fn truncate_segment_content(name: &str, text: &str, max_tokens: usize) -> String {
+    match name {
+        "active_memory" | "loaded_skills" | "execution_plan" => {
+            truncate_head_tail_to_token_budget(text, max_tokens)
+        }
+        _ => truncate_to_token_budget(text, max_tokens),
+    }
+}
+
+fn prefix_to_token_budget(text: &str, max_tokens: usize) -> String {
+    if max_tokens == 0 || rough_token_count(text) <= max_tokens {
+        return text.to_string();
+    }
+
     let char_count = text.chars().count();
     let mut lo = 0usize;
     let mut hi = char_count;
@@ -1105,15 +1114,44 @@ fn truncate_to_token_budget(text: &str, max_tokens: usize) -> String {
         }
     }
 
-    let truncated: String = text.chars().take(lo).collect();
-    if truncated.len() < text.len() {
-        format!(
-            "{}\n[... segment truncated: budget {} tokens]",
-            truncated, max_tokens
-        )
-    } else {
-        truncated
+    text.chars().take(lo).collect()
+}
+
+fn suffix_to_token_budget(text: &str, max_tokens: usize) -> String {
+    if max_tokens == 0 || rough_token_count(text) <= max_tokens {
+        return text.to_string();
     }
+
+    let chars: Vec<char> = text.chars().collect();
+    let mut lo = 0usize;
+    let mut hi = chars.len();
+    while lo < hi {
+        let count = (lo + hi + 1) / 2;
+        let candidate: String = chars[chars.len() - count..].iter().collect();
+        if rough_token_count(&candidate) <= max_tokens {
+            lo = count;
+        } else {
+            hi = count - 1;
+        }
+    }
+    chars[chars.len() - lo..].iter().collect()
+}
+
+fn truncate_head_tail_to_token_budget(text: &str, max_tokens: usize) -> String {
+    if max_tokens == 0 || rough_token_count(text) <= max_tokens {
+        return text.to_string();
+    }
+    let marker = format!("\n[... middle truncated: budget {max_tokens} tokens ...]\n");
+    let marker_tokens = rough_token_count(&marker);
+    if max_tokens <= marker_tokens + 2 {
+        return truncate_to_token_budget(text, max_tokens);
+    }
+    let body_budget = max_tokens - marker_tokens;
+    let head_budget = body_budget * 2 / 3;
+    let tail_budget = body_budget - head_budget;
+    let head = prefix_to_token_budget(text, head_budget);
+    let tail = suffix_to_token_budget(text, tail_budget);
+    format!("{head}{marker}{tail}")
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -1201,6 +1239,35 @@ mod tests {
     }
 
     #[test]
+    fn default_principles_keep_all_required_protocols() {
+        let mut engine = ContextEngine::new(crate::prompt::DEFAULT_IDENTITY, 128_000);
+        let principles = format!(
+            "{}\n\n{}",
+            crate::prompt::DEFAULT_PRINCIPLES,
+            crate::prompt::MEMORY_PROTOCOL
+        );
+        engine.set_principles(&principles);
+
+        let prompt = engine.assemble_system_prompt();
+        assert!(prompt.contains("## Clarification Protocol"));
+        assert!(prompt.contains("## Planning Protocol"));
+        assert!(prompt.contains("### Subagent decision rules"));
+        assert!(prompt.contains("## Memory Protocol"));
+        assert!(!prompt.contains("Principles (truncated)"));
+    }
+
+    #[test]
+    fn stable_system_message_has_a_hard_cap_and_marks_custom_overflow() {
+        let mut engine = ContextEngine::new(&"identity ".repeat(8_000), 128_000);
+        engine.set_principles(&"principle ".repeat(20_000));
+        engine.set_tool_catalog(&"tool ".repeat(20_000));
+
+        let prompt = engine.assemble_system_prompt();
+        assert!(rough_token_count(&prompt) <= 10_000);
+        assert!(prompt.contains("truncated"));
+    }
+
+    #[test]
     fn loaded_skills_segment_is_bounded() {
         let mut engine = ContextEngine::new("test", 32_000);
         let big = "skill-body-line\n".repeat(8_000);
@@ -1208,6 +1275,34 @@ mod tests {
         let injection = engine.assemble_context_injection();
         assert!(injection.contains("skill-body-line"));
         assert!(injection.contains("truncated"));
+        assert!(rough_token_count(&injection) <= 2_700);
+    }
+
+    #[test]
+    fn active_memory_truncation_preserves_latest_recall_at_the_tail() {
+        let mut engine = ContextEngine::new("identity", 128_000);
+        let memory = format!(
+            "{}\nLATEST_RECALL_SENTINEL",
+            "old project instructions ".repeat(1_000)
+        );
+        engine.set_active_memory(&memory);
+
+        let injection = engine.assemble_context_injection();
+        assert!(injection.contains("old project instructions"));
+        assert!(injection.contains("LATEST_RECALL_SENTINEL"));
+        assert!(injection.contains("middle truncated"));
+    }
+
+    #[test]
+    fn dynamic_budget_reserves_room_for_execution_plan() {
+        let mut engine = ContextEngine::new("identity", 8_000);
+        engine.set_environment(&"environment ".repeat(300));
+        engine.set_active_memory(&"memory ".repeat(1_000));
+        engine.set_loaded_skills(&"skill instructions ".repeat(2_000));
+        engine.set_execution_plan("EXECUTION_PLAN_SENTINEL: continue step 3");
+
+        let injection = engine.assemble_context_injection();
+        assert!(injection.contains("EXECUTION_PLAN_SENTINEL"));
         assert!(rough_token_count(&injection) <= 2_700);
     }
 
@@ -1621,6 +1716,36 @@ mod tests {
     }
 
     #[test]
+    fn chunked_drop_keeps_the_initiating_user_of_a_single_react_turn() {
+        use crate::types::{FunctionCall, ToolCall};
+
+        let mut engine = ContextEngine::new("identity", 128_000);
+        engine.add(Message::user("the only task instruction"));
+        for i in 0..6 {
+            let id = format!("call_{i}");
+            engine.add(Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: id.clone(),
+                    call_type: "function".into(),
+                    function: FunctionCall {
+                        name: "shell".into(),
+                        arguments: "{}".into(),
+                    },
+                }],
+            ));
+            engine.add(Message::tool(id, "ok".into(), Some("shell".into())));
+        }
+
+        assert_eq!(engine.chunked_drop(4), 0);
+        assert_eq!(engine.raw_messages().first().unwrap().role, Role::User);
+        assert_eq!(
+            engine.raw_messages().first().unwrap().content.as_deref(),
+            Some("the only task instruction")
+        );
+    }
+
+    #[test]
     fn test_stable_prefix_consistency_excludes_environment() {
         // P0-2: stable_prefix_text / stable_prefix_token_count must reflect
         // exactly the frozen system prompt (Stable segments only) and must
@@ -1643,12 +1768,8 @@ mod tests {
         assert!(!prompt.contains("/tmp"));
         assert!(!prefix_text.contains("/tmp"));
 
-        // The two must agree on whether a prefix exists (no divergence that
-        // would cause a local KV cache miss on the wrong text).
-        assert_eq!(
-            engine.stable_prefix_token_count() > 0,
-            !prefix_text.is_empty()
-        );
+        assert_eq!(prefix_text, prompt);
+        assert_eq!(engine.stable_prefix_token_count(), rough_token_count(&prompt));
     }
 
     // ── P2-9: cache_hint & fingerprint tests ─────────────────────────

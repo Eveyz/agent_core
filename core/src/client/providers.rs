@@ -140,9 +140,11 @@ fn build_responses_body(
             }
             Role::Assistant => {
                 // Opaque reasoning item first (Codex / Responses requirement in tool loops).
+                let mut has_opaque_reasoning = false;
                 if let Some(ref reasoning) = msg.reasoning {
                     if let Some(ref blob) = reasoning.encrypted_content {
                         if !blob.is_empty() {
+                            has_opaque_reasoning = true;
                             let mut item = json!({
                                 "type": "reasoning",
                                 "encrypted_content": blob,
@@ -153,6 +155,25 @@ fn build_responses_body(
                             input.push(item);
                         }
                     }
+                }
+                // Responses-compatible providers may return plaintext thinking
+                // without an opaque blob. Preserve that active-loop state as
+                // assistant history rather than silently dropping it.
+                if !has_opaque_reasoning
+                    && let Some(text) = msg
+                        .reasoning
+                        .as_ref()
+                        .and_then(|reasoning| reasoning.text.as_deref())
+                    && !text.is_empty()
+                {
+                    input.push(json!({
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{
+                            "type": "output_text",
+                            "text": format!("<think>{text}</think>"),
+                        }],
+                    }));
                 }
                 if let Some(ref calls) = msg.tool_calls {
                     for tc in calls {
@@ -422,6 +443,37 @@ mod tests {
     }
 
     #[test]
+    fn responses_body_keeps_plaintext_reasoning_without_an_opaque_blob() {
+        let mut assistant = Message::assistant_with_tools(
+            "<think>inspect before calling</think>",
+            vec![ToolCall {
+                id: "call_1".into(),
+                call_type: "function".into(),
+                function: FunctionCall {
+                    name: "shell".into(),
+                    arguments: "{}".into(),
+                },
+            }],
+        );
+        assistant.reasoning = Some(ReasoningState::from_text("inspect before calling"));
+
+        let body = build_responses_body(
+            "responses-compatible-model",
+            &[Message::user("do it"), assistant],
+            &[],
+            true,
+            None,
+            Some(1_024),
+            true,
+            Some("high"),
+        );
+
+        let serialized = serde_json::to_string(&body["input"]).unwrap();
+        assert!(serialized.contains("inspect before calling"));
+        assert!(serialized.contains("function_call"));
+    }
+
+    #[test]
     fn anthropic_body_round_trips_signature() {
         let mut assistant = Message::assistant("answer");
         assistant.reasoning = Some(ReasoningState {
@@ -457,6 +509,28 @@ mod tests {
         let ser = serde_json::to_string(&body["messages"][0]).unwrap();
         assert!(!ser.contains("encrypted_content"));
         assert!(ser.contains("<think>"));
+    }
+
+    #[test]
+    fn chat_completions_keeps_stream_retry_thinking_in_assistant_content() {
+        let mut messages = vec![Message::user("do it")];
+        crate::hygiene::inject_stream_retry_hint(
+            &mut messages,
+            "partial reasoning sentinel",
+            "partial answer",
+        );
+
+        let body = build_chat_completions_body(
+            "chat-model",
+            &messages,
+            &[],
+            true,
+            None,
+            Some(1_024),
+        );
+        let serialized = serde_json::to_string(&body["messages"]).unwrap();
+        assert!(serialized.contains("<think>partial reasoning sentinel</think>"));
+        assert!(serialized.contains("partial answer"));
     }
 
     #[test]

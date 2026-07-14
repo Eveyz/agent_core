@@ -25,6 +25,8 @@ const THINKING_CLOSE: &str = "</think>";
 pub const THINKING_BODY_MAX_CHARS: usize = 4_096;
 /// Max chars of partial assistant text injected on stream retry.
 pub const PARTIAL_TEXT_MAX_CHARS: usize = 2_048;
+pub const NO_STATUS_ACKNOWLEDGEMENT: &str =
+    "Output no preamble or status acknowledgement.";
 
 /// Embed thinking into assistant content for live context / Chat Completions compat.
 /// Empty thinking returns `text` unchanged. Format matches frontend `entriesToMessages`.
@@ -68,15 +70,14 @@ pub fn strip_thinking_in_content(content: &str) -> String {
 /// Strip plaintext `<think>` from assistant messages before the last *real* user turn.
 /// Keeps thinking in the active tool loop (messages after the last user).
 ///
-/// The trailing `<context_injection>` user message appended by ContextEngine is
-/// ignored when locating the last user — otherwise the entire tool loop would
-/// be treated as "historical" and stripped every turn.
+/// Runtime-owned System messages are naturally ignored when locating the last
+/// user, so the active tool loop remains active across per-turn injection.
 ///
 /// Also clears structured reasoning (text + opaque blobs) on those historical
 /// assistants. Active-loop blobs are left intact for provider round-trip.
 pub fn strip_historical_thinking(messages: &mut [Message]) -> usize {
     let last_user = messages.iter().enumerate().rev().find_map(|(i, m)| {
-        if m.role == Role::User && !is_context_injection_message(m) {
+        if m.role == Role::User {
             Some(i)
         } else {
             None
@@ -128,14 +129,6 @@ pub fn strip_historical_thinking(messages: &mut [Message]) -> usize {
     modified
 }
 
-fn is_context_injection_message(msg: &Message) -> bool {
-    msg.role == Role::User
-        && msg
-            .content
-            .as_deref()
-            .is_some_and(|c| c.contains("<context_injection>"))
-}
-
 /// Strip plaintext thinking from every assistant message (content tags + reasoning.text).
 /// Opaque blobs/signatures are also cleared — after compaction the model starts fresh.
 /// Returns the number of messages modified.
@@ -174,11 +167,25 @@ pub fn truncate_thinking_body(thinking: &str) -> String {
     if thinking.len() <= THINKING_BODY_MAX_CHARS {
         return thinking.to_string();
     }
-    let end = crate::util::floor_char_boundary(thinking, THINKING_BODY_MAX_CHARS);
-    format!(
-        "{}\n[thinking truncated from {} chars]",
-        &thinking[..end],
+    let marker = format!(
+        "\n[thinking truncated in middle from {} chars]\n",
         thinking.len()
+    );
+    let content_budget = THINKING_BODY_MAX_CHARS.saturating_sub(marker.len());
+    let head_budget = content_budget * 2 / 3;
+    let tail_budget = content_budget.saturating_sub(head_budget);
+    let head_end = crate::util::floor_char_boundary(thinking, head_budget);
+    let tail_start_target = thinking.len().saturating_sub(tail_budget);
+    let tail_start = thinking
+        .char_indices()
+        .map(|(idx, _)| idx)
+        .find(|idx| *idx >= tail_start_target)
+        .unwrap_or(thinking.len());
+    format!(
+        "{}{}{}",
+        &thinking[..head_end],
+        marker,
+        &thinking[tail_start..]
     )
 }
 
@@ -214,7 +221,7 @@ pub fn truncate_thinking_in_content(content: &str) -> Option<String> {
     if modified { Some(result) } else { None }
 }
 
-/// Append a trailing user hint so a stream retry can continue without redoing work.
+/// Append a trailing runtime hint so a stream retry can continue without redoing work.
 /// Only mutates the request-boundary message list — never persisted history.
 pub fn inject_stream_retry_hint(messages: &mut Vec<Message>, thinking: &str, text: &str) {
     if thinking.is_empty() && text.is_empty() {
@@ -226,22 +233,15 @@ pub fn inject_stream_retry_hint(messages: &mut Vec<Message>, thinking: &str, tex
     } else {
         text.to_string()
     };
-    let mut hint = String::from(
-        "[Previous response was interrupted mid-stream. Continue from where you left off; \
-         do not repeat work already completed.",
-    );
+    let mut partial = Message::assistant(&wrap_thinking(&think, &partial_text));
     if !think.is_empty() {
-        hint.push_str("\nPartial reasoning:\n");
-        hint.push_str(THINKING_OPEN);
-        hint.push_str(&think);
-        hint.push_str(THINKING_CLOSE);
+        partial.reasoning = Some(crate::types::ReasoningState::from_text(think));
     }
-    if !partial_text.is_empty() {
-        hint.push_str("\nPartial output: ");
-        hint.push_str(&partial_text);
-    }
-    hint.push(']');
-    messages.push(Message::user(&hint));
+    messages.push(partial);
+    messages.push(Message::system(&format!(
+        "Continue directly from the assistant output above; do not repeat completed work. \
+         {NO_STATUS_ACKNOWLEDGEMENT}"
+    )));
 }
 
 /// Run the full hygiene pass on a message list (mutates in place).
@@ -551,12 +551,35 @@ mod tests {
     }
 
     #[test]
-    fn inject_stream_retry_hint_adds_user_message() {
+    fn inject_stream_retry_hint_adds_runtime_message() {
         let mut msgs = vec![Message::user("hi")];
         inject_stream_retry_hint(&mut msgs, "partial reasoning", "partial text");
-        assert_eq!(msgs.len(), 2);
-        assert!(msgs[1].content.as_ref().unwrap().contains("Partial reasoning"));
-        assert!(msgs[1].content.as_ref().unwrap().contains("partial text"));
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[1].role, Role::Assistant);
+        assert_eq!(
+            msgs[1].content.as_deref(),
+            Some("<think>partial reasoning</think>\npartial text")
+        );
+        assert_eq!(
+            msgs[1].reasoning.as_ref().and_then(|r| r.text.as_deref()),
+            Some("partial reasoning")
+        );
+        assert_eq!(msgs[2].role, Role::System);
+        let hint = msgs[2].content.as_ref().unwrap();
+        assert!(hint.contains(NO_STATUS_ACKNOWLEDGEMENT));
+        assert!(!hint.contains("recovery"));
+    }
+
+    #[test]
+    fn long_thinking_preserves_both_head_and_latest_tail() {
+        let thinking = format!(
+            "HEAD_SENTINEL{}TAIL_SENTINEL",
+            "x".repeat(THINKING_BODY_MAX_CHARS)
+        );
+        let truncated = truncate_thinking_body(&thinking);
+        assert!(truncated.contains("HEAD_SENTINEL"));
+        assert!(truncated.contains("TAIL_SENTINEL"));
+        assert!(truncated.contains("thinking truncated in middle"));
     }
 
     #[test]
@@ -612,7 +635,7 @@ mod tests {
             ),
             Message::tool("c1".into(), "ok".into(), Some("shell".into())),
             // Trailing context injection must not count as the "last user".
-            Message::user("<context_injection>\ncwd=/tmp\n</context_injection>"),
+            Message::system("<context_injection>\ncwd=/tmp\n</context_injection>"),
         ];
         let n = strip_historical_thinking(&mut msgs);
         assert_eq!(n, 1);
@@ -634,7 +657,7 @@ mod tests {
             Message::assistant(&wrap_thinking("old", "a1")),
             Message::user("q2"),
             Message::assistant(&wrap_thinking(&long, "a2")),
-            Message::user("<context_injection>\nx\n</context_injection>"),
+            Message::system("<context_injection>\nx\n</context_injection>"),
         ];
         let n = sanitize(&mut msgs);
         assert!(n >= 2);
@@ -657,7 +680,7 @@ mod tests {
         let mut msgs = vec![
             Message::user("q"),
             msg,
-            Message::user("<context_injection>\nx\n</context_injection>"),
+            Message::system("<context_injection>\nx\n</context_injection>"),
         ];
         sanitize(&mut msgs);
         let r = msgs[1].reasoning.as_ref().unwrap();

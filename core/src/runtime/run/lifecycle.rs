@@ -296,11 +296,11 @@ impl Run {
                             .unwrap_or_else(|| "next pending".into());
                         let nudge = format!(
                             "[System] Execution phase is `{}` with incomplete steps. \
-                             Do NOT stop with prose only. Resume step {step} with tools \
+                             Do NOT stop with prose only. Continue step {step} with tools \
                              (todo_update as you go). Do not replan unless force=true.",
                             self.execution.phase
                         );
-                        self.context.add(Message::user(&nudge));
+                        self.context.add(Message::system(&nudge));
                         self.last_turn_end_time = Some(Instant::now());
                         self.current_turn_id = None;
                         continue;

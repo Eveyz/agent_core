@@ -462,12 +462,12 @@ impl Run {
                     .or_else(|| list.ensure_active_step())
                     .unwrap_or_else(|| "?".into());
                 let reason = if saw_abort {
-                    "interrupted/aborted"
+                    "The previous tool batch did not finish"
                 } else {
                     "todo_write failed"
                 };
                 self.execution.set_resume_hint(format!(
-                    "{reason}. Plan unchanged (v{}). Resume step {step} with tools; \
+                    "{reason}. Plan unchanged (v{}). Continue step {step} with tools; \
                      do NOT replan unless force=true is required.",
                     self.execution.plan_version
                 ));
@@ -1069,7 +1069,7 @@ impl Run {
         let Some(path) = self.session_snapshot_path.clone() else {
             return;
         };
-        let messages = self.context.raw_messages().to_vec();
+        let messages = crate::session::messages_for_snapshot(self.context.raw_messages());
         let generation = self
             .session_snapshot_gen
             .fetch_add(1, Ordering::Relaxed)

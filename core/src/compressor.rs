@@ -172,6 +172,15 @@ pub struct Compressor {
     pub max_tool_catalog_tokens: usize,
 }
 
+/// Index of the latest real User task. Messages from this boundary onward are
+/// the active ReAct turn and must remain structurally intact.
+fn active_turn_start(messages: &[Message]) -> usize {
+    messages
+        .iter()
+        .rposition(|message| message.role == crate::types::Role::User)
+        .unwrap_or(messages.len())
+}
+
 impl Default for Compressor {
     fn default() -> Self {
         Self {
@@ -198,7 +207,8 @@ impl Compressor {
     /// Returns the number of messages modified.
     pub fn snip_compact(&self, messages: &mut Vec<Message>) -> usize {
         let mut modified = 0;
-        for msg in messages.iter_mut() {
+        let active_start = active_turn_start(messages);
+        for msg in messages.iter_mut().take(active_start) {
             if msg.role == crate::types::Role::Tool
                 && let Some(ref content) = msg.content
                 && let Some(truncated) =
@@ -219,8 +229,9 @@ impl Compressor {
     pub fn dedup_compact(&self, messages: &mut Vec<Message>) -> usize {
         let mut deduped = 0;
         let mut seen: HashMap<String, (usize, String)> = HashMap::new(); // content_hash → (msg_index, tool_name)
+        let active_start = active_turn_start(messages);
 
-        for i in 0..messages.len() {
+        for i in 0..active_start {
             let (content, tool_name) = {
                 let msg = &messages[i];
                 if msg.role != crate::types::Role::Tool {
@@ -261,14 +272,12 @@ impl Compressor {
 
     // ── Stage 3: chunkCompact ───────────────────────────────────────
 
-    /// Merge consecutive tool_call → tool_result pairs into single system messages.
-    /// Only operates on older messages — the most recent `protect_recent` messages
-    /// are left untouched so the API-required tool_call/tool_result pairing stays
-    /// intact for the active conversation window.
+    /// Merge consecutive tool_call → tool_result pairs into assistant-owned summaries.
+    /// Only operates before the latest User boundary, preserving the entire
+    /// active ReAct turn regardless of how many tool calls it contains.
     /// Returns the number of pairs merged.
     pub fn chunk_compact(&self, messages: &mut Vec<Message>) -> usize {
-        let protect = 8.min(messages.len());
-        let mut limit = messages.len().saturating_sub(protect);
+        let mut limit = active_turn_start(messages);
         let mut merged = 0;
         let mut i = 0;
 
@@ -302,14 +311,14 @@ impl Compressor {
                 let result = next.content.clone().unwrap_or_default();
                 let result_preview = truncate_preview(&result, 500);
 
-                // Replace tool_call message with a system chunk
+                // Tool output is untrusted and must not become a System message.
                 let chunk = format!(
                     "[Tool: {} | Args: {}]\n→ Result: {}",
                     tool_name,
                     truncate_preview(&tool_args, 200),
                     result_preview
                 );
-                messages[i] = Message::system(&chunk);
+                messages[i] = Message::assistant(&chunk);
 
                 // Remove the tool result message
                 messages.remove(i + 1);
@@ -402,8 +411,7 @@ impl Compressor {
     }
 
     /// Apply a summary returned by the LLM, replacing old messages.
-    /// Also strips plaintext thinking from any remaining assistant messages so
-    /// compacted history does not re-inject old CoT.
+    /// Historical thinking is stripped without touching the retained active turn.
     pub fn apply_summary(
         messages: &mut Vec<Message>,
         split_idx: usize,
@@ -416,10 +424,11 @@ impl Compressor {
             summary.to_context_string()
         );
 
-        // Remove old messages and insert summary as system message
+        // Conversation summaries may quote user/tool content, so keep them at
+        // assistant privilege instead of elevating them to System.
         messages.drain(..split_idx);
-        messages.insert(0, Message::system(&summary_text));
-        crate::hygiene::strip_all_thinking(messages);
+        messages.insert(0, Message::assistant(&summary_text));
+        crate::hygiene::strip_historical_thinking(messages);
 
         summary_text
     }
@@ -614,7 +623,7 @@ mod tests {
         ];
         let merged = comp.chunk_compact(&mut msgs);
         assert_eq!(merged, 1);
-        assert_eq!(msgs[0].role, crate::types::Role::System);
+        assert_eq!(msgs[0].role, crate::types::Role::Assistant);
         let content = msgs[0].content.as_ref().unwrap();
         assert!(content.contains("read_file"));
         assert!(content.contains("fn main()"));
@@ -630,6 +639,36 @@ mod tests {
         let merged = comp.chunk_compact(&mut msgs);
         assert_eq!(merged, 0);
         assert_eq!(msgs.len(), 2);
+    }
+
+    #[test]
+    fn active_react_turn_is_never_compacted() {
+        let mut comp = Compressor::default();
+        let mut msgs = vec![Message::user("single long task")];
+        for i in 0..6 {
+            let id = format!("active_{i}");
+            msgs.push(make_tool_call_msg(&id, "exec", "{}"));
+            msgs.push(make_tool_result(
+                &id,
+                "exec",
+                &format!("unique-{i}-{}", "x".repeat(20_000)),
+            ));
+        }
+        let result = comp.run_stages_1_3(&mut msgs, |messages| messages.len());
+
+        assert!(result.stages_ran.is_empty());
+        assert_eq!(msgs.len(), 13);
+        for i in 0..6 {
+            assert_eq!(
+                msgs[1 + i * 2].tool_calls.as_ref().unwrap()[0].id,
+                format!("active_{i}")
+            );
+            assert!(msgs[2 + i * 2]
+                .content
+                .as_ref()
+                .unwrap()
+                .contains(&format!("unique-{i}")));
+        }
     }
 
     #[test]
@@ -662,11 +701,17 @@ mod tests {
 
     #[test]
     fn test_apply_summary() {
+        let active = Message::assistant("done2").with_reasoning(crate::types::ReasoningState {
+            text: Some("active reasoning".into()),
+            encrypted_content: Some("active blob".into()),
+            signature: None,
+            summary: None,
+        });
         let mut msgs = vec![
             Message::user("task1"),
             Message::assistant("done1"),
             Message::user("task2"),
-            Message::assistant("done2"),
+            active,
         ];
 
         let summary = TurnSummary {
@@ -679,6 +724,14 @@ mod tests {
 
         let text = Compressor::apply_summary(&mut msgs, 2, &summary, 1);
         assert_eq!(msgs.len(), 3); // summary + task2 + done2
+        assert_eq!(msgs[0].role, crate::types::Role::Assistant);
+        assert_eq!(
+            msgs[2]
+                .reasoning
+                .as_ref()
+                .and_then(|reasoning| reasoning.encrypted_content.as_deref()),
+            Some("active blob")
+        );
         assert!(
             msgs[0]
                 .content

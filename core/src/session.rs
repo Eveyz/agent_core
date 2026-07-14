@@ -67,6 +67,54 @@ fn split_reasoning_from_metadata(
     (metadata, reasoning)
 }
 
+/// Prepare messages for the crash-safe JSON snapshot. `Message::reasoning` is
+/// omitted from normal provider serialization, so use the SQLite metadata
+/// encoding here to preserve opaque blobs and signatures.
+pub(crate) fn messages_for_snapshot(messages: &[Message]) -> Vec<Message> {
+    messages
+        .iter()
+        .cloned()
+        .map(|mut message| {
+            message.metadata = merge_reasoning_into_metadata(
+                message.metadata.as_ref(),
+                message.reasoning.as_ref(),
+            );
+            message.reasoning = None;
+            message
+        })
+        .collect()
+}
+
+/// Remove only incomplete tool edges from an interrupted prompt. Complete
+/// call/result pairs remain valuable execution context on resume.
+fn sanitize_interrupted_history(messages: &mut Vec<Message>) {
+    let result_ids: std::collections::HashSet<String> = messages
+        .iter()
+        .filter(|msg| msg.role == crate::types::Role::Tool)
+        .filter_map(|msg| msg.tool_call_id.clone())
+        .collect();
+
+    let mut complete_call_ids = std::collections::HashSet::new();
+    for msg in messages.iter_mut().filter(|msg| msg.role == crate::types::Role::Assistant) {
+        let Some(calls) = msg.tool_calls.as_mut() else {
+            continue;
+        };
+        calls.retain(|call| result_ids.contains(&call.id));
+        complete_call_ids.extend(calls.iter().map(|call| call.id.clone()));
+        if calls.is_empty() {
+            msg.tool_calls = None;
+        }
+    }
+
+    messages.retain(|msg| {
+        msg.role != crate::types::Role::Tool
+            || msg
+                .tool_call_id
+                .as_ref()
+                .is_some_and(|id| complete_call_ids.contains(id))
+    });
+}
+
 // ── Types ────────────────────────────────────────────────────────────
 
 /// Metadata for a saved session (no messages).
@@ -801,7 +849,7 @@ impl SessionManager {
                 let mut prompt = row?;
                 if let Some(mut msgs) = messages_by_prompt.remove(&prompt.id) {
                     msgs.sort_by_key(|(idx, _)| *idx);
-                    let mut cleaned_msgs: Vec<Message> = msgs.into_iter().map(|(_, m)| m).collect();
+                    let cleaned_msgs: Vec<Message> = msgs.into_iter().map(|(_, m)| m).collect();
 
                     prompt.messages = cleaned_msgs;
                 }
@@ -815,18 +863,7 @@ impl SessionManager {
                 // Preserve the canonical prompt projection for inspection, but
                 // sanitize an interrupted tail before it is sent to a provider.
                 if p.status != "completed" {
-                    history_messages.retain(|msg| msg.role != crate::types::Role::Tool);
-                    for msg in &mut history_messages {
-                        if msg.role == crate::types::Role::Assistant {
-                            msg.tool_calls = None;
-                        }
-                    }
-                    if !history_messages
-                        .iter()
-                        .any(|msg| msg.role == crate::types::Role::Assistant)
-                    {
-                        history_messages.push(Message::assistant("[Execution Interrupted]"));
-                    }
+                    sanitize_interrupted_history(&mut history_messages);
                 }
                 flat_messages.extend(history_messages);
             }
@@ -1449,6 +1486,71 @@ mod tests {
                 .unwrap()
                 .contains("PermissionPolicy")
         );
+    }
+
+    #[test]
+    fn snapshot_messages_preserve_opaque_reasoning_via_metadata() {
+        let messages = vec![Message::assistant("working").with_reasoning(ReasoningState {
+            text: Some("plain reasoning".into()),
+            encrypted_content: Some("opaque-blob".into()),
+            signature: Some("provider-signature".into()),
+            summary: None,
+        })];
+
+        let snapshot = messages_for_snapshot(&messages);
+        let json = serde_json::to_string(&snapshot).unwrap();
+        assert!(json.contains(REASONING_METADATA_KEY));
+        assert!(json.contains("opaque-blob"));
+
+        let decoded: Vec<Message> = serde_json::from_str(&json).unwrap();
+        let (metadata, reasoning) = split_reasoning_from_metadata(decoded[0].metadata.clone());
+        assert!(metadata.is_none());
+        let reasoning = reasoning.expect("reasoning must survive snapshot JSON");
+        assert_eq!(reasoning.encrypted_content.as_deref(), Some("opaque-blob"));
+        assert_eq!(reasoning.signature.as_deref(), Some("provider-signature"));
+    }
+
+    #[test]
+    fn interrupted_resume_keeps_complete_tool_pairs_and_drops_only_dangling_calls() {
+        let (mgr, _dir) = make_manager();
+        let mut msgs = make_messages();
+        msgs.push(Message::assistant_with_tools(
+            "unfinished",
+            vec![crate::types::ToolCall {
+                id: "call_dangling".to_string(),
+                call_type: "function".to_string(),
+                function: crate::types::FunctionCall {
+                    name: "shell".to_string(),
+                    arguments: "{}".to_string(),
+                },
+            }],
+        ));
+        let id = mgr.save(None, &msgs, "/tmp", "gpt").unwrap();
+        let first = mgr.resume(&id).unwrap().unwrap();
+        let prompt_id = first.prompts[0].id.clone();
+        mgr.finish_prompt(&prompt_id, "interrupted", &serde_json::json!({}))
+            .unwrap();
+
+        let resumed = mgr.resume(&id).unwrap().unwrap();
+        assert!(resumed
+            .messages
+            .iter()
+            .any(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("call_1")));
+        assert!(resumed.messages.iter().any(|m| {
+            m.tool_calls
+                .as_ref()
+                .is_some_and(|calls| calls.iter().any(|call| call.id == "call_1"))
+        }));
+        assert!(!resumed.messages.iter().any(|m| {
+            m.tool_calls
+                .as_ref()
+                .is_some_and(|calls| calls.iter().any(|call| call.id == "call_dangling"))
+        }));
+        assert!(!resumed.messages.iter().any(|m| {
+            m.content
+                .as_deref()
+                .is_some_and(|content| content.contains("Execution Interrupted"))
+        }));
     }
 
     #[test]
