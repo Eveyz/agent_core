@@ -30,9 +30,11 @@ const ApprovalBlockUI = memo(function ApprovalBlockUI({
     setChosenAction(choice);
     const sessionId = store.getState().project.activeSessionId;
     if (!sessionId) return;
+    const runId = store.getState().chat.runId[sessionId];
+    if (!runId) return;
     dispatch(toolApprovalResponded({ sessionId, promptId, approved: !choice.startsWith('deny') }));
     try {
-      await invoke('approve_tool', { promptId, choice });
+      await invoke('approve_tool', { runId, promptId, choice });
     } catch (e) {
       console.error('Failed to approve tool', e);
     }

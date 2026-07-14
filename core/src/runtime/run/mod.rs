@@ -40,7 +40,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
@@ -74,7 +74,6 @@ const CACHE_IDLE_WARN_SECS: u64 = 240;
 enum TurnOutcome {
     Final(String),
     Continue,
-    Stop(String),
 }
 
 /// Outcome of a recovery attempt within model_turn.
@@ -115,7 +114,7 @@ pub struct Run {
 
     // ── Communication channels ────────────────────────────────────
     cmd_rx: mpsc::Receiver<RunCommand>,
-    event_tx: broadcast::Sender<Envelope>,
+    event_tx: mpsc::UnboundedSender<Envelope>,
     /// Monotonic per-Run sequence counter (shared with RunManager).
     seq: Arc<AtomicU64>,
     /// The active turn's id (R7). Set when a turn starts, cleared on Run end.
@@ -198,7 +197,7 @@ impl Run {
         brain: Arc<Brain>,
         model_config: ModelConfig,
         cmd_rx: mpsc::Receiver<RunCommand>,
-        event_tx: broadcast::Sender<Envelope>,
+        event_tx: mpsc::UnboundedSender<Envelope>,
         seq: Arc<AtomicU64>,
         working_dir: Option<String>,
         history: Vec<crate::types::Message>,
@@ -366,7 +365,10 @@ impl Run {
 
     /// Refresh the shared context snapshot (read by side-channel `/btw` queries).
     pub(crate) fn refresh_context_snapshot(&self) {
-        *self.context_snapshot.write() = self.context.messages();
+        // This snapshot is also the canonical persisted transcript. Dynamic
+        // context injection and the synthetic system prefix are reconstructed
+        // per turn and must never be written back as conversation history.
+        *self.context_snapshot.write() = self.context.raw_messages().to_vec();
     }
 
     /// Todo list for this Run's session (isolated from other sessions).

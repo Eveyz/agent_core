@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
 import CopyIcon from 'lucide-react/dist/esm/icons/copy.mjs';
-import { createHighlighter, type Highlighter, type BundledLanguage } from 'shiki';
+import type { Highlighter, BundledLanguage } from 'shiki';
 
 // Languages loaded eagerly on first use. These cover the vast majority of
 // code blocks; any other language is loaded on demand the first time it
@@ -12,14 +12,16 @@ const CORE_LANGS = [
   'toml', 'yaml', 'html', 'css', 'sql', 'markdown',
 ];
 
-let highlighterPromise: ReturnType<typeof createHighlighter> | null = null;
+let highlighterPromise: Promise<Highlighter> | null = null;
 
 function getShikiHighlighter(): Promise<Highlighter> {
   if (!highlighterPromise) {
-    highlighterPromise = createHighlighter({
-      themes: ['vitesse-dark', 'vitesse-light'],
-      langs: CORE_LANGS,
-    });
+    highlighterPromise = import('shiki').then(({ createHighlighter }) =>
+      createHighlighter({
+        themes: ['vitesse-dark', 'vitesse-light'],
+        langs: CORE_LANGS,
+      }),
+    );
   }
   return highlighterPromise;
 }

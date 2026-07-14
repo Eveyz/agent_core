@@ -8,6 +8,7 @@ const EMPTY_TODOS: TodoItem[] = [];
 const EMPTY_SUBAGENTS: Record<string, SubagentEntry> = {};
 const EMPTY_PATH: { id: string; name: string }[] = [];
 const EMPTY_BTW: BtwEntry[] = [];
+const entryIndexes = new WeakMap<ChatEntry[], Map<string, ChatEntry>>();
 
 
 type Rootish = {
@@ -39,7 +40,12 @@ export function selectEntryById(state: Rootish, entryId: string): ChatEntry | un
   if (!sessionId) return undefined;
   const list = state.chat.entries[sessionId];
   if (!list) return undefined;
-  return list.find((e) => e.id === entryId);
+  let index = entryIndexes.get(list);
+  if (!index) {
+    index = new Map(list.map((entry) => [entry.id, entry]));
+    entryIndexes.set(list, index);
+  }
+  return index.get(entryId);
 }
 
 export function selectSubagentById(state: Rootish, subagentId: string): SubagentEntry | undefined {

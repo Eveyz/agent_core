@@ -3,7 +3,7 @@ use crate::runtime::event::{Envelope, RunEvent};
 use crate::reflector::diff_observer::UserEditDiffEvent;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 
 pub struct DiffPreferenceEngine;
 
@@ -11,7 +11,7 @@ impl DiffPreferenceEngine {
     pub fn spawn_analysis(
         client: OpenAIClient,
         diffs: Vec<UserEditDiffEvent>,
-        event_tx: broadcast::Sender<Envelope>,
+        event_tx: mpsc::UnboundedSender<Envelope>,
         seq: Arc<AtomicU64>,
         run_id: String,
     ) {

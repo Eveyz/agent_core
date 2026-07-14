@@ -287,6 +287,36 @@ impl ToolPermissionPattern {
             None => true,
         }
     }
+
+    /// Match every declared dimension. A constrained dimension fails closed
+    /// when the invocation did not provide a value.
+    pub fn matches_invocation(
+        &self,
+        tool_name: &str,
+        command: Option<&str>,
+        paths: &[&str],
+        host: Option<&str>,
+        danger: DangerLevel,
+    ) -> bool {
+        if !self.matches_tool(tool_name) {
+            return false;
+        }
+        if self.commands.is_some() && !command.is_some_and(|value| self.matches_command(value)) {
+            return false;
+        }
+        if self.paths.is_some()
+            && (paths.is_empty() || !paths.iter().all(|path| self.matches_path(path)))
+        {
+            return false;
+        }
+        if self.hosts.is_some() && !host.is_some_and(|value| self.matches_host(value)) {
+            return false;
+        }
+        if self.max_danger.is_some_and(|maximum| danger > maximum) {
+            return false;
+        }
+        true
+    }
 }
 
 // ── Whitelist entry (persisted to config.toml) ──────────────────────
@@ -546,5 +576,29 @@ mod tests {
         assert!(DangerLevel::ReadOnly < DangerLevel::ReadWrite);
         assert!(DangerLevel::ReadWrite < DangerLevel::Network);
         assert!(DangerLevel::System < DangerLevel::Destructive);
+    }
+
+    #[test]
+    fn constrained_invocation_dimensions_fail_closed() {
+        let pattern = ToolPermissionPattern::simple("webfetch")
+            .with_hosts(vec!["example.com".into()])
+            .with_paths(vec!["/safe/**".into()]);
+        assert!(!pattern.matches_invocation(
+            "webfetch", None, &[], Some("example.com"), DangerLevel::Network
+        ));
+        assert!(!pattern.matches_invocation(
+            "webfetch", None, &["/safe/a"], None, DangerLevel::Network
+        ));
+        assert!(!pattern.matches_invocation(
+            "webfetch", None, &["/safe/a", "/unsafe/b"], Some("example.com"), DangerLevel::Network
+        ));
+    }
+
+    #[test]
+    fn maximum_danger_is_enforced() {
+        let mut pattern = ToolPermissionPattern::simple("shell");
+        pattern.max_danger = Some(DangerLevel::ReadOnly);
+        assert!(pattern.matches_invocation("shell", Some("git status"), &[], None, DangerLevel::ReadOnly));
+        assert!(!pattern.matches_invocation("shell", Some("git status"), &[], None, DangerLevel::System));
     }
 }

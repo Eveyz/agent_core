@@ -62,6 +62,7 @@ impl Run {
         };
         self.context.add(Message::user_with_model(&display_input, &self.client.model.model_id));
         self.refresh_context_snapshot();
+        self.save_session_snapshot();
 
         // /learn: inject system instruction prompting the agent to extract and save lessons
         if is_learn {
@@ -112,11 +113,9 @@ impl Run {
                 // memory operations are not blocked for the 10-50ms the
                 // embedding model takes. The lock is then only held for
                 // the lightweight I/O + index update.
-                let embedding = {
-                    let m = mem.lock();
-                    m.embedding_model()
-                        .map(|model| model.embed_single(user_input).unwrap_or_default())
-                };
+                let model = { mem.lock().embedding_model().cloned() };
+                let embedding = model
+                    .map(|model| model.embed_single(user_input).unwrap_or_default());
                 let m = mem.lock();
                 let memory_session_id = self.session_id.as_deref().unwrap_or_else(|| m.session_id());
                 let _ = m.store_conversation_for_session_precomputed(
@@ -151,7 +150,10 @@ impl Run {
             skill_misses = missing;
         }
         for name in skill_misses {
-            self.emit(RunEvent::Error {
+            self.emit(RunEvent::Notice {
+                code: "skill_not_found".to_string(),
+                severity: "warning".to_string(),
+                recoverable: true,
                 message: format!(
                     "Skill '{name}' not found; use skill_list to see available skills."
                 ),
@@ -321,7 +323,6 @@ impl Run {
                     return Ok(text);
                 }
                 Ok(TurnOutcome::Continue) => {}
-                Ok(TurnOutcome::Stop(msg)) => return Ok(msg),
                 Err(RunError::Cancelled) => return Err(RunError::Cancelled),
                 Err(RunError::Failed(e)) => return Err(RunError::Failed(e)),
             }
@@ -397,7 +398,10 @@ impl Run {
                         skill_misses = missing;
                     }
                     for name in skill_misses {
-                        self.emit(RunEvent::Error {
+                        self.emit(RunEvent::Notice {
+                            code: "skill_not_found".to_string(),
+                            severity: "warning".to_string(),
+                            recoverable: true,
                             message: format!(
                                 "Skill '{name}' not found; use skill_list to see available skills."
                             ),
@@ -458,7 +462,10 @@ impl Run {
                 skill_misses = missing;
             }
             for name in skill_misses {
-                self.emit(RunEvent::Error {
+                self.emit(RunEvent::Notice {
+                    code: "skill_not_found".to_string(),
+                    severity: "warning".to_string(),
+                    recoverable: true,
                     message: format!(
                         "Skill '{name}' not found; use skill_list to see available skills."
                     ),
@@ -511,7 +518,10 @@ impl Run {
                         skill_misses = missing;
                     }
                     for name in skill_misses {
-                        self.emit(RunEvent::Error {
+                        self.emit(RunEvent::Notice {
+                            code: "skill_not_found".to_string(),
+                            severity: "warning".to_string(),
+                            recoverable: true,
                             message: format!(
                                 "Skill '{name}' not found; use skill_list to see available skills."
                             ),
@@ -538,22 +548,6 @@ impl Run {
                 choice,
             });
             return;
-        }
-        // Fallback: global map — used by the deprecated Agent path, subagents,
-        // and any code that still sets approval_resolver: None.
-        #[allow(deprecated)]
-        {
-            let pending_arc = crate::permission::global_pending_approvals();
-            let mut pending = pending_arc.lock();
-            if let Some(tx) = pending.remove(prompt_id) {
-                tracing::debug!(prompt_id, "approval resolved via global map");
-                let _ = tx.send(choice.clone());
-                self.emit(RunEvent::ApprovalResolved {
-                    prompt_id: prompt_id.to_string(),
-                    choice,
-                });
-                return;
-            }
         }
         tracing::debug!(prompt_id, "approval prompt not found");
     }
@@ -606,5 +600,3 @@ impl Run {
                 .any(|i| i.status != crate::todo::TodoStatus::Completed)
     }
 }
-
-

@@ -38,6 +38,14 @@ pub enum RunEvent {
     RunFailed {
         error: String,
     },
+    /// Structured non-terminal diagnostic/progress notice. Lifecycle state
+    /// must never be inferred from the human-readable message.
+    Notice {
+        code: String,
+        severity: String,
+        recoverable: bool,
+        message: String,
+    },
 
     // ── State transitions ──────────────────────────────────────────
     StateChanged {
@@ -612,6 +620,7 @@ impl RunEvent {
                 questions: questions.clone(),
             },
             RunEvent::Error { message } => AgentEvent::Error(message.clone()),
+            RunEvent::Notice { message, .. } => AgentEvent::Error(message.clone()),
             RunEvent::SubagentStarted { subagent_id, role_name, task } => {
                 AgentEvent::SubagentStart {
                     subagent_id: subagent_id.clone(),

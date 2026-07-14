@@ -100,6 +100,7 @@ fn event_tag(ev: &RunEvent) -> &'static str {
         RunEvent::InputRequested { .. } => "input_requested",
         RunEvent::InputResolved { .. } => "input_resolved",
         RunEvent::ContextCompacted { .. } => "context_compacted",
+        RunEvent::Notice { .. } => "notice",
         RunEvent::Error { .. } => "error",
         RunEvent::SteerQueued { .. } => "steer_queued",
         RunEvent::SteerInjected { .. } => "steer_injected",

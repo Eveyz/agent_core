@@ -11,12 +11,15 @@ fn expand_tilde(path: &str) -> String {
 /// exist yet (e.g. a file `write_file` is about to create), the existing
 /// parent directory is canonicalized and the file name re-attached. Relative
 /// paths are resolved against the current working directory first.
-fn canonicalize_target(file_path: &str) -> PathBuf {
+fn canonicalize_target(file_path: &str, working_dir: Option<&str>) -> PathBuf {
     let p = Path::new(file_path);
     let abs = if p.is_absolute() {
         p.to_path_buf()
     } else {
-        std::env::current_dir().unwrap_or_default().join(p)
+        working_dir
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default())
+            .join(p)
     };
     if let Ok(canon) = abs.canonicalize() {
         return canon;
@@ -228,4 +231,3 @@ pub fn is_destructive_command(cmd: &str) -> bool {
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
-

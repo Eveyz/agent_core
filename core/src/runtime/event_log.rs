@@ -7,7 +7,7 @@
 //! - **Audit**: full trace of what happened, for debugging and trust
 //! - **Reflector**: the offline reflection framework can analyze traces
 //!
-//! The log is best-effort: IO failures are logged but never block execution.
+//! Publication happens only after the envelope has been appended and flushed.
 
 use anyhow::{Context, Result};
 use std::io::Write;
@@ -98,34 +98,29 @@ impl EventLog {
         self.bytes_written = 0;
     }
 
-    /// Append an envelope to the log (best-effort persistence).
-    pub fn append(&mut self, env: Envelope) {
+    /// Append and flush an envelope. The caller must publish only after this
+    /// succeeds, otherwise replay would not be a source of truth.
+    pub fn append(&mut self, env: Envelope) -> Result<()> {
         self.entries.push(env.clone());
 
         if !self.writable {
-            return;
+            anyhow::bail!("event log directory is not writable: {}", self.path.display());
         }
 
         // Rotate if the file has grown too large
         self.rotate_if_needed();
 
         // Serialize and append to file
-        match serde_json::to_string(&env) {
-            Ok(line) => {
-                // Open in append mode — if this fails, we just skip (best-effort)
-                if let Ok(mut file) = std::fs::OpenOptions::new()
-                    .append(true)
-                    .create(true)
-                    .open(&self.path)
-                {
-                    let _ = writeln!(file, "{line}");
-                    self.bytes_written += line.len() as u64 + 1; // +1 for newline
-                }
-            }
-            Err(e) => {
-                tracing::warn!(run_id = %self.run_id, error = %e, "failed to serialize event for log");
-            }
-        }
+        let line = serde_json::to_string(&env)?;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(&self.path)
+            .with_context(|| format!("failed to open event log: {}", self.path.display()))?;
+        writeln!(file, "{line}")?;
+        file.flush()?;
+        self.bytes_written += line.len() as u64 + 1;
+        Ok(())
     }
 
     /// Number of events in the log.
@@ -167,7 +162,7 @@ impl EventLog {
                 .with_context(|| format!("failed to parse event log line {}: {line}", i + 1))?;
             events.push(env);
         }
-        Ok(events)
+        validate_and_sort(events)
     }
 
     /// Load envelopes with `seq > from_seq` from a JSONL log (for resync).
@@ -178,17 +173,17 @@ impl EventLog {
             .with_context(|| format!("failed to read event log: {path:?}"))?;
 
         let mut events = Vec::new();
-        for line in content.lines() {
+        for (i, line) in content.lines().enumerate() {
             if line.trim().is_empty() {
                 continue;
             }
             match serde_json::from_str::<Envelope>(line) {
                 Ok(env) if env.seq > from_seq => events.push(env),
                 Ok(_) => {}
-                Err(_) => continue,
+                Err(error) => anyhow::bail!("invalid event log line {}: {error}", i + 1),
             }
         }
-        Ok(events)
+        validate_and_sort(events)
     }
 
     /// List all Run IDs that have event logs in the given directory.
@@ -215,6 +210,29 @@ impl EventLog {
     }
 }
 
+fn validate_and_sort(mut events: Vec<Envelope>) -> Result<Vec<Envelope>> {
+    events.sort_by_key(|event| event.seq);
+    let mut deduped = Vec::with_capacity(events.len());
+    for event in events {
+        if let Some(previous) = deduped.last() {
+            let previous: &Envelope = previous;
+            if previous.seq == event.seq {
+                if previous.event_id != event.event_id {
+                    anyhow::bail!(
+                        "conflicting events at sequence {}: {} != {}",
+                        event.seq,
+                        previous.event_id,
+                        event.event_id
+                    );
+                }
+                continue;
+            }
+        }
+        deduped.push(event);
+    }
+    Ok(deduped)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,7 +257,7 @@ mod tests {
                 id: "run-1".into(),
                 session_id: None,
             },
-        });
+        }).unwrap();
         log.append(Envelope {
             seq: 1,
             event_id: "e1".into(),
@@ -249,7 +267,7 @@ mod tests {
             parent_call_id: None,
             ts: chrono::Utc::now(),
             event: RunEvent::RunStarted,
-        });
+        }).unwrap();
 
         assert_eq!(log.len(), 2);
 
@@ -278,7 +296,7 @@ mod tests {
                     id: "run-2".into(),
                     session_id: None,
                 },
-            });
+            }).unwrap();
             log.append(Envelope {
                 seq: 1,
                 event_id: "e1".into(),
@@ -291,7 +309,7 @@ mod tests {
                     from: RunState::Created,
                     to: RunState::Running,
                 },
-            });
+            }).unwrap();
             log.append(Envelope {
                 seq: 2,
                 event_id: "e2".into(),
@@ -303,7 +321,7 @@ mod tests {
             event: RunEvent::RunCompleted {
                     final_text: "done".into(),
                 },
-            });
+            }).unwrap();
         }
 
         // Load them back
@@ -328,7 +346,7 @@ mod tests {
                 parent_call_id: None,
                 ts: chrono::Utc::now(),
             event: RunEvent::RunStarted,
-            });
+            }).unwrap();
             let mut log2 = EventLog::new("run-b", dir.path().to_str().unwrap());
             log2.append(Envelope {
                 seq: 0,
@@ -339,7 +357,7 @@ mod tests {
                 parent_call_id: None,
                 ts: chrono::Utc::now(),
             event: RunEvent::RunStarted,
-            });
+            }).unwrap();
         }
 
         let runs = EventLog::list_runs(dir.path().to_str().unwrap()).unwrap();
@@ -359,5 +377,22 @@ mod tests {
     fn list_runs_nonexistent_dir() {
         let runs = EventLog::list_runs("/nonexistent/path/that/does/not/exist").unwrap();
         assert!(runs.is_empty());
+    }
+
+    #[test]
+    fn replay_sorts_and_rejects_conflicting_duplicate_sequences() {
+        let event = |seq, event_id: &str| Envelope {
+            seq,
+            event_id: event_id.into(),
+            run_id: "run-conflict".into(),
+            session_id: None,
+            turn_id: None,
+            parent_call_id: None,
+            ts: chrono::Utc::now(),
+            event: RunEvent::RunStarted,
+        };
+        let sorted = validate_and_sort(vec![event(2, "e2"), event(1, "e1")]).unwrap();
+        assert_eq!(sorted.iter().map(|event| event.seq).collect::<Vec<_>>(), vec![1, 2]);
+        assert!(validate_and_sort(vec![event(1, "e1"), event(1, "different")]).is_err());
     }
 }

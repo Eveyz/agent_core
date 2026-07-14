@@ -6,7 +6,6 @@ use agent_core::{
     permission::ApprovalChoice,
     McpClientManager, McpTool,
 };
-use serde::Serialize;
 use tauri::{AppHandle, Emitter, Listener, Manager, State};
 use std::sync::Arc;
 use parking_lot::Mutex;
@@ -52,34 +51,6 @@ struct FrontendMessage {
     metadata: Option<serde_json::Value>,
 }
 
-impl FrontendMessage {
-    fn to_agent_message(&self) -> agent_core::types::Message {
-        let role = match self.role.as_str() {
-            "system" => agent_core::types::Role::System,
-            "assistant" => agent_core::types::Role::Assistant,
-            "tool" => agent_core::types::Role::Tool,
-            _ => agent_core::types::Role::User,
-        };
-        let tool_calls: Option<Vec<agent_core::types::ToolCall>> = self.tool_calls.as_ref()
-            .and_then(|v| serde_json::from_value(v.clone()).ok());
-        let is_assistant_with_tools = role == agent_core::types::Role::Assistant && tool_calls.is_some();
-        agent_core::types::Message {
-            role,
-            content: if self.content.is_empty() && is_assistant_with_tools {
-                None
-            } else {
-                Some(self.content.clone())
-            },
-            tool_calls,
-            tool_call_id: self.tool_call_id.clone(),
-            name: self.name.clone(),
-            model: self.model.clone(),
-            metadata: self.metadata.clone(),
-            reasoning: None,
-        }
-    }
-}
-
 #[derive(serde::Serialize)]
 struct FrontendSession {
     meta: agent_core::SessionMeta,
@@ -100,19 +71,19 @@ async fn send_message(
     session_id: Option<String>,
     model: Option<String>,
 ) -> Result<String, String> {
-    let mut manager = state.run_manager.lock().await;
-
-    if let Some(ref m) = model {
-        let _ = manager.switch_model(m);
-    }
-
     // Load history + session-level pinned goal
     let mut history = vec![];
     let mut working_dir = None;
     let mut initial_goal: Option<String> = None;
     let mut initial_goal_completed = false;
     if let Some(ref sid) = session_id {
-        if let Ok(Some(sess)) = state.session_manager.resume(sid) {
+        let sm = state.session_manager.clone();
+        let sid_owned = sid.clone();
+        if let Some(sess) = tokio::task::spawn_blocking(move || sm.resume(&sid_owned))
+            .await
+            .map_err(|e| format!("session resume task failed: {e}"))?
+            .map_err(|e| format!("failed to resume session: {e}"))?
+        {
             history = sess.messages;
             working_dir = Some(sess.meta.cwd);
             initial_goal = sess.meta.pinned_goal.clone();
@@ -148,6 +119,24 @@ async fn send_message(
         }
     }
 
+    // Validate and activate the requested model before creating a running
+    // prompt, so an invalid model cannot leave an orphaned lifecycle row.
+    {
+        let mut manager = state.run_manager.lock().await;
+        if let Some(ref m) = model {
+            if let Err(error) = manager.switch_model(m) {
+                persist_failed_user_message(
+                    &state.session_manager,
+                    session_id.as_deref(),
+                    &history,
+                    &message,
+                )
+                .await;
+                return Err(error.to_string());
+            }
+        }
+    }
+
     // ── Prompt lifecycle: create prompt with 'running' status ──────
     // This way, if the app crashes mid-run, startup repair will mark
     // the orphaned prompt as 'interrupted' instead of leaving the
@@ -161,42 +150,58 @@ async fn send_message(
         }).await {
             Ok(Ok((pid, _turn))) => Some(pid),
             Ok(Err(e)) => {
-                eprintln!("[prompt] failed to create prompt: {e}");
-                None
+                persist_failed_user_message(&state.session_manager, session_id.as_deref(), &history, &message).await;
+                return Err(format!("failed to create prompt: {e}"));
             }
             Err(e) => {
-                eprintln!("[prompt] create_prompt task panicked: {e}");
-                None
+                persist_failed_user_message(&state.session_manager, session_id.as_deref(), &history, &message).await;
+                return Err(format!("create_prompt task failed: {e}"));
             }
         }
     } else {
         None
     };
 
+    let manager = state.run_manager.lock().await;
+
     // Create the Run
-    let run_id = manager
+    let run_id = match manager
         .create_run_with_workdir(
             &message,
             session_id.clone(),
             working_dir,
-            history,
+            history.clone(),
             initial_goal,
             initial_goal_completed,
         )
         .await
-        .map_err(|e| e.to_string())?;
+    {
+        Ok(run_id) => run_id,
+        Err(e) => {
+            persist_failed_user_message(&state.session_manager, session_id.as_deref(), &history, &message).await;
+            finish_setup_prompt(&state.session_manager, prompt_id.as_deref(), &e.to_string()).await;
+            return Err(e.to_string());
+        }
+    };
 
     // Subscribe to events BEFORE starting, so we don't miss any.
-    let mut event_rx = manager
-        .subscribe(&run_id)
-        .await
-        .map_err(|e| e.to_string())?;
+    let mut event_rx = match manager.subscribe(&run_id).await {
+        Ok(rx) => rx,
+        Err(e) => {
+            let _ = manager.command(&run_id, RunCommand::Cancel).await;
+            persist_failed_user_message(&state.session_manager, session_id.as_deref(), &history, &message).await;
+            finish_setup_prompt(&state.session_manager, prompt_id.as_deref(), &e.to_string()).await;
+            return Err(e.to_string());
+        }
+    };
 
     // Start the Run
-    manager
-        .command(&run_id, RunCommand::Start)
-        .await
-        .map_err(|e| e.to_string())?;
+    if let Err(e) = manager.command(&run_id, RunCommand::Start).await {
+        let _ = manager.command(&run_id, RunCommand::Cancel).await;
+        persist_failed_user_message(&state.session_manager, session_id.as_deref(), &history, &message).await;
+        finish_setup_prompt(&state.session_manager, prompt_id.as_deref(), &e.to_string()).await;
+        return Err(e.to_string());
+    }
 
     // Drop the manager lock so other commands can proceed while we stream events.
     drop(manager);
@@ -204,17 +209,14 @@ async fn send_message(
     // Spawn a task to forward events to the frontend.
     let app_handle_clone = app_handle.clone();
     let sm_for_task = state.session_manager.clone();
+    let manager_for_task = state.run_manager.clone();
     let pid_for_task = prompt_id.clone();
+    let run_id_for_task = run_id.clone();
+    let session_id_for_task = session_id.clone();
     tokio::spawn(async move {
         loop {
             match event_rx.recv().await {
                 Ok(event) => {
-                    if let Err(e) = app_handle_clone.emit("agent-event", &event) {
-                        eprintln!("Failed to emit agent event: {}", e);
-                    }
-                    // Prevent WKWebView IPC flood which can drop the first events of a burst
-                    tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
-
                     // Check if this is a terminal event
                     let maybe_terminal = match &event.event {
                         RunEvent::RunCompleted { .. } => Some("completed"),
@@ -235,6 +237,27 @@ async fn send_message(
                     }
 
                     if let Some(status) = maybe_terminal {
+                        // Persist the exact runtime transcript before telling
+                        // React that the run is terminal. This makes the backend
+                        // transcript authoritative and prevents a UI projection
+                        // save from winning the race.
+                        if let Some(ref sid) = session_id_for_task {
+                            let messages = {
+                                let manager = manager_for_task.lock().await;
+                                manager.context_snapshot_for_run(&run_id_for_task).await
+                            };
+                            if let Some(messages) = messages {
+                                let sm = sm_for_task.clone();
+                                let sid_owned = sid.clone();
+                                let _ = tokio::task::spawn_blocking(move || {
+                                    if let Err(e) = sm.save_canonical_transcript(&sid_owned, &messages) {
+                                        eprintln!("[session] failed to persist canonical transcript: {e}");
+                                    }
+                                })
+                                .await;
+                            }
+                        }
+
                         // ── Prompt lifecycle: mark prompt as finished ──
                         if let Some(ref pid) = pid_for_task {
                             let sm = sm_for_task.clone();
@@ -249,6 +272,12 @@ async fn send_message(
                                 }
                             }).await;
                         }
+                    }
+
+                    if let Err(e) = app_handle_clone.emit("agent-event", &event) {
+                        eprintln!("Failed to emit agent event: {}", e);
+                    }
+                    if maybe_terminal.is_some() {
                         break;
                     }
                 }
@@ -262,6 +291,42 @@ async fn send_message(
     });
 
     Ok(run_id)
+}
+
+async fn finish_setup_prompt(
+    session_manager: &Arc<agent_core::SessionManager>,
+    prompt_id: Option<&str>,
+    error: &str,
+) {
+    let Some(prompt_id) = prompt_id else { return };
+    let sm = session_manager.clone();
+    let prompt_id = prompt_id.to_string();
+    let error = error.to_string();
+    let _ = tokio::task::spawn_blocking(move || {
+        let _ = sm.finish_prompt(
+            &prompt_id,
+            "failed",
+            &serde_json::json!({ "setup_error": error }),
+        );
+    })
+    .await;
+}
+
+async fn persist_failed_user_message(
+    session_manager: &Arc<agent_core::SessionManager>,
+    session_id: Option<&str>,
+    history: &[agent_core::Message],
+    message: &str,
+) {
+    let Some(session_id) = session_id else { return };
+    let sm = session_manager.clone();
+    let session_id = session_id.to_string();
+    let mut messages = history.to_vec();
+    messages.push(agent_core::Message::user(message));
+    let _ = tokio::task::spawn_blocking(move || {
+        let _ = sm.save_canonical_transcript(&session_id, &messages);
+    })
+    .await;
 }
 
 // ── /btw & /learn: side-channel slash commands ─────────────────────
@@ -479,13 +544,13 @@ async fn cancel_steer(
 /// Approve a tool execution that's waiting for approval.
 ///
 /// Resolution order:
-/// 1. Global pending approvals map (backward compat + subagent)
+/// 1. Run-scoped subagent approval map
 /// 2. Per-Run `ApprovalResolver` (direct path — no actor deadlock)
 /// 3. Command channel broadcast (legacy fallback for paused runs)
 #[tauri::command]
 async fn approve_tool(
     state: State<'_, AppState>,
-    run_id: Option<String>,
+    run_id: String,
     prompt_id: String,
     choice: String,
 ) -> Result<(), String> {
@@ -504,20 +569,21 @@ async fn approve_tool(
         prompt_id, choice, run_id
     );
 
-    // 1. Try global pending approvals first (used by subagents + legacy paths)
-    {
-        let pending_arc = agent_core::permission::global_pending_approvals();
-        let mut pending = pending_arc.lock();
-        if let Some(tx) = pending.remove(&prompt_id) {
-            eprintln!("[approve_tool] resolved via global map");
-            let _ = tx.send(choice_enum.clone());
-            return Ok(());
-        }
+    // 1. Subagent approvals share the parent Run id but have their own waiter.
+    let subagent_waiter = {
+        let pending_arc = agent_core::permission::pending_subagent_approvals();
+        let waiter = pending_arc.lock().remove(&format!("{run_id}:{prompt_id}"));
+        waiter
+    };
+    if let Some(tx) = subagent_waiter {
+        eprintln!("[approve_tool] resolved via run-scoped subagent map");
+        let _ = tx.send(choice_enum.clone());
+        return Ok(());
     }
 
     // 2. Try per-Run resolver directly (no command channel, no actor deadlock)
     if manager
-        .resolve_approval(run_id.as_deref(), &prompt_id, choice_enum.clone())
+        .resolve_approval(Some(&run_id), &prompt_id, choice_enum.clone())
         .await
     {
         eprintln!("[approve_tool] resolved via per-Run resolver");
@@ -526,27 +592,17 @@ async fn approve_tool(
 
     eprintln!("[approve_tool] NOT resolved, falling back to command channel");
 
-    // 3. Legacy command-channel fallback (for paused/edge-case runs)
-    if let Some(id) = run_id {
-        manager
-            .command(&id, RunCommand::Approve {
+    // 3. Run-scoped command-channel fallback (for paused/edge-case runs)
+    manager
+        .command(
+            &run_id,
+            RunCommand::Approve {
                 prompt_id,
                 choice: choice_enum,
-            })
-            .await
-            .map_err(|e| e.to_string())
-    } else {
-        let runs = manager.list_runs().await;
-        for id in runs {
-            let _ = manager
-                .command(&id, RunCommand::Approve {
-                    prompt_id: prompt_id.clone(),
-                    choice: choice_enum.clone(),
-                })
-                .await;
-        }
-        Ok(())
-    }
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Answer a pending `ask_user` clarification request.
@@ -557,7 +613,7 @@ async fn approve_tool(
 #[tauri::command]
 async fn answer_input(
     state: State<'_, AppState>,
-    run_id: Option<String>,
+    run_id: String,
     prompt_id: String,
     answer: String,
 ) -> Result<(), String> {
@@ -572,40 +628,23 @@ async fn answer_input(
     let manager = state.run_manager.lock().await;
 
     if manager
-        .resolve_input(run_id.as_deref(), &prompt_id, answers.clone())
+        .resolve_input(Some(&run_id), &prompt_id, answers.clone())
         .await
     {
         return Ok(());
     }
 
-    // Fallback: command channel (paused / edge-case runs)
-    if let Some(id) = run_id {
-        manager
-            .command(
-                &id,
-                RunCommand::Answer {
-                    prompt_id,
-                    answer: serde_json::to_string(&answers).unwrap_or(answer),
-                },
-            )
-            .await
-            .map_err(|e| e.to_string())
-    } else {
-        let runs = manager.list_runs().await;
-        let payload = serde_json::to_string(&answers).unwrap_or(answer);
-        for id in runs {
-            let _ = manager
-                .command(
-                    &id,
-                    RunCommand::Answer {
-                        prompt_id: prompt_id.clone(),
-                        answer: payload.clone(),
-                    },
-                )
-                .await;
-        }
-        Ok(())
-    }
+    // Run-scoped command-channel fallback (paused / edge-case runs)
+    manager
+        .command(
+            &run_id,
+            RunCommand::Answer {
+                prompt_id,
+                answer: serde_json::to_string(&answers).unwrap_or(answer),
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Clear the session-level pinned goal (banner ×). Does not start a Run.
@@ -888,51 +927,17 @@ async fn rename_session(
     .map_err(|e| format!("rename_session task failed: {e}"))?
 }
 
-#[derive(Serialize)]
-struct SaveResult {
-    updated_at: String,
-}
-
 #[tauri::command]
-async fn save_session_messages(
+async fn retry_session_from_prompt(
     state: State<'_, AppState>,
     session_id: String,
-    messages_json: String,
-    cwd: String,
-    model_used: String,
-    process_time_ms: Option<u64>,
-    thought_time_ms: Option<u64>,
-) -> Result<SaveResult, String> {
+    prompt_id: String,
+) -> Result<(), String> {
     let sm = state.session_manager.clone();
-    tokio::task::spawn_blocking(move || {
-        let frontend_msgs: Vec<FrontendMessage> = serde_json::from_str(&messages_json)
-            .map_err(|e| format!("Invalid messages JSON: {}", e))?;
-        let messages: Vec<agent_core::types::Message> = frontend_msgs
-            .iter()
-            .map(|m| m.to_agent_message())
-            .collect();
-        let project_id = sm.get_project_id(&session_id).ok().flatten();
-        let final_cwd = if project_id.as_deref() == Some("__adhoc_chat__") {
-            let chat_dir = agent_core::paths::get_agverse_dir().join("chats").join(&session_id);
-            chat_dir.to_string_lossy().to_string()
-        } else {
-            cwd
-        };
-        sm.save(Some(&session_id), &messages, &final_cwd, &model_used)
-            .map_err(|e| e.to_string())?;
-        if process_time_ms.is_some() || thought_time_ms.is_some() {
-            sm.save_timing(&session_id, process_time_ms.unwrap_or(0), thought_time_ms.unwrap_or(0))
-                .map_err(|e| e.to_string())?;
-        }
-        let updated_at = sm.get_meta(&session_id)
-            .ok()
-            .flatten()
-            .map(|m| m.updated_at)
-            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
-        Ok(SaveResult { updated_at })
-    })
-    .await
-    .map_err(|e| format!("save_session_messages task failed: {e}"))?
+    tokio::task::spawn_blocking(move || sm.truncate_before_prompt(&session_id, &prompt_id))
+        .await
+        .map_err(|e| format!("retry rewind task failed: {e}"))?
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2263,7 +2268,7 @@ pub fn run() {
             list_directory, search_files,
             get_config, save_config, switch_model, set_mode, get_mode,
             create_session, delete_session, rename_session,
-            save_session_messages, resume_session,
+            retry_session_from_prompt, resume_session,
             list_projects, create_project, create_new_project, get_documents_dir, get_default_project_path,
             set_project_pinned, set_session_pinned,
             delete_project, rename_project, open_in_explorer,

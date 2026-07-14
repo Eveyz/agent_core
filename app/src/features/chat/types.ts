@@ -64,6 +64,7 @@ export type TurnBlock =
       answers?: ClarificationAnswers;
     }
   | { type: 'error'; text: string }
+  | { type: 'notice'; text: string; code?: string; severity?: string }
   | { type: 'subagent_ref'; subagent_id: string; parent_call_id?: string };
 
 /** Same shape as TurnBlock, minus nested `subagent_ref` (subagents don't spawn further). */
@@ -80,7 +81,8 @@ export type SubagentBlock =
       status: 'pending' | 'answered' | 'cancelled';
       answers?: ClarificationAnswers;
     }
-  | { type: 'error'; text: string };
+  | { type: 'error'; text: string }
+  | { type: 'notice'; text: string; code?: string; severity?: string };
 
 export interface SubagentEntry {
   id: string;
@@ -152,6 +154,8 @@ export interface ChatState {
   allPrompts: Record<string, FrontendPrompt[]>;
   visiblePromptsCount: Record<string, number>;
   isDirty: Record<string, boolean>;
+  contentRevision: Record<string, number>;
+  persistedRevision: Record<string, number>;
   _resumedFromBackend: Record<string, boolean>;
   _thinkBuffers: Record<string, Record<string, string>>;
   goal: Record<string, string | null>;
@@ -170,9 +174,11 @@ export interface ChatState {
     skills: SkillManifest[];
     loadedAt: number;
   } | null;
-  resyncing: boolean;
-  _pendingGap: { runId: string; fromSeq: number } | null;
-  cacheMetrics: CacheMetrics | null;
+  resyncingByRun: Record<string, boolean>;
+  pendingGapByRun: Record<string, { fromSeq: number; toSeq: number }>;
+  cacheMetricsByRun: Record<string, CacheMetrics>;
+  appliedEventIdsByRun: Record<string, Record<string, true>>;
+  pendingEventsByRun: Record<string, Record<number, RunEventPayload>>;
 }
 
 export interface CacheMetrics {
@@ -198,6 +204,7 @@ export type RunEventType =
   | 'tool_preparing' | 'tool_started' | 'tool_update' | 'tool_ended'
   | 'approval_required' | 'approval_resolved' | 'input_requested' | 'input_resolved'
   | 'context_compacted' | 'error'
+  | 'notice'
   | 'subagent_started' | 'subagent_ended'
   | 'process_spawned' | 'process_killed'
   | 'todo_updated'
@@ -228,7 +235,7 @@ export interface RunEventPayload {
   message_id?: string;
   text?: string;
   tool_count?: number;
-  message?: { role: string; content?: string };
+  message?: { role: string; content?: string } | string;
   call_id?: string;
   name?: string;
   args?: unknown;
@@ -246,6 +253,9 @@ export interface RunEventPayload {
   answers?: ClarificationAnswers;
   question?: string;
   error?: string;
+  code?: string;
+  severity?: string;
+  recoverable?: boolean;
   choice?: string;
   subagent_id?: string;
   role_name?: string;

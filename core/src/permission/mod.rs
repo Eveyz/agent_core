@@ -32,13 +32,10 @@ use std::sync::{Arc, OnceLock};
 
 pub type PendingApprovalMap = HashMap<String, tokio::sync::oneshot::Sender<types::ApprovalChoice>>;
 
-/// **Deprecated**: Per-Run approval routing via [`ApprovalResolver`](crate::runtime::ApprovalResolver)
-/// replaces this global map. This is kept only for backward compatibility with
-/// the legacy `Agent` path used by the CLI.
-#[deprecated(
-    note = "use runtime::ApprovalResolver instead — this global map is not scoped per-Run"
-)]
-pub fn global_pending_approvals() -> Arc<Mutex<PendingApprovalMap>> {
+/// Subagent waiters keyed by `parent_run_id:prompt_id`. Main Run approvals use
+/// `ApprovalResolver`; this map exists because child tools execute outside the
+/// main Run actor while still presenting approvals in the parent's UI stream.
+pub fn pending_subagent_approvals() -> Arc<Mutex<PendingApprovalMap>> {
     static MAP: OnceLock<Arc<Mutex<PendingApprovalMap>>> = OnceLock::new();
     MAP.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
         .clone()
@@ -303,14 +300,36 @@ impl PermissionPolicy {
         path: Option<&str>,
         host: Option<&str>,
     ) -> PermissionDecision {
+        let paths: Vec<&str> = path.into_iter().collect();
+        self.check_scoped(
+            tool_name,
+            tool_input_json,
+            command,
+            &paths,
+            host,
+            None,
+        )
+    }
+
+    /// Check a fully extracted invocation using the same cwd that execution
+    /// will use. Every path is sandboxed and every rule dimension is matched.
+    pub fn check_scoped(
+        &mut self,
+        tool_name: &str,
+        tool_input_json: &str,
+        command: Option<&str>,
+        paths: &[&str],
+        host: Option<&str>,
+        working_dir: Option<&str>,
+    ) -> PermissionDecision {
         let danger = self.danger_level_for(tool_name, tool_input_json, command);
 
         // Pre-layer: Sandbox — paths outside the sandbox are hard-denied.
         // This is a security boundary: it is enforced before everything else
         // (including Yolo mode and the whitelist) so a sandboxed agent can never
         // touch files outside its allowed roots, regardless of other approvals.
-        if let Some(p) = path {
-            if let Err(reason) = self.check_path(p) {
+        for p in paths {
+            if let Err(reason) = self.check_path_from(p, working_dir) {
                 self.audit_record(
                     tool_name,
                     tool_input_json,
@@ -347,12 +366,7 @@ impl PermissionPolicy {
 
         // Layer 1: Blacklist — unconditional deny (even in Permissive mode)
         for bp in &self.blacklist {
-            if bp.matches_tool(tool_name) {
-                if let Some(cmd) = command {
-                    if !bp.matches_command(cmd) {
-                        continue;
-                    }
-                }
+            if bp.matches_invocation(tool_name, command, paths, host, danger) {
                 let reason = format!(
                     "Tool '{}' is blacklisted (config.toml [permissions.blacklist])",
                     tool_name
@@ -371,7 +385,10 @@ impl PermissionPolicy {
         }
 
         // Layer 2: Whitelist — unconditional allow
-        if let Some(entry) = self.whitelist.query(tool_name, command, path, host) {
+        if let Some(entry) = self
+            .whitelist
+            .query_scoped(tool_name, command, paths, host, danger)
+        {
             if entry.is_valid() {
                 let reason = format!(
                     "matched whitelist: {} (scope: {:?}, used {} times)",
@@ -451,17 +468,10 @@ impl PermissionPolicy {
 
         // Layer 4: Config rules (from config.toml [permissions.rules])
         for rule in &self.config_rules {
-            if rule.pattern.matches_tool(tool_name) {
-                if let Some(cmd) = command {
-                    if !rule.pattern.matches_command(cmd) {
-                        continue;
-                    }
-                }
-                if let Some(p) = path {
-                    if !rule.pattern.matches_path(p) {
-                        continue;
-                    }
-                }
+            if rule
+                .pattern
+                .matches_invocation(tool_name, command, paths, host, danger)
+            {
                 let matched = format!(
                     "config rule: {} → {:?}",
                     rule.pattern.tool_pattern, rule.level
@@ -520,17 +530,7 @@ impl PermissionPolicy {
         }
 
         for (pattern, rule_danger, level) in &self.builtin_rules {
-            if pattern.matches_tool(tool_name) {
-                if let Some(cmd) = command {
-                    if !pattern.matches_command(cmd) {
-                        continue;
-                    }
-                }
-                if let Some(p) = path {
-                    if !pattern.matches_path(p) {
-                        continue;
-                    }
-                }
+            if pattern.matches_invocation(tool_name, command, paths, host, danger) {
                 let matched = format!(
                     "builtin rule: {} → {:?} (danger: {:?})",
                     pattern.tool_pattern, level, rule_danger
@@ -584,7 +584,13 @@ impl PermissionPolicy {
             return PermissionDecision::Allow;
         }
 
-        let prompt = self.build_approval_prompt(tool_name, tool_input_json, danger, command, path);
+        let prompt = self.build_approval_prompt(
+            tool_name,
+            tool_input_json,
+            danger,
+            command,
+            paths.first().copied(),
+        );
         self.audit_record(
             tool_name,
             tool_input_json,
@@ -612,10 +618,18 @@ impl PermissionPolicy {
     /// the file name. Both the target and the configured sandbox roots are
     /// canonicalized so symlink/relative-path comparisons are correct.
     pub fn check_path(&self, file_path: &str) -> Result<(), String> {
+        self.check_path_from(file_path, None)
+    }
+
+    pub fn check_path_from(
+        &self,
+        file_path: &str,
+        working_dir: Option<&str>,
+    ) -> Result<(), String> {
         if self.sandbox_paths.is_empty() {
             return Ok(());
         }
-        let target = canonicalize_target(file_path);
+        let target = canonicalize_target(file_path, working_dir);
         for sandbox in &self.sandbox_paths {
             let sandbox_canon = sandbox.canonicalize().unwrap_or_else(|_| sandbox.clone());
             if target.starts_with(&sandbox_canon) {

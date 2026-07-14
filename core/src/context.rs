@@ -114,6 +114,13 @@ pub enum Stability {
     Dynamic,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContextTrust {
+    Runtime,
+    Instruction,
+    UserDerived,
+}
+
 /// A single segment of the system prompt.
 #[derive(Debug, Clone)]
 pub struct ContextSegment {
@@ -131,6 +138,8 @@ pub struct ContextSegment {
     pub refresh: RefreshPolicy,
     /// KV cache stability level.
     pub stability: Stability,
+    /// Explicit provenance/trust class used in model-visible framing.
+    pub trust: ContextTrust,
     /// Whether this segment is currently enabled.
     pub enabled: bool,
     /// Last time this segment was built (for tracking).
@@ -148,6 +157,11 @@ impl ContextSegment {
         refresh: RefreshPolicy,
         stability: Stability,
     ) -> Self {
+        let trust = match name {
+            "identity" | "principles" | "loaded_skills" => ContextTrust::Instruction,
+            "active_memory" => ContextTrust::UserDerived,
+            _ => ContextTrust::Runtime,
+        };
         Self {
             name: name.to_string(),
             label: label.to_string(),
@@ -156,6 +170,7 @@ impl ContextSegment {
             priority,
             refresh,
             stability,
+            trust,
             enabled: true,
             last_built: None,
             dirty: true,
@@ -187,7 +202,10 @@ impl ContextSegment {
         if truncated.is_empty() {
             return String::new();
         }
-        format!("== {} ==\n{}\n", self.label, truncated)
+        format!(
+            "== {} [source={}, trust={:?}] ==\n{}\n",
+            self.label, self.name, self.trust, truncated
+        )
     }
 
     /// Estimated token count of assembled output.
@@ -195,7 +213,10 @@ impl ContextSegment {
         if !self.enabled || self.content.is_empty() {
             return 0;
         }
-        let header = format!("== {} ==\n\n", self.label);
+        let header = format!(
+            "== {} [source={}, trust={:?}] ==\n\n",
+            self.label, self.name, self.trust
+        );
         let header_tokens = rough_token_count(&header);
         let body_tokens = rough_token_count(&self.content).min(self.max_tokens);
         header_tokens + body_tokens
@@ -311,13 +332,14 @@ impl ContextEngine {
         );
         self.segments.insert("active_memory".to_string(), memory);
 
-        // Segment 6: LOADED SKILLS — catalog + active skill content (no hard truncate;
-        // max_tokens=0 means unlimited — skill bodies are instructions, not disposable data)
+        // Segment 6: LOADED SKILLS — instructions are high priority, but still
+        // bounded so a large/malicious skill cannot consume the whole model window.
+        let skill_budget = ((self.max_tokens as f64 * 0.05) as usize).clamp(1_000, 10_000);
         let skills = ContextSegment::new(
             "loaded_skills",
             "Loaded Skills",
             5,
-            0,
+            skill_budget,
             RefreshPolicy::PerTurn,
             Stability::Dynamic,
         );
@@ -444,7 +466,10 @@ impl ContextEngine {
             if seg_tokens > remaining && !parts.is_empty() {
                 let truncated = truncate_to_token_budget(&seg.content, remaining);
                 if !truncated.is_empty() {
-                    parts.push(format!("== {} (truncated) ==\n{}\n", seg.label, truncated));
+                    parts.push(format!(
+                        "== {} [source={}, trust={:?}, truncated] ==\n{}\n",
+                        seg.label, seg.name, seg.trust, truncated
+                    ));
                 }
                 break;
             }
@@ -465,6 +490,8 @@ impl ContextEngine {
         segments.sort_by_key(|s| s.priority);
 
         let mut parts = Vec::new();
+        let dynamic_budget = ((self.max_tokens as f64 * 0.08) as usize).clamp(1_000, 16_000);
+        let mut used_tokens = 0usize;
 
         for seg in &segments {
             if !seg.enabled || seg.content.is_empty() {
@@ -474,11 +501,27 @@ impl ContextEngine {
             if seg.stability == Stability::Stable {
                 continue;
             }
+            let remaining = dynamic_budget.saturating_sub(used_tokens);
+            if remaining == 0 {
+                break;
+            }
             let text = seg.assemble();
             if text.is_empty() {
                 continue;
             }
+            let text_tokens = rough_token_count(&text);
+            if text_tokens > remaining {
+                let content = truncate_to_token_budget(&seg.content, remaining.saturating_sub(8));
+                if !content.is_empty() {
+                    parts.push(format!(
+                        "== {} [source={}, trust={:?}, truncated] ==\n{}\n",
+                        seg.label, seg.name, seg.trust, content
+                    ));
+                }
+                break;
+            }
             parts.push(text);
+            used_tokens = used_tokens.saturating_add(text_tokens);
         }
 
         if parts.is_empty() {
@@ -661,7 +704,7 @@ impl ContextEngine {
     }
 
     /// Build the full message array: system (frozen) + conversation history
-    /// (untouched) + dynamic context injection as a separate trailing user
+    /// (untouched) + dynamic context injection as a separate trailing system
     /// message.
     ///
     /// This structure maximizes prompt cache hits:
@@ -671,8 +714,9 @@ impl ContextEngine {
     ///   a separate user message at the end, which is always a cache miss
     ///   but does not invalidate the cacheable prefix.
     ///
-    /// Adding the injection as a separate message (rather than mutating the
-    /// last user message) ensures it is delivered on **every** turn,
+    /// Keeping runtime-owned context in the system role preserves its trust
+    /// provenance instead of presenting memory/skills as user-authored text.
+    /// Adding it as a separate message ensures it is delivered on **every** turn,
     /// including tool-call turns where the last conversation message is a
     /// Tool result.
     pub fn messages(&self) -> Vec<Message> {
@@ -687,10 +731,10 @@ impl ContextEngine {
             result.push(msg.clone());
         }
 
-        // Append dynamic context injection as a separate user message.
+        // Append dynamic context injection as a separate trusted system message.
         let injection = self.assemble_context_injection();
         if !injection.is_empty() {
-            result.push(Message::user(&injection));
+            result.push(Message::system(&injection));
         }
 
         result
@@ -1157,20 +1201,14 @@ mod tests {
     }
 
     #[test]
-    fn loaded_skills_segment_does_not_hard_truncate() {
-        let mut engine = ContextEngine::new("test", 128000);
-        // ~3000 tokens of content if budget were still 2000
-        let big = "skill-body-line\n".repeat(800);
-        assert!(rough_token_count(&big) > 2000);
+    fn loaded_skills_segment_is_bounded() {
+        let mut engine = ContextEngine::new("test", 32_000);
+        let big = "skill-body-line\n".repeat(8_000);
         engine.set_loaded_skills(&big);
         let injection = engine.assemble_context_injection();
         assert!(injection.contains("skill-body-line"));
-        assert!(
-            !injection.contains("segment truncated"),
-            "loaded_skills must not hard-truncate (max_tokens=0)"
-        );
-        // Full body should survive (minus header framing)
-        assert!(injection.matches("skill-body-line").count() >= 700);
+        assert!(injection.contains("truncated"));
+        assert!(rough_token_count(&injection) <= 2_700);
     }
 
     #[test]
@@ -1200,9 +1238,9 @@ mod tests {
         // system + 3 conversation messages + 1 injection message
         assert_eq!(msgs.len(), 5);
 
-        // Last message is the injection (separate user message)
+        // Last message is the injection (separate trusted system message)
         let injection_msg = &msgs[4];
-        assert_eq!(injection_msg.role, Role::User);
+        assert_eq!(injection_msg.role, Role::System);
         let content = injection_msg.content.as_ref().unwrap();
         assert!(content.contains("<context_injection>"));
         assert!(content.contains("User likes Rust"));
@@ -1246,7 +1284,7 @@ mod tests {
         // Injection should be present even though the last conversation
         // message is a Tool result (not a User message).
         let injection_msg = &msgs[4];
-        assert_eq!(injection_msg.role, Role::User);
+        assert_eq!(injection_msg.role, Role::System);
         let content = injection_msg.content.as_ref().unwrap();
         assert!(content.contains("<context_injection>"));
         assert!(content.contains("User likes Rust"));
@@ -1303,7 +1341,7 @@ mod tests {
         // Should be > 0 since all stable segments have content
         assert!(stable_tokens > 0);
         // Should be small since content is minimal
-        assert!(stable_tokens < 50);
+        assert!(stable_tokens < 100);
     }
 
     #[test]

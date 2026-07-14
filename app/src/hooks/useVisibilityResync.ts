@@ -2,8 +2,7 @@ import { useEffect } from 'react';
 import { useStore } from 'react-redux';
 import { RootState } from '../store';
 import { useAppDispatch } from './useAppDispatch';
-import { getFullMessagesForSession, getTimingMetrics, resyncRun } from '../features/chat/chatSlice';
-import { saveSessionMessages } from '../features/project/projectSlice';
+import { resyncRun } from '../features/chat/chatSlice';
 
 export function useVisibilityResync() {
   const dispatch = useAppDispatch();
@@ -12,25 +11,7 @@ export function useVisibilityResync() {
   useEffect(() => {
     const handleFocusOrVisibility = () => {
       const state = store.getState();
-      if (document.visibilityState === 'hidden') {
-        const sid = state.project.activeSessionId;
-        if (!sid || !state.chat.isDirty[sid]) return;
-        const activeProject = state.project.projects.find((p) => p.id === state.project.activeProjectId);
-        if (!activeProject?.path) return;
-        const messages = getFullMessagesForSession(state.chat, sid);
-        if (messages.length === 0) return;
-        const entries = state.chat.entries[sid] ?? [];
-        const { processTimeMs, thoughtTimeMs } = getTimingMetrics(entries);
-        dispatch(saveSessionMessages({
-          sessionId: sid,
-          messages,
-          cwd: activeProject.path,
-          modelUsed: state.settings.config?.default_model || '',
-          processTimeMs,
-          thoughtTimeMs,
-        }));
-        return;
-      }
+      if (document.visibilityState === 'hidden') return;
 
       const sid = state.project.activeSessionId;
       const { isProcessing, runId } = sid ? {

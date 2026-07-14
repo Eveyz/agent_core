@@ -82,10 +82,6 @@ const SESSION_KEY = 'agent_core_active_session';
 const savedActiveId = localStorage.getItem(STORAGE_KEY);
 const savedActiveSessionId = localStorage.getItem(SESSION_KEY);
 
-const saveQueueBySession: Record<string, Promise<unknown>> = {};
-const saveGenerationBySession: Record<string, number> = {};
-const lastAppliedSaveGenerationBySession: Record<string, number> = {};
-
 /** Sort sessions by last activity (newest first), stable tie-breaker on id. */
 export function sortSessionsByActivity(sessions: SessionMeta[]): SessionMeta[] {
   return [...sessions].sort((a, b) => {
@@ -259,45 +255,6 @@ export const renameSession = createAsyncThunk(
       await invoke('rename_session', { sessionId, newTitle });
       return { sessionId, projectId, newTitle };
     } catch (e) {
-      return rejectWithValue(String(e));
-    }
-  }
-);
-
-export const saveSessionMessages = createAsyncThunk(
-  'project/saveSessionMessages',
-  async ({ sessionId, messages, cwd, modelUsed, processTimeMs, thoughtTimeMs }: {
-    sessionId: string;
-    messages: FrontendMessage[];
-    cwd: string;
-    modelUsed: string;
-    processTimeMs?: number;
-    thoughtTimeMs?: number;
-  }, { rejectWithValue }) => {
-    const generation = (saveGenerationBySession[sessionId] ?? 0) + 1;
-    saveGenerationBySession[sessionId] = generation;
-    const previous = saveQueueBySession[sessionId] ?? Promise.resolve();
-    try {
-      const task = previous
-        .catch(() => undefined)
-        .then(() => invoke<{ updated_at: string }>('save_session_messages', {
-          sessionId,
-          messagesJson: JSON.stringify(messages),
-          cwd,
-          modelUsed,
-          processTimeMs: processTimeMs ?? null,
-          thoughtTimeMs: thoughtTimeMs ?? null,
-        }));
-      saveQueueBySession[sessionId] = task;
-      const result = await task;
-      if (saveQueueBySession[sessionId] === task) {
-        delete saveQueueBySession[sessionId];
-      }
-      return { sessionId, messageCount: messages.length, updated_at: result.updated_at, generation };
-    } catch (e) {
-      if (saveGenerationBySession[sessionId] === generation) {
-        delete saveQueueBySession[sessionId];
-      }
       return rejectWithValue(String(e));
     }
   }
@@ -513,20 +470,10 @@ export const projectSlice = createSlice({
             s.title = newTitle;
           }
         }
-      })
-      .addCase(saveSessionMessages.fulfilled, (state, action) => {
-        const { sessionId, messageCount, updated_at, generation } = action.payload;
-        const latestGeneration = saveGenerationBySession[sessionId] ?? 0;
-        if (generation < latestGeneration) return;
-        lastAppliedSaveGenerationBySession[sessionId] = generation;
-        patchSessionActivity(state, sessionId, updated_at, messageCount);
       });
   },
 });
 
-export function __testSetSaveGeneration(sessionId: string, generation: number): void {
-  saveGenerationBySession[sessionId] = generation;
-}
 
 export const {
   setActiveProject,

@@ -16,8 +16,8 @@ interface LazyEntryProps {
 
 // Height used for off-screen placeholders so the scrollbar and the
 // auto-scroll math (scrollHeight / scrollTop) stay roughly correct without
-// mounting the — expensive — entry. Only affects entries that have never
-// scrolled into view; once visible an entry stays mounted at its real height.
+// mounting the expensive entry. A measured height replaces this estimate after
+// first render so entries can be safely unmounted again outside the window.
 const PLACEHOLDER_MIN_HEIGHT = 160;
 // Pre-render this far outside the viewport so normal scrolling never shows a
 // placeholder flash.
@@ -30,11 +30,6 @@ const ROOT_MARGIN = '400px 0px 400px 0px';
  * block / markdown parse inside it) at once, freezing the UI. By deferring
  * off-screen entries to cheap placeholder divs, the initial mount cost is
  * bounded to what is actually visible.
- *
- * Once an entry becomes visible it stays mounted for the lifetime of the
- * session (we never swap it back to a placeholder). This preserves component
- * state (e.g. expanded tool blocks) and avoids remount jank; it is strictly
- * better than the previous "mount everything immediately" behaviour.
  *
  * The scroll container is unchanged, so useAutoScroll's scrollTop/scrollHeight
  * logic keeps working untouched — placeholders occupy height in the flow.
@@ -49,30 +44,42 @@ export const LazyEntry = memo(function LazyEntry({
   onSend,
 }: LazyEntryProps) {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
-  const [visible, setVisible] = useState(forceVisible);
+  const measuredHeight = useRef(PLACEHOLDER_MIN_HEIGHT);
+  const [nearViewport, setNearViewport] = useState(forceVisible);
+  const visible = forceVisible || nearViewport;
 
   useEffect(() => {
-    if (visible) return;
     const el = wrapperRef.current;
     if (!el) return;
     const root = scrollRef.current ?? null;
     const observer = new IntersectionObserver(
       (entries) => {
         for (const e of entries) {
-          if (e.isIntersecting) {
-            setVisible(true);
-            break;
-          }
+          setNearViewport(e.isIntersecting);
         }
       },
       { root, rootMargin: ROOT_MARGIN, threshold: 0 },
     );
     observer.observe(el);
     return () => observer.disconnect();
-  }, [visible, scrollRef]);
+  }, [scrollRef]);
 
-  if (visible) {
-    return (
+  useEffect(() => {
+    if (!visible || !wrapperRef.current) return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry.contentRect.height > 0) measuredHeight.current = entry.contentRect.height;
+    });
+    observer.observe(wrapperRef.current);
+    return () => observer.disconnect();
+  }, [visible]);
+
+  return (
+    <div
+      ref={wrapperRef}
+      className={visible ? 'lazy-entry-mounted' : 'lazy-entry-placeholder'}
+      style={visible ? undefined : { minHeight: measuredHeight.current }}
+    >
+      {visible ? (
       <EntryRow
         entryId={entryId}
         defaultModel={defaultModel}
@@ -80,14 +87,7 @@ export const LazyEntry = memo(function LazyEntry({
         isProcessing={isProcessing}
         onSend={onSend}
       />
-    );
-  }
-
-  return (
-    <div
-      ref={wrapperRef}
-      className="lazy-entry-placeholder"
-      style={{ minHeight: PLACEHOLDER_MIN_HEIGHT }}
-    />
+      ) : null}
+    </div>
   );
 });

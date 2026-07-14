@@ -10,7 +10,6 @@ async function loadModules() {
     removeItem: vi.fn(),
   });
   const chat = await import('./chatSlice');
-  const utils = await import('./utils');
   return {
     reducer: chat.default as Reducer<ChatState, AnyAction>,
     agentEventsBatch: chat.agentEventsBatch,
@@ -22,7 +21,6 @@ async function loadModules() {
     clarificationAnswered: chat.clarificationAnswered,
     btwAsked: chat.btwAsked,
     steerMessageQueued: chat.steerMessageQueued,
-    entriesToMessages: utils.entriesToMessages,
   };
 }
 
@@ -74,6 +72,29 @@ describe('chat reducer session routing', () => {
     expect(turn1?.blocks?.some((b) => b.type === 'assistant' && b.text === 'from-s1')).toBe(true);
     expect(turn2?.blocks?.some((b) => b.type === 'assistant' && b.text === 'from-s2')).toBe(true);
     expect(turn1?.blocks?.some((b) => b.type === 'assistant' && b.text === 'from-s2')).toBe(false);
+  });
+
+  it('folds out-of-order replay exactly once in contiguous sequence order', async () => {
+    const { reducer, userMessageSent, runIdSet, agentEventsBatch } = await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, userMessageSent({ text: 'hello', model: 'm1', sessionId: 's1' }));
+    state = reducer(state, runIdSet({ runId: 'run-1', sessionId: 's1' }));
+    state = reducer(state, agentEventsBatch([
+      { event: 'turn_started', run_id: 'run-1', event_id: 'e1', seq: 1, turn_id: 't1', index: 0 },
+      { event: 'model_streaming', run_id: 'run-1', event_id: 'e3', seq: 3, turn_id: 't1', message_id: 'm1', delta: { Text: 'B' } },
+    ]));
+
+    expect(state.pendingGapByRun['run-1']).toEqual({ fromSeq: 1, toSeq: 3 });
+    state = reducer(state, agentEventsBatch([
+      { event: 'model_streaming', run_id: 'run-1', event_id: 'e2', seq: 2, turn_id: 't1', message_id: 'm1', delta: { Text: 'A' } },
+      { event: 'model_streaming', run_id: 'run-1', event_id: 'e3', seq: 3, turn_id: 't1', message_id: 'm1', delta: { Text: 'B' } },
+    ]));
+
+    const turn = state.entries.s1.find((entry) => entry.type === 'turn');
+    const text = turn?.blocks?.filter((block) => block.type === 'assistant').map((block) => block.text).join('');
+    expect(text).toBe('AB');
+    expect(state.lastSeqByRun['run-1']).toBe(3);
+    expect(state.pendingGapByRun['run-1']).toBeUndefined();
   });
 
   it('toolApprovalResponded updates the targeted session even when another is active', async () => {
@@ -283,33 +304,43 @@ describe('chat reducer session routing', () => {
     expect(state.entries.s1.some((e) => e.promptId === 'p-live')).toBe(true);
     expect(state.entries.s1.some((e) => e.type === 'turn' && e.blocks?.some((b) => b.type === 'assistant' && b.text === 'live answer'))).toBe(true);
   });
-});
 
-describe('chat serialization', () => {
-  it('serializes thinking blocks using parseable think tags', async () => {
-    const { entriesToMessages } = await loadModules();
-    const messages = entriesToMessages(
-      [
-        { id: 'user-1', type: 'user', promptId: 'p1', text: 'question' },
-        {
-          id: 'turn-1',
-          type: 'turn',
-          promptId: 'p1',
-          blocks: [
-            { type: 'thinking', text: 'reasoning', isStreaming: false },
-            { type: 'assistant', text: 'answer', isStreaming: false },
+  it('restores every canonical model and tool iteration in prompt order', async () => {
+    const { reducer } = await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, {
+      type: 'project/resumeSession/fulfilled',
+      payload: {
+        meta: { id: 's1' },
+        messages: [],
+        prompts: [{
+          id: 'p1', session_id: 's1', turn_index: 0, model: 'm', status: 'completed',
+          token_usage: {}, started_at: null, ended_at: null, created_at: '',
+          messages: [
+            { role: 'user', content: 'task' },
+            { role: 'assistant', content: 'checking', tool_calls: [{ id: 'c1', type: 'function', function: { name: 'read_file', arguments: '{"path":"a"}' } }] },
+            { role: 'tool', content: 'A', tool_call_id: 'c1', name: 'read_file' },
+            { role: 'assistant', content: 'searching', tool_calls: [{ id: 'c2', type: 'function', function: { name: 'grep', arguments: '{"pattern":"x"}' } }] },
+            { role: 'tool', content: 'B', tool_call_id: 'c2', name: 'grep' },
+            { role: 'assistant', content: 'done' },
           ],
-        },
-      ],
-      {},
-    );
+        }],
+      },
+      meta: { arg: 's1' },
+    });
 
-    expect(messages[1].content).toBe('<think>reasoning</think>\nanswer');
+    const turn = state.entries.s1.find((entry) => entry.type === 'turn');
+    expect(turn?.blocks?.map((block) => block.type)).toEqual([
+      'assistant', 'tool', 'assistant', 'tool', 'assistant',
+    ]);
+    const tools = turn?.blocks?.filter((block) => block.type === 'tool') ?? [];
+    expect(tools[0].type === 'tool' && tools[0].result).toBe('A');
+    expect(tools[1].type === 'tool' && tools[1].result).toBe('B');
   });
 });
 
-describe('recovery error events', () => {
-  it('keeps processing true when recovery Error events arrive mid-run', async () => {
+describe('runtime notice and error events', () => {
+  it('keeps processing true when recoverable Notice events arrive mid-run', async () => {
     const { reducer, userMessageSent, runIdSet, agentEventsBatch } = await loadModules();
     let state = reducer(undefined, { type: '@@INIT' });
     state = reducer(state, userMessageSent({ text: 'hello', model: 'm1', sessionId: 's1' }));
@@ -321,9 +352,12 @@ describe('recovery error events', () => {
       agentEventsBatch([
         { event: 'turn_started', run_id: 'run-1', turn_id: 'turn-1', index: 0 },
         {
-          event: 'error',
+          event: 'notice',
           run_id: 'run-1',
           turn_id: 'turn-1',
+          code: 'model_retry',
+          severity: 'warning',
+          recoverable: true,
           message: 'retrying model call after 500ms',
         },
       ]),
@@ -332,7 +366,7 @@ describe('recovery error events', () => {
     expect(state.processing.s1).toBe(true);
     const turn = state.entries.s1.find((e) => e.type === 'turn');
     expect(turn?.endTime).toBeUndefined();
-    expect(turn?.blocks?.some((b) => b.type === 'error' && b.text.includes('retrying'))).toBe(true);
+    expect(turn?.blocks?.some((b) => b.type === 'notice' && b.text.includes('retrying'))).toBe(true);
   });
 
   it('clears processing on terminal Error events', async () => {

@@ -219,6 +219,17 @@ impl Storage {
             CREATE INDEX IF NOT EXISTS idx_sessions_archived ON sessions(archived);
             CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 
+            CREATE TABLE IF NOT EXISTS subagent_lineage (
+                session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+                parent_session_id TEXT NOT NULL DEFAULT '',
+                parent_run_id TEXT NOT NULL DEFAULT '',
+                parent_call_id TEXT NOT NULL DEFAULT '',
+                child_run_id TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_subagent_lineage_parent_run
+                ON subagent_lineage(parent_run_id, parent_call_id);
+
             CREATE TABLE IF NOT EXISTS prompts (
                 id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,

@@ -150,6 +150,16 @@ impl RunManager {
         None
     }
 
+    /// Canonical raw transcript for one Run. Dynamic context segments are not
+    /// included, so the result is safe to persist as future model history.
+    pub async fn context_snapshot_for_run(&self, run_id: &str) -> Option<Vec<Message>> {
+        self.runs
+            .lock()
+            .await
+            .get(run_id)
+            .map(RunHandle::context_snapshot)
+    }
+
     /// The current agent mode. New Runs inherit this mode.
     pub fn mode(&self) -> AgentMode {
         self.brain.mode()
@@ -199,6 +209,9 @@ impl RunManager {
 
         // Create channels
         let (cmd_tx, cmd_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
+        // Producers write to one ordered mailbox. The writer persists each
+        // envelope before publishing it to the lossy UI broadcast.
+        let (producer_tx, mut producer_rx) = mpsc::unbounded_channel::<Envelope>();
         let (event_tx, _event_rx) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
 
         // Shared state for external querying
@@ -221,7 +234,7 @@ impl RunManager {
             self.brain.clone(),
             model_config,
             cmd_rx,
-            event_tx.clone(),
+            producer_tx.clone(),
             seq.clone(),
             working_dir,
             history,
@@ -238,8 +251,52 @@ impl RunManager {
         // cancellation without waiting for the next poll_commands() cycle.
         let cancel_token = run.cancel_token();
 
-        // Emit RunCreated event (seq 0 — the bootstrap event).
-        let _ = event_tx.send(Envelope {
+        let writer_run_id = run_id.clone();
+        let writer_broadcast = event_tx.clone();
+        let writer_cancel = cancel_token.clone();
+        let writer_state = shared_state.clone();
+        let writer_handle = tokio::spawn(async move {
+            let mut event_log = EventLog::new(&writer_run_id, &default_runs_dir());
+            let mut next_seq = 0u64;
+            while let Some(mut env) = producer_rx.recv().await {
+                // Arrival at this single mailbox defines lifecycle order. This
+                // closes the fetch_add/send scheduling race across producers.
+                env.seq = next_seq;
+                next_seq += 1;
+                let is_terminal = matches!(
+                    env.event,
+                    RunEvent::RunCompleted { .. }
+                        | RunEvent::RunCancelled { .. }
+                        | RunEvent::RunFailed { .. }
+                );
+                if let Err(error) = event_log.append(env.clone()) {
+                    tracing::error!(run_id = %writer_run_id, %error, "event writer failed; stopping publication");
+                    writer_cancel.cancel();
+                    *writer_state.write() = RunState::Failed;
+                    let _ = writer_broadcast.send(Envelope {
+                        seq: next_seq,
+                        event_id: uuid::Uuid::new_v4().to_string(),
+                        run_id: writer_run_id.clone(),
+                        session_id: env.session_id.clone(),
+                        turn_id: env.turn_id.clone(),
+                        parent_call_id: env.parent_call_id.clone(),
+                        ts: chrono::Utc::now(),
+                        event: RunEvent::RunFailed {
+                            error: format!("event log persistence failed: {error}"),
+                        },
+                    });
+                    break;
+                }
+                let _ = writer_broadcast.send(env);
+                if is_terminal {
+                    break;
+                }
+            }
+        });
+
+        // Emit RunCreated through the writer, so it is always present in the
+        // durable trace even when no frontend subscriber exists yet.
+        let _ = producer_tx.send(Envelope {
             seq: seq.fetch_add(1, Ordering::Relaxed),
             event_id: uuid::Uuid::new_v4().to_string(),
             run_id: run_id.clone(),
@@ -268,7 +325,7 @@ impl RunManager {
                         crate::memory::diff_preference::DiffPreferenceEngine::spawn_analysis(
                             client,
                             diffs,
-                            event_tx.clone(),
+                            producer_tx.clone(),
                             seq.clone(),
                             run_id.clone(),
                         );
@@ -282,40 +339,9 @@ impl RunManager {
         let user_input_owned = user_input.to_string();
         let state_clone = shared_state.clone();
         let event_tx_clone = event_tx.clone();
-        let log_run_id = run_id.clone();
-        let seq_for_reflect = seq.clone();
-        let event_tx_for_log = event_tx.clone();
         let brain_for_reflect = self.brain.clone();
         let reflect_run_id = run_id.clone();
         let join_handle = tokio::spawn(async move {
-            // Logging subscriber: persists every Envelope to JSONL so that
-            // replay/resync works. Runs independently of the Run task, ensuring
-            // streaming events (which bypass Run::emit) are also logged (B3).
-            let mut log_rx = event_tx_for_log.subscribe();
-            let mut event_log = EventLog::new(&log_run_id, &default_runs_dir());
-            let log_task = tokio::spawn(async move {
-                loop {
-                    match log_rx.recv().await {
-                        Ok(env) => {
-                            let is_terminal = matches!(
-                                env.event,
-                                RunEvent::RunCompleted { .. }
-                                    | RunEvent::RunCancelled { .. }
-                                    | RunEvent::RunFailed { .. }
-                            );
-                            event_log.append(env);
-                            if is_terminal {
-                                break;
-                            }
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            tracing::warn!(run_id = %log_run_id, lagged = n, "event log subscriber lagged");
-                            continue;
-                        }
-                    }
-                }
-            });
             // We need to update shared_state as the Run progresses.
             // The Run owns its state internally, so we use a wrapper that
             // mirrors state changes via events.
@@ -341,8 +367,8 @@ impl RunManager {
             // The state mirror task will exit when it sees the terminal event.
             // Give it a moment to process the last event.
             let _ = state_task.await;
-            // Wait for the logging subscriber to flush remaining events.
-            let _ = log_task.await;
+            // Wait for the single writer to durably append the terminal event.
+            let _ = writer_handle.await;
 
             // Offline reflection: analyze the Run's event log for improvement
             // suggestions. Only runs if the Brain has a Reflector configured.
@@ -367,23 +393,7 @@ impl RunManager {
                                         suggestion = %sug.id,
                                         "reflector suggestion needs approval: {diff}"
                                     );
-                                    let _ = event_tx_clone.send(Envelope {
-                                        seq: seq_for_reflect.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-                                        event_id: uuid::Uuid::new_v4().to_string(),
-                                        run_id: reflect_run_id.clone(),
-                                        session_id: None,
-                                        turn_id: None,
-                                        parent_call_id: None,
-                                        ts: chrono::Utc::now(),
-                                        event: RunEvent::ApprovalRequired {
-                                            subagent_id: None,
-                                            prompt_id: sug.id.clone(),
-                                            tool_name: "reflector".into(),
-                                            tool_input: serde_json::json!({ "diff": diff }),
-                                            danger_level: "low".into(),
-                                            explanation: format!("Reflector suggests: {}", sug.rationale),
-                                        },
-                                    });
+                                    tracing::info!(suggestion = %sug.id, %diff, "reflector approval queued outside completed Run lifecycle");
                                 }
                                 Ok(crate::reflector::SuggestionAction::Forbidden) => {
                                     tracing::debug!(

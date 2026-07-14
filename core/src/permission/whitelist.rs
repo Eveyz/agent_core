@@ -62,30 +62,31 @@ impl WhitelistManager {
         path: Option<&str>,
         host: Option<&str>,
     ) -> Option<WhitelistEntry> {
+        self.query_scoped(
+            tool_name,
+            command,
+            &path.into_iter().collect::<Vec<_>>(),
+            host,
+            crate::permission::DangerLevel::ReadOnly,
+        )
+    }
+
+    pub fn query_scoped(
+        &mut self,
+        tool_name: &str,
+        command: Option<&str>,
+        paths: &[&str],
+        host: Option<&str>,
+        danger: crate::permission::DangerLevel,
+    ) -> Option<WhitelistEntry> {
         // Purge expired first
         self.purge_expired();
 
         // Find matching entry index
         let match_idx = self.entries.iter().position(|entry| {
-            if !entry.pattern.matches_tool(tool_name) {
-                return false;
-            }
-            if let Some(cmd) = command {
-                if !entry.pattern.matches_command(cmd) {
-                    return false;
-                }
-            }
-            if let Some(p) = path {
-                if !entry.pattern.matches_path(p) {
-                    return false;
-                }
-            }
-            if let Some(h) = host {
-                if !entry.pattern.matches_host(h) {
-                    return false;
-                }
-            }
-            true
+            entry
+                .pattern
+                .matches_invocation(tool_name, command, paths, host, danger)
         });
 
         if let Some(idx) = match_idx {

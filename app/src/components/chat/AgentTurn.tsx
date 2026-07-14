@@ -7,7 +7,6 @@ import AlertTriangleIcon from 'lucide-react/dist/esm/icons/alert-triangle.mjs';
 import BanIcon from 'lucide-react/dist/esm/icons/ban.mjs';
 import FileCheckIcon from 'lucide-react/dist/esm/icons/file-check.mjs';
 import type { ChatEntry, TurnBlock } from '../../features/chat/chatSlice';
-import { isRecoveryMessage } from '../../features/chat/utils';
 import type { RootState } from '../../store';
 import { formatTime } from '../../utils/format';
 import { MarkdownContent } from './MarkdownContent';
@@ -433,15 +432,14 @@ export const AgentTurnUI = memo(function AgentTurnUI({
                   />
                 )
               )
+            ) : item.type === 'notice' ? (
+              <div className="warning-block-style-simple">
+                <AlertTriangleIcon size={16} style={{ flexShrink: 0 }} />
+                <span style={{ lineHeight: '1.4' }}>{translateRecoveryMessage(item.data.text, t)}</span>
+              </div>
             ) : item.type === 'error' ? (
               (() => {
                 const text = item.data.text;
-                const isRecovery = isRecoveryMessage(text);
-
-                if (isRecovery && idx < renderItems.length - 1) {
-                  return null;
-                }
-
                 if (!collapsed || idx === renderItems.length - 1) {
                   if (
                     text.includes("maximum number of steps") ||
@@ -477,15 +475,6 @@ export const AgentTurnUI = memo(function AgentTurnUI({
                             <span className="interrupted-subtitle">{t('chat.turn.interruptedSubtitle')}</span>
                           </div>
                         </div>
-                      </div>
-                    );
-                  }
-
-                  if (isRecovery) {
-                    return (
-                      <div className="warning-block-style-simple">
-                        <AlertTriangleIcon size={16} style={{ flexShrink: 0 }} />
-                        <span style={{ lineHeight: '1.4' }}>{translateRecoveryMessage(text, t)}</span>
                       </div>
                     );
                   }

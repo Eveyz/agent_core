@@ -5,10 +5,14 @@ export type AssistantBlock = Extract<TurnBlock, { type: 'assistant' }>;
 export type ApprovalBlock = Extract<TurnBlock, { type: 'approval' }>;
 export type ClarificationBlock = Extract<TurnBlock, { type: 'clarification' }>;
 export type SubagentRefBlock = Extract<TurnBlock, { type: 'subagent_ref' }>;
+export type ToolBlock = Extract<TurnBlock, { type: 'tool' }>;
+export type SubagentToolBlock = ToolBlock & {
+  name: 'subagent' | 'subagents' | 'invoke_subagent';
+};
 
 const SUBAGENT_TOOL_NAMES = ['subagent', 'subagents', 'invoke_subagent'];
 
-export function isSubagentTool(b: TurnBlock): boolean {
+export function isSubagentTool(b: TurnBlock): b is SubagentToolBlock {
   return b.type === 'tool' && SUBAGENT_TOOL_NAMES.includes(b.name);
 }
 
@@ -52,6 +56,7 @@ export interface TurnIteration {
 export type TurnRenderItem =
   | { type: 'iteration'; data: TurnIteration }
   | { type: 'assistant'; data: AssistantBlock }
+  | { type: 'notice'; data: Extract<TurnBlock, { type: 'notice' }> }
   | { type: 'error'; data: Extract<TurnBlock, { type: 'error' }> };
 
 export function groupBlocksIntoItems(blocks: TurnBlock[]): TurnRenderItem[] {
@@ -75,6 +80,12 @@ export function groupBlocksIntoItems(blocks: TurnBlock[]): TurnRenderItem[] {
     if (b.type === 'error') {
       pushCurrentIter();
       items.push({ type: 'error', data: b });
+      return;
+    }
+
+    if (b.type === 'notice') {
+      pushCurrentIter();
+      items.push({ type: 'notice', data: b });
       return;
     }
 

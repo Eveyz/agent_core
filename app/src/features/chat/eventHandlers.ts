@@ -16,7 +16,6 @@ import {
   appendDeltaToBlocks,
   truncateResult,
   stringifyResult,
-  isRecoveryMessage,
 } from './utils';
 import type { AnyBlock } from './utils';
 
@@ -336,9 +335,10 @@ export function handleCacheInfo(state: ChatState, sessionId: string, hitRate: nu
 
 export function handleCacheSummary(
   state: ChatState,
+  runId: string,
   metrics: { total_turns: number; total_hit_tokens: number; total_miss_tokens: number; turns_with_hits: number; cumulative_hit_rate: number }
 ): void {
-  state.cacheMetrics = {
+  state.cacheMetricsByRun[runId] = {
     total_turns: metrics.total_turns,
     total_hit_tokens: metrics.total_hit_tokens,
     total_miss_tokens: metrics.total_miss_tokens,
@@ -477,25 +477,18 @@ export function handleAgentEnd(state: ChatState, sessionId: string): void {
 }
 
 export function handleError(state: ChatState, sessionId: string, errorText: string): void {
-  // Recovery notices reuse the Error event channel but the run is still
-  // alive — keep the stop button / sidebar spinner until a real terminal event.
-  const recovery = isRecoveryMessage(errorText);
-  if (!recovery) {
-    state.processing[sessionId] = false;
-  }
+  state.processing[sessionId] = false;
   const turn = getActiveTurn(state, sessionId);
   if (turn && turn.type === 'turn' && turn.blocks) {
     closeStreamingBlock(turn.blocks);
-    if (!recovery) {
-      stopDanglingSubagents(state.subagents[sessionId], turn);
-    }
+    stopDanglingSubagents(state.subagents[sessionId], turn);
     const lastBlock = turn.blocks[turn.blocks.length - 1];
     if (lastBlock && lastBlock.type === 'error') {
       lastBlock.text = errorText;
       return;
     }
     turn.blocks.push({ type: 'error', text: errorText });
-  } else if (!recovery) {
+  } else {
     state.entries[sessionId].push({
       id: `error-${Date.now()}`,
       type: 'turn',
@@ -505,6 +498,20 @@ export function handleError(state: ChatState, sessionId: string, errorText: stri
       startTime: Date.now(),
       endTime: Date.now(),
     });
+  }
+}
+
+export function handleNotice(
+  state: ChatState,
+  sessionId: string,
+  message: string,
+  code?: string,
+  severity?: string,
+): void {
+  const turn = getActiveTurn(state, sessionId);
+  if (turn && turn.type === 'turn' && turn.blocks) {
+    closeStreamingBlock(turn.blocks);
+    turn.blocks.push({ type: 'notice', text: message, code, severity });
   }
 }
 
@@ -733,20 +740,58 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
   (state.isResuming ??= {})[sessionId] ??= false;
   (state._pendingTurnId ??= {})[sessionId] ??= undefined;
 
-  // Set _pendingTurnId BEFORE lifecycle handlers that may call handleError/getActiveTurn
-  state._pendingTurnId[sessionId] = ev.turn_id;
+  (state.appliedEventIdsByRun ??= {})[ev.run_id] ??= {};
+  (state.pendingEventsByRun ??= {})[ev.run_id] ??= {};
+  const trackedRuns = Object.keys(state.appliedEventIdsByRun);
+  if (trackedRuns.length > 128) {
+    for (const oldRunId of trackedRuns.slice(0, trackedRuns.length - 128)) {
+      delete state.appliedEventIdsByRun[oldRunId];
+      delete state.pendingEventsByRun[oldRunId];
+      delete state.pendingGapByRun[oldRunId];
+      delete state.resyncingByRun[oldRunId];
+      delete state.cacheMetricsByRun[oldRunId];
+      delete state.lastSeqByRun[oldRunId];
+      delete state.runIdToSessionId[oldRunId];
+    }
+  }
 
-  // Seq gap detection
-  if (typeof ev.seq === 'number' && typeof ev.run_id === 'string') {
+  // Events are folded exactly once and only in contiguous sequence order.
+  // Live events beyond a gap wait in the per-run reorder buffer until replay
+  // supplies the missing sequence.
+  if (ev.event_id && state.appliedEventIdsByRun[ev.run_id][ev.event_id]) {
+    return null;
+  }
+  if (typeof ev.seq === 'number') {
     const prev = state.lastSeqByRun[ev.run_id];
+    if (prev !== undefined && ev.seq <= prev) {
+      return null;
+    }
     if (prev !== undefined && ev.seq > prev + 1) {
-      console.warn(
-        `[agent-event] gap detected for run ${ev.run_id}: expected ${prev + 1}, got ${ev.seq} (${ev.seq - prev - 1} missing); triggering resync`
-      );
-      state._pendingGap = { runId: ev.run_id, fromSeq: prev };
+      state.pendingEventsByRun[ev.run_id][ev.seq] = ev;
+      const pendingSeqs = Object.keys(state.pendingEventsByRun[ev.run_id])
+        .map(Number)
+        .sort((a, b) => a - b);
+      while (pendingSeqs.length > 512) {
+        const seq = pendingSeqs.pop();
+        if (seq !== undefined) delete state.pendingEventsByRun[ev.run_id][seq];
+      }
+      state.pendingGapByRun[ev.run_id] = { fromSeq: prev, toSeq: ev.seq };
+      return null;
     }
     state.lastSeqByRun[ev.run_id] = ev.seq;
   }
+  if (ev.event_id) {
+    state.appliedEventIdsByRun[ev.run_id][ev.event_id] = true;
+    const appliedIds = Object.keys(state.appliedEventIdsByRun[ev.run_id]);
+    if (appliedIds.length > 4096) {
+      for (const oldId of appliedIds.slice(0, appliedIds.length - 4096)) {
+        delete state.appliedEventIdsByRun[ev.run_id][oldId];
+      }
+    }
+  }
+
+  // Set _pendingTurnId BEFORE lifecycle handlers that may call handleError/getActiveTurn
+  state._pendingTurnId[sessionId] = ev.turn_id;
 
   // Run lifecycle events
   if (ev.event === 'state_changed' && ev.to) {
@@ -786,7 +831,7 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
       handleCacheInfo(state, sessionId, ev.hit_rate ?? -1.0);
       break;
     case 'cache_summary':
-      handleCacheSummary(state, {
+      handleCacheSummary(state, ev.run_id, {
         total_turns: ev.total_turns ?? 0,
         total_hit_tokens: ev.total_hit_tokens ?? 0,
         total_miss_tokens: ev.total_miss_tokens ?? 0,
@@ -865,6 +910,15 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
     case 'error':
       handleError(state, sessionId, ((ev as unknown as Record<string, unknown>).message as string | undefined) ?? 'unknown error');
       break;
+    case 'notice':
+      handleNotice(
+        state,
+        sessionId,
+        typeof ev.message === 'string' ? ev.message : ev.code ?? 'runtime notice',
+        ev.code,
+        ev.severity,
+      );
+      break;
     case 'subagent_started':
       handleSubagentStart(state, sessionId, ev.subagent_id ?? '', ev.parent_call_id, ev.role_name, ev.task ?? '');
       break;
@@ -927,6 +981,19 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
     }
     default:
       break;
+  }
+
+  const lastApplied = state.lastSeqByRun[ev.run_id];
+  if (lastApplied !== undefined) {
+    const next = state.pendingEventsByRun[ev.run_id]?.[lastApplied + 1];
+    if (next) {
+      delete state.pendingEventsByRun[ev.run_id][lastApplied + 1];
+      processSingleEvent(state, next as unknown as Record<string, unknown>);
+    }
+    const gap = state.pendingGapByRun[ev.run_id];
+    if (gap && (state.lastSeqByRun[ev.run_id] ?? -1) >= gap.toSeq) {
+      delete state.pendingGapByRun[ev.run_id];
+    }
   }
   return sessionId;
 }

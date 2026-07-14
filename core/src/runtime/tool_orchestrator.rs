@@ -31,6 +31,7 @@ pub struct ToolOrchestrator<'a> {
     /// Per-Run clarification resolver for `ask_user`.
     pub input_resolver: Option<InputResolver>,
     pub session_id: Option<String>,
+    pub run_id: Option<String>,
     pub working_dir: Option<String>,
 }
 
@@ -84,24 +85,22 @@ impl<'a> ToolOrchestrator<'a> {
             // also reused below to scope any approval the user grants, so that
             // e.g. allowing one `shell` command does not allow every command.
             let command = args.get("command").and_then(|v| v.as_str());
-            let path = args
-                .get("path")
-                .or(args.get("file_path"))
-                .or(args.get("file"))
-                .or(args.get("working_dir"))
-                .and_then(|v| v.as_str());
-            let host = args
+            let paths = invocation_paths(&args);
+            let path_refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+            let raw_host = args
                 .get("url")
                 .or(args.get("host"))
                 .and_then(|v| v.as_str());
+            let host = raw_host.map(normalize_host);
 
             let perm_t0 = Instant::now();
-            let decision = self.permission_policy.check(
+            let decision = self.permission_policy.check_scoped(
                 &call.function.name,
                 &call.function.arguments,
                 command,
-                path,
-                host,
+                &path_refs,
+                host.as_deref(),
+                self.working_dir.as_deref(),
             );
             let perm_check_ms = perm_t0.elapsed().as_millis() as u64;
 
@@ -136,9 +135,9 @@ impl<'a> ToolOrchestrator<'a> {
                         resolver.insert(prompt.prompt_id.clone(), tx);
                     } else {
                         // Fallback: global map (old Agent path)
-                        let pending_arc = crate::permission::global_pending_approvals();
+                        let pending_arc = crate::permission::pending_subagent_approvals();
                         let mut pending = pending_arc.lock();
-                        pending.insert(prompt.prompt_id.clone(), tx);
+                        pending.insert(scoped_approval_key(self.run_id.as_deref(), &prompt.prompt_id), tx);
                     }
 
                     // Emit approval event
@@ -192,8 +191,8 @@ impl<'a> ToolOrchestrator<'a> {
                                                 pattern: scoped_pattern(
                                                     &call.function.name,
                                                     command,
-                                                    path,
-                                                    host,
+                                                    paths.first().map(String::as_str),
+                                                    host.as_deref(),
                                                 ),
                                                 level: crate::permission::ApprovalLevel::Deny,
                                             },
@@ -211,8 +210,8 @@ impl<'a> ToolOrchestrator<'a> {
                                             scoped_pattern(
                                                 &call.function.name,
                                                 command,
-                                                path,
-                                                host,
+                                                paths.first().map(String::as_str),
+                                                host.as_deref(),
                                             ),
                                             ApprovalScope::Session,
                                         ),
@@ -232,8 +231,8 @@ impl<'a> ToolOrchestrator<'a> {
                                             scoped_pattern(
                                                 &call.function.name,
                                                 command,
-                                                path,
-                                                host,
+                                                paths.first().map(String::as_str),
+                                                host.as_deref(),
                                             ),
                                             ApprovalScope::Duration(dur_str),
                                         ),
@@ -245,8 +244,8 @@ impl<'a> ToolOrchestrator<'a> {
                                             scoped_pattern(
                                                 &call.function.name,
                                                 command,
-                                                path,
-                                                host,
+                                                paths.first().map(String::as_str),
+                                                host.as_deref(),
                                             ),
                                             ApprovalScope::Persistent,
                                         ),
@@ -257,9 +256,9 @@ impl<'a> ToolOrchestrator<'a> {
                             if let Some(ref resolver) = self.approval_resolver {
                                 resolver.remove(&prompt.prompt_id);
                             } else {
-                                let pending_arc = crate::permission::global_pending_approvals();
+                                let pending_arc = crate::permission::pending_subagent_approvals();
                                 let mut pending = pending_arc.lock();
-                                pending.remove(&prompt.prompt_id);
+                                pending.remove(&scoped_approval_key(self.run_id.as_deref(), &prompt.prompt_id));
                             }
                         }
                         Err(_) => {
@@ -267,9 +266,9 @@ impl<'a> ToolOrchestrator<'a> {
                             if let Some(ref resolver) = self.approval_resolver {
                                 resolver.remove(&prompt.prompt_id);
                             } else {
-                                let pending_arc = crate::permission::global_pending_approvals();
+                                let pending_arc = crate::permission::pending_subagent_approvals();
                                 let mut pending = pending_arc.lock();
-                                pending.remove(&prompt.prompt_id);
+                                pending.remove(&scoped_approval_key(self.run_id.as_deref(), &prompt.prompt_id));
                             }
                             if self.cancel_token.is_cancelled() {
                                 results[i] = "Aborted".to_string();
@@ -591,10 +590,21 @@ impl<'a> ToolOrchestrator<'a> {
                 obj.insert("_session_id".to_string(), serde_json::Value::String(sid.clone()));
             }
         }
+        if let Some(ref run_id) = self.run_id {
+            if let Some(obj) = modified_args.as_object_mut() {
+                obj.insert("_parent_run_id".to_string(), Value::String(run_id.clone()));
+            }
+        }
         if let Some(ref wd) = self.working_dir {
             if let Some(obj) = modified_args.as_object_mut() {
                 obj.insert("_working_dir".to_string(), serde_json::Value::String(wd.clone()));
             }
+        }
+        if let Some(obj) = modified_args.as_object_mut() {
+            obj.insert(
+                "_parent_call_id".to_string(),
+                serde_json::Value::String(tool_call_id.to_string()),
+            );
         }
 
         // Create event channel for tools that emit structured events (e.g. subagent) and streaming updates.
@@ -685,4 +695,94 @@ fn scoped_pattern(
         pattern = pattern.with_hosts(vec![h.to_string()]);
     }
     pattern
+}
+
+/// Extract every filesystem target exposed by the built-in tool schemas. A
+/// permission decision is only as strong as its argument extraction: checking
+/// just the first source path lets copy/move-style tools smuggle a second path.
+fn invocation_paths(args: &Value) -> Vec<String> {
+    const PATH_KEYS: &[&str] = &[
+        "path",
+        "file_path",
+        "file",
+        "working_dir",
+        "cwd",
+        "source",
+        "destination",
+        "src",
+        "dst",
+    ];
+    let mut paths = Vec::new();
+    fn visit(value: &Value, path_keys: &[&str], paths: &mut Vec<String>) {
+        match value {
+            Value::Object(object) => {
+                for (key, value) in object {
+                    if path_keys.contains(&key.as_str()) {
+                        match value {
+                            Value::String(path) => paths.push(path.clone()),
+                            Value::Array(values) => paths.extend(
+                                values.iter().filter_map(Value::as_str).map(ToOwned::to_owned),
+                            ),
+                            _ => {}
+                        }
+                    }
+                    visit(value, path_keys, paths);
+                }
+            }
+            Value::Array(values) => {
+                for value in values {
+                    visit(value, path_keys, paths);
+                }
+            }
+            _ => {}
+        }
+    }
+    visit(args, PATH_KEYS, &mut paths);
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn normalize_host(value: &str) -> String {
+    url::Url::parse(value)
+        .ok()
+        .and_then(|url| url.host_str().map(ToOwned::to_owned))
+        .unwrap_or_else(|| value.trim().to_ascii_lowercase())
+}
+
+fn scoped_approval_key(run_id: Option<&str>, prompt_id: &str) -> String {
+    match run_id {
+        Some(run_id) => format!("{run_id}:{prompt_id}"),
+        None => prompt_id.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+
+    #[test]
+    fn extracts_all_nested_invocation_paths() {
+        let args = serde_json::json!({
+            "source": "a.txt",
+            "operations": [{ "destination": "b.txt" }, { "paths": ["ignored"] }],
+            "nested": { "file_path": ["c.txt", "d.txt"] }
+        });
+        assert_eq!(invocation_paths(&args), vec!["a.txt", "b.txt", "c.txt", "d.txt"]);
+    }
+
+    #[test]
+    fn normalizes_urls_to_hosts() {
+        assert_eq!(normalize_host("https://EXAMPLE.com/a?q=1"), "example.com");
+        assert_eq!(normalize_host("LOCALHOST"), "localhost");
+    }
+
+    #[test]
+    fn scopes_subagent_approval_waiters_to_the_parent_run() {
+        assert_eq!(scoped_approval_key(Some("run-a"), "prompt-1"), "run-a:prompt-1");
+        assert_ne!(
+            scoped_approval_key(Some("run-a"), "prompt-1"),
+            scoped_approval_key(Some("run-b"), "prompt-1")
+        );
+    }
 }

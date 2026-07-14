@@ -14,6 +14,7 @@ pub mod storage;
 
 use anyhow::{Context, Result};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use self::archival::ArchivalMemory;
 use self::block::CoreMemory;
@@ -41,6 +42,9 @@ pub struct MemoryManager {
     max_index_entries: Option<usize>,
     /// FIFO queue of inserted record IDs for eviction.
     insertion_order: std::cell::RefCell<std::collections::VecDeque<String>>,
+    /// Monotonic across Runs; per-Run turn indexes restart at zero and must not
+    /// drive global maintenance scheduling.
+    completed_turns: AtomicU64,
 }
 
 impl MemoryManager {
@@ -75,6 +79,7 @@ impl MemoryManager {
 
         let archival = ArchivalMemory::new(storage.clone(), embedding_model.clone());
         let consolidator = MemoryConsolidator::new(storage, embedding_model);
+        let completed_turns = persisted_completed_turns(&recall);
 
         let session_id = uuid::Uuid::new_v4().to_string();
 
@@ -88,6 +93,7 @@ impl MemoryManager {
             hnsw,
             max_index_entries: Some(10_000),
             insertion_order: std::cell::RefCell::new(std::collections::VecDeque::new()),
+            completed_turns: AtomicU64::new(completed_turns),
         })
     }
 
@@ -121,6 +127,7 @@ impl MemoryManager {
         };
         let archival = ArchivalMemory::without_embedding(storage.clone());
         let consolidator = MemoryConsolidator::without_embedding(storage);
+        let completed_turns = persisted_completed_turns(&recall);
 
         let session_id = uuid::Uuid::new_v4().to_string();
 
@@ -134,6 +141,7 @@ impl MemoryManager {
             hnsw,
             max_index_entries: Some(10_000),
             insertion_order: std::cell::RefCell::new(std::collections::VecDeque::new()),
+            completed_turns: AtomicU64::new(completed_turns),
         })
     }
 
@@ -155,6 +163,10 @@ impl MemoryManager {
     /// / `search_conversation_precomputed` to keep the lock held briefly.
     pub fn embedding_model(&self) -> Option<&Arc<EmbeddingModel>> {
         self.recall.embedding_model()
+    }
+
+    pub fn record_completed_turn(&self) -> u64 {
+        self.completed_turns.fetch_add(1, Ordering::Relaxed) + 1
     }
 
     pub fn archival(&self) -> &ArchivalMemory {
@@ -389,6 +401,26 @@ impl MemoryManager {
         }
         // Fallback: pass through to recall's vector search
         self.recall.search_by_vector(query_emb, query, top_k)
+    }
+
+    pub fn search_conversation_for_session_precomputed(
+        &self,
+        session_id: &str,
+        query_emb: &[f32],
+        query: &str,
+        top_k: usize,
+    ) -> Result<Vec<recall::RecallRecord>> {
+        self.recall
+            .search_by_vector_for_session(session_id, query_emb, query, top_k)
+    }
+
+    pub fn search_conversation_for_session_keyword(
+        &self,
+        session_id: &str,
+        query: &str,
+        top_k: usize,
+    ) -> Result<Vec<recall::RecallRecord>> {
+        self.recall.search_by_keyword_for_session(session_id, query, top_k)
     }
 
     /// Pure BM25 keyword search — no embedding model needed.
@@ -872,6 +904,18 @@ impl MemoryManager {
 
         Ok(results)
     }
+}
+
+fn persisted_completed_turns(recall: &RecallMemory) -> u64 {
+    recall
+        .storage_conn()
+        .query_row(
+            "SELECT COUNT(*) FROM recall_memory WHERE role = 'assistant'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        .max(0) as u64
 }
 
 #[cfg(test)]

@@ -126,6 +126,7 @@ pub struct Subagent {
     /// The agent definition id this subagent was built from (for memory keying).
     agent_id: Option<String>,
     pub session_id: Option<String>,
+    pub parent_run_id: Option<String>,
     /// Optional cancel token — propagated from the parent Run so canceling the
     /// parent also stops the subagent. When `None`, a new token is created.
     pub cancel_token: Option<CancellationToken>,
@@ -166,6 +167,7 @@ impl Subagent {
             memory_store: None,
             agent_id: None,
             session_id: None,
+            parent_run_id: None,
             cancel_token: None,
             supervisor: None,
         }
@@ -473,6 +475,7 @@ impl Subagent {
                     approval_resolver: None,
                     input_resolver: None, // ask_user only on main Run (v1)
                     session_id: self.session_id.clone(),
+                    run_id: self.parent_run_id.clone().or_else(|| Some(self.id.clone())),
                     working_dir: self.config.working_dir.as_ref().map(|p| p.to_string_lossy().to_string()),
                 };
 
@@ -777,12 +780,12 @@ impl Subagent {
     /// Consume the subagent and return its conversation messages.
     /// Useful for saving the subagent's session.
     pub fn into_messages(self) -> Vec<Message> {
-        self.context.messages()
+        self.context.raw_messages().to_vec()
     }
 
     /// Get a reference to the subagent's context messages (non-consuming).
     pub fn messages(&self) -> Vec<Message> {
-        self.context.messages()
+        self.context.raw_messages().to_vec()
     }
 }
 

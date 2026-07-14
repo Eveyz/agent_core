@@ -12,6 +12,19 @@ export default defineConfig(async () => ({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined;
+          if (id.includes('/react/') || id.includes('/react-dom/')) return 'react-vendor';
+          if (id.includes('/@reduxjs/') || id.includes('/react-redux/')) return 'state-vendor';
+          if (id.includes('/react-markdown/') || id.includes('/remark-') || id.includes('/rehype-')) return 'markdown-vendor';
+          return undefined;
+        },
+      },
+    },
+  },
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,

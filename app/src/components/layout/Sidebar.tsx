@@ -21,7 +21,6 @@ import {
 } from "../../features/project/projectSlice";
 import { selectIsResumingActive } from "../../features/chat/chatSlice";
 import { useAppDispatch } from "../../hooks/useAppDispatch";
-import { useSaveSession } from "../../hooks/useSaveSession";
 import { useConfirmDialog } from "../ui/DialogManager";
 import { NewProjectDialog } from "../ui/NewProjectDialog";
 import { SessionList } from "./SessionList";
@@ -183,9 +182,6 @@ export const Sidebar = memo(function Sidebar({
     (state: RootState) => state.chat.processing,
   );
   const isResuming = useSelector(selectIsResumingActive);
-  const defaultModel = useSelector(
-    (state: RootState) => state.settings.config?.default_model || "",
-  );
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(
     new Set(),
   );
@@ -320,40 +316,25 @@ export const Sidebar = memo(function Sidebar({
     [dispatch],
   );
 
-  // Save current session to backend + memory cache (P2-3: uses shared useSaveSession hook)
-  const { saveSession } = useSaveSession();
-  const saveAndCacheCurrent = useCallback(() => {
-    const project = projects.find((p) => p.id === activeProjectId);
-    saveSession({
-      activeSessionId,
-      activeProjectPath: project?.path ?? null,
-      defaultModel,
-    });
-  }, [saveSession, activeSessionId, activeProjectId, projects, defaultModel]);
-
   const handleNewSession = useCallback(
     async (projectId: string) => {
       if (creatingSession) return;
       setCreatingSession(true);
       try {
-        saveAndCacheCurrent();
         await dispatch(createSession(projectId));
       } finally {
         setCreatingSession(false);
       }
     },
-    [dispatch, creatingSession, saveAndCacheCurrent],
+    [dispatch, creatingSession],
   );
 
   const handleSelectSession = useCallback(
     (sessionId: string, projectId: string) => {
-      if (activeSessionId && activeSessionId !== sessionId) {
-        saveAndCacheCurrent();
-      }
       dispatch(setActiveProject(projectId));
       dispatch(setActiveSession(sessionId));
     },
-    [dispatch, activeSessionId, saveAndCacheCurrent],
+    [dispatch],
   );
 
   const handleDeleteSession = useCallback(

@@ -213,6 +213,40 @@ impl RecallMemory {
         candidates.into_iter().collect()
     }
 
+    fn collect_session_candidates(
+        db: &rusqlite::Connection,
+        session_id: &str,
+        query_text: &str,
+        fts_limit: usize,
+        recent_limit: usize,
+    ) -> Vec<i64> {
+        let mut candidates = std::collections::HashSet::new();
+        if let Some(fts_query) = Self::build_fts_query(query_text) {
+            if let Ok(mut stmt) = db.prepare_cached(
+                "SELECT r.rowid FROM recall_memory_fts f JOIN recall_memory r ON r.rowid = f.rowid \
+                 WHERE recall_memory_fts MATCH ?1 AND r.session_id = ?2 LIMIT ?3",
+            ) {
+                if let Ok(rows) = stmt.query_map(
+                    rusqlite::params![fts_query, session_id, fts_limit as i64],
+                    |row| row.get::<_, i64>(0),
+                ) {
+                    candidates.extend(rows.flatten());
+                }
+            }
+        }
+        if let Ok(mut stmt) = db.prepare_cached(
+            "SELECT rowid FROM recall_memory WHERE session_id = ?1 ORDER BY created_at DESC LIMIT ?2",
+        ) {
+            if let Ok(rows) = stmt.query_map(
+                rusqlite::params![session_id, recent_limit as i64],
+                |row| row.get::<_, i64>(0),
+            ) {
+                candidates.extend(rows.flatten());
+            }
+        }
+        candidates.into_iter().collect()
+    }
+
     /// Keyword-based search fallback (no embedding model).
     /// Uses FTS5 full-text search instead of LIKE for better performance.
     pub fn search_by_keyword(&self, query: &str, top_k: usize) -> Result<Vec<RecallRecord>> {
@@ -264,6 +298,45 @@ impl RecallMemory {
         Ok(results)
     }
 
+    pub fn search_by_keyword_for_session(
+        &self,
+        session_id: &str,
+        query: &str,
+        top_k: usize,
+    ) -> Result<Vec<RecallRecord>> {
+        let db = self.storage.conn();
+        if let Some(fts_query) = Self::build_fts_query(query) {
+            let mut stmt = db.prepare_cached(
+                "SELECT r.id, r.session_id, r.role, r.content, r.embedding, r.importance, \
+                 COALESCE(r.memory_strength, 1.0), COALESCE(r.access_count, 0), \
+                 r.last_accessed_at, COALESCE(r.category, 'Conversation'), r.created_at \
+                 FROM recall_memory_fts f JOIN recall_memory r ON r.rowid = f.rowid \
+                 WHERE recall_memory_fts MATCH ?1 AND r.session_id = ?2 ORDER BY rank LIMIT ?3",
+            )?;
+            let rows = stmt.query_map(
+                rusqlite::params![fts_query, session_id, top_k as i64],
+                Self::parse_recall_row,
+            )?;
+            let results: Vec<_> = rows.collect::<rusqlite::Result<_>>()?;
+            if !results.is_empty() {
+                return Ok(results);
+            }
+        }
+        let pattern = format!("%{}%", query);
+        let mut stmt = db.prepare_cached(
+            "SELECT id, session_id, role, content, embedding, importance, \
+             COALESCE(memory_strength, 1.0), COALESCE(access_count, 0), \
+             last_accessed_at, COALESCE(category, 'Conversation'), created_at \
+             FROM recall_memory WHERE session_id = ?1 AND content LIKE ?2 \
+             ORDER BY created_at DESC LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![session_id, pattern, top_k as i64],
+            Self::parse_recall_row,
+        )?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Parse a row into a RecallRecord.
     fn parse_recall_row(row: &rusqlite::Row) -> rusqlite::Result<RecallRecord> {
         let embedding_bytes: Vec<u8> = row.get(4)?;
@@ -291,10 +364,33 @@ impl RecallMemory {
         query_text: &str,
         top_k: usize,
     ) -> Result<Vec<RecallRecord>> {
+        self.search_by_vector_scoped(query_embedding, query_text, None, top_k)
+    }
+
+    pub fn search_by_vector_for_session(
+        &self,
+        session_id: &str,
+        query_embedding: &[f32],
+        query_text: &str,
+        top_k: usize,
+    ) -> Result<Vec<RecallRecord>> {
+        self.search_by_vector_scoped(query_embedding, query_text, Some(session_id), top_k)
+    }
+
+    fn search_by_vector_scoped(
+        &self,
+        query_embedding: &[f32],
+        query_text: &str,
+        session_id: Option<&str>,
+        top_k: usize,
+    ) -> Result<Vec<RecallRecord>> {
         let db = self.storage.conn();
 
         // Phase 1: Collect candidates via FTS5 + recent records
-        let rowids = Self::collect_candidates(&db, query_text, 50, 100);
+        let rowids = match session_id {
+            Some(session_id) => Self::collect_session_candidates(&db, session_id, query_text, 50, 100),
+            None => Self::collect_candidates(&db, query_text, 50, 100),
+        };
 
         if rowids.is_empty() {
             return Ok(Vec::new());

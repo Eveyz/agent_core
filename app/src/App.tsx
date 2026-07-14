@@ -35,14 +35,12 @@ import { useAppDispatch } from './hooks/useAppDispatch';
 import { useAgentEventListener } from './hooks/useAgentEventListener';
 import { usePreviewEvents } from './hooks/usePreviewEvents';
 import { usePreviewToolHandler } from './hooks/usePreviewToolHandler';
-import { useAutoSaveSession } from './hooks/useAutoSaveSession';
 import { useAutoScroll } from './hooks/useAutoScroll';
 import { useThemeEffect } from './hooks/useThemeEffect';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useWindowShow } from './hooks/useWindowShow';
 import { useSessionLoader } from './hooks/useSessionLoader';
 import { useVisibilityResync } from './hooks/useVisibilityResync';
-import { useSaveSession } from './hooks/useSaveSession';
 
 import { Sidebar } from './components/layout/Sidebar';
 import { CosmicBackground } from './components/layout/CosmicBackground';
@@ -118,7 +116,6 @@ function App() {
   const projects = useSelector((state: RootState) => state.project.projects);
   const sessionTitle = useSelector((state: RootState) => getActiveSessionTitle(state.project));
 
-  const activeProject = projects.find((p) => p.id === activeProjectId);
   const [activeTab, setActiveTab] = useState<'code' | 'write'>('code');
   const [activeView, setActiveView] = useState<AppView>('chat');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -152,14 +149,6 @@ function App() {
   useAgentEventListener();
   usePreviewEvents();
   usePreviewToolHandler();
-
-  useAutoSaveSession({
-    activeSessionId,
-    activeProjectPath: activeProject?.path ?? null,
-    defaultModel,
-  });
-
-  const { saveSessionNow } = useSaveSession();
 
   useThemeEffect(appearance);
 
@@ -350,20 +339,14 @@ function App() {
         dispatch(setActiveSession(activeSessionId));
       }
 
-      dispatch(retryFromEntry({ sessionId: activeSessionId, id: entryId, text: msg }));
-      scrollToBottom();
-
-      const projectPath = activeProject?.path ?? null;
-      if (projectPath) {
-        await saveSessionNow({
-          activeSessionId,
-          activeProjectPath: projectPath,
-          defaultModel,
-          force: true,
-        });
-      }
-
       try {
+        if (!entry.promptId) throw new Error('Cannot retry an entry without a canonical prompt id');
+        await invoke('retry_session_from_prompt', {
+          sessionId: activeSessionId,
+          promptId: entry.promptId,
+        });
+        dispatch(retryFromEntry({ sessionId: activeSessionId, id: entryId, text: msg }));
+        scrollToBottom();
         const id = await invoke<string>('send_message', { message: msg, sessionId: activeSessionId, model: defaultModel });
         dispatch(runIdSet({ runId: id, sessionId: activeSessionId }));
       } catch (e) {
@@ -371,7 +354,7 @@ function App() {
         dispatch(sendFailed({ sessionId: activeSessionId, error: String(e) }));
       }
     },
-    [dispatch, activeSessionId, activeProject, store, scrollToBottom, defaultModel, saveSessionNow]
+    [dispatch, activeSessionId, store, scrollToBottom, defaultModel]
   );
 
   const handleOpenSettings = useCallback(() => {

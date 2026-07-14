@@ -203,10 +203,92 @@ pub struct SessionManager {
     storage: super::memory::storage::Storage,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubagentLineage {
+    pub session_id: String,
+    pub parent_session_id: String,
+    pub parent_run_id: String,
+    pub parent_call_id: String,
+    pub child_run_id: String,
+}
+
 impl SessionManager {
     /// Create a new SessionManager backed by the shared storage.
     pub fn new(storage: super::memory::storage::Storage) -> Self {
         Self { storage }
+    }
+
+    fn snapshot_path(session_id: &str) -> std::path::PathBuf {
+        crate::paths::get_agverse_dir()
+            .join("sessions")
+            .join(format!("{session_id}.messages.json"))
+    }
+
+    /// Atomically promote the runtime's raw transcript snapshot into SQLite.
+    /// Returns false when no snapshot exists.
+    pub fn commit_snapshot(&self, session_id: &str) -> Result<bool> {
+        let path = Self::snapshot_path(session_id);
+        if !path.exists() {
+            return Ok(false);
+        }
+        if let (Some(meta), Ok(modified)) = (self.get_meta(session_id)?, path.metadata()?.modified()) {
+            let snapshot_time: chrono::DateTime<Utc> = modified.into();
+            if let Ok(sqlite_time) = chrono::DateTime::parse_from_rfc3339(&meta.updated_at) {
+                if snapshot_time <= sqlite_time.with_timezone(&Utc) {
+                    std::fs::remove_file(&path)?;
+                    return Ok(false);
+                }
+            }
+        }
+        let json = std::fs::read_to_string(&path)?;
+        let messages: Vec<Message> = serde_json::from_str(&json)?;
+        validate_transcript(&messages)?;
+        self.save_canonical_transcript(session_id, &messages)?;
+        Ok(true)
+    }
+
+    /// Replace a session with the exact raw runtime transcript. UI projections
+    /// must never call this path.
+    pub fn save_canonical_transcript(
+        &self,
+        session_id: &str,
+        messages: &[Message],
+    ) -> Result<()> {
+        validate_transcript(messages)?;
+        let meta = self
+            .get_meta(session_id)?
+            .ok_or_else(|| anyhow::anyhow!("session '{session_id}' does not exist"))?;
+        self.save(
+            Some(session_id),
+            messages,
+            &meta.cwd,
+            &meta.model_used,
+        )?;
+        let snapshot = Self::snapshot_path(session_id);
+        if snapshot.exists() {
+            std::fs::remove_file(snapshot)?;
+        }
+        Ok(())
+    }
+
+    /// Rewind the canonical transcript to immediately before a prompt. The
+    /// retried user message is appended by the next Run.
+    pub fn truncate_before_prompt(&self, session_id: &str, prompt_id: &str) -> Result<()> {
+        let resumed = self
+            .resume(session_id)?
+            .ok_or_else(|| anyhow::anyhow!("session '{session_id}' does not exist"))?;
+        let target = resumed
+            .prompts
+            .iter()
+            .find(|prompt| prompt.id == prompt_id)
+            .ok_or_else(|| anyhow::anyhow!("prompt '{prompt_id}' does not exist in session"))?;
+        let messages: Vec<Message> = resumed
+            .prompts
+            .iter()
+            .filter(|prompt| prompt.turn_index < target.turn_index)
+            .flat_map(|prompt| prompt.messages.clone())
+            .collect();
+        self.save_canonical_transcript(session_id, &messages)
     }
 
     // ── Prompt lifecycle ────────────────────────────────────────────
@@ -343,16 +425,50 @@ impl SessionManager {
         &self,
         subagent_id: &str,
         messages: &[Message],
+        parent_session_id: Option<&str>,
+        parent_run_id: Option<&str>,
+        parent_call_id: Option<&str>,
     ) -> Result<String> {
         // Prepend a user message identifying the subagent
         let mut full_messages = vec![
             Message::user(&format!("Subagent task: {}", subagent_id)),
         ];
         full_messages.extend_from_slice(messages);
-        self.save_full(
+        let session_id = self.save_full(
             None,
-            &full_messages, "", "subagent", None, "subagent", None,
-        )
+            &full_messages, "", "subagent", parent_session_id, "subagent", None,
+        )?;
+        let child_run_id = uuid::Uuid::new_v4().to_string();
+        self.storage.conn().execute(
+            "INSERT OR REPLACE INTO subagent_lineage \
+             (session_id, parent_session_id, parent_run_id, parent_call_id, child_run_id, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                session_id,
+                parent_session_id.unwrap_or(""),
+                parent_run_id.unwrap_or(""),
+                parent_call_id.unwrap_or(""),
+                child_run_id,
+                Utc::now().to_rfc3339(),
+            ],
+        )?;
+        Ok(session_id)
+    }
+
+    pub fn subagent_lineage(&self, session_id: &str) -> Result<Option<SubagentLineage>> {
+        let db = self.storage.conn();
+        let mut stmt = db.prepare(
+            "SELECT session_id, parent_session_id, parent_run_id, parent_call_id, child_run_id \
+             FROM subagent_lineage WHERE session_id = ?1",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![session_id])?;
+        Ok(rows.next()?.map(|row| SubagentLineage {
+            session_id: row.get(0).unwrap_or_default(),
+            parent_session_id: row.get(1).unwrap_or_default(),
+            parent_run_id: row.get(2).unwrap_or_default(),
+            parent_call_id: row.get(3).unwrap_or_default(),
+            child_run_id: row.get(4).unwrap_or_default(),
+        }))
     }
 
     /// Save with full control over parent, type, and project.
@@ -580,6 +696,9 @@ impl SessionManager {
 
     /// Load a session's messages and prompts for resume.
     pub fn resume(&self, session_id: &str) -> Result<Option<Session>> {
+        // A runtime snapshot is newer and more authoritative than any UI
+        // projection in SQLite. Promote it before reading the session.
+        self.commit_snapshot(session_id)?;
         let meta = match self.get_meta(session_id)? {
             Some(m) => m,
             None => return Ok(None),
@@ -616,8 +735,9 @@ impl SessionManager {
                             }
                         });
 
-                let metadata: Option<serde_json::Value> =
-                    serde_json::from_str(&metadata_json).ok();
+                let metadata: Option<serde_json::Value> = serde_json::from_str::<serde_json::Value>(&metadata_json)
+                    .ok()
+                    .filter(|value| !value.is_null());
 
                 let (metadata, reasoning) = split_reasoning_from_metadata(metadata);
 
@@ -683,28 +803,6 @@ impl SessionManager {
                     msgs.sort_by_key(|(idx, _)| *idx);
                     let mut cleaned_msgs: Vec<Message> = msgs.into_iter().map(|(_, m)| m).collect();
 
-                    // Clean up interrupted prompts to prevent dangling tool calls from confusing LLMs.
-                    if prompt.status != "completed" {
-                        cleaned_msgs.retain(|msg| msg.role != crate::types::Role::Tool);
-                        for msg in &mut cleaned_msgs {
-                            if msg.role == crate::types::Role::Assistant {
-                                msg.tool_calls = None;
-                            }
-                        }
-                        let has_assistant = cleaned_msgs.iter().any(|msg| msg.role == crate::types::Role::Assistant);
-                        if !has_assistant {
-                            cleaned_msgs.push(Message {
-                                role: crate::types::Role::Assistant,
-                                content: Some("[Execution Interrupted]".to_string()),
-                                tool_calls: None,
-                                tool_call_id: None,
-                                name: None,
-                                model: None,
-                                metadata: None,
-                            reasoning: None,
-                            });
-                        }
-                    }
                     prompt.messages = cleaned_msgs;
                 }
                 prompts.push(prompt);
@@ -713,7 +811,24 @@ impl SessionManager {
             // Reconstruct clean flat history list from cleaned prompts
             let mut flat_messages = Vec::new();
             for p in &prompts {
-                flat_messages.extend(p.messages.clone());
+                let mut history_messages = p.messages.clone();
+                // Preserve the canonical prompt projection for inspection, but
+                // sanitize an interrupted tail before it is sent to a provider.
+                if p.status != "completed" {
+                    history_messages.retain(|msg| msg.role != crate::types::Role::Tool);
+                    for msg in &mut history_messages {
+                        if msg.role == crate::types::Role::Assistant {
+                            msg.tool_calls = None;
+                        }
+                    }
+                    if !history_messages
+                        .iter()
+                        .any(|msg| msg.role == crate::types::Role::Assistant)
+                    {
+                        history_messages.push(Message::assistant("[Execution Interrupted]"));
+                    }
+                }
+                flat_messages.extend(history_messages);
             }
             if !legacy_messages.is_empty() {
                 legacy_messages.sort_by_key(|(idx, _)| *idx);
@@ -1021,6 +1136,33 @@ impl SessionManager {
     }
 }
 
+fn validate_transcript(messages: &[Message]) -> Result<()> {
+    let mut declared = std::collections::HashSet::new();
+    let mut completed = std::collections::HashSet::new();
+    for message in messages {
+        if let Some(tool_calls) = &message.tool_calls {
+            for call in tool_calls {
+                if !declared.insert(call.id.clone()) {
+                    anyhow::bail!("duplicate tool call id '{}' in transcript", call.id);
+                }
+            }
+        }
+        if message.role == crate::types::Role::Tool {
+            let id = message
+                .tool_call_id
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("tool result is missing tool_call_id"))?;
+            if !declared.contains(id) {
+                anyhow::bail!("tool result references unknown call id '{id}'");
+            }
+            if !completed.insert(id.to_string()) {
+                anyhow::bail!("duplicate tool result for call id '{id}'");
+            }
+        }
+    }
+    Ok(())
+}
+
 // ── Helper for Role deserialization ──────────────────────────────────
 
 /// Extension trait for Role deserialization from strings.
@@ -1144,6 +1286,78 @@ mod tests {
         assert_eq!(sessions[0].message_count, 4);
         assert_eq!(sessions[0].cwd, "/home/project");
         assert_eq!(sessions[0].model_used, "gpt-4o");
+    }
+
+    #[test]
+    fn canonical_transcript_round_trip_preserves_provider_order() {
+        let (mgr, _dir) = make_manager();
+        let mut messages = make_messages();
+        messages.push(Message::assistant_with_tools(
+            "second tool",
+            vec![crate::types::ToolCall {
+                id: "call_2".into(),
+                call_type: "function".into(),
+                function: crate::types::FunctionCall {
+                    name: "grep".into(),
+                    arguments: r#"{"pattern":"PermissionDecision"}"#.into(),
+                },
+            }],
+        ));
+        messages.push(Message::tool(
+            "call_2".into(),
+            "matches".into(),
+            Some("grep".into()),
+        ));
+        messages.push(Message::assistant("final answer"));
+
+        let session_id = mgr.save(None, &messages, "/tmp", "test-model").unwrap();
+        mgr.save_canonical_transcript(&session_id, &messages).unwrap();
+        let resumed = mgr.resume(&session_id).unwrap().unwrap();
+
+        assert_eq!(
+            serde_json::to_value(&resumed.messages).unwrap(),
+            serde_json::to_value(&messages).unwrap(),
+        );
+    }
+
+    #[test]
+    fn subagent_session_persists_full_lineage() {
+        let (mgr, _dir) = make_manager();
+        let parent_id = mgr.save(None, &[Message::user("parent")], "/tmp", "m").unwrap();
+        let child_id = mgr
+            .save_subagent_with_messages(
+                "researcher",
+                &[Message::user("child task"), Message::assistant("done")],
+                Some(&parent_id),
+                Some("parent-run"),
+                Some("call-42"),
+            )
+            .unwrap();
+        let lineage = mgr.subagent_lineage(&child_id).unwrap().unwrap();
+        assert_eq!(lineage.parent_session_id, parent_id);
+        assert_eq!(lineage.parent_run_id, "parent-run");
+        assert_eq!(lineage.parent_call_id, "call-42");
+        assert!(!lineage.child_run_id.is_empty());
+    }
+
+    #[test]
+    fn retry_rewind_truncates_canonical_messages_at_prompt_boundary() {
+        let (mgr, _dir) = make_manager();
+        let messages = vec![
+            Message::user("one"),
+            Message::assistant("answer one"),
+            Message::user("two"),
+            Message::assistant("answer two"),
+        ];
+        let session_id = mgr.save(None, &messages, "/tmp", "m").unwrap();
+        let resumed = mgr.resume(&session_id).unwrap().unwrap();
+        let second_prompt_id = resumed.prompts[1].id.clone();
+
+        mgr.truncate_before_prompt(&session_id, &second_prompt_id).unwrap();
+        let rewound = mgr.resume(&session_id).unwrap().unwrap();
+        assert_eq!(rewound.messages.len(), 2);
+        assert_eq!(rewound.messages[0].content.as_deref(), Some("one"));
+        assert_eq!(rewound.messages[1].content.as_deref(), Some("answer one"));
     }
 
     #[test]

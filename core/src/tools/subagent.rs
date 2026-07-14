@@ -265,7 +265,16 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
         // Save subagent session if session manager is available
         if let Some(ref mgr) = self.session_mgr {
             let mgr = mgr.lock();
-            let _ = mgr.save_subagent_with_messages(&id, &messages);
+            let parent_session_id = args.get("_session_id").and_then(Value::as_str);
+            let parent_run_id = args.get("_parent_run_id").and_then(Value::as_str);
+            let parent_call_id = args.get("_parent_call_id").and_then(Value::as_str);
+            let _ = mgr.save_subagent_with_messages(
+                &id,
+                &messages,
+                parent_session_id,
+                parent_run_id,
+                parent_call_id,
+            );
         }
 
         Ok(format!("{}{}", result.format_output(strategy), file_ref))
@@ -395,18 +404,18 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
 
         // Emit SubagentStart events immediately so TUI shows all boxes
         // before any subagent actually begins work.
-        let mut task_infos: Vec<(String, String, Vec<String>, usize, ResultStrategy)> = Vec::new();
+        let mut task_infos: Vec<(String, String, Option<Vec<String>>, usize, ResultStrategy)> = Vec::new();
         for task_spec in tasks {
             let id = task_spec["id"].as_str().unwrap_or("unknown").to_string();
             let task = task_spec["task"].as_str().unwrap_or("").to_string();
-            let tools: Vec<String> = task_spec["tools"]
-                .as_array()
+            let tools: Option<Vec<String>> = task_spec
+                .get("tools")
+                .and_then(Value::as_array)
                 .map(|arr| {
                     arr.iter()
                         .filter_map(|v| v.as_str().map(String::from))
                         .collect()
-                })
-                .unwrap_or_default();
+                });
             let max_iterations = task_spec["max_iterations"]
                 .as_u64()
                 .map(|v| v as usize)
@@ -422,14 +431,26 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
         // tasks (process leak).
         let mut join_set = tokio::task::JoinSet::new();
         let parent_max_iterations = self.parent_max_iterations;
+        let parent_session_id = args
+            .get("_session_id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        let parent_working_dir = args
+            .get("_working_dir")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        let parent_run_id = args
+            .get("_parent_run_id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        let parent_call_id = args
+            .get("_parent_call_id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
         for (id, task, tools, max_iterations, strategy) in task_infos {
             let model_config = self.model_config.clone();
             let permission_config = self.permission_config.clone();
-            let available_tools = if tools.is_empty() {
-                self.available_tools.clone()
-            } else {
-                tools
-            };
+            let parent_available_tools = self.available_tools.clone();
 
             let mgr_clone = self.session_mgr.clone();
             let sub_sender = event_sender.clone();
@@ -437,19 +458,51 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
             let ct_clone = self.cancel_token.clone();
             let parent_depth = self.parent_depth;
             let skill_manager = self.skill_manager.clone();
+            let parent_session_id = parent_session_id.clone();
+            let parent_working_dir = parent_working_dir.clone();
+            let parent_run_id = parent_run_id.clone();
+            let parent_call_id = parent_call_id.clone();
 
             join_set.spawn(async move {
-                let args = serde_json::json!({
+                let mut args = serde_json::json!({
                     "id": id.clone(),
                     "task": task,
-                    "tools": available_tools,
                     "max_iterations": max_iterations,
                 });
+                if let Some(tools) = tools {
+                    args.as_object_mut()
+                        .expect("subagent args are an object")
+                        .insert("tools".to_string(), serde_json::json!(tools));
+                }
+                if let Some(ref session_id) = parent_session_id {
+                    args.as_object_mut().expect("subagent args are an object").insert(
+                        "_session_id".to_string(),
+                        Value::String(session_id.clone()),
+                    );
+                }
+                if let Some(ref working_dir) = parent_working_dir {
+                    args.as_object_mut().expect("subagent args are an object").insert(
+                        "_working_dir".to_string(),
+                        Value::String(working_dir.clone()),
+                    );
+                }
+                if let Some(ref run_id) = parent_run_id {
+                    args.as_object_mut().expect("subagent args are an object").insert(
+                        "_parent_run_id".to_string(),
+                        Value::String(run_id.clone()),
+                    );
+                }
+                if let Some(ref call_id) = parent_call_id {
+                    args.as_object_mut().expect("subagent args are an object").insert(
+                        "_parent_call_id".to_string(),
+                        Value::String(call_id.clone()),
+                    );
+                }
 
                 let result = spawn_single(
                     &args,
                     &model_config,
-                    &available_tools,
+                    &parent_available_tools,
                     sub_sender,
                     &permission_config,
                     parent_max_iterations,
@@ -472,7 +525,13 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                 if let Some(ref mgr) = mgr_clone {
                     let mgr = mgr.lock();
                     if let Ok((_, ref messages)) = result {
-                        let _ = mgr.save_subagent_with_messages(&id, messages);
+                        let _ = mgr.save_subagent_with_messages(
+                            &id,
+                            messages,
+                            parent_session_id.as_deref(),
+                            parent_run_id.as_deref(),
+                            parent_call_id.as_deref(),
+                        );
                     }
                 }
 
@@ -726,11 +785,7 @@ pub(crate) async fn persist_subagent_messages(
             return None;
         }
 
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let filename = format!("{}_{}.messages.json", agent_id, ts);
+        let filename = format!("{}_{}.messages.json", agent_id, uuid::Uuid::new_v4());
         let path = dir.join(&filename);
 
         if std::fs::write(&path, &json).is_err() {
@@ -891,6 +946,50 @@ pub(crate) fn is_meta_dispatch_tool(name: &str) -> bool {
     )
 }
 
+/// Resolve a child's tool set as a strict subset of the concrete tools held by
+/// the parent. Missing `tools` means inherit all; an explicit empty array means
+/// no tools. The order follows the parent's registry so the result is stable.
+fn select_subagent_tools(args: &Value, available_tools: &[String]) -> Vec<String> {
+    let requested: Option<HashSet<&str>> = match args.get("tools") {
+        None => None,
+        Some(Value::String(value)) if value == "all" => None,
+        Some(Value::Array(values)) => Some(
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|name| *name != "all")
+                .collect(),
+        ),
+        Some(_) => Some(HashSet::new()),
+    };
+
+    available_tools
+        .iter()
+        .filter(|name| !is_meta_dispatch_tool(name))
+        .filter(|name| {
+            requested
+                .as_ref()
+                .is_none_or(|wanted| wanted.contains(name.as_str()))
+        })
+        .cloned()
+        .collect()
+}
+
+/// The parent Run has already selected the effective cwd/worktree. Preserve
+/// that exact scope for the child instead of rediscovering from process CWD.
+fn effective_subagent_working_dir(args: &Value) -> std::path::PathBuf {
+    if let Some(path) = args
+        .get("_working_dir")
+        .and_then(Value::as_str)
+        .filter(|path| !path.trim().is_empty())
+    {
+        return std::path::PathBuf::from(path);
+    }
+
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    find_workspace_root(&cwd)
+}
+
 async fn spawn_single(
     args: &Value,
     model_config: &ModelConfig,
@@ -928,22 +1027,14 @@ async fn spawn_single(
     let child_depth = parent_depth + 1;
 
     let default_system_prompt = "You are a focused sub-agent. Complete the given task and return the result. Be concise. \
-You have access to tools: read_file, glob, grep, shell, edit, webfetch, and git tools. \
-CRITICAL: ALWAYS use the 'webfetch' tool to fetch web content. NEVER use shell with 'curl' or 'wget'. \
-Do NOT attempt to read or process image files.";
+Only use tools actually present in your tool schema; capabilities are delegated by the parent and may be empty. \
+Do NOT attempt to bypass a missing capability through another tool.";
 
     let mut persona_content = String::new();
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_else(|_| ".".to_string());
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-
-    // Find the workspace / project root by walking up from CWD until we
-    // find a Cargo.toml. This is the directory subagent tools should use
-    // as their effective working directory so relative paths resolve
-    // correctly — the process CWD (e.g. app/) may be nested inside the
-    // workspace and miss sibling crates.
-    let workspace_root = find_workspace_root(&cwd);
+    let workspace_root = effective_subagent_working_dir(args);
 
     // 1. Global Agent Persona
     let global_agent = std::path::Path::new(&home).join(format!(".agverse/agents/{}.md", id));
@@ -952,7 +1043,7 @@ Do NOT attempt to read or process image files.";
     }
 
     // 2. Local/Project Agent Persona
-    let local_agent = cwd.join(format!(".agverse/agents/{}.md", id));
+    let local_agent = workspace_root.join(format!(".agverse/agents/{}.md", id));
     if let Ok(c) = tokio::fs::read_to_string(&local_agent).await {
         persona_content.push_str(&format!("Project Persona ({id}):\n{c}\n\n"));
     }
@@ -968,11 +1059,8 @@ Do NOT attempt to read or process image files.";
         format!("{}\n\n=== Subagent Persona ===\n{}", base_prompt, persona_content)
     };
 
-    // Inject the workspace root into the subagent's context so it knows
-    // where the project lives and can resolve paths relative to the root.
-    // We walk up from the process CWD to find the Cargo.toml workspace root
-    // because the process CWD is often a nested directory (e.g. app/) while
-    // sibling crates (core/, cli/) live at the workspace level.
+    // Inject the exact parent execution root so the child cannot silently
+    // widen a worktree-scoped Run back to the process checkout.
     let ws_root = workspace_root.to_string_lossy().to_string();
     let mut system_prompt = format!("{system_prompt}\n\nWorking Directory: {ws_root}");
 
@@ -1002,61 +1090,13 @@ Do NOT attempt to read or process image files.";
         );
     }
 
-    let max_iterations = args["max_iterations"].as_u64().unwrap_or(parent_max_iterations as u64) as usize;
+    let requested_iterations = args["max_iterations"]
+        .as_u64()
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(parent_max_iterations);
+    let max_iterations = requested_iterations.clamp(1, parent_max_iterations.max(1));
 
-    // Determine tool names from args
-    let tool_names: Vec<String> = if let Some(arr) = args["tools"].as_array() {
-        arr.iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect()
-    } else {
-        vec![
-            "read_file".to_string(),
-            "glob".to_string(),
-            "grep".to_string(),
-            "shell".to_string(),
-            "edit".to_string(),
-            "webfetch".to_string(),
-        ]
-    };
-
-    // Check for "all" wildcard
-    let is_all = args["tools"]
-        .as_str()
-        .map(|s| s == "all")
-        .or_else(|| {
-            args["tools"]
-                .as_array()
-                .and_then(|a| a.first())
-                .and_then(|v| v.as_str())
-                .map(|s| s == "all")
-        })
-        .unwrap_or(false);
-
-    let mut final_tool_names = if is_all {
-        available_tools.to_vec()
-    } else if tool_names.is_empty() {
-        // Agent explicitly passed empty tools — respect that, but subagent can only think
-        vec!["read_file".to_string()] // give at least read ability
-    } else {
-        tool_names
-    };
-
-    // Prevent subagents from getting tools the parent agent doesn't have.
-    final_tool_names.retain(|t| available_tools.contains(t));
-
-    // Strip meta-dispatch tools so a spawned subagent cannot recursively
-    // spawn its own subagents or trigger skill loading — those operations
-    // must remain under the explicit control of the parent LLM (or workflow
-    // executor). This is the second layer of defence beyond the recursion
-    // depth check above: even if a subagent somehow gets past the check
-    // (e.g. via the `"all"` wildcard), the tool name won't be available.
-    final_tool_names.retain(|t| !is_meta_dispatch_tool(t));
-
-    // If all requested tools were filtered out, give at least read_file so it can do something.
-    if final_tool_names.is_empty() {
-        final_tool_names = vec!["read_file".to_string()];
-    }
+    let final_tool_names = select_subagent_tools(args, available_tools);
 
     let tool_count = final_tool_names.len();
 
@@ -1069,6 +1109,13 @@ Do NOT attempt to read or process image files.";
             &mut tool_registry,
             supervisor.clone(),
         );
+        let unauthorized: Vec<String> = tool_registry
+            .clone_names()
+            .into_iter()
+            .filter(|name| !available_tools.contains(name))
+            .collect();
+        let unauthorized_refs: Vec<&str> = unauthorized.iter().map(String::as_str).collect();
+        tool_registry.remove_all(&unauthorized_refs);
     }
 
     let config = SubagentConfig {
@@ -1093,6 +1140,10 @@ Do NOT attempt to read or process image files.";
         permission_config.clone(),
     );
     subagent.session_id = session_id.map(|s| s.to_string());
+    subagent.parent_run_id = args
+        .get("_parent_run_id")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
     if let Some(sv) = supervisor {
         subagent = subagent.with_supervisor(sv);
     }
@@ -1119,4 +1170,46 @@ Do NOT attempt to read or process image files.";
         },
         messages,
     ))
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+
+    fn names(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn requested_tools_are_strictly_bounded_by_parent_capabilities() {
+        let args = serde_json::json!({ "tools": ["shell", "write_file"] });
+        let selected = select_subagent_tools(&args, &names(&["read_file", "grep"]));
+        assert!(selected.is_empty());
+    }
+
+    #[test]
+    fn omitted_tools_inherit_parent_capabilities_but_not_meta_tools() {
+        let args = serde_json::json!({});
+        let selected = select_subagent_tools(
+            &args,
+            &names(&["read_file", "shell", "subagent", "skill_load"]),
+        );
+        assert_eq!(selected, names(&["read_file", "shell"]));
+    }
+
+    #[test]
+    fn explicit_empty_tools_remains_empty() {
+        let args = serde_json::json!({ "tools": [] });
+        let selected = select_subagent_tools(&args, &names(&["read_file", "shell"]));
+        assert!(selected.is_empty());
+    }
+
+    #[test]
+    fn injected_parent_working_directory_is_not_widened() {
+        let args = serde_json::json!({ "_working_dir": "/tmp/project-worktree/nested" });
+        assert_eq!(
+            effective_subagent_working_dir(&args),
+            std::path::PathBuf::from("/tmp/project-worktree/nested")
+        );
+    }
 }

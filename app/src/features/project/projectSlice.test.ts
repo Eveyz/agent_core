@@ -68,43 +68,6 @@ describe('projectSlice session activity', () => {
     expect(state.sessions.proj[0].updated_at).toBe('2026-01-03T10:00:00Z');
   });
 
-  it('saveSessionMessages.fulfilled patches updated_at and ignores stale generation', async () => {
-    const mod = await loadModules();
-    const { default: reducer, saveSessionMessages, __testSetSaveGeneration } = mod;
-    let state = reducer(undefined, { type: '@@INIT' });
-    state = {
-      ...state,
-      sessions: {
-        proj: [makeSession('s1', '2026-01-01T10:00:00Z')],
-      },
-    };
-
-    state = reducer(state, {
-      type: saveSessionMessages.fulfilled.type,
-      payload: {
-        sessionId: 's1',
-        messageCount: 3,
-        updated_at: '2026-01-02T10:00:00Z',
-        generation: 2,
-      },
-    });
-    expect(state.sessions.proj[0].message_count).toBe(3);
-    expect(state.sessions.proj[0].updated_at).toBe('2026-01-02T10:00:00Z');
-
-    __testSetSaveGeneration('s1', 3);
-    state = reducer(state, {
-      type: saveSessionMessages.fulfilled.type,
-      payload: {
-        sessionId: 's1',
-        messageCount: 1,
-        updated_at: '2026-01-01T08:00:00Z',
-        generation: 2,
-      },
-    });
-    expect(state.sessions.proj[0].message_count).toBe(3);
-    expect(state.sessions.proj[0].updated_at).toBe('2026-01-02T10:00:00Z');
-  });
-
   it('findProjectIdForSession resolves owner project', async () => {
     const { findProjectIdForSession } = await loadModules();
     const sessions = {

@@ -4,7 +4,6 @@ use anyhow::Result;
 use futures::StreamExt;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
-use tokio::sync::broadcast;
 
 use crate::runtime::tool_orchestrator::ToolOrchestrator;
 use crate::client::streaming::{TokenAccumulator, ToolCallAccumulator};
@@ -124,8 +123,7 @@ impl Run {
                     "TURN: model_turn failed"
                 );
                 let friendly_err = format_user_friendly_error(&e);
-                self.emit(RunEvent::Error { message: friendly_err.clone() });
-                return Ok(TurnOutcome::Stop(friendly_err));
+                return Err(RunError::Failed(friendly_err));
             }
         };
 
@@ -172,11 +170,9 @@ impl Run {
                     // memory operations are not blocked for the 10-50ms the
                     // embedding model takes. The lock is then only held for
                     // the lightweight I/O + index update.
-                    let embedding = {
-                        let m = mem.lock();
-                        m.embedding_model()
-                            .map(|model| model.embed_single(&text).unwrap_or_default())
-                    };
+                    let model = { mem.lock().embedding_model().cloned() };
+                    let embedding = model
+                        .map(|model| model.embed_single(&text).unwrap_or_default());
                     let m = mem.lock();
                     let memory_session_id = self.session_id.as_deref().unwrap_or_else(|| m.session_id());
                     let _ = m.store_conversation_for_session_precomputed(
@@ -199,8 +195,9 @@ impl Run {
             // Clone the consolidator BEFORE acquiring the lock so the lock
             // is held only briefly; the heavy CPU work runs lock-free.
             if let Some(ref mem) = self.brain.memory {
+                let completed_turn = mem.lock().record_completed_turn();
                 if self.brain.memory_mode() != crate::config::MemoryMode::Stateless
-                    && turn_index % 20 == 0
+                    && completed_turn % 20 == 0
                 {
                     let mem = mem.clone();
                     self.join_set.spawn(async move {
@@ -231,8 +228,7 @@ impl Run {
 
                 // Lifecycle: prune cold recall + promote to archival every 40 turns.
                 if self.brain.memory_mode() != crate::config::MemoryMode::Stateless
-                    && turn_index > 0
-                    && turn_index % 40 == 0
+                    && completed_turn % 40 == 0
                 {
                     let mem = mem.clone();
                     self.join_set.spawn(async move {
@@ -358,6 +354,7 @@ impl Run {
                 approval_resolver: Some(approval_resolver),
                 input_resolver: Some(input_resolver),
                 session_id: self.session_id.clone(),
+                run_id: Some(self.id.clone()),
                 working_dir: self.working_dir.clone(),
             };
             orchestrator
@@ -512,10 +509,7 @@ impl Run {
 
         if turn_index == self.max_iterations - 1 {
             let summary = super::build_iteration_limit_summary(&self.context, self.max_iterations);
-            self.emit(RunEvent::Error {
-                message: summary.clone(),
-            });
-            return Ok(TurnOutcome::Stop(summary));
+            return Err(RunError::Failed(summary));
         }
 
         Ok(TurnOutcome::Continue)
@@ -526,7 +520,8 @@ impl Run {
     pub(super) async fn model_turn(&mut self) -> Result<ModelTurnResult, String> {
         const MAX_RECOVERY_ATTEMPTS: u32 = 3;
         /// How many times we restart a dropped SSE stream before escalating to recovery.
-        const MAX_STREAM_RETRIES: u32 = 10;
+        const MAX_STREAM_RETRIES: u32 = 5;
+        const MAX_RETRY_DELAY_MS: u64 = 30_000;
 
         for _attempt in 0..MAX_RECOVERY_ATTEMPTS {
             tracing::info!(attempt = _attempt, "TURN: model_turn recovery attempt");
@@ -597,10 +592,14 @@ impl Run {
                 let mut attempt_partial = StreamPartial::default();
 
                 let step_res = {
-                    let stream_res = self
-                        .client
-                        .chat_completion_stream_with_hint(&attempt_messages, &tools, Some(cache_hint))
-                        .await;
+                    let stream_res = tokio::select! {
+                        _ = self.cancel.cancelled() => return Err("aborted".to_string()),
+                        result = self.client.chat_completion_stream_with_hint(
+                            &attempt_messages,
+                            &tools,
+                            Some(cache_hint),
+                        ) => result,
+                    };
 
                     match stream_res {
                         Ok(s) => {
@@ -633,8 +632,12 @@ impl Run {
                         retry_checkpoint.merge_attempt(&attempt_partial);
                         tracing::warn!(attempt = stream_attempt, error = %err_msg, "stream attempt failed");
                         if stream_attempt < MAX_STREAM_RETRIES {
-                            let delay_ms = 1000u64 * 2u64.pow(stream_attempt as u32);
-                            self.emit(RunEvent::Error {
+                            let delay_ms = (1000u64 * 2u64.pow(stream_attempt))
+                                .min(MAX_RETRY_DELAY_MS);
+                            self.emit(RunEvent::Notice {
+                                code: "model_stream_retry".to_string(),
+                                severity: "warning".to_string(),
+                                recoverable: true,
                                 message: format!(
                                     "Failed to connect to remote model (stream failed), retrying in {}s (attempt {}/{})",
                                     delay_ms / 1000,
@@ -642,7 +645,10 @@ impl Run {
                                     MAX_STREAM_RETRIES,
                                 ),
                             });
-                            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                            tokio::select! {
+                                _ = self.cancel.cancelled() => return Err("aborted".to_string()),
+                                _ = tokio::time::sleep(std::time::Duration::from_millis(delay_ms)) => {}
+                            }
                             stream_attempt += 1;
                             continue;
                         }
@@ -677,7 +683,7 @@ impl Run {
     pub(super) async fn collect_stream(
         &self,
         stream: impl futures::Stream<Item = Result<StreamEvent>>,
-        event_tx: &broadcast::Sender<Envelope>,
+        event_tx: &tokio::sync::mpsc::UnboundedSender<Envelope>,
         partial: &mut StreamPartial,
     ) -> Result<ModelTurnResult> {
         tracing::debug!("LATENCY: collect_stream start");
@@ -745,11 +751,19 @@ impl Run {
             *last_kind = kind;
         };
 
+        const STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
         tokio::pin!(stream);
-        while let Some(event) = stream.next().await {
-            if self.cancel.is_cancelled() {
-                anyhow::bail!("aborted");
-            }
+        loop {
+            let event = tokio::select! {
+                _ = self.cancel.cancelled() => anyhow::bail!("aborted"),
+                result = tokio::time::timeout(STREAM_IDLE_TIMEOUT, stream.next()) => {
+                    match result {
+                        Ok(Some(event)) => event,
+                        Ok(None) => break,
+                        Err(_) => anyhow::bail!("model stream idle timeout after {}s", STREAM_IDLE_TIMEOUT.as_secs()),
+                    }
+                }
+            };
             let event = event?;
             let now = Instant::now();
             let since = now.duration_since(stream_t0).as_millis() as u64;
@@ -1055,7 +1069,7 @@ impl Run {
         let Some(path) = self.session_snapshot_path.clone() else {
             return;
         };
-        let messages = self.context.messages();
+        let messages = self.context.raw_messages().to_vec();
         let generation = self
             .session_snapshot_gen
             .fetch_add(1, Ordering::Relaxed)

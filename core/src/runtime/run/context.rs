@@ -340,12 +340,11 @@ impl Run {
                     return;
                 };
 
-                let embedding: Option<Vec<f32>> = mem_arc
+                let model = mem_arc
                     .try_lock_for(Duration::from_secs(1))
-                    .and_then(|m| {
-                        m.embedding_model()
-                            .and_then(|model| model.embed_single(query).ok())
-                    });
+                    .and_then(|m| m.embedding_model().cloned());
+                let embedding: Option<Vec<f32>> =
+                    model.and_then(|model| model.embed_single(query).ok());
 
                 let Some(guard) = mem_arc.try_lock_for(Duration::from_secs(1)) else {
                     mem_str.push_str(RECALL_HINT);
@@ -353,27 +352,24 @@ impl Run {
                     return;
                 };
 
-                // Over-fetch then keep only this session's recall — never inject
-                // other sessions' conversations into the active memory segment.
-                let fetch_k = 12;
-                let mut results = if let Some(ref emb) = embedding {
+                let Some(ref sid) = self.session_id else {
+                    mem_str.push_str(RECALL_HINT);
+                    mem_str.push('\n');
+                    return;
+                };
+                let results = if let Some(ref emb) = embedding {
                     guard
-                        .search_conversation_precomputed(emb, query, fetch_k)
+                        .search_conversation_for_session_precomputed(sid, emb, query, 3)
                         .unwrap_or_else(|_| {
                             guard
-                                .search_conversation_bm25_with_salience(query, fetch_k)
+                                .search_conversation_for_session_keyword(sid, query, 3)
                                 .unwrap_or_default()
                         })
                 } else {
                     guard
-                        .search_conversation_bm25_with_salience(query, fetch_k)
+                        .search_conversation_for_session_keyword(sid, query, 3)
                         .unwrap_or_default()
                 };
-
-                if let Some(ref sid) = self.session_id {
-                    results.retain(|r| r.session_id == *sid);
-                }
-                results.truncate(3);
 
                 let formatted = format_recall_results(&results, 1200);
                 if formatted.is_empty() {

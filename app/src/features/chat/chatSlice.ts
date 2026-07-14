@@ -1,13 +1,13 @@
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
 import { invoke } from '@tauri-apps/api/core';
-import { resumeSession, deleteSession, saveSessionMessages } from '../project/projectSlice';
+import { resumeSession, deleteSession } from '../project/projectSlice';
 
 import type {
   TurnBlock, SubagentEntry, ChatState, RunState, ChatEntry, FrontendPrompt,
 } from './types';
 import { processSingleEvent, stopDanglingSubagents } from './eventHandlers';
 
-// ── Re-export types, selectors, and utils for backward compatibility ─
+// ── Re-export public chat types and selectors ──────────────────────
 export {
   selectEntryIds, selectEntryById, selectSubagentById,
   selectPendingApprovalCount, selectHasActivePendingApproval,
@@ -22,7 +22,6 @@ export type {
   ChatState, RunState, RunEventPayload, RunEventType, SteerMessage,
   ClarificationQuestion, ClarificationOption, ClarificationAnswers,
 } from './types';
-export { entriesToMessages, stringifyResult, getFullMessagesForSession, getTimingMetrics } from './utils';
 
 // ── Helper ──────────────────────────────────────────────────────────
 
@@ -38,6 +37,8 @@ function ensureSession(state: ChatState, sessionId: string) {
   if (state.allPrompts[sessionId] === undefined) state.allPrompts[sessionId] = [];
   if (state.visiblePromptsCount[sessionId] === undefined) state.visiblePromptsCount[sessionId] = 1;
   if (state.isDirty[sessionId] === undefined) state.isDirty[sessionId] = false;
+  if (state.contentRevision[sessionId] === undefined) state.contentRevision[sessionId] = 0;
+  if (state.persistedRevision[sessionId] === undefined) state.persistedRevision[sessionId] = 0;
   if (state._resumedFromBackend[sessionId] === undefined) state._resumedFromBackend[sessionId] = false;
   if (state.goal[sessionId] === undefined) state.goal[sessionId] = null;
   if (state.goalCompleted[sessionId] === undefined) state.goalCompleted[sessionId] = false;
@@ -45,6 +46,34 @@ function ensureSession(state: ChatState, sessionId: string) {
   if (state.btwEntries[sessionId] === undefined) state.btwEntries[sessionId] = [];
   if (state.isResuming[sessionId] === undefined) state.isResuming[sessionId] = false;
   if (state._pendingTurnId[sessionId] === undefined) state._pendingTurnId[sessionId] = undefined;
+}
+
+function markDirty(state: ChatState, sessionId: string) {
+  ensureSession(state, sessionId);
+  state.contentRevision[sessionId] += 1;
+  state.isDirty[sessionId] = true;
+}
+
+function markPersisted(state: ChatState, sessionId: string) {
+  ensureSession(state, sessionId);
+  state.persistedRevision[sessionId] = state.contentRevision[sessionId];
+  state.isDirty[sessionId] = false;
+}
+
+function payloadEventName(payload: string | Record<string, unknown>): string | undefined {
+  if (typeof payload === 'string') {
+    try {
+      return JSON.parse(payload)?.event;
+    } catch {
+      return undefined;
+    }
+  }
+  return typeof payload.event === 'string' ? payload.event : undefined;
+}
+
+function isTerminalPayload(payload: string | Record<string, unknown>): boolean {
+  const event = payloadEventName(payload);
+  return event === 'run_completed' || event === 'run_cancelled' || event === 'run_failed';
 }
 
 // ── Initial state ────────────────────────────────────────────────────
@@ -60,6 +89,8 @@ const initialState: ChatState = {
   allPrompts: {},
   visiblePromptsCount: {},
   isDirty: {},
+  contentRevision: {},
+  persistedRevision: {},
   _resumedFromBackend: {},
   _thinkBuffers: {},
   goal: {},
@@ -71,9 +102,11 @@ const initialState: ChatState = {
   runIdToSessionId: {},
   lastSeqByRun: {},
   skillsCache: null,
-  resyncing: false,
-  _pendingGap: null,
-  cacheMetrics: null,
+  resyncingByRun: {},
+  pendingGapByRun: {},
+  cacheMetricsByRun: {},
+  appliedEventIdsByRun: {},
+  pendingEventsByRun: {},
 };
 
 // ── Resync thunk ─────────────────────────────────────────────────────
@@ -83,8 +116,8 @@ export const resyncRun = createAsyncThunk<
   { runId: string; fromSeq: number }
 >('chat/resyncRun', async ({ runId, fromSeq }, { dispatch, getState }) => {
   const state = getState() as { chat: ChatState };
-  if (state.chat.resyncing) return;
-  dispatch(setResyncing(true));
+  if (state.chat.resyncingByRun[runId]) return;
+  dispatch(setResyncing({ runId, value: true }));
   try {
     const lines = await invoke<string[]>('replay_since', { runId, fromSeq });
     for (const line of lines) {
@@ -99,7 +132,7 @@ export const resyncRun = createAsyncThunk<
   } catch (e) {
     console.error('[resyncRun] failed to replay events:', e);
   } finally {
-    dispatch(setResyncing(false));
+    dispatch(setResyncing({ runId, value: false }));
   }
 });
 
@@ -195,36 +228,53 @@ function rebuildEntries(state: ChatState, sessionId: string) {
       turnIds = meta.turnIds;
     }
 
-    // Fallback: If metadata/blocks is missing (e.g. legacy session), reconstruct blocks from messages
+    // Canonical fallback: fold every provider message in order. A prompt may
+    // contain several assistant(tool_calls) -> tool -> assistant iterations;
+    // restoring only the first assistant silently hid most of the conversation.
     if (blocks.length === 0) {
-      // 1. Thinking block from <think> tags in assistant message content
-      if (assistantMsg && assistantMsg.content) {
-        const hasThinkTag = assistantMsg.content.match(/<think>([\s\S]*?)<\/think>/);
-        if (hasThinkTag) {
-          const thinkContent = hasThinkTag[1];
-          const restContent = assistantMsg.content.replace(/<think>[\s\S]*?<\/think>/, '').trim();
-          blocks.push({ type: 'thinking', text: thinkContent, isStreaming: false });
-          if (restContent) {
-            blocks.push({ type: 'assistant', text: restContent, isStreaming: false });
+      const toolBlocks = new Map<string, Extract<TurnBlock, { type: 'tool' }>>();
+      for (const message of prompt.messages) {
+        if (message.role === 'assistant') {
+          if (message.content) {
+            const hasThinkTag = message.content.match(/<think>([\s\S]*?)<\/think>/);
+            if (hasThinkTag) {
+              blocks.push({ type: 'thinking', text: hasThinkTag[1], isStreaming: false });
+              const visible = message.content.replace(/<think>[\s\S]*?<\/think>/, '').trim();
+              if (visible) blocks.push({ type: 'assistant', text: visible, isStreaming: false });
+            } else {
+              blocks.push({ type: 'assistant', text: message.content, isStreaming: false });
+            }
           }
-        } else {
-          blocks.push({ type: 'assistant', text: assistantMsg.content, isStreaming: false });
-        }
-      }
-
-      // 2. Tool blocks from tool messages or tool_calls
-      if (assistantMsg && assistantMsg.tool_calls) {
-        for (const tc of assistantMsg.tool_calls) {
-          const toolMsg = prompt.messages.find(m => m.role === 'tool' && m.tool_call_id === tc.id);
-          blocks.push({
-            type: 'tool',
-            call_id: tc.id,
-            name: tc.function.name,
-            args: tc.function.arguments,
-            result: toolMsg?.content || '',
-            active: false,
-            is_error: false,
-          });
+          for (const tc of message.tool_calls ?? []) {
+            let args: unknown = tc.function.arguments;
+            try { args = JSON.parse(tc.function.arguments); } catch { /* retain raw args */ }
+            const toolBlock: Extract<TurnBlock, { type: 'tool' }> = {
+              type: 'tool',
+              call_id: tc.id,
+              name: tc.function.name,
+              args,
+              result: '',
+              active: false,
+              is_error: false,
+            };
+            toolBlocks.set(tc.id, toolBlock);
+            blocks.push(toolBlock);
+          }
+        } else if (message.role === 'tool' && message.tool_call_id) {
+          const toolBlock = toolBlocks.get(message.tool_call_id);
+          if (toolBlock) {
+            toolBlock.result = message.content ?? '';
+            if (message.name) toolBlock.name = message.name;
+          } else {
+            blocks.push({
+              type: 'tool',
+              call_id: message.tool_call_id,
+              name: message.name ?? 'tool',
+              result: message.content ?? '',
+              active: false,
+              is_error: false,
+            });
+          }
         }
       }
     }
@@ -344,11 +394,17 @@ export const chatSlice = createSlice({
         }],
       };
       state.allPrompts[sid].push(newPrompt);
-      state.visiblePromptsCount[sid] = Math.max(state.visiblePromptsCount[sid], state.allPrompts[sid].length);
+      // Materialize only the newly appended prompt. Raising this to the full
+      // prompt count would claim that older, hidden prompts exist in `entries`
+      // and the next full save would silently omit them.
+      state.visiblePromptsCount[sid] = Math.min(
+        state.allPrompts[sid].length,
+        state.visiblePromptsCount[sid] + 1,
+      );
 
       state.processing[sid] = true;
       state._resumedFromBackend[sid] = false;
-      state.isDirty[sid] = true;
+      markDirty(state, sid);
       state.todo[sid] = [];
     },
     runIdSet: (state, action: PayloadAction<{ runId: string; sessionId: string }>) => {
@@ -406,21 +462,29 @@ export const chatSlice = createSlice({
     },
     agentEventReceived: (state, action: PayloadAction<string | Record<string, unknown>>) => {
       const sid = processSingleEvent(state, action.payload);
-      if (sid) state.isDirty[sid] = true;
+      if (sid) {
+        if (isTerminalPayload(action.payload)) markPersisted(state, sid);
+        else markDirty(state, sid);
+      }
     },
     agentEventsBatch: (state, action: PayloadAction<Array<string | Record<string, unknown>>>) => {
       const dirtySessionIds = new Set<string>();
+      const persistedSessionIds = new Set<string>();
       for (const payload of action.payload) {
         const sid = processSingleEvent(state, payload);
-        if (sid) dirtySessionIds.add(sid);
+        if (sid) {
+          if (isTerminalPayload(payload)) persistedSessionIds.add(sid);
+          else dirtySessionIds.add(sid);
+        }
       }
-      for (const sid of dirtySessionIds) state.isDirty[sid] = true;
+      for (const sid of dirtySessionIds) markDirty(state, sid);
+      for (const sid of persistedSessionIds) markPersisted(state, sid);
     },
     toolApprovalResponded: (state, action: PayloadAction<{ sessionId: string; promptId: string; approved: boolean }>) => {
       const sid = action.payload.sessionId;
       ensureSession(state, sid);
 
-      state.isDirty[sid] = true;
+      markDirty(state, sid);
       for (const entry of state.entries[sid]) {
         if (entry.type !== 'turn' || !entry.blocks) continue;
         const block = entry.blocks.find((b) => b.type === 'approval' && b.prompt_id === action.payload.promptId);
@@ -445,7 +509,7 @@ export const chatSlice = createSlice({
     }>) => {
       const sid = action.payload.sessionId;
       ensureSession(state, sid);
-      state.isDirty[sid] = true;
+      markDirty(state, sid);
       for (const entry of state.entries[sid]) {
         if (entry.type !== 'turn' || !entry.blocks) continue;
         const block = entry.blocks.find(
@@ -464,7 +528,7 @@ export const chatSlice = createSlice({
       state.goal[sid] = null;
       state.goalCompleted[sid] = false;
       state.todo[sid] = [];
-      state.isDirty[sid] = true;
+      markDirty(state, sid);
     },
     clearChat: (state, action: PayloadAction<string>) => {
       const sid = action.payload;
@@ -473,7 +537,7 @@ export const chatSlice = createSlice({
       state.processing[sid] = false;
       state.goal[sid] = null;
       state.goalCompleted[sid] = false;
-      state.isDirty[sid] = false;
+      markPersisted(state, sid);
       state._resumedFromBackend[sid] = false;
       state.todo[sid] = [];
       state.steerQueue[sid] = [];
@@ -490,7 +554,7 @@ export const chatSlice = createSlice({
       ensureSession(state, sid);
 
       state.processing[sid] = false;
-      state.isDirty[sid] = true;
+      markDirty(state, sid);
       const entries = state.entries[sid];
       const last = entries[entries.length - 1];
       if (last && last.type === 'turn' && !last.endTime) {
@@ -544,17 +608,20 @@ export const chatSlice = createSlice({
           model: originalModel,
         }],
       });
-      state.visiblePromptsCount[sid] = Math.max(state.visiblePromptsCount[sid], state.allPrompts[sid].length);
+      state.visiblePromptsCount[sid] = Math.min(
+        state.allPrompts[sid].length,
+        state.visiblePromptsCount[sid] + 1,
+      );
       state.processing[sid] = true;
       state._resumedFromBackend[sid] = false;
-      state.isDirty[sid] = true;
+      markDirty(state, sid);
     },
     sendFailed: (state, action: PayloadAction<{ sessionId: string; error: string }>) => {
       const sid = action.payload.sessionId;
       ensureSession(state, sid);
       state.processing[sid] = false;
       state.runState[sid] = 'failed';
-      state.isDirty[sid] = true;
+      markDirty(state, sid);
       state.entries[sid].push({
         id: `error-${Date.now()}`,
         type: 'turn',
@@ -578,11 +645,11 @@ export const chatSlice = createSlice({
       ensureSession(state, sid);
       state.viewingSubagentPath[sid] = [];
     },
-    setResyncing: (state, action: PayloadAction<boolean>) => {
-      state.resyncing = action.payload;
+    setResyncing: (state, action: PayloadAction<{ runId: string; value: boolean }>) => {
+      state.resyncingByRun[action.payload.runId] = action.payload.value;
     },
-    clearPendingGap: (state) => {
-      state._pendingGap = null;
+    clearPendingGap: (state, action: PayloadAction<string>) => {
+      delete state.pendingGapByRun[action.payload];
     },
     cacheSkills: (state, action: PayloadAction<import('./types').SkillManifest[]>) => {
       state.skillsCache = {
@@ -612,7 +679,7 @@ export const chatSlice = createSlice({
         steerId,
         steerStatus: 'pending',
       });
-      state.isDirty[sid] = true;
+      markDirty(state, sid);
     },
     steerMessageInjected: (state, action: PayloadAction<{ sessionId: string; steerId: string }>) => {
       const sid = action.payload.sessionId;
@@ -626,7 +693,7 @@ export const chatSlice = createSlice({
           entry.steerStatus = 'injected';
         }
       }
-      state.isDirty[sid] = true;
+      markDirty(state, sid);
     },
     steerMessageCancelled: (state, action: PayloadAction<{ sessionId: string; steerId: string }>) => {
       const sid = action.payload.sessionId;
@@ -637,7 +704,7 @@ export const chatSlice = createSlice({
       state.entries[sid] = state.entries[sid].filter(
         (e) => !(e.type === 'user' && e.isSteer && e.steerId === steerId)
       );
-      state.isDirty[sid] = true;
+      markDirty(state, sid);
     },
     // ── /btw side-channel ──────────────────────────────────────────
     btwAsked: (state, action: PayloadAction<{ sessionId: string; id: string; question: string }>) => {
@@ -703,6 +770,8 @@ export const chatSlice = createSlice({
       state.visiblePromptsCount[sessionId] = Math.min(2, state.allPrompts[sessionId].length);
       rebuildEntries(state, sessionId);
       state._resumedFromBackend[sessionId] = true;
+      state.contentRevision[sessionId] = 0;
+      state.persistedRevision[sessionId] = 0;
       state.isDirty[sessionId] = false;
     });
     builder.addCase(deleteSession.fulfilled, (state, action) => {
@@ -717,6 +786,8 @@ export const chatSlice = createSlice({
       delete state.allPrompts[sessionId];
       delete state.visiblePromptsCount[sessionId];
       delete state.isDirty[sessionId];
+      delete state.contentRevision[sessionId];
+      delete state.persistedRevision[sessionId];
       delete state._resumedFromBackend[sessionId];
       delete state._thinkBuffers[sessionId];
       delete state.goal[sessionId];
@@ -726,10 +797,6 @@ export const chatSlice = createSlice({
 
       delete state.isResuming[sessionId];
       delete state._pendingTurnId[sessionId];
-    });
-    builder.addCase(saveSessionMessages.fulfilled, (state, action) => {
-      const sessionId = action.payload.sessionId;
-      state.isDirty[sessionId] = false;
     });
   },
 });

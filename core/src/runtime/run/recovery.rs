@@ -10,7 +10,10 @@ impl Run {
         let action = self.recovery.determine_strategy(&self.recovery_ctx);
         match action {
             RecoveryAction::CompactContext { target_ratio } => {
-                self.emit(RunEvent::Error {
+                self.emit(RunEvent::Notice {
+                    code: "context_compaction_retry".to_string(),
+                    severity: "warning".to_string(),
+                    recoverable: true,
                     message: format!(
                         "context too long; compacting to {:.0}% before retry",
                         target_ratio * 100.0
@@ -20,14 +23,20 @@ impl Run {
                 RecoveryOutcome::Retry
             }
             RecoveryAction::EscalateTokens { new_max_tokens } => {
-                self.emit(RunEvent::Error {
+                self.emit(RunEvent::Notice {
+                    code: "max_tokens_escalation".to_string(),
+                    severity: "info".to_string(),
+                    recoverable: true,
                     message: format!("escalating max_tokens to {new_max_tokens}"),
                 });
                 self.client.set_max_tokens(new_max_tokens);
                 RecoveryOutcome::Retry
             }
             RecoveryAction::Retry { delay_ms, reason } => {
-                self.emit(RunEvent::Error {
+                self.emit(RunEvent::Notice {
+                    code: "model_retry".to_string(),
+                    severity: "warning".to_string(),
+                    recoverable: true,
                     message: format!(
                         "Failed to connect to remote model ({}), retrying in {}s (attempt {}/{})",
                         reason.as_str(),
@@ -36,11 +45,17 @@ impl Run {
                         self.recovery.max_retries(),
                     ),
                 });
-                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                tokio::select! {
+                    _ = self.cancel.cancelled() => return RecoveryOutcome::GiveUp,
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(delay_ms.min(30_000))) => {}
+                }
                 RecoveryOutcome::Retry
             }
             RecoveryAction::SwitchModel { model } => {
-                self.emit(RunEvent::Error {
+                self.emit(RunEvent::Notice {
+                    code: "fallback_model".to_string(),
+                    severity: "warning".to_string(),
+                    recoverable: true,
                     message: format!("switching to fallback model: {model}"),
                 });
                 // Look up the new model config from the Brain's shared Config
