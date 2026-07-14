@@ -48,6 +48,13 @@ export const LazyEntry = memo(function LazyEntry({
   const [nearViewport, setNearViewport] = useState(forceVisible);
   const visible = forceVisible || nearViewport;
 
+  // When a parent briefly force-mounts (e.g. prepended older prompts), keep the
+  // entry marked near-viewport so clearing forceVisible does not collapse it
+  // back to a placeholder and shift scroll.
+  useEffect(() => {
+    if (forceVisible) setNearViewport(true);
+  }, [forceVisible]);
+
   useEffect(() => {
     const el = wrapperRef.current;
     if (!el) return;
@@ -76,6 +83,7 @@ export const LazyEntry = memo(function LazyEntry({
   return (
     <div
       ref={wrapperRef}
+      data-entry-id={entryId}
       className={visible ? 'lazy-entry-mounted' : 'lazy-entry-placeholder'}
       style={visible ? undefined : { minHeight: measuredHeight.current }}
     >

@@ -1,4 +1,4 @@
-import { RefObject, useState, memo } from 'react';
+import { RefObject, useState, memo, useRef, useLayoutEffect, useEffect, useCallback } from 'react';
 import { useSelector, shallowEqual } from 'react-redux';
 import { RootState } from '../../store';
 import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
@@ -18,6 +18,34 @@ interface ChatAreaProps {
   onSend?: (msg: string) => void;
 }
 
+/** loadMorePrompts adds 2 prompts → typically 4 entries (user + turn each). */
+const PREPEND_FORCE_MOUNT = 4;
+/** Stop preserving after this long even if height keeps changing. */
+const PRESERVE_MAX_MS = 1000;
+/** Consider layout settled after this quiet period with no resize. */
+const PRESERVE_SETTLE_MS = 150;
+
+interface ScrollPreserveState {
+  /** Entry that should stay visually fixed while older content prepends. */
+  anchorId: string;
+  /** Desired viewport Y of the anchor (from getBoundingClientRect().top). */
+  anchorTop: number;
+}
+
+function restoreScrollAnchor(
+  scrollEl: HTMLElement,
+  preserve: ScrollPreserveState,
+): void {
+  const anchorEl = scrollEl.querySelector(
+    `[data-entry-id="${CSS.escape(preserve.anchorId)}"]`,
+  ) as HTMLElement | null;
+  if (!anchorEl) return;
+  const delta = anchorEl.getBoundingClientRect().top - preserve.anchorTop;
+  if (Math.abs(delta) > 0.5) {
+    scrollEl.scrollTop += delta;
+  }
+}
+
 export const ChatArea = memo(function ChatArea({
   entryIds,
   defaultModel,
@@ -35,6 +63,68 @@ export const ChatArea = memo(function ChatArea({
   const allPrompts = useSelector((state: RootState) => state.chat.allPrompts[activeSessionId ?? '']);
   const visiblePromptsCount = useSelector((state: RootState) => state.chat.visiblePromptsCount[activeSessionId ?? '']);
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
+  /** Force-mount newly prepended rows so placeholder→real height doesn't fight the anchor. */
+  const [forceMountTopCount, setForceMountTopCount] = useState(0);
+  const preserveRef = useRef<ScrollPreserveState | null>(null);
+
+  const restoreAnchor = useCallback(() => {
+    const preserve = preserveRef.current;
+    const scrollEl = scrollRef.current;
+    if (!preserve || !scrollEl) return;
+    restoreScrollAnchor(scrollEl, preserve);
+  }, [scrollRef]);
+
+  // Correct before paint whenever prepended entries land in the DOM.
+  useLayoutEffect(() => {
+    if (!preserveRef.current) return;
+    restoreAnchor();
+  }, [entryIds, restoreAnchor]);
+
+  // Keep correcting while LazyEntry / markdown / code blocks settle their heights.
+  useEffect(() => {
+    if (!isLoadingOlder) return;
+    const content = contentRef.current;
+
+    let settled = false;
+    let settleTimer: number | null = null;
+    let maxTimer: number | null = null;
+    let ro: ResizeObserver | null = null;
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (settleTimer != null) clearTimeout(settleTimer);
+      if (maxTimer != null) clearTimeout(maxTimer);
+      ro?.disconnect();
+      preserveRef.current = null;
+      setForceMountTopCount(0);
+      setIsLoadingOlder(false);
+    };
+
+    const scheduleSettle = () => {
+      if (settleTimer != null) clearTimeout(settleTimer);
+      settleTimer = window.setTimeout(finish, PRESERVE_SETTLE_MS);
+    };
+
+    if (content && typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(() => {
+        restoreAnchor();
+        scheduleSettle();
+      });
+      ro.observe(content);
+    }
+
+    // Kick the settle clock even if height doesn't change further.
+    scheduleSettle();
+    maxTimer = window.setTimeout(finish, PRESERVE_MAX_MS);
+
+    return () => {
+      settled = true;
+      if (settleTimer != null) clearTimeout(settleTimer);
+      if (maxTimer != null) clearTimeout(maxTimer);
+      ro?.disconnect();
+    };
+  }, [isLoadingOlder, contentRef, restoreAnchor]);
 
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const target = e.currentTarget;
@@ -43,37 +133,34 @@ export const ChatArea = memo(function ChatArea({
       visiblePromptsCount < allPrompts.length &&
       !isLoadingOlder &&
       !isProcessing &&
-      activeSessionId
+      activeSessionId &&
+      entryIds.length > 0
     ) {
+      const anchorId = entryIds[0];
+      const anchorEl = target.querySelector(
+        `[data-entry-id="${CSS.escape(anchorId)}"]`,
+      ) as HTMLElement | null;
+      if (!anchorEl) return;
+
+      preserveRef.current = {
+        anchorId,
+        anchorTop: anchorEl.getBoundingClientRect().top,
+      };
+      setForceMountTopCount(PREPEND_FORCE_MOUNT);
       setIsLoadingOlder(true);
-
-      const oldScrollHeight = target.scrollHeight;
-      const oldScrollTop = target.scrollTop;
-
-      setTimeout(() => {
-        dispatch(loadMorePrompts({ sessionId: activeSessionId }));
-
-        requestAnimationFrame(() => {
-          if (scrollRef.current) {
-            const newScrollHeight = scrollRef.current.scrollHeight;
-            const deltaHeight = newScrollHeight - oldScrollHeight;
-            scrollRef.current.scrollTop = oldScrollTop + deltaHeight;
-          }
-          setIsLoadingOlder(false);
-        });
-      }, 400); // Natural loading delay
+      dispatch(loadMorePrompts({ sessionId: activeSessionId }));
     }
   };
 
   return (
     <div className="chat-container">
       <div className="chat-history" ref={scrollRef} onScroll={handleScroll}>
+        {isLoadingOlder && (
+          <div className="chat-history-load-older" aria-hidden>
+            <div className="loader-spinner" />
+          </div>
+        )}
         <div ref={contentRef} className="chat-history-content">
-          {isLoadingOlder && (
-            <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '16px 0' }}>
-              <div className="loader-spinner" />
-            </div>
-          )}
           {entryIds.map((id, index) => (
             <LazyEntry
               key={id}
@@ -82,7 +169,7 @@ export const ChatArea = memo(function ChatArea({
               handleRetry={handleRetry}
               isProcessing={isProcessing}
               scrollRef={scrollRef}
-              forceVisible={index >= entryIds.length - 3}
+              forceVisible={index < forceMountTopCount || index >= entryIds.length - 3}
               onSend={onSend}
             />
           ))}

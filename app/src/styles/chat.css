@@ -109,6 +109,19 @@
   overflow-anchor: none;
 }
 
+/* Overlay so the spinner does not change scrollHeight while loading older prompts. */
+.chat-history-load-older {
+  position: absolute;
+  top: 8px;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  pointer-events: none;
+}
+
 .chat-history-content {
   display: flex;
   flex-direction: column;
