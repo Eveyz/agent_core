@@ -510,12 +510,7 @@ async fn execute_agent_node(
     let runtime_subagent_id = subagent.id().to_string();
     let started = std::time::Instant::now();
     let run_result = subagent.run_with_sender(&task, event_tx).await;
-    let messages = subagent.messages();
-    let transcript_ref = crate::tools::subagent::persist_subagent_messages(
-        &runtime_subagent_id,
-        &messages,
-    )
-    .await;
+    let transcript_ref = subagent.transcript_path();
     let elapsed_ms = started.elapsed().as_millis() as i64;
     if transcript_ref.is_none() {
         tracing::warn!(subagent_id = %runtime_subagent_id, node_id = %node.id,
@@ -646,4 +641,3 @@ fn emit<F: FnOnce() -> AgentEvent>(event_tx: &Option<EventSender>, f: F) {
         let _ = tx.send(f());
     }
 }
-

@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -14,6 +14,9 @@ use crate::runtime::EventGuard;
 use crate::runtime::supervisor::ProcessSupervisor;
 use crate::tools::ToolRegistry;
 use crate::types::{AgentEvent, EventSender, Message, MessageDelta, StreamEvent, ToolCall};
+use transcript::{TranscriptOutcome, TranscriptRecorder};
+
+pub mod transcript;
 
 /// How the subagent's result should be formatted before returning to the parent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,6 +135,27 @@ pub struct SubagentResult {
     pub success: bool,
 }
 
+#[derive(Default, Clone)]
+struct StreamPartial {
+    text: String,
+    thinking: String,
+}
+
+impl StreamPartial {
+    fn merge_attempt(&mut self, attempt: &Self) {
+        if attempt.text.len() > self.text.len() {
+            self.text.clone_from(&attempt.text);
+        }
+        if attempt.thinking.len() > self.thinking.len() {
+            self.thinking.clone_from(&attempt.thinking);
+        }
+    }
+
+    fn recoverable_text(&self) -> String {
+        crate::hygiene::wrap_thinking(&self.thinking, &self.text)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentMemoryIdentity {
     agent_id: String,
@@ -169,6 +193,7 @@ pub struct Subagent {
     /// Optional process supervisor — when set, the subagent's ShellTool is
     /// replaced with a supervised version for process-group isolation.
     pub supervisor: Option<Arc<Mutex<ProcessSupervisor>>>,
+    transcript: Option<Mutex<TranscriptRecorder>>,
 }
 
 impl Subagent {
@@ -191,8 +216,10 @@ impl Subagent {
 
         let registry = Self::wire_working_dir(registry, &config);
 
+        let id = uuid::Uuid::new_v4().to_string();
+        let transcript = TranscriptRecorder::in_default_root(&id).map(Mutex::new);
         Self {
-            id: uuid::Uuid::new_v4().to_string(),
+            id,
             role_name: role_name.to_string(),
             config,
             client,
@@ -206,6 +233,7 @@ impl Subagent {
             parent_run_id: None,
             cancel_token: None,
             supervisor: None,
+            transcript,
         }
     }
 
@@ -287,6 +315,25 @@ impl Subagent {
         task: &str,
         event_sender: Option<EventSender>,
     ) -> Result<SubagentResult> {
+        let result = self.run_inner(task, event_sender).await;
+        let outcome = match &result {
+            Ok(result) if result.success => TranscriptOutcome::Succeeded,
+            Ok(_) => TranscriptOutcome::Failed,
+            Err(error) if error.to_string().contains("cancel") => TranscriptOutcome::Cancelled,
+            Err(_) => TranscriptOutcome::Failed,
+        };
+        if let Err(error) = self.finalize_transcript(outcome) {
+            tracing::warn!(subagent_id = %self.id, error = %error,
+                "Failed to finalize subagent transcript");
+        }
+        result
+    }
+
+    async fn run_inner(
+        &mut self,
+        task: &str,
+        event_sender: Option<EventSender>,
+    ) -> Result<SubagentResult> {
         // NOTE: We intentionally do NOT touch the process-global CWD here.
         // Modifying std::env::set_current_dir() races with concurrent
         // subagents sharing the same tokio runtime. The subagent's working
@@ -323,6 +370,7 @@ impl Subagent {
         }
 
         self.context.add(Message::user_with_model(task, &self.client.model.model_id));
+        self.checkpoint_transcript(None);
 
         // Emit SubagentStart
         if let Some(ref tx) = event_sender {
@@ -369,7 +417,7 @@ impl Subagent {
 
             self.context.trim_to_fit();
 
-            let messages = self.context.messages();
+            let base_messages = self.context.messages();
             let tools = self.registry.tool_definitions();
 
             const MAX_STREAM_ATTEMPTS: u32 = 3;
@@ -379,11 +427,18 @@ impl Subagent {
             let mut reasoning_blob = crate::types::ReasoningState::default();
             let mut tool_calls = Vec::new();
             let mut message_id = String::new();
+            let mut retry_checkpoint = StreamPartial::default();
 
             for attempt in 0..MAX_STREAM_ATTEMPTS {
+                let mut attempt_messages = base_messages.clone();
+                crate::hygiene::inject_stream_retry_hint(
+                    &mut attempt_messages,
+                    &retry_checkpoint.thinking,
+                    &retry_checkpoint.text,
+                );
                 let stream = match self
                     .client
-                    .chat_completion_stream(&messages, &tools)
+                    .chat_completion_stream(&attempt_messages, &tools)
                     .await
                 {
                     Ok(s) => s,
@@ -407,7 +462,11 @@ impl Subagent {
                     }
                 };
 
-                match self.collect_stream(stream, event_sender.as_ref()).await {
+                let mut attempt_partial = StreamPartial::default();
+                match self
+                    .collect_stream(stream, event_sender.as_ref(), &mut attempt_partial)
+                    .await
+                {
                     Ok((t, th, blob, tc, mid)) => {
                         text = t;
                         thinking = th;
@@ -418,6 +477,11 @@ impl Subagent {
                         break;
                     }
                     Err(e) => {
+                        retry_checkpoint.merge_attempt(&attempt_partial);
+                        self.checkpoint_transcript(Some(&retry_checkpoint.recoverable_text()));
+                        if self.cancel_token.as_ref().is_some_and(|t| t.is_cancelled()) {
+                            return Err(e);
+                        }
                         if attempt + 1 < MAX_STREAM_ATTEMPTS {
                             let delay = std::time::Duration::from_millis(1000 * 2u64.pow(attempt));
                             tracing::warn!(attempt, delay_ms = delay.as_millis(), error = %e,
@@ -498,6 +562,7 @@ impl Subagent {
                     msg = msg.with_reasoning(reasoning);
                 }
                 self.context.add(msg);
+                self.checkpoint_transcript(None);
             }
 
             // Execute tools, emitting SubagentToolStart/SubagentToolEnd events
@@ -586,6 +651,7 @@ impl Subagent {
                 }
                 self.context
                     .add(Message::tool(call.id.clone(), result.clone(), Some(call.function.name.clone())));
+                self.checkpoint_transcript(None);
             }
         }
 
@@ -638,6 +704,7 @@ impl Subagent {
         &self,
         stream: impl futures::Stream<Item = Result<StreamEvent>>,
         event_sender: Option<&EventSender>,
+        partial: &mut StreamPartial,
     ) -> Result<(String, String, crate::types::ReasoningState, Vec<ToolCall>, String)> {
         use crate::client::streaming::{TokenAccumulator, ToolCallAccumulator};
         use futures::StreamExt;
@@ -682,6 +749,8 @@ impl Subagent {
                 StreamEvent::TextDelta(delta) => {
                     tokens.push_text(&delta);
                     text_buffer.push_str(&delta);
+                    partial.text.push_str(&delta);
+                    self.checkpoint_transcript(Some(&partial.recoverable_text()));
                     if tokens.should_flush() {
                         if let Some((text, thinking)) = tokens.flush() {
                             if let Some(tx) = event_sender {
@@ -706,6 +775,8 @@ impl Subagent {
                 StreamEvent::ThinkingDelta(delta) => {
                     tokens.push_thinking(&delta);
                     thinking_buffer.push_str(&delta);
+                    partial.thinking.push_str(&delta);
+                    self.checkpoint_transcript(Some(&partial.recoverable_text()));
                     if tokens.should_flush() {
                         if let Some((text, thinking)) = tokens.flush() {
                             if let Some(tx) = event_sender {
@@ -838,6 +909,30 @@ impl Subagent {
                 tracing::warn!("failed to persist agent memory (assistant): {e}");
             }
         }
+    }
+
+    fn checkpoint_transcript(&self, partial_assistant: Option<&str>) {
+        if let Some(recorder) = &self.transcript {
+            recorder
+                .lock()
+                .checkpoint(self.context.raw_messages(), partial_assistant);
+        }
+    }
+
+    fn finalize_transcript(&self, outcome: TranscriptOutcome) -> Result<std::path::PathBuf> {
+        let recorder = self
+            .transcript
+            .as_ref()
+            .context("subagent transcript recorder is unavailable")?;
+        recorder
+            .lock()
+            .finalize(self.context.raw_messages(), outcome)
+    }
+
+    pub fn transcript_path(&self) -> Option<std::path::PathBuf> {
+        self.transcript
+            .as_ref()
+            .map(|recorder| recorder.lock().path().to_path_buf())
     }
 
     pub fn id(&self) -> &str {

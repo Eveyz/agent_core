@@ -257,9 +257,10 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
 
         // Persist full subagent conversation to disk so the parent context
         // stays small (cache-friendly) while preserving the complete history.
-        let file_ref = persist_subagent_messages(&result.subagent_id, &messages)
-            .await
-            .map(|p| format!("\n\n---\n⚠️ Full subagent messages persisted to: {}", p.display()))
+        let file_ref = result
+            .transcript_ref
+            .as_ref()
+            .map(|path| format!("\n\n---\n⚠️ Full subagent transcript: {path}"))
             .unwrap_or_default();
 
         // Save subagent session if session manager is available
@@ -515,14 +516,10 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                 .await;
 
                 // Persist messages to file (cache-friendly: parent context stays small).
-                let file_ref = match &result {
-                    Ok((sub_result, messages)) => {
-                        persist_subagent_messages(&sub_result.subagent_id, messages)
-                            .await
-                            .map(|p| p.display().to_string())
-                    }
-                    Err(_) => None,
-                };
+                let file_ref = result
+                    .as_ref()
+                    .ok()
+                    .and_then(|(sub_result, _)| sub_result.transcript_ref.clone());
 
                 if let Some(ref mgr) = mgr_clone {
                     let mgr = mgr.lock();
@@ -761,63 +758,10 @@ fn truncate_str(s: &str, max_len: usize) -> String {
 
 use crate::util::floor_char_boundary;
 
-// ── Subagent message persistence ─────────────────────────────────────
-
-/// Write the full subagent conversation (`messages`) to
-/// `~/.agverse/subagents/{agent_id}_{ts}.messages.json`.
-/// Returns the absolute path on success so it can be included in the
-/// parent-agent tool result as a pointer.  The parent context stays small
-/// (cache-friendly), while the full history is preserved on disk.
-///
-/// Runs file I/O on a blocking thread so we don't stall the async runtime.
-pub(crate) async fn persist_subagent_messages(
-    subagent_id: &str,
-    messages: &[Message],
-) -> Option<std::path::PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    let json = serde_json::to_string_pretty(messages).ok()?;
-    let msg_count = messages.len();
-
-    let filename = subagent_message_filename(subagent_id)?;
-    let subagent_id = subagent_id.to_string();
-    tokio::task::spawn_blocking(move || -> Option<std::path::PathBuf> {
-        let dir = std::path::PathBuf::from(&home)
-            .join(".agverse")
-            .join("subagents");
-        if std::fs::create_dir_all(&dir).is_err() {
-            return None;
-        }
-
-        let path = dir.join(&filename);
-
-        if std::fs::write(&path, &json).is_err() {
-            return None;
-        }
-
-        tracing::info!(
-            subagent_id = %subagent_id,
-            path = %path.display(),
-            msg_count = msg_count,
-            "Persisted subagent messages"
-        );
-
-        Some(path)
-    })
-    .await
-    .ok()
-    .flatten()
-}
-
-fn subagent_message_filename(subagent_id: &str) -> Option<String> {
-    let runtime_id = uuid::Uuid::parse_str(subagent_id).ok()?;
-    Some(format!("{}_{}.messages.json", runtime_id, uuid::Uuid::new_v4()))
-}
-
 // ── Shared spawn logic ───────────────────────────────────────────────
 
 /// Result from spawning a single subagent.
 struct SpawnResult {
-    subagent_id: String,
     success: bool,
     iterations_used: usize,
     output: String,
@@ -825,6 +769,7 @@ struct SpawnResult {
     last_text: String,
     tool_count: usize,
     tool_summary: String,
+    transcript_ref: Option<String>,
 }
 
 impl crate::session::SubagentResultLike for SpawnResult {
@@ -1179,6 +1124,9 @@ Do NOT attempt to bypass a missing capability through another tool.";
 
     let runtime_subagent_id = subagent.id().to_string();
     let run_result = subagent.run_with_sender(task, event_sender).await;
+    let transcript_ref = subagent
+        .transcript_path()
+        .map(|path| path.display().to_string());
 
     // Collect subagent messages for session saving
     let messages = subagent.into_messages();
@@ -1186,11 +1134,10 @@ Do NOT attempt to bypass a missing capability through another tool.";
     let result = match run_result {
         Ok(result) => result,
         Err(error) => {
-            let transcript = persist_subagent_messages(&runtime_subagent_id, &messages).await;
-            if let Some(path) = transcript {
+            if let Some(path) = &transcript_ref {
                 return Err(error.context(format!(
                     "partial subagent transcript persisted to {}",
-                    path.display()
+                    path
                 )));
             }
             tracing::warn!(
@@ -1206,13 +1153,13 @@ Do NOT attempt to bypass a missing capability through another tool.";
 
     Ok((
         SpawnResult {
-            subagent_id: runtime_subagent_id,
             success: result.success,
             iterations_used: result.iterations_used,
             output: result.output,
             last_text: result.last_text.clone(),
             tool_count,
             tool_summary,
+            transcript_ref,
         },
         messages,
     ))
@@ -1224,16 +1171,6 @@ mod capability_tests {
 
     fn names(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_string()).collect()
-    }
-
-    #[test]
-    fn transcript_filename_requires_a_runtime_uuid() {
-        let runtime_id = "550e8400-e29b-41d4-a716-446655440000";
-        let filename = subagent_message_filename(runtime_id).expect("valid runtime id");
-        assert!(filename.starts_with(runtime_id));
-        assert!(filename.ends_with(".messages.json"));
-        assert!(subagent_message_filename("../outside").is_none());
-        assert!(subagent_message_filename("display-name").is_none());
     }
 
     #[cfg(unix)]

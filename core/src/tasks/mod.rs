@@ -631,12 +631,7 @@ impl Tool for TaskExecuteTool {
         // Persist messages (mirrors the `subagent` tool's persistence so the
         // full task history is recoverable even though the parent context
         // only sees the formatted result).
-        let messages = subagent.messages();
-        let transcript_ref = crate::tools::subagent::persist_subagent_messages(
-            &runtime_subagent_id,
-            &messages,
-        )
-        .await;
+        let transcript_ref = subagent.transcript_path();
         if transcript_ref.is_none() {
             tracing::warn!(subagent_id = %runtime_subagent_id, task_id = %id,
                 "Task subagent transcript could not be persisted");
