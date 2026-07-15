@@ -501,15 +501,60 @@ async fn execute_agent_node(
         registry,
         permission_config,
         memory,
-        Some(def.id.clone()),
+        Some(def.memory_identity()),
     )
     .with_supervisor(supervisor.clone())
     .with_cancel_token(cancel_token);
 
     let task = format_agent_input(node, input);
+    let runtime_subagent_id = subagent.id().to_string();
     let started = std::time::Instant::now();
-    let result = subagent.run_with_sender(&task, event_tx).await?;
+    let run_result = subagent.run_with_sender(&task, event_tx).await;
+    let messages = subagent.messages();
+    let transcript_ref = crate::tools::subagent::persist_subagent_messages(
+        &runtime_subagent_id,
+        &messages,
+    )
+    .await;
     let elapsed_ms = started.elapsed().as_millis() as i64;
+    if transcript_ref.is_none() {
+        tracing::warn!(subagent_id = %runtime_subagent_id, node_id = %node.id,
+            "Workflow subagent transcript could not be persisted");
+    }
+    let result = match run_result {
+        Ok(result) => result,
+        Err(error) => {
+            let recovery = transcript_ref
+                .as_ref()
+                .map(|path| format!("Partial transcript: {}", path.display()))
+                .unwrap_or_else(|| "Partial transcript could not be persisted".to_string());
+            let entry = AgentHistoryEntry {
+                agent_id: def.id.clone(),
+                session_id: session_id.to_string(),
+                workflow_run_id: run_id.to_string(),
+                trigger: "workflow".to_string(),
+                input: task,
+                output: format!("{error}\n\n{recovery}"),
+                success: false,
+                model_used: model_config.model_id.clone(),
+                process_time_ms: elapsed_ms,
+                ..Default::default()
+            };
+            let hist_storage = storage.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                let _ = agent_registry::history::record(&hist_storage, &entry);
+            })
+            .await;
+            return Err(error.context(recovery));
+        }
+    };
+    let transcript_path = transcript_ref
+        .as_ref()
+        .map(|path| path.display().to_string());
+    let history_output = match &transcript_path {
+        Some(path) => format!("{}\n\nTranscript: {path}", result.output),
+        None => result.output.clone(),
+    };
 
     // Record agent history.
     let entry = AgentHistoryEntry {
@@ -518,7 +563,7 @@ async fn execute_agent_node(
         workflow_run_id: run_id.to_string(),
         trigger: "workflow".to_string(),
         input: task,
-        output: result.output.clone(),
+        output: history_output,
         iterations_used: result.iterations_used as u32,
         success: result.success,
         model_used: model_config.model_id.clone(),
@@ -537,6 +582,7 @@ async fn execute_agent_node(
         "result": result.output,
         "success": result.success,
         "iterations": result.iterations_used,
+        "transcript_ref": transcript_path,
     });
 
     Ok((output, tokens))
@@ -600,5 +646,4 @@ fn emit<F: FnOnce() -> AgentEvent>(event_tx: &Option<EventSender>, f: F) {
         let _ = tx.send(f());
     }
 }
-
 

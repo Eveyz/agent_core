@@ -625,21 +625,50 @@ impl Tool for TaskExecuteTool {
         )
         .with_supervisor(supervisor)
         .with_cancel_token(cancel_token);
-        let result = subagent.run(&task_prompt).await?;
+        let runtime_subagent_id = subagent.id().to_string();
+        let run_result = subagent.run(&task_prompt).await;
 
         // Persist messages (mirrors the `subagent` tool's persistence so the
         // full task history is recoverable even though the parent context
         // only sees the formatted result).
         let messages = subagent.messages();
-        let _ = crate::tools::subagent::persist_subagent_messages(id, &messages).await;
+        let transcript_ref = crate::tools::subagent::persist_subagent_messages(
+            &runtime_subagent_id,
+            &messages,
+        )
+        .await;
+        if transcript_ref.is_none() {
+            tracing::warn!(subagent_id = %runtime_subagent_id, task_id = %id,
+                "Task subagent transcript could not be persisted");
+        }
+        let result = match run_result {
+            Ok(result) => result,
+            Err(error) => {
+                let recovery = transcript_ref
+                    .as_ref()
+                    .map(|path| format!("Partial transcript: {}", path.display()))
+                    .unwrap_or_else(|| "Partial transcript could not be persisted".to_string());
+                self.board.lock().update(
+                    id,
+                    TaskStatus::Failed,
+                    Some(format!("{error}\n\n{recovery}")),
+                )?;
+                return Err(error.context(recovery));
+            }
+        };
+        let transcript_note = transcript_ref
+            .as_ref()
+            .map(|path| format!("\n\nTranscript: {}", path.display()))
+            .unwrap_or_default();
+        let persisted_output = format!("{}{}", result.output, transcript_note);
 
         // Update task with result
         {
             let mut board = self.board.lock();
             if result.success {
-                board.update(id, TaskStatus::Completed, Some(result.output.clone()))?;
+                board.update(id, TaskStatus::Completed, Some(persisted_output.clone()))?;
             } else {
-                board.update(id, TaskStatus::Failed, Some(result.output.clone()))?;
+                board.update(id, TaskStatus::Failed, Some(persisted_output.clone()))?;
             }
 
             // Report unblocked tasks
@@ -659,7 +688,7 @@ impl Tool for TaskExecuteTool {
                     "failed"
                 },
                 result.iterations_used,
-                result.output
+                persisted_output
             );
 
             if !unblocked.is_empty() {

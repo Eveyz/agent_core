@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::{Config, ModelConfig};
 use crate::memory::storage::Storage;
 use crate::permission::{ConfigRule, PermissionConfig, PermissionMode};
-use crate::subagent::SubagentConfig;
+use crate::subagent::{AgentMemoryIdentity, SubagentConfig};
 
 /// A user-defined agent definition persisted in the `agents` table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +83,10 @@ impl AgentDef {
         } else {
             &self.memory_group
         }
+    }
+
+    pub fn memory_identity(&self) -> AgentMemoryIdentity {
+        AgentMemoryIdentity::new(self.id.clone(), self.memory_key().to_string())
     }
 
     /// Parse a row from the `agents` table into an [`AgentDef`].
@@ -380,5 +384,22 @@ fn parse_permission_rules(value: &serde_json::Value) -> Option<Vec<ConfigRule>> 
         Some(Vec::new())
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memory_identity_uses_group_for_isolation_and_agent_for_provenance() {
+        let def = AgentDef {
+            id: "agent-a".into(),
+            memory_group: "shared-reviewers".into(),
+            ..AgentDef::default()
+        };
+        let identity = def.memory_identity();
+        assert_eq!(identity.agent_id(), "agent-a");
+        assert_eq!(identity.memory_key(), "shared-reviewers");
     }
 }

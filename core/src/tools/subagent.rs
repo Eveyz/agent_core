@@ -1,7 +1,7 @@
 use crate::config::ModelConfig;
 use crate::permission::PermissionConfig;
 use crate::session::SessionManager;
-use crate::subagent::{ResultStrategy, Subagent, SubagentConfig};
+use crate::subagent::{PersonaKey, ResultStrategy, Subagent, SubagentConfig};
 use crate::tools::{Tool, ToolRegistry, ToolUpdateFn};
 use crate::types::{EventSender, Message, Role};
 use anyhow::Result;
@@ -257,7 +257,7 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
 
         // Persist full subagent conversation to disk so the parent context
         // stays small (cache-friendly) while preserving the complete history.
-        let file_ref = persist_subagent_messages(&id, &messages)
+        let file_ref = persist_subagent_messages(&result.subagent_id, &messages)
             .await
             .map(|p| format!("\n\n---\n⚠️ Full subagent messages persisted to: {}", p.display()))
             .unwrap_or_default();
@@ -516,9 +516,11 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
 
                 // Persist messages to file (cache-friendly: parent context stays small).
                 let file_ref = match &result {
-                    Ok((_, messages)) => persist_subagent_messages(&id, messages)
-                        .await
-                        .map(|p| p.display().to_string()),
+                    Ok((sub_result, messages)) => {
+                        persist_subagent_messages(&sub_result.subagent_id, messages)
+                            .await
+                            .map(|p| p.display().to_string())
+                    }
                     Err(_) => None,
                 };
 
@@ -769,14 +771,15 @@ use crate::util::floor_char_boundary;
 ///
 /// Runs file I/O on a blocking thread so we don't stall the async runtime.
 pub(crate) async fn persist_subagent_messages(
-    agent_id: &str,
+    subagent_id: &str,
     messages: &[Message],
 ) -> Option<std::path::PathBuf> {
     let home = std::env::var("HOME").ok()?;
     let json = serde_json::to_string_pretty(messages).ok()?;
     let msg_count = messages.len();
 
-    let agent_id = agent_id.to_string();
+    let filename = subagent_message_filename(subagent_id)?;
+    let subagent_id = subagent_id.to_string();
     tokio::task::spawn_blocking(move || -> Option<std::path::PathBuf> {
         let dir = std::path::PathBuf::from(&home)
             .join(".agverse")
@@ -785,7 +788,6 @@ pub(crate) async fn persist_subagent_messages(
             return None;
         }
 
-        let filename = format!("{}_{}.messages.json", agent_id, uuid::Uuid::new_v4());
         let path = dir.join(&filename);
 
         if std::fs::write(&path, &json).is_err() {
@@ -793,7 +795,7 @@ pub(crate) async fn persist_subagent_messages(
         }
 
         tracing::info!(
-            agent_id = %agent_id,
+            subagent_id = %subagent_id,
             path = %path.display(),
             msg_count = msg_count,
             "Persisted subagent messages"
@@ -806,10 +808,16 @@ pub(crate) async fn persist_subagent_messages(
     .flatten()
 }
 
+fn subagent_message_filename(subagent_id: &str) -> Option<String> {
+    let runtime_id = uuid::Uuid::parse_str(subagent_id).ok()?;
+    Some(format!("{}_{}.messages.json", runtime_id, uuid::Uuid::new_v4()))
+}
+
 // ── Shared spawn logic ───────────────────────────────────────────────
 
 /// Result from spawning a single subagent.
 struct SpawnResult {
+    subagent_id: String,
     success: bool,
     iterations_used: usize,
     output: String,
@@ -990,6 +998,24 @@ fn effective_subagent_working_dir(args: &Value) -> std::path::PathBuf {
     find_workspace_root(&cwd)
 }
 
+async fn read_persona_file(
+    persona_root: &std::path::Path,
+    key: &PersonaKey,
+) -> Option<String> {
+    let canonical_root = tokio::fs::canonicalize(persona_root).await.ok()?;
+    let target = persona_root.join(format!("{}.md", key.as_str()));
+    let canonical_target = tokio::fs::canonicalize(target).await.ok()?;
+    if !canonical_target.starts_with(&canonical_root) {
+        tracing::warn!(
+            path = %canonical_target.display(),
+            root = %canonical_root.display(),
+            "Ignoring persona file outside the configured persona root"
+        );
+        return None;
+    }
+    tokio::fs::read_to_string(canonical_target).await.ok()
+}
+
 async fn spawn_single(
     args: &Value,
     model_config: &ModelConfig,
@@ -1036,16 +1062,16 @@ Do NOT attempt to bypass a missing capability through another tool.";
         .unwrap_or_else(|_| ".".to_string());
     let workspace_root = effective_subagent_working_dir(args);
 
-    // 1. Global Agent Persona
-    let global_agent = std::path::Path::new(&home).join(format!(".agverse/agents/{}.md", id));
-    if let Ok(c) = tokio::fs::read_to_string(&global_agent).await {
-        persona_content.push_str(&format!("Global Persona ({id}):\n{c}\n\n"));
-    }
+    if let Ok(persona_key) = PersonaKey::parse(id) {
+        let global_root = std::path::Path::new(&home).join(".agverse").join("agents");
+        if let Some(c) = read_persona_file(&global_root, &persona_key).await {
+            persona_content.push_str(&format!("Global Persona ({id}):\n{c}\n\n"));
+        }
 
-    // 2. Local/Project Agent Persona
-    let local_agent = workspace_root.join(format!(".agverse/agents/{}.md", id));
-    if let Ok(c) = tokio::fs::read_to_string(&local_agent).await {
-        persona_content.push_str(&format!("Project Persona ({id}):\n{c}\n\n"));
+        let local_root = workspace_root.join(".agverse").join("agents");
+        if let Some(c) = read_persona_file(&local_root, &persona_key).await {
+            persona_content.push_str(&format!("Project Persona ({id}):\n{c}\n\n"));
+        }
     }
 
     let base_prompt = args["system_prompt"]
@@ -1151,16 +1177,36 @@ Do NOT attempt to bypass a missing capability through another tool.";
         subagent = subagent.with_cancel_token(ct);
     }
 
-    let result = subagent.run_with_sender(task, event_sender).await?;
+    let runtime_subagent_id = subagent.id().to_string();
+    let run_result = subagent.run_with_sender(task, event_sender).await;
 
     // Collect subagent messages for session saving
     let messages = subagent.into_messages();
+
+    let result = match run_result {
+        Ok(result) => result,
+        Err(error) => {
+            let transcript = persist_subagent_messages(&runtime_subagent_id, &messages).await;
+            if let Some(path) = transcript {
+                return Err(error.context(format!(
+                    "partial subagent transcript persisted to {}",
+                    path.display()
+                )));
+            }
+            tracing::warn!(
+                subagent_id = %runtime_subagent_id,
+                "Failed to persist partial subagent transcript"
+            );
+            return Err(error);
+        }
+    };
 
     // Build tool execution summary from the subagent's message history
     let tool_summary = build_tool_summary(&messages);
 
     Ok((
         SpawnResult {
+            subagent_id: runtime_subagent_id,
             success: result.success,
             iterations_used: result.iterations_used,
             output: result.output,
@@ -1178,6 +1224,31 @@ mod capability_tests {
 
     fn names(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn transcript_filename_requires_a_runtime_uuid() {
+        let runtime_id = "550e8400-e29b-41d4-a716-446655440000";
+        let filename = subagent_message_filename(runtime_id).expect("valid runtime id");
+        assert!(filename.starts_with(runtime_id));
+        assert!(filename.ends_with(".messages.json"));
+        assert!(subagent_message_filename("../outside").is_none());
+        assert!(subagent_message_filename("display-name").is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn persona_lookup_rejects_a_symlink_outside_its_root() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let persona_root = temp.path().join("agents");
+        std::fs::create_dir(&persona_root).expect("persona root");
+        let outside = temp.path().join("outside.md");
+        std::fs::write(&outside, "secret").expect("outside persona");
+        symlink(&outside, persona_root.join("reviewer.md")).expect("persona symlink");
+        let key = PersonaKey::parse("reviewer").expect("valid persona key");
+        assert!(read_persona_file(&persona_root, &key).await.is_none());
     }
 
     #[test]

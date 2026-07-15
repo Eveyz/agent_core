@@ -77,6 +77,27 @@ pub struct SubagentConfig {
 /// Hard cap on subagent recursion depth.
 pub const MAX_SUBAGENT_DEPTH: u8 = 3;
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PersonaKey(String);
+
+impl PersonaKey {
+    pub fn parse(value: &str) -> Result<Self> {
+        let valid = !value.is_empty()
+            && value.len() <= 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+        if !valid {
+            anyhow::bail!("invalid persona key: expected 1-64 ASCII letters, digits, '-' or '_'");
+        }
+        Ok(Self(value.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 impl Default for SubagentConfig {
     fn default() -> Self {
         Self {
@@ -111,6 +132,21 @@ pub struct SubagentResult {
     pub success: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentMemoryIdentity {
+    agent_id: String,
+    memory_key: String,
+}
+
+impl AgentMemoryIdentity {
+    pub fn new(agent_id: impl Into<String>, memory_key: impl Into<String>) -> Self {
+        Self { agent_id: agent_id.into(), memory_key: memory_key.into() }
+    }
+
+    pub fn agent_id(&self) -> &str { &self.agent_id }
+    pub fn memory_key(&self) -> &str { &self.memory_key }
+}
+
 pub struct Subagent {
     pub id: String,
     pub role_name: String,
@@ -124,7 +160,7 @@ pub struct Subagent {
     /// before execution and persisted after.
     memory_store: Option<Arc<AgentMemoryStore>>,
     /// The agent definition id this subagent was built from (for memory keying).
-    agent_id: Option<String>,
+    memory_identity: Option<AgentMemoryIdentity>,
     pub session_id: Option<String>,
     pub parent_run_id: Option<String>,
     /// Optional cancel token — propagated from the parent Run so canceling the
@@ -165,7 +201,7 @@ impl Subagent {
             permission_policy,
             hook_registry: Arc::new(parking_lot::Mutex::new(crate::hooks::HookRegistry::new())),
             memory_store: None,
-            agent_id: None,
+            memory_identity: None,
             session_id: None,
             parent_run_id: None,
             cancel_token: None,
@@ -234,11 +270,11 @@ impl Subagent {
         registry: ToolRegistry,
         permission_config: crate::permission::PermissionConfig,
         memory_store: Option<Arc<AgentMemoryStore>>,
-        agent_id: Option<String>,
+        memory_identity: Option<AgentMemoryIdentity>,
     ) -> Self {
         let mut sa = Self::new(role_name, config, model_config, registry, permission_config);
         sa.memory_store = memory_store;
-        sa.agent_id = agent_id;
+        sa.memory_identity = memory_identity;
         sa
     }
 
@@ -410,6 +446,7 @@ impl Subagent {
             // field.  Promote thinking → text so the UI and parent agent see it.
             if tool_calls.is_empty() && text.trim().is_empty() && !thinking.trim().is_empty() {
                 text = thinking.trim().to_string();
+                thinking.clear();
                 if let Some(ref tx) = event_sender {
                     let _ = tx.send(AgentEvent::SubagentMessageUpdate {
                         subagent_id: self.id.clone(),
@@ -427,6 +464,7 @@ impl Subagent {
             tool_call_count += tool_calls.len();
 
             if tool_calls.is_empty() {
+                self.record_final_response(&text, &thinking, reasoning_blob);
                 guard.complete();
                 // Emit SubagentEnd
                 if let Some(ref tx) = event_sender {
@@ -734,13 +772,30 @@ impl Subagent {
         Ok((text_buffer, thinking_buffer, reasoning_blob, tool_calls, message_id))
     }
 
+    fn record_final_response(
+        &mut self,
+        text: &str,
+        thinking: &str,
+        mut reasoning: crate::types::ReasoningState,
+    ) {
+        let content = crate::hygiene::wrap_thinking(thinking, text);
+        let mut message = Message::assistant(&content);
+        if !thinking.trim().is_empty() && reasoning.text.is_none() {
+            reasoning.text = Some(thinking.trim().to_string());
+        }
+        if !reasoning.is_empty() {
+            message = message.with_reasoning(reasoning);
+        }
+        self.context.add(message);
+    }
+
     /// Inject relevant memories from the per-agent store into the context's
     /// active-memory segment (appended to any existing content).
     fn inject_memory(&mut self, task: &str) {
-        let (Some(store), Some(agent_id)) = (&self.memory_store, &self.agent_id) else {
+        let (Some(store), Some(identity)) = (&self.memory_store, &self.memory_identity) else {
             return;
         };
-        let injection = store.build_context_injection(agent_id, task, 2000);
+        let injection = store.build_context_injection(identity.memory_key(), task, 2000);
         if injection.is_empty() {
             return;
         }
@@ -760,14 +815,26 @@ impl Subagent {
     /// Persist the conversation turn (user task + assistant output) to the
     /// per-agent memory store. Errors are logged and swallowed.
     fn persist_memory(&self, task: &str, output: &str) {
-        let (Some(store), Some(agent_id)) = (&self.memory_store, &self.agent_id) else {
+        let (Some(store), Some(identity)) = (&self.memory_store, &self.memory_identity) else {
             return;
         };
-        if let Err(e) = store.store(agent_id, agent_id, "user", task, "conversation") {
+        if let Err(e) = store.store(
+            identity.memory_key(),
+            identity.agent_id(),
+            "user",
+            task,
+            "conversation",
+        ) {
             tracing::warn!("failed to persist agent memory (user): {e}");
         }
         if !output.is_empty() {
-            if let Err(e) = store.store(agent_id, agent_id, "assistant", output, "conversation") {
+            if let Err(e) = store.store(
+                identity.memory_key(),
+                identity.agent_id(),
+                "assistant",
+                output,
+                "conversation",
+            ) {
                 tracing::warn!("failed to persist agent memory (assistant): {e}");
             }
         }
@@ -791,6 +858,39 @@ impl Subagent {
 
 pub struct SubagentManager {
     subagents: HashMap<String, SubagentConfig>,
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::{PersonaKey, Subagent, SubagentConfig};
+    use crate::config::ModelConfig;
+    use crate::permission::PermissionConfig;
+    use crate::tools::ToolRegistry;
+    use crate::types::{ReasoningState, Role};
+
+    #[test]
+    fn persona_key_accepts_only_a_safe_single_path_component() {
+        assert!(PersonaKey::parse("code-reviewer").is_ok());
+        assert!(PersonaKey::parse("reviewer_2").is_ok());
+        for unsafe_value in ["../secret", "nested/agent", "nested\\agent", ".", "", "agent name"] {
+            assert!(PersonaKey::parse(unsafe_value).is_err());
+        }
+    }
+
+    #[test]
+    fn final_response_is_part_of_the_canonical_transcript() {
+        let mut subagent = Subagent::new(
+            "reviewer",
+            SubagentConfig::default(),
+            &ModelConfig::default(),
+            ToolRegistry::new(),
+            PermissionConfig::default(),
+        );
+        subagent.record_final_response("final answer", "", ReasoningState::default());
+        let final_message = subagent.messages().pop().expect("final assistant message");
+        assert_eq!(final_message.role, Role::Assistant);
+        assert_eq!(final_message.content.as_deref(), Some("final answer"));
+    }
 }
 
 impl Default for SubagentManager {
