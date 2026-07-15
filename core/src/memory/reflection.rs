@@ -431,13 +431,15 @@ impl ReflectionRepository {
             db.query_row("SELECT COUNT(*) FROM reflection_facts", [], |row| {
                 row.get::<_, i64>(0)
             })? as usize;
-        let status = db
-            .query_row(
-                "SELECT status FROM reflection_state ORDER BY updated_at DESC LIMIT 1",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .unwrap_or_else(|_| "idle".to_string());
+        let status = db.query_row(
+            "SELECT CASE \
+               WHEN EXISTS(SELECT 1 FROM reflection_state WHERE status = 'running') THEN 'running' \
+               WHEN EXISTS(SELECT 1 FROM reflection_state WHERE status = 'error') THEN 'error' \
+               WHEN EXISTS(SELECT 1 FROM reflection_state WHERE status = 'disabled') THEN 'disabled' \
+               ELSE 'idle' END",
+            [],
+            |row| row.get::<_, String>(0),
+        )?;
         let last_success_at = db.query_row(
             "SELECT COALESCE(MAX(last_success_at), '') FROM reflection_state",
             [],
@@ -762,14 +764,45 @@ async fn run_reflection(
         Err(e) => return Err(e).context("failed to read agverse.md for reflection"),
     };
     let prompt = build_extraction_prompt(&conversation_text, &existing_memory);
-    let messages = vec![Message::system(&prompt)];
+    let messages = vec![
+        Message::system(&prompt),
+        Message::user(
+            "Return the result now as exactly one JSON object. Do not include reasoning, prose, or Markdown fences.",
+        ),
+    ];
 
     let (response, _) = client
         .chat_completion(&messages, &[])
         .await
         .context("reflection LLM call failed")?;
 
-    let output = parse_reflection_output(&response)?;
+    let output = match parse_reflection_output(&response) {
+        Ok(output) => output,
+        Err(first_error) => {
+            tracing::warn!(
+                session_id = batch.session_id,
+                error = %first_error,
+                "reflection response was not valid structured JSON; requesting one format repair"
+            );
+            let repair_messages = vec![
+                Message::system(
+                    "Repair an AI response into exactly one valid JSON object with this schema: \
+                     {\"summary\":\"concise conversation summary\",\"facts\":[{\"section\":\"User Preferences\",\"text\":\"durable fact\"}]}. \
+                     Preserve the meaning. Use an empty facts array when needed. Output JSON only.",
+                ),
+                Message::user(&format!(
+                    "Original reflection task:\n{prompt}\n\nResponse to repair:\n{response}"
+                )),
+            ];
+            let (repaired, _) = client
+                .chat_completion(&repair_messages, &[])
+                .await
+                .context("reflection JSON repair call failed")?;
+            parse_reflection_output(&repaired).with_context(|| {
+                format!("reflection JSON repair failed after initial error: {first_error}")
+            })?
+        }
+    };
     persist_reflection_output(
         memory,
         repository,
@@ -874,20 +907,76 @@ fn write_atomic(path: &std::path::Path, content: &str) -> Result<()> {
 
 fn parse_reflection_output(response: &str) -> Result<ReflectionOutput> {
     let trimmed = response.trim();
-    let without_prefix = trimmed
-        .strip_prefix("```json")
-        .or_else(|| trimmed.strip_prefix("```"))
-        .unwrap_or(trimmed);
-    let json = without_prefix
-        .strip_suffix("```")
-        .unwrap_or(without_prefix)
-        .trim();
-    let output: ReflectionOutput =
-        serde_json::from_str(json).context("reflection model returned invalid JSON")?;
+    let mut last_error = None;
+    let output = std::iter::once(trimmed)
+        .chain(json_object_candidates(trimmed))
+        .find_map(
+            |candidate| match serde_json::from_str::<ReflectionOutput>(candidate) {
+                Ok(output) => Some(output),
+                Err(error) => {
+                    last_error = Some(error);
+                    None
+                }
+            },
+        )
+        .with_context(|| {
+            let shape = format!(
+                "len={}, fenced={}, reasoning={}, open_braces={}, close_braces={}",
+                response.len(),
+                response.contains("```"),
+                response.contains("<think>") || response.contains("reasoning"),
+                response.matches('{').count(),
+                response.matches('}').count(),
+            );
+            match last_error {
+                Some(error) => format!("reflection model returned invalid JSON ({shape}): {error}"),
+                None => format!("reflection model returned no JSON object ({shape})"),
+            }
+        })?;
     if output.summary.trim().is_empty() {
         anyhow::bail!("reflection model returned an empty conversation summary");
     }
     Ok(output)
+}
+
+fn json_object_candidates(input: &str) -> impl Iterator<Item = &str> {
+    input
+        .char_indices()
+        .filter(|(_, ch)| *ch == '{')
+        .filter_map(|(start, _)| balanced_json_object(input, start))
+}
+
+fn balanced_json_object(input: &str, start: usize) -> Option<&str> {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (offset, ch) in input[start..].char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    let end = start + offset + ch.len_utf8();
+                    return Some(&input[start..end]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn normalize_fact(text: &str) -> String {
@@ -1154,6 +1243,7 @@ mod tests {
             .unwrap();
 
         let status = repository.status().unwrap();
+        assert_eq!(status.status, "idle");
         assert!(!status.last_success_at.is_empty());
         assert_eq!(status.last_error, "model unavailable");
     }
@@ -1382,6 +1472,21 @@ mod tests {
         assert_eq!(output.summary, "The team selected Rust.");
         assert_eq!(output.facts.len(), 1);
         assert!(parse_reflection_output(r#"{"facts":[]}"#).is_err());
+    }
+
+    #[test]
+    fn reflection_output_accepts_json_wrapped_in_model_reasoning_and_prose() {
+        let response = r#"<think>I need to separate the summary from durable facts.</think>
+Here is the requested result:
+```json
+{"summary":"The user fixed reflection persistence.","facts":[]}
+```
+This follows the requested schema."#;
+
+        let output = parse_reflection_output(response)
+            .expect("a valid JSON object embedded in model prose should be parsed");
+        assert_eq!(output.summary, "The user fixed reflection persistence.");
+        assert!(output.facts.is_empty());
     }
 
     #[test]

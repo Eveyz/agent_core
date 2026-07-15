@@ -258,9 +258,9 @@ export default function MemoryTab() {
                   Status: {reflectionStatus.enabled ? reflectionStatus.status || 'idle' : 'disabled'}
                   {reflectionStatus.last_success_at && ` · Last success: ${new Date(reflectionStatus.last_success_at).toLocaleString()}`}
                 </div>
-                {reflectionStatus.last_error && (
+                {reflectionStatus.status === 'error' && reflectionStatus.last_error && (
                   <div style={{ gridColumn: '1 / -1', fontSize: '11px', color: 'var(--danger, #ef4444)' }}>
-                    Last error: {reflectionStatus.last_error}
+                    Current error: {reflectionStatus.last_error}
                   </div>
                 )}
               </div>
