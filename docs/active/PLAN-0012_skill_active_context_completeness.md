@@ -21,7 +21,7 @@ tags: [skills, context, subagent, cache]
 
 When a skill is active (`@skill:` / `skill_load` / auto-trigger), the agent and its subagents must receive:
 
-1. Full `SKILL.md` body (not mid-truncated by Segment 6)
+1. Activated `SKILL.md` body in a dedicated, higher-budget segment
 2. Absolute skill directory + asset path index (`templates/`, etc.)
 3. Principles that allow `read_file` under active skill dirs
 4. Session-active skills inherited by subagents
@@ -31,12 +31,25 @@ When a skill is active (`@skill:` / `skill_load` / auto-trigger), the agent and 
 
 | Area | Change |
 |------|--------|
-| Segment 6 | `loaded_skills.max_tokens = 0` (no hard truncate) |
+| Context | Separate bounded active-skill and compact discovery-catalog segments |
+| Discovery | `skill_search` queries metadata when the compact catalog is truncated |
 | Assets | `discover_assets` → `### Skill assets` in active / `skill_load` context |
-| Principles / catalog | Active vs inactive copy; allow `read_file` on listed assets |
+| Resources | `skill_list_resources` + `skill_read_resource` with canonical path containment |
+| Dependencies | `requires` resolves dependency-first, rejects missing skills/cycles, and unloads orphaned dependencies |
+| Subskills | Discover explicit `<skill>/subskills/<name>/SKILL.md` packages |
+| Paths | Run workspace roots include `.agent`, `.agents`, `.claude`, `.codex`, and `skills` |
+| Scripts | Canonical path validation, direct argv execution, 600s cap, Build-mode gating |
+| Principles / catalog | Active vs inactive copy; prefer contained resource reads |
 | `@skill:` | `parse_skill_mentions` + miss notes; steer / follow-up activate |
 | Subagent | `resolve_subagent_skills(declared ∪ session actives)` |
 | Cache | `get_skills` from Brain; invalidate reloads Brain; draft approve + `skill_reload` clear Redux |
+
+The discovery catalog and activated instructions occupy separate context
+segments. Active instructions are ordered before the compact catalog so catalog
+growth cannot consume the activated-skill budget. The segment remains bounded
+as a defense against oversized or malicious skill packages; the complete body
+is also returned by explicit `skill_load`, while references are retrieved on
+demand through `skill_read_resource`.
 
 ## Related
 

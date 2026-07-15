@@ -14,6 +14,29 @@ mod tests {
     }
 
     #[test]
+    fn skill_scripts_remain_system_danger_after_api_name_sanitization() {
+        let policy = make_policy();
+        assert_eq!(
+            policy.danger_level_for("skill.reporting.export", "{}", None),
+            DangerLevel::System
+        );
+        assert_eq!(
+            policy.danger_level_for("skill_reporting_export", "{}", None),
+            DangerLevel::System
+        );
+        assert_eq!(
+            policy.danger_level_for("skill_read_resource", "{}", None),
+            DangerLevel::ReadOnly
+        );
+        let mut policy = policy;
+        assert!(
+            policy
+                .check("skill_reporting_export", "{}", None, None, None)
+                .needs_approval()
+        );
+    }
+
+    #[test]
     fn test_destructive_command_denied() {
         let mut policy = make_policy();
         let result = policy.check(

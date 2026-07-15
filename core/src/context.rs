@@ -158,7 +158,9 @@ impl ContextSegment {
         stability: Stability,
     ) -> Self {
         let trust = match name {
-            "identity" | "principles" | "loaded_skills" => ContextTrust::Instruction,
+            "identity" | "principles" | "skill_catalog" | "loaded_skills" => {
+                ContextTrust::Instruction
+            }
             "active_memory" => ContextTrust::UserDerived,
             _ => ContextTrust::Runtime,
         };
@@ -230,7 +232,7 @@ impl ContextSegment {
 
 // ── Context Engine ────────────────────────────────────────────────────
 
-/// The main context engine — manages 7 semantic segments + message history.
+/// The main context engine — manages semantic segments + message history.
 ///
 /// Each turn, `assemble_system_prompt()` is called internally by `messages()`.
 /// The Agent can update individual segments via the setter methods.
@@ -274,7 +276,7 @@ impl ContextEngine {
         engine
     }
 
-    /// Initialize the 7 standard segments.
+    /// Initialize the 8 standard segments.
     fn init_segments(&mut self, base_identity: &str) {
         // Segment 1: IDENTITY — who the agent is
         let mut identity = ContextSegment::new(
@@ -339,22 +341,35 @@ impl ContextEngine {
 
         // Segment 6: LOADED SKILLS — instructions are high priority, but still
         // bounded so a large/malicious skill cannot consume the whole model window.
-        let skill_budget = ((self.max_tokens as f64 * 0.05) as usize).clamp(1_000, 10_000);
+        let skill_budget = ((self.max_tokens as f64 * 0.08) as usize).clamp(2_000, 16_000);
         let skills = ContextSegment::new(
             "loaded_skills",
             "Loaded Skills",
-            5,
+            6,
             skill_budget,
             RefreshPolicy::PerTurn,
             Stability::Dynamic,
         );
         self.segments.insert("loaded_skills".to_string(), skills);
 
-        // Segment 7: EXECUTION PLAN — todo + task board
+        // Compact discovery index is isolated from active instructions so a
+        // large catalog cannot truncate the body of an activated skill.
+        let skill_catalog = ContextSegment::new(
+            "skill_catalog",
+            "Skill Catalog",
+            7,
+            1_000,
+            RefreshPolicy::PerTurn,
+            Stability::Dynamic,
+        );
+        self.segments
+            .insert("skill_catalog".to_string(), skill_catalog);
+
+        // EXECUTION PLAN — todo + task board
         let plan = ContextSegment::new(
             "execution_plan",
             "Execution Plan",
-            6,
+            5,
             300,
             RefreshPolicy::PerTurn,
             Stability::Dynamic,
@@ -413,6 +428,12 @@ impl ContextEngine {
     /// Called when skills are loaded/unloaded.
     pub fn set_loaded_skills(&mut self, text: &str) {
         if let Some(seg) = self.segments.get_mut("loaded_skills") {
+            seg.set_content(text);
+        }
+    }
+
+    pub fn set_skill_catalog(&mut self, text: &str) {
+        if let Some(seg) = self.segments.get_mut("skill_catalog") {
             seg.set_content(text);
         }
     }
@@ -538,11 +559,8 @@ impl ContextEngine {
             }
             let text_tokens = rough_token_count(&text);
             if text_tokens > remaining {
-                let content = truncate_segment_content(
-                    &seg.name,
-                    &seg.content,
-                    remaining.saturating_sub(8),
-                );
+                let content =
+                    truncate_segment_content(&seg.name, &seg.content, remaining.saturating_sub(8));
                 if !content.is_empty() {
                     parts.push(format!(
                         "== {} [source={}, trust={:?}, truncated] ==\n{}\n",
@@ -559,7 +577,10 @@ impl ContextEngine {
             return String::new();
         }
 
-        format!("<context_injection>\n{}\n</context_injection>", parts.join("\n"))
+        format!(
+            "<context_injection>\n{}\n</context_injection>",
+            parts.join("\n")
+        )
     }
 
     /// Number of tokens in the exact stable system prefix sent to the provider.
@@ -610,8 +631,7 @@ impl ContextEngine {
         // prefix that remains byte-stable across turns and can be reused
         // by a KV cache engine.
         let injection_tokens = rough_token_count(&self.assemble_context_injection());
-        let cacheable_prefix_tokens =
-            self.current_token_count().saturating_sub(injection_tokens);
+        let cacheable_prefix_tokens = self.current_token_count().saturating_sub(injection_tokens);
 
         // TTL probe: measure idle gap between turns. Providers like
         // DeepSeek expire KV cache after ~5-10 min of inactivity.
@@ -1162,15 +1182,16 @@ mod tests {
     use crate::types::Role;
 
     #[test]
-    fn test_seven_segments_created() {
+    fn test_eight_segments_created() {
         let engine = ContextEngine::new("test identity", 128000);
-        assert_eq!(engine.segments.len(), 7);
+        assert_eq!(engine.segments.len(), 8);
         assert!(engine.segments.contains_key("identity"));
         assert!(engine.segments.contains_key("principles"));
         assert!(engine.segments.contains_key("environment"));
         assert!(engine.segments.contains_key("tool_catalog"));
         assert!(engine.segments.contains_key("active_memory"));
         assert!(engine.segments.contains_key("loaded_skills"));
+        assert!(engine.segments.contains_key("skill_catalog"));
         assert!(engine.segments.contains_key("execution_plan"));
     }
 
@@ -1279,6 +1300,18 @@ mod tests {
     }
 
     #[test]
+    fn large_catalog_cannot_truncate_active_skill_instructions() {
+        let mut engine = ContextEngine::new("test", 32_000);
+        engine.set_loaded_skills("ACTIVE_SKILL_SENTINEL: follow these instructions");
+        engine.set_skill_catalog(&"catalog entry ".repeat(10_000));
+        let injection = engine.assemble_context_injection();
+        assert!(injection.contains("ACTIVE_SKILL_SENTINEL"));
+        let active_pos = injection.find("ACTIVE_SKILL_SENTINEL").unwrap();
+        let catalog_pos = injection.find("Skill Catalog").unwrap();
+        assert!(active_pos < catalog_pos);
+    }
+
+    #[test]
     fn active_memory_truncation_preserves_latest_recall_at_the_tail() {
         let mut engine = ContextEngine::new("identity", 128_000);
         let memory = format!(
@@ -1369,7 +1402,7 @@ mod tests {
             name: Some("test_tool".to_string()),
             model: None,
             metadata: None,
-        reasoning: None,
+            reasoning: None,
         });
 
         let msgs = engine.messages();
@@ -1493,7 +1526,7 @@ mod tests {
             name: Some("test_tool".to_string()),
             model: None,
             metadata: None,
-        reasoning: None,
+            reasoning: None,
         });
 
         // Use compressor directly to test snipCompact
@@ -1571,7 +1604,7 @@ mod tests {
     #[test]
     fn test_chunked_drop_avoids_orphaned_tools() {
         let mut engine = ContextEngine::new("test", 128000);
-        
+
         // Turn 1: User message
         engine.add(Message::user("Hello"));
         // Turn 1: Assistant makes tool calls
@@ -1585,7 +1618,7 @@ mod tests {
             },
         }]);
         engine.add(assistant_msg);
-        
+
         // Turn 1: Tool response
         let tool_msg = Message {
             role: Role::Tool,
@@ -1595,29 +1628,29 @@ mod tests {
             name: Some("write_file".to_string()),
             model: None,
             metadata: None,
-        reasoning: None,
+            reasoning: None,
         };
         engine.add(tool_msg);
-        
+
         // Turn 2: User message
         engine.add(Message::user("Next step"));
         // Turn 2: Assistant final response
         engine.add(Message::assistant("Done"));
-        
+
         // Context contains 5 messages in raw history:
         // [0] User ("Hello")
         // [1] Assistant (tool calls)
         // [2] Tool (call_1 response)
         // [3] User ("Next step")
         // [4] Assistant ("Done")
-        
+
         // If we want to keep 3 messages (which would normally split at index 2, keeping [2, 3, 4], i.e., Tool, User, Assistant),
         // we should instead find the User message at/before index 2, which is index 0.
         // So it should drop 0 messages to avoid leaving Tool message at the start.
         let dropped = engine.chunked_drop(3);
         assert_eq!(dropped, 0);
         assert_eq!(engine.len(), 5);
-        
+
         // If we want to keep 2 messages (which would split at index 3, which is User "Next step"),
         // index 3 is a User message, so it is safe to split. It should drop first 3 messages.
         let dropped_more = engine.chunked_drop(2);
@@ -1678,7 +1711,11 @@ mod tests {
                 },
             }],
         ));
-        engine.add(Message::tool("c1".into(), "out".into(), Some("exec".into())));
+        engine.add(Message::tool(
+            "c1".into(),
+            "out".into(),
+            Some("exec".into()),
+        ));
         engine.add(Message::assistant("reply"));
         engine.add(Message::user("task B"));
         engine.add(Message::assistant_with_tools(
@@ -1692,7 +1729,11 @@ mod tests {
                 },
             }],
         ));
-        engine.add(Message::tool("c2".into(), "out2".into(), Some("exec".into())));
+        engine.add(Message::tool(
+            "c2".into(),
+            "out2".into(),
+            Some("exec".into()),
+        ));
         engine.add(Message::assistant("done"));
 
         // 8 messages, keep 4 → cut at User "task B" (index 4), removing the
@@ -1704,15 +1745,19 @@ mod tests {
         assert_eq!(engine.messages[0].content.as_deref().unwrap(), "task B");
         // The first tool turn (assistant-with-toolcalls + its tool result)
         // was removed together, so no orphaned tool message remains.
-        assert!(!engine
-            .messages
-            .iter()
-            .any(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("c1")));
+        assert!(
+            !engine
+                .messages
+                .iter()
+                .any(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("c1"))
+        );
         // The second tool pair is fully intact in the kept region.
-        assert!(engine
-            .messages
-            .iter()
-            .any(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("c2")));
+        assert!(
+            engine
+                .messages
+                .iter()
+                .any(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("c2"))
+        );
     }
 
     #[test]
@@ -1769,7 +1814,10 @@ mod tests {
         assert!(!prefix_text.contains("/tmp"));
 
         assert_eq!(prefix_text, prompt);
-        assert_eq!(engine.stable_prefix_token_count(), rough_token_count(&prompt));
+        assert_eq!(
+            engine.stable_prefix_token_count(),
+            rough_token_count(&prompt)
+        );
     }
 
     // ── P2-9: cache_hint & fingerprint tests ─────────────────────────
@@ -1861,7 +1909,10 @@ mod tests {
 
         engine.set_tool_catalog("toolA\ntoolB");
         let fp2 = engine.stable_prefix_fingerprint();
-        assert_ne!(fp1, fp2, "fingerprint must change when stable content changes");
+        assert_ne!(
+            fp1, fp2,
+            "fingerprint must change when stable content changes"
+        );
     }
 
     #[test]

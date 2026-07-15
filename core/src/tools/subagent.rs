@@ -893,6 +893,7 @@ pub(crate) fn is_meta_dispatch_tool(name: &str) -> bool {
         "subagent"
             | "subagents"
             | "skill_list"
+            | "skill_search"
             | "skill_load"
             | "skill_deactivate"
             | "skill_reload"
@@ -926,6 +927,21 @@ fn select_subagent_tools(args: &Value, available_tools: &[String]) -> Vec<String
         })
         .cloned()
         .collect()
+}
+
+fn is_authorized_child_tool(
+    name: &str,
+    available_tools: &[String],
+    effective_skills: &[String],
+) -> bool {
+    available_tools.iter().any(|available| available == name)
+        || effective_skills
+            .iter()
+            .any(|skill| name.starts_with(&format!("skill.{skill}.")))
+}
+
+fn child_allows_skill_scripts(available_tools: &[String]) -> bool {
+    available_tools.iter().any(|name| name == "shell")
 }
 
 /// The parent Run has already selected the effective cwd/worktree. Preserve
@@ -1073,7 +1089,10 @@ Do NOT attempt to bypass a missing capability through another tool.";
 
     // Build real ToolRegistry with factory
     let mut tool_registry = ToolRegistry::from_names(&final_tool_names);
-    if !effective_skills.is_empty() {
+    // Skill scripts are executable capabilities. The parent Run only exposes
+    // `shell` in Build mode, so use that inherited capability as the hard
+    // boundary for dynamic script registration in children as well.
+    if !effective_skills.is_empty() && child_allows_skill_scripts(available_tools) {
         SkillManager::sync_skill_scripts_for_skills(
             skill_manager.as_ref(),
             &effective_skills,
@@ -1083,7 +1102,7 @@ Do NOT attempt to bypass a missing capability through another tool.";
         let unauthorized: Vec<String> = tool_registry
             .clone_names()
             .into_iter()
-            .filter(|name| !available_tools.contains(name))
+            .filter(|name| !is_authorized_child_tool(name, available_tools, &effective_skills))
             .collect();
         let unauthorized_refs: Vec<&str> = unauthorized.iter().map(String::as_str).collect();
         tool_registry.remove_all(&unauthorized_refs);
@@ -1219,5 +1238,27 @@ mod capability_tests {
             effective_subagent_working_dir(&args),
             std::path::PathBuf::from("/tmp/project-worktree/nested")
         );
+    }
+
+    #[test]
+    fn effective_skill_scripts_are_authorized_without_stale_parent_snapshot_entry() {
+        let available = names(&["read_file"]);
+        let skills = names(&["reporting"]);
+        assert!(is_authorized_child_tool(
+            "skill.reporting.export",
+            &available,
+            &skills
+        ));
+        assert!(!is_authorized_child_tool(
+            "skill.unrelated.export",
+            &available,
+            &skills
+        ));
+    }
+
+    #[test]
+    fn skill_scripts_require_build_capabilities() {
+        assert!(!child_allows_skill_scripts(&names(&["read_file", "grep"])));
+        assert!(child_allows_skill_scripts(&names(&["read_file", "shell"])));
     }
 }

@@ -81,7 +81,7 @@ pub use runtime::{
 pub use session::{
     Prompt, Session, SessionCounts, SessionManager, SessionMeta, SubagentResultLike,
 };
-pub use skills::{parse_skill_mentions, SkillLoader, SkillManager, SkillManifest};
+pub use skills::{parse_skill_mentions, SkillDiagnostic, SkillLoader, SkillManager, SkillManifest};
 pub use subagent::{Subagent, SubagentConfig, SubagentManager, SubagentResult};
 pub use tasks::{TaskBoard, TaskRecord, TaskStatus};
 pub use teams::{AgentTeam, MessageBus, TeamMessage, TeamMessageType};

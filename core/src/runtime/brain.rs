@@ -28,6 +28,8 @@ use crate::skills::SkillManager;
 use crate::todo::SessionTodoStore;
 use crate::tools::ToolRegistry;
 use crate::types::ToolExecutionMode;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 /// The reusable "brain" shared by all Runs.
 ///
@@ -43,6 +45,9 @@ pub struct Brain {
     pub reflection_daemon: Option<Arc<ReflectionDaemon>>,
     /// Shared skill manager (if skills are enabled).
     pub skill_manager: Option<Arc<Mutex<SkillManager>>>,
+    /// Workspace-scoped managers prevent same-named project skills from
+    /// changing underneath Runs in another project.
+    workspace_skill_managers: Arc<Mutex<HashMap<PathBuf, Arc<Mutex<SkillManager>>>>>,
     /// Per-session todo lists (planning state shared across Runs of one session only).
     pub todo_lists: Arc<SessionTodoStore>,
     /// Offline reflector (analyzes Run event logs after completion).
@@ -104,6 +109,7 @@ impl Brain {
             memory,
             reflection_daemon,
             skill_manager,
+            workspace_skill_managers: Arc::new(Mutex::new(HashMap::new())),
             todo_lists,
             reflector,
             current_model_name,
@@ -226,6 +232,34 @@ impl Brain {
                 Ok(None)
             }
         }
+    }
+
+    /// Return the stable SkillManager for a workspace. Managers are cached per
+    /// canonical workspace so activation state persists without sharing path
+    /// precedence across projects.
+    pub fn skill_manager_for_workspace(
+        &self,
+        workspace: Option<&Path>,
+    ) -> Result<Option<Arc<Mutex<SkillManager>>>> {
+        let Some(base) = self.skill_manager.as_ref() else {
+            return Ok(None);
+        };
+        let Some(workspace) = workspace else {
+            return Ok(Some(base.clone()));
+        };
+        let key = workspace
+            .canonicalize()
+            .unwrap_or_else(|_| workspace.to_path_buf());
+        let mut cache = self.workspace_skill_managers.lock();
+        if let Some(manager) = cache.get(&key) {
+            return Ok(Some(manager.clone()));
+        }
+        let mut manager = SkillManager::with_global_defaults();
+        manager.add_workspace_root(&key);
+        manager.scan()?;
+        let manager = Arc::new(Mutex::new(manager));
+        cache.insert(key, manager.clone());
+        Ok(Some(manager))
     }
 
     fn build_reflector(config: &Config) -> Option<Reflector> {

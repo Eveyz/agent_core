@@ -138,7 +138,7 @@ impl Run {
 
         // Skill auto-trigger: check user message against skill triggers and @skill: tags
         let mut skill_misses: Vec<String> = Vec::new();
-        if let Some(ref sm) = self.brain.skill_manager {
+        if let Some(ref sm) = self.skill_manager {
             let mut mgr = sm.lock();
             let sid = self.session_id.as_deref();
             let matched_names: Vec<String> = mgr
@@ -395,7 +395,7 @@ impl Run {
                 }
                 RunCommand::FollowUp { message } => {
                     let mut skill_misses: Vec<String> = Vec::new();
-                    if let Some(ref sm) = self.brain.skill_manager {
+                    if let Some(ref sm) = self.skill_manager {
                         let mut mgr = sm.lock();
                         let sid = self.session_id.as_deref();
                         let (_activated, missing) = mgr.activate_mentions_in(sid, &message);
@@ -459,7 +459,7 @@ impl Run {
             });
             // Activate @skill: mentions in steer text the same as initial input.
             let mut skill_misses: Vec<String> = Vec::new();
-            if let Some(ref sm) = self.brain.skill_manager {
+            if let Some(ref sm) = self.skill_manager {
                 let mut mgr = sm.lock();
                 let sid = self.session_id.as_deref();
                 let (_activated, missing) = mgr.activate_mentions_in(sid, &entry.raw_text);
@@ -515,7 +515,7 @@ impl Run {
                 }
                 Some(RunCommand::FollowUp { message }) => {
                     let mut skill_misses: Vec<String> = Vec::new();
-                    if let Some(ref sm) = self.brain.skill_manager {
+                    if let Some(ref sm) = self.skill_manager {
                         let mut mgr = sm.lock();
                         let sid = self.session_id.as_deref();
                         let (_activated, missing) = mgr.activate_mentions_in(sid, &message);

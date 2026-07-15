@@ -169,7 +169,8 @@ pub fn default_rules_with_danger() -> Vec<(ToolPermissionPattern, DangerLevel, A
             ApprovalLevel::Allow,
         ),
         (
-            ToolPermissionPattern::simple("skill_*"),
+            ToolPermissionPattern::simple("skill_*")
+                .with_max_danger(DangerLevel::ReadOnly),
             DangerLevel::ReadOnly,
             ApprovalLevel::Allow,
         ),

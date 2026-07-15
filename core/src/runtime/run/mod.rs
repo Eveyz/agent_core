@@ -46,22 +46,23 @@ use tokio_util::sync::CancellationToken;
 
 use parking_lot::{Mutex, RwLock};
 
-use crate::context_processor::ContextProcessor;
 use crate::client::OpenAIClient;
 use crate::config::ModelConfig;
 use crate::context::ContextEngine as Context;
-use crate::error_recovery::{RecoveryEngine, RecoveryContext};
+use crate::context_processor::ContextProcessor;
+use crate::error_recovery::{RecoveryContext, RecoveryEngine};
 use crate::hooks::HookRegistry;
 use crate::mode::AgentMode;
 use crate::permission::PermissionPolicy;
 use crate::runtime::approval::ApprovalResolver;
-use crate::runtime::input::InputResolver;
 use crate::runtime::brain::Brain;
 use crate::runtime::command::{RunCommand, SteerEntry};
 use crate::runtime::event::{CacheMetrics, Envelope, RunEvent, RunId};
 use crate::runtime::execution::ExecutionState;
+use crate::runtime::input::InputResolver;
 use crate::runtime::state::RunState;
 use crate::runtime::supervisor::ProcessSupervisor;
+use crate::skills::SkillManager;
 use crate::tools::ToolRegistry;
 use crate::types::{Message, Role, ToolExecutionMode};
 
@@ -99,6 +100,8 @@ pub struct Run {
 
     /// The shared, reusable brain.
     brain: Arc<Brain>,
+    /// Workspace-scoped skill state for this Run.
+    skill_manager: Option<Arc<Mutex<SkillManager>>>,
 
     // ── Per-Run state (not shared) ────────────────────────────────
     state: RunState,
@@ -221,7 +224,25 @@ impl Run {
         let working_dir_for_tool = working_dir.clone();
         let cancel_token = CancellationToken::new();
 
+        // Skill discovery follows a stable workspace-scoped manager rather
+        // than mutating the desktop process' global path precedence.
+        let skill_manager = brain.skill_manager_for_workspace(
+            working_dir.as_deref().map(std::path::Path::new),
+        )?;
+
         let mut registry = brain.build_tool_registry_for(mode, session_id.as_deref());
+        if let Some(ref manager) = skill_manager {
+            registry.remove_all(&[
+                "skill_search",
+                "skill_list_resources",
+                "skill_read_resource",
+                "skill_list",
+                "skill_load",
+                "skill_deactivate",
+                "skill_reload",
+            ]);
+            crate::tools::skill::register_skill_tools(&mut registry, manager.clone());
+        }
         // Replace the default ShellTool with a supervised version
         // (only present in Build mode — in other modes shell was already removed)
         if mode == AgentMode::Build {
@@ -248,7 +269,7 @@ impl Run {
                 Some(supervisor.clone()),
                 Some(cancel_token.clone()),
                 0,
-                brain.skill_manager.clone(),
+                skill_manager.clone(),
             );
         }
 
@@ -306,6 +327,7 @@ impl Run {
             id,
             session_id,
             brain,
+            skill_manager,
             state: RunState::Created,
             context,
             client,

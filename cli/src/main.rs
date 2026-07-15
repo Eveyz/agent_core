@@ -560,23 +560,12 @@ async fn main() -> anyhow::Result<()> {
     };
     brain.set_tool_execution_mode(tool_mode);
 
-    // Skill manager
-    let mut skill_manager = SkillManager::with_defaults();
-    let _ = skill_manager.scan();
-    let skill_manager = Arc::new(Mutex::new(skill_manager));
-
-    // Register skill tools on Brain's base registry (for display)
-    {
-        let mut reg = brain.display_registry();
-        tools::skill::register_skill_tools(&mut reg, skill_manager.clone());
-    }
-    // Also register via callback so skills flow into Runs
-    brain.register_tool_fn(Box::new({
-        let sm = skill_manager.clone();
-        move |reg: &mut agent_core::ToolRegistry| {
-            tools::skill::register_skill_tools(reg, sm.clone());
-        }
-    }));
+    // Use Brain's SkillManager as the single source of truth. A second manager
+    // would let skill_load mutate different active state from Segment 6.
+    let skill_manager = brain
+        .skill_manager
+        .clone()
+        .expect("Brain always initializes a SkillManager");
 
     let run_manager = RunManager::new(brain);
 
@@ -589,12 +578,10 @@ async fn main() -> anyhow::Result<()> {
     {
         let tl = todo_list.clone();
         let tb = task_board.clone();
-        let sm = skill_manager.clone();
         let mc = brain.current_model_config().ok();
         let pc = brain.config.permissions.clone();
         brain.register_tool_fn(Box::new(move |reg: &mut agent_core::ToolRegistry| {
             tools::todo::register_todo_tools(reg, tl.clone());
-            tools::skill::register_skill_tools(reg, sm.clone());
             tasks::register_task_tools(reg, tb.clone(), mc.clone().unwrap_or_default(), pc.clone());
         }));
     }

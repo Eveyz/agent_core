@@ -184,6 +184,11 @@ pub(crate) fn classify_resources(
         "git_status" | "git_diff" | "git_log" | "git_show" => {
             reads.push(ResourceKey::Path("/.git".to_string()));
         }
+        name if crate::tools::script::is_skill_script_tool_name(name) => {
+            // Skill scripts execute arbitrary programs. Serialize calls per
+            // script instead of treating this dynamic namespace as pure.
+            mutations.push(ResourceKey::BashProgram(name.to_string()));
+        }
         _ => {
             // Unknown tool: don't declare resources → free to parallelize.
             // If it had a path field, treat it conservatively as a mutation so
@@ -313,5 +318,26 @@ mod tests {
             &serde_json::json!({"command": "/usr/bin/git status"}),
         );
         assert_eq!(mut_b, vec![ResourceKey::BashProgram("git".into())]);
+    }
+
+    #[test]
+    fn skill_scripts_are_classified_as_mutations() {
+        let (mutations, reads) =
+            classify_resources("skill.reporting.export", &serde_json::json!({}));
+        assert!(reads.is_empty());
+        assert_eq!(
+            mutations,
+            vec![ResourceKey::BashProgram(
+                "skill.reporting.export".to_string()
+            )]
+        );
+        let (sanitized, _) =
+            classify_resources("skill_reporting_export", &serde_json::json!({}));
+        assert_eq!(
+            sanitized,
+            vec![ResourceKey::BashProgram(
+                "skill_reporting_export".to_string()
+            )]
+        );
     }
 }

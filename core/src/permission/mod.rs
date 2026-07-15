@@ -665,17 +665,18 @@ impl PermissionPolicy {
             return DangerLevel::System;
         }
 
+        // Dynamic skill script tools execute arbitrary programs. Check this
+        // before the broad read-only `skill_*` metadata-tool rule; API-facing
+        // names replace dots with underscores.
+        if crate::tools::script::is_skill_script_tool_name(tool_name) {
+            return DangerLevel::System;
+        }
+
         // Other tools: use the danger annotated on built-in rules.
         for (pattern, danger, _) in &self.builtin_rules {
             if pattern.matches_tool(tool_name) {
                 return *danger;
             }
-        }
-
-        // Skill script tools (skill.<skill_name>.<script_name>) — treat as
-        // System-level danger since they execute arbitrary commands, same as shell.
-        if tool_name.starts_with("skill.") {
-            return DangerLevel::System;
         }
 
         // Fallback heuristics

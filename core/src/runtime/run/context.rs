@@ -7,7 +7,9 @@ use serde_json::Value;
 
 use crate::config::MemoryMode;
 use crate::context::ContextEngine as Context;
-use crate::memory::{format_recall_results, intent_for_mode, route_recall_intent, RecallIntent, RECALL_HINT};
+use crate::memory::{
+    RECALL_HINT, RecallIntent, format_recall_results, intent_for_mode, route_recall_intent,
+};
 use crate::types::{Message, Role};
 
 use super::Run;
@@ -106,7 +108,10 @@ impl Run {
                 let mut global_local_path = global_path.clone();
                 global_local_path.set_file_name("agverse.local.md");
                 if let Ok(content) = std::fs::read_to_string(&global_local_path) {
-                    instructions.push(("Global User Preferences (cross-project)".to_string(), content));
+                    instructions.push((
+                        "Global User Preferences (cross-project)".to_string(),
+                        content,
+                    ));
                 }
 
                 // Extract recent conversation text to match path-scoped rules
@@ -126,10 +131,8 @@ impl Run {
                     for name in &["agverse.md", "AGENTS.md"] {
                         let path = std::path::Path::new(dir).join(name);
                         if let Ok(content) = std::fs::read_to_string(&path) {
-                            instructions.push((
-                                format!("Project Instructions (cwd: {name})"),
-                                content,
-                            ));
+                            instructions
+                                .push((format!("Project Instructions (cwd: {name})"), content));
                             break;
                         }
                     }
@@ -146,18 +149,14 @@ impl Run {
                         if let Ok(entries) = std::fs::read_dir(&rules_dir) {
                             let mut rule_files: Vec<_> = entries
                                 .filter_map(|e| e.ok())
-                                .filter(|e| {
-                                    e.path().extension().is_some_and(|ext| ext == "md")
-                                })
+                                .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
                                 .collect();
                             rule_files.sort_by_key(|e| e.path());
                             for entry in rule_files {
                                 if let Ok(content) = std::fs::read_to_string(entry.path()) {
                                     let path = entry.path();
-                                    let name = path
-                                        .file_stem()
-                                        .and_then(|s| s.to_str())
-                                        .unwrap_or("rule");
+                                    let name =
+                                        path.file_stem().and_then(|s| s.to_str()).unwrap_or("rule");
 
                                     let name_lower = name.to_lowercase();
                                     if name_lower == "global"
@@ -177,7 +176,10 @@ impl Run {
                     for (label, content) in &instructions {
                         parts.push(format!("## {label}\n{content}"));
                     }
-                    mem_str.push_str(&format!("Project Instructions:\n{}\n\n", parts.join("\n\n")));
+                    mem_str.push_str(&format!(
+                        "Project Instructions:\n{}\n\n",
+                        parts.join("\n\n")
+                    ));
                 }
 
                 // Memory router (P2/P3): gate recall injection by intent + mode
@@ -199,22 +201,14 @@ impl Run {
         }
 
         // Segment 6: LOADED SKILLS — catalog + active skill content
-        if let Some(ref sm) = self.brain.skill_manager {
+        if let Some(ref sm) = self.skill_manager {
             let mut mgr = sm.lock();
             let sid = self.session_id.as_deref();
             let catalog = mgr.build_catalog_for(sid);
             let active = mgr.build_active_context_for(sid);
             let notes = mgr.drain_notes(sid);
-            let mut skills_str = String::new();
-            if !catalog.is_empty() {
-                skills_str.push_str(&catalog);
-            }
-            if !active.is_empty() {
-                if !skills_str.is_empty() {
-                    skills_str.push_str("\n\n");
-                }
-                skills_str.push_str(&active);
-            }
+            self.context.set_skill_catalog(&catalog);
+            let mut skills_str = active;
             if !notes.is_empty() {
                 if !skills_str.is_empty() {
                     skills_str.push_str("\n\n");
@@ -224,9 +218,7 @@ impl Run {
                     skills_str.push_str(&format!("- {note}\n"));
                 }
             }
-            if !skills_str.is_empty() {
-                self.context.set_loaded_skills(&skills_str);
-            }
+            self.context.set_loaded_skills(&skills_str);
         }
 
         // Segment 7: EXECUTION PLAN — runtime phase dashboard + todos (+ optional goal)
@@ -259,10 +251,25 @@ impl Run {
     /// Register / unregister `skill.<name>.<script>` tools so they match the
     /// currently active skills. Called once per turn from refresh_context_segments.
     fn sync_skill_scripts(&mut self) {
-        
         use crate::tools::script::SkillScriptTool;
 
-        let mgr = match self.brain.skill_manager.as_ref() {
+        // Skill scripts are executable capabilities and must not bypass the
+        // Run mode's read-only restrictions.
+        if self.mode != crate::mode::AgentMode::Build {
+            if !self.registered_script_tools.is_empty() {
+                let names: Vec<&str> = self
+                    .registered_script_tools
+                    .iter()
+                    .map(String::as_str)
+                    .collect();
+                self.registry.remove_all(&names);
+                self.registered_script_tools.clear();
+                self.tool_catalog_cache = None;
+            }
+            return;
+        }
+
+        let mgr = match self.skill_manager.as_ref() {
             Some(sm) => sm,
             None => return,
         };
@@ -274,9 +281,7 @@ impl Run {
         // Build the set of tool names we *should* have registered.
         let expected: std::collections::HashSet<String> = active_scripts
             .iter()
-            .map(|(skill_name, script)| {
-                format!("skill.{}.{}", skill_name, script.name)
-            })
+            .map(|(skill_name, script)| format!("skill.{}.{}", skill_name, script.name))
             .collect();
 
         let current: std::collections::HashSet<String> =
@@ -298,10 +303,7 @@ impl Run {
         }
 
         // Unregister tools whose skills were deactivated.
-        let to_remove: Vec<String> = current
-            .difference(&expected)
-            .cloned()
-            .collect();
+        let to_remove: Vec<String> = current.difference(&expected).cloned().collect();
 
         if !to_remove.is_empty() {
             let names: Vec<&str> = to_remove.iter().map(|s| s.as_str()).collect();

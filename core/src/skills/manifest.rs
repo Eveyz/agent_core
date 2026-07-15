@@ -1,7 +1,7 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// A runnable script provided by a skill.
 ///
@@ -126,15 +126,46 @@ impl SkillManifest {
 
         let mut manifest = parse_yaml_frontmatter(frontmatter)?;
 
-        // Content path: if not specified, the SKILL.md itself is the content
-        if manifest.content_path.as_os_str().is_empty() {
-            manifest.content_path = file_path.to_path_buf();
+        validate_identifier("skill name", &manifest.name)?;
+        if manifest.description.trim().is_empty() {
+            anyhow::bail!("skill description must not be empty");
         }
 
-        // If the manifest's content_path points to SKILL.md, read the body
-        // Otherwise, the content_path points to a separate file
-        if manifest.content_path == file_path {
-            // Body is in the same file — store it directly (used by load_content)
+        let skill_dir = file_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("SKILL.md has no parent directory"))?;
+
+        // Content path: if not specified, the SKILL.md itself is the content
+        if manifest.content_path.as_os_str().is_empty() {
+            let file_name = file_path
+                .file_name()
+                .ok_or_else(|| anyhow::anyhow!("SKILL.md has no file name"))?;
+            manifest.content_path =
+                resolve_existing_path_within(skill_dir, Path::new(file_name), "content_path")?;
+        } else {
+            manifest.content_path =
+                resolve_existing_path_within(skill_dir, &manifest.content_path, "content_path")?;
+        }
+
+        for script in &mut manifest.scripts {
+            validate_identifier("script name", &script.name)?;
+            if script.description.trim().is_empty() {
+                anyhow::bail!("script '{}' description must not be empty", script.name);
+            }
+            if script.file.trim().is_empty() {
+                anyhow::bail!("script '{}' file must not be empty", script.name);
+            }
+            if script.timeout_secs == 0 || script.timeout_secs > 600 {
+                anyhow::bail!(
+                    "script '{}' timeout_secs must be between 1 and 600",
+                    script.name
+                );
+            }
+            if !script.schema.is_object() {
+                anyhow::bail!("script '{}' schema must be a JSON object", script.name);
+            }
+            let _ =
+                resolve_existing_path_within(skill_dir, Path::new(&script.file), "script file")?;
         }
 
         Ok(manifest)
@@ -194,6 +225,43 @@ impl SkillManifest {
     }
 }
 
+fn validate_identifier(label: &str, value: &str) -> Result<()> {
+    if value.is_empty()
+        || !value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        anyhow::bail!("{label} must match [A-Za-z0-9_-]+");
+    }
+    Ok(())
+}
+
+/// Resolve an absolute or skill-relative path and prove that it stays inside
+/// the canonical skill directory. This also rejects missing files and symlink
+/// escapes before a skill becomes activatable.
+pub(crate) fn resolve_existing_path_within(
+    skill_dir: &Path,
+    requested: &Path,
+    label: &str,
+) -> Result<PathBuf> {
+    let canonical_root = std::fs::canonicalize(skill_dir)
+        .with_context(|| format!("failed to resolve skill directory: {}", skill_dir.display()))?;
+    let candidate = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        skill_dir.join(requested)
+    };
+    let canonical = std::fs::canonicalize(&candidate)
+        .with_context(|| format!("{label} does not exist: {}", candidate.display()))?;
+    if !canonical.starts_with(&canonical_root) {
+        anyhow::bail!("{label} escapes skill directory: {}", requested.display());
+    }
+    if !canonical.is_file() {
+        anyhow::bail!("{label} is not a file: {}", candidate.display());
+    }
+    Ok(canonical)
+}
+
 // ── YAML-like frontmatter parser (no serde_yaml dependency) ──────────
 
 fn parse_yaml_frontmatter(content: &str) -> Result<SkillManifest> {
@@ -218,7 +286,9 @@ fn parse_yaml_frontmatter(content: &str) -> Result<SkillManifest> {
         Requires,
         ProvidesTools,
         /// Parsing `scripts:` section — accumulating fields for one ScriptEntry.
-        Scripts { current: ScriptEntry },
+        Scripts {
+            current: ScriptEntry,
+        },
     }
     let mut list_mode = ListMode::None;
 
@@ -566,7 +636,9 @@ Some content"#;
 
         let dir = PathBuf::from("/tmp/test_skill_scripts");
         let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(dir.join("scripts")).unwrap();
+        fs::write(dir.join("scripts/deploy.sh"), "#!/bin/sh\n").unwrap();
+        fs::write(dir.join("scripts/check.py"), "print('ok')\n").unwrap();
         fs::write(dir.join("SKILL.md"), content).unwrap();
 
         let manifest = SkillManifest::from_file(&dir.join("SKILL.md")).unwrap();
@@ -605,5 +677,38 @@ content"#;
         assert!(manifest.scripts.is_empty());
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn relative_content_path_is_resolved_from_skill_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("references")).unwrap();
+        fs::write(dir.path().join("references/main.md"), "Reference body").unwrap();
+        fs::write(
+            dir.path().join("SKILL.md"),
+            "---\nname: external-content\ndescription: d\ncontent_path: references/main.md\n---\nIgnored\n",
+        )
+        .unwrap();
+        let manifest = SkillManifest::from_file(&dir.path().join("SKILL.md")).unwrap();
+        assert!(manifest.content_path.is_absolute());
+        assert_eq!(
+            SkillManifest::read_body(&manifest.content_path).unwrap(),
+            "Reference body"
+        );
+    }
+
+    #[test]
+    fn content_and_script_paths_cannot_escape_skill_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let skill = root.path().join("skill");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(root.path().join("outside.md"), "outside").unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: escape\ndescription: d\ncontent_path: ../outside.md\n---\nBody\n",
+        )
+        .unwrap();
+        let error = SkillManifest::from_file(&skill.join("SKILL.md")).unwrap_err();
+        assert!(error.to_string().contains("escapes skill directory"));
     }
 }

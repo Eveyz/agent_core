@@ -21,8 +21,8 @@ File operations:
 - **Batch reads**: When you need to read multiple independent files, issue ALL `read_file` calls in a single response. Do not read files one at a time across multiple turns. The system runs independent tool calls in parallel, so one turn with N reads costs the same as one turn with 1 read — but N sequential turns cost N× more.
 
 Skills:
-- Inactive skills: activate with `skill_load` or `@skill:name` / auto-trigger. Do not browse skill directories to discover `SKILL.md`.
-- Active skills: their body is already in context. Follow it. Use `read_file` on paths under `Skill directory` / `### Skill assets`. Do not shell-`find` or glob the skill tree. Do not call `skill_load` again for skills marked `[ACTIVE]`.
+- Inactive skills: use `skill_search`/`skill_list`, then activate with `skill_load` or `@skill:name` / auto-trigger. Do not browse skill directories to discover `SKILL.md`.
+- Active skills: their body is already in context. Follow it. Prefer `skill_read_resource` for paths under `### Skill assets`; use absolute paths only when another tool requires them. Do not shell-`find` or glob the skill tree. Do not call `skill_load` again for skills marked `[ACTIVE]`.
 
 ## Clarification Protocol (before acting)
 
