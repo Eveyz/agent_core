@@ -80,6 +80,32 @@ fn build_dependency_context(board: &TaskBoard, task_id: &str) -> String {
     ctx
 }
 
+fn claim_task(
+    board: &Arc<Mutex<TaskBoard>>,
+    id: &str,
+) -> anyhow::Result<(String, String)> {
+    let mut board = board.lock();
+    let task = board
+        .get(id)
+        .ok_or_else(|| anyhow::anyhow!("task '{}' not found", id))?;
+    match task.status() {
+        TaskStatus::Pending => anyhow::bail!(
+            "Task '{}' is not ready. Blocked by: {}",
+            id,
+            task.blocked_by().join(", ")
+        ),
+        TaskStatus::Blocked => anyhow::bail!("Task '{}' is blocked.", id),
+        TaskStatus::Completed => anyhow::bail!("Task '{}' is already completed.", id),
+        TaskStatus::InProgress => anyhow::bail!("Task '{}' is already in progress.", id),
+        TaskStatus::Failed => anyhow::bail!("Task '{}' has already failed.", id),
+        TaskStatus::Ready => {}
+    }
+    let dep_context = build_dependency_context(&board, id);
+    let goal = task.goal().to_string();
+    board.update(id, TaskStatus::InProgress, None)?;
+    Ok((goal, dep_context))
+}
+
 struct TaskCreateTool {
     board: Arc<Mutex<TaskBoard>>,
 }
@@ -468,6 +494,71 @@ struct TaskExecuteTool {
     permission_config: PermissionConfig,
 }
 
+struct TaskExecutionGuard {
+    board: Arc<Mutex<TaskBoard>>,
+    id: String,
+    finished: bool,
+    recovery: Option<(String, std::path::PathBuf)>,
+}
+
+impl TaskExecutionGuard {
+    fn new(board: Arc<Mutex<TaskBoard>>, id: impl Into<String>) -> Self {
+        Self {
+            board,
+            id: id.into(),
+            finished: false,
+            recovery: None,
+        }
+    }
+
+    fn finish(&mut self) {
+        self.finished = true;
+    }
+
+    fn set_recovery(&mut self, runtime_id: &str) {
+        self.recovery = crate::subagent::transcript::TranscriptRecorder::default_path(runtime_id)
+            .ok()
+            .map(|path| (runtime_id.to_string(), path));
+    }
+}
+
+impl Drop for TaskExecutionGuard {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        let mut board = self.board.lock();
+        if board
+            .get(&self.id)
+            .is_some_and(|task| *task.status() == TaskStatus::InProgress)
+        {
+            let recovery = self.recovery.as_ref().and_then(|(runtime_id, path)| {
+                path.exists().then(|| {
+                    format!(
+                        "\nRuntime ID: {runtime_id}\nPartial transcript: {}",
+                        path.display()
+                    )
+                })
+            }).unwrap_or_default();
+            let _ = board.update(
+                &self.id,
+                TaskStatus::Failed,
+                Some(format!(
+                    "Task execution was cancelled or aborted before completion{recovery}"
+                )),
+            );
+        }
+    }
+}
+
+fn select_task_tools(requested: Vec<String>, parent_tools: &[String]) -> Vec<String> {
+    requested
+        .into_iter()
+        .filter(|name| parent_tools.contains(name))
+        .filter(|name| !crate::subagent::spec::is_meta_dispatch_tool(name))
+        .collect()
+}
+
 impl TaskExecuteTool {
     fn new(
         board: Arc<Mutex<TaskBoard>>,
@@ -516,7 +607,7 @@ impl Tool for TaskExecuteTool {
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
 
-        let custom_tools: Vec<String> = args["tools"]
+        let requested_tools: Vec<String> = args["tools"]
             .as_array()
             .map(|arr| {
                 arr.iter()
@@ -532,6 +623,18 @@ impl Tool for TaskExecuteTool {
                     "edit".to_string(),
                 ]
             });
+        let parent_tools: Vec<String> = args
+            .get("_parent_tools")
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let custom_tools = select_task_tools(requested_tools, &parent_tools);
 
         let system_prompt = args["system_prompt"]
             .as_str()
@@ -539,35 +642,8 @@ impl Tool for TaskExecuteTool {
             .to_string();
 
         // Check task is ready and get dependency context
-        let (goal, dep_context) = {
-            let board = self.board.lock();
-            let task = board
-                .get(id)
-                .ok_or_else(|| anyhow::anyhow!("task '{}' not found", id))?;
-
-            if *task.status() != TaskStatus::Ready && *task.status() == TaskStatus::Pending {
-                anyhow::bail!(
-                    "Task '{}' is not ready. Blocked by: {}",
-                    id,
-                    task.blocked_by().join(", ")
-                );
-            }
-            if *task.status() == TaskStatus::Completed {
-                anyhow::bail!("Task '{}' is already completed.", id);
-            }
-            if *task.status() == TaskStatus::InProgress {
-                anyhow::bail!("Task '{}' is already in progress.", id);
-            }
-
-            let dep_ctx = build_dependency_context(&board, id);
-            (task.goal().to_string(), dep_ctx)
-        };
-
-        // Mark in-progress
-        {
-            let mut board = self.board.lock();
-            board.update(id, TaskStatus::InProgress, None)?;
-        }
+        let (goal, dep_context) = claim_task(&self.board, id)?;
+        let mut execution_guard = TaskExecutionGuard::new(self.board.clone(), id);
 
         // Build task prompt with dependency context
         let mut task_prompt = String::new();
@@ -607,11 +683,13 @@ impl Tool for TaskExecuteTool {
         let config = SubagentConfig {
             system_prompt,
             tools: custom_tools,
-            max_iterations: self.model_config.max_iterations.max(10),
+            max_iterations: self.model_config.max_iterations.max(1),
             max_context_tokens: self.model_config.max_context_tokens,
             working_dir: Some(
-                std::env::current_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                args.get("_working_dir")
+                    .and_then(Value::as_str)
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into())),
             ),
             ..SubagentConfig::default()
         };
@@ -623,9 +701,25 @@ impl Tool for TaskExecuteTool {
             tool_registry,
             self.permission_config.clone(),
         )
+        .with_runtime_scope(
+            args.get("_session_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            args.get("_parent_run_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+        )
         .with_supervisor(supervisor)
         .with_cancel_token(cancel_token);
+        if let Some(resolver) = args
+            .get("_parent_run_id")
+            .and_then(Value::as_str)
+            .and_then(crate::runtime::approval::resolver_for_run)
+        {
+            subagent = subagent.with_approval_resolver(resolver);
+        }
         let runtime_subagent_id = subagent.id().to_string();
+        execution_guard.set_recovery(&runtime_subagent_id);
         let run_result = subagent.run(&task_prompt).await;
 
         // Persist messages (mirrors the `subagent` tool's persistence so the
@@ -648,6 +742,7 @@ impl Tool for TaskExecuteTool {
                     TaskStatus::Failed,
                     Some(format!("{error}\n\n{recovery}")),
                 )?;
+                execution_guard.finish();
                 return Err(error.context(recovery));
             }
         };
@@ -665,6 +760,7 @@ impl Tool for TaskExecuteTool {
             } else {
                 board.update(id, TaskStatus::Failed, Some(persisted_output.clone()))?;
             }
+            execution_guard.finish();
 
             // Report unblocked tasks
             let ready = board.ready_tasks();
@@ -803,6 +899,51 @@ mod tests {
 
     fn make_board() -> Arc<Mutex<TaskBoard>> {
         Arc::new(Mutex::new(TaskBoard::new()))
+    }
+
+    #[test]
+    fn task_child_cannot_gain_tools_or_meta_dispatch_from_parent() {
+        let selected = select_task_tools(
+            vec!["read_file".into(), "shell".into(), "subagent".into()],
+            &["read_file".into(), "subagent".into()],
+        );
+        assert_eq!(selected, vec!["read_file"]);
+    }
+
+    #[test]
+    fn dropped_task_execution_guard_fails_an_in_progress_task() {
+        let board = make_board();
+        let id = board.lock().create("guarded", "goal", vec![]);
+        board
+            .lock()
+            .update(&id, TaskStatus::InProgress, None)
+            .unwrap();
+        drop(TaskExecutionGuard::new(board.clone(), id.clone()));
+        assert_eq!(*board.lock().get(&id).unwrap().status(), TaskStatus::Failed);
+    }
+
+    #[test]
+    fn concurrent_task_claim_has_exactly_one_winner() {
+        let board = make_board();
+        let id = board.lock().create("claim", "goal", vec![]);
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let board = board.clone();
+                let id = id.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    claim_task(&board, &id).is_ok()
+                })
+            })
+            .collect();
+        barrier.wait();
+        let wins = handles
+            .into_iter()
+            .map(|handle| usize::from(handle.join().unwrap()))
+            .sum::<usize>();
+        assert_eq!(wins, 1);
     }
 
     #[test]

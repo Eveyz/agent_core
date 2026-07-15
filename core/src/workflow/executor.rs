@@ -15,9 +15,9 @@ use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::agent_registry::{self, AgentHistoryEntry, AgentMemoryStore};
-use crate::mode::AgentMode;
 use crate::memory::embedding::EmbeddingModel;
 use crate::memory::storage::Storage;
+use crate::mode::AgentMode;
 use crate::runtime::Brain;
 use crate::skills::SkillManager;
 use crate::subagent::Subagent;
@@ -25,9 +25,7 @@ use crate::tools::ToolRegistry;
 use crate::types::{AgentEvent, EventSender};
 
 use super::context::{RouterConfig, WorkflowContext};
-use super::definition::{
-    NodeType, NodeDef, OnNodeFailure, WorkflowDef, WorkflowRunNodeResult,
-};
+use super::definition::{NodeDef, NodeType, OnNodeFailure, WorkflowDef, WorkflowRunNodeResult};
 use super::planner;
 
 /// Result of a workflow execution.
@@ -44,6 +42,42 @@ pub struct WorkflowRunResult {
 pub struct WorkflowExecutor {
     storage: Storage,
     brain: Arc<Brain>,
+}
+
+struct WorkflowAgentGuard {
+    storage: Storage,
+    entry: AgentHistoryEntry,
+    runtime_id: Option<String>,
+    started: std::time::Instant,
+    finished: bool,
+}
+
+impl WorkflowAgentGuard {
+    fn set_runtime(&mut self, runtime_id: String) {
+        self.runtime_id = Some(runtime_id);
+    }
+
+    fn finish(&mut self) {
+        self.finished = true;
+    }
+}
+
+impl Drop for WorkflowAgentGuard {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        let recovery = self.runtime_id.as_ref().and_then(|runtime_id| {
+            crate::subagent::transcript::TranscriptRecorder::default_path(runtime_id)
+                .ok()
+                .filter(|path| path.exists())
+                .map(|path| format!("Runtime ID: {runtime_id}\nPartial transcript: {}", path.display()))
+        }).unwrap_or_else(|| "Partial transcript could not be persisted".to_string());
+        self.entry.output = format!("Workflow agent was cancelled or aborted\n\n{recovery}");
+        self.entry.success = false;
+        self.entry.process_time_ms = self.started.elapsed().as_millis() as i64;
+        let _ = agent_registry::history::record(&self.storage, &self.entry);
+    }
 }
 
 impl WorkflowExecutor {
@@ -376,10 +410,7 @@ async fn execute_node(
         }
         NodeType::Agent => {
             if node.agent_id.is_empty() {
-                return Err(anyhow::anyhow!(
-                    "agent node '{}' has no agent_id",
-                    node.id
-                ));
+                return Err(anyhow::anyhow!("agent node '{}' has no agent_id", node.id));
             }
             execute_agent_node(
                 node,
@@ -416,10 +447,7 @@ async fn execute_agent_node(
     // Fetch the agent definition.
     let agent_id = node.agent_id.clone();
     let s = storage.clone();
-    let def = tokio::task::spawn_blocking(move || {
-        agent_registry::get(&s, &agent_id)
-    })
-    .await??;
+    let def = tokio::task::spawn_blocking(move || agent_registry::get(&s, &agent_id)).await??;
 
     // Build runtime components.
     let mut subagent_config = agent_registry::build_subagent_config(&def);
@@ -469,6 +497,7 @@ async fn execute_agent_node(
         Some(cancel_token.clone()),
         1,
         brain.skill_manager.clone(),
+        crate::tools::subagent::ApprovalRouting::LegacyScoped,
     );
 
     // Also ensure ShellTool (when present) is the supervised version so the
@@ -494,6 +523,22 @@ async fn execute_agent_node(
         None
     };
 
+    let task = format_agent_input(node, input);
+    let mut recovery_guard = WorkflowAgentGuard {
+        storage: storage.clone(),
+        entry: AgentHistoryEntry {
+            agent_id: def.id.clone(),
+            session_id: session_id.to_string(),
+            workflow_run_id: run_id.to_string(),
+            trigger: "workflow".to_string(),
+            input: task.clone(),
+            model_used: model_config.model_id.clone(),
+            ..Default::default()
+        },
+        runtime_id: None,
+        started: std::time::Instant::now(),
+        finished: false,
+    };
     let mut subagent = Subagent::new_with_memory(
         &def.name,
         subagent_config,
@@ -503,11 +548,12 @@ async fn execute_agent_node(
         memory,
         Some(def.memory_identity()),
     )
+    .with_runtime_scope(Some(session_id.to_string()), Some(run_id.to_string()))
     .with_supervisor(supervisor.clone())
     .with_cancel_token(cancel_token);
 
-    let task = format_agent_input(node, input);
     let runtime_subagent_id = subagent.id().to_string();
+    recovery_guard.set_runtime(runtime_subagent_id.clone());
     let started = std::time::Instant::now();
     let run_result = subagent.run_with_sender(&task, event_tx).await;
     let transcript_ref = subagent.transcript_path();
@@ -540,6 +586,7 @@ async fn execute_agent_node(
                 let _ = agent_registry::history::record(&hist_storage, &entry);
             })
             .await;
+            recovery_guard.finish();
             return Err(error.context(recovery));
         }
     };
@@ -570,6 +617,7 @@ async fn execute_agent_node(
         let _ = agent_registry::history::record(&hist_storage, &entry);
     })
     .await;
+    recovery_guard.finish();
 
     // V1: token tracking not yet wired from Subagent streams.
     let tokens = (0i64, 0i64);
@@ -607,10 +655,7 @@ fn apply_router(
 }
 
 /// Build an [`AgentMemoryStore`] from the Brain's embedding configuration.
-pub fn build_agent_memory_store(
-    brain: &Brain,
-    storage: Storage,
-) -> AgentMemoryStore {
+pub fn build_agent_memory_store(brain: &Brain, storage: Storage) -> AgentMemoryStore {
     if let Some(ref mem) = brain.config.memory {
         if mem.embedding_enabled {
             if let Ok(model) = EmbeddingModel::new(&mem.embedding_model) {

@@ -325,6 +325,7 @@ impl Run {
                 .join(format!("{}.messages.json", sid))
         });
 
+        crate::runtime::approval::register_run_resolver(&id, approval_resolver.clone());
         Ok(Self {
             id,
             session_id,
@@ -464,6 +465,7 @@ impl Drop for Run {
         self.join_set.abort_all();
         // Kill all supervised processes
         self.supervisor.lock().kill_all();
+        crate::runtime::approval::unregister_run_resolver(&self.id);
         // approval_resolver.clear() is called above (resolvers get dropped error)
     }
 }

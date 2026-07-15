@@ -1,14 +1,14 @@
 #![allow(deprecated)]
-use crate::runtime::input::{
-    format_answers_for_model, parse_ask_user_args, validate_answers, ClarificationAnswers,
-    InputResolver,
-};
-use crate::runtime::tool_scheduler::{DepGraph, SchedNode, classify_resources};
 use crate::hooks::{HookRegistry, PreToolResult};
 use crate::permission::{
     ApprovalChoice, ApprovalScope, PermissionDecision, PermissionPolicy, ToolPermissionPattern,
     WhitelistEntry,
 };
+use crate::runtime::input::{
+    format_answers_for_model, parse_ask_user_args, validate_answers, ClarificationAnswers,
+    InputResolver,
+};
+use crate::runtime::tool_scheduler::{classify_resources, DepGraph, SchedNode};
 use crate::runtime::ApprovalResolver;
 use crate::tools::{ToolRegistry, ToolUpdateFn};
 use crate::types::{AgentEvent, ToolCall, ToolExecutionMode};
@@ -137,7 +137,10 @@ impl<'a> ToolOrchestrator<'a> {
                         // Fallback: global map (old Agent path)
                         let pending_arc = crate::permission::pending_subagent_approvals();
                         let mut pending = pending_arc.lock();
-                        pending.insert(scoped_approval_key(self.run_id.as_deref(), &prompt.prompt_id), tx);
+                        pending.insert(
+                            scoped_approval_key(self.run_id.as_deref(), &prompt.prompt_id),
+                            tx,
+                        );
                     }
 
                     // Emit approval event
@@ -258,7 +261,10 @@ impl<'a> ToolOrchestrator<'a> {
                             } else {
                                 let pending_arc = crate::permission::pending_subagent_approvals();
                                 let mut pending = pending_arc.lock();
-                                pending.remove(&scoped_approval_key(self.run_id.as_deref(), &prompt.prompt_id));
+                                pending.remove(&scoped_approval_key(
+                                    self.run_id.as_deref(),
+                                    &prompt.prompt_id,
+                                ));
                             }
                         }
                         Err(_) => {
@@ -268,7 +274,10 @@ impl<'a> ToolOrchestrator<'a> {
                             } else {
                                 let pending_arc = crate::permission::pending_subagent_approvals();
                                 let mut pending = pending_arc.lock();
-                                pending.remove(&scoped_approval_key(self.run_id.as_deref(), &prompt.prompt_id));
+                                pending.remove(&scoped_approval_key(
+                                    self.run_id.as_deref(),
+                                    &prompt.prompt_id,
+                                ));
                             }
                             if self.cancel_token.is_cancelled() {
                                 results[i] = "Aborted".to_string();
@@ -442,10 +451,11 @@ impl<'a> ToolOrchestrator<'a> {
             let is_error = crate::runtime::execution::tool_result_is_error(&output);
 
             if !is_error {
-                let final_output =
-                    self.hook_registry
-                        .lock()
-                        .fire_post_tool_use(&call.function.name, args, &output);
+                let final_output = self.hook_registry.lock().fire_post_tool_use(
+                    &call.function.name,
+                    args,
+                    &output,
+                );
                 results[*i] = final_output;
             }
         }
@@ -454,12 +464,7 @@ impl<'a> ToolOrchestrator<'a> {
     }
 
     /// Block on `ask_user`: emit InputRequested, await InputResolver.
-    async fn execute_ask_user<F>(
-        &self,
-        call: &ToolCall,
-        args: Value,
-        on_event: &F,
-    ) -> String
+    async fn execute_ask_user<F>(&self, call: &ToolCall, args: Value, on_event: &F) -> String
     where
         F: Fn(AgentEvent, &str) + Send + Sync,
     {
@@ -527,7 +532,8 @@ impl<'a> ToolOrchestrator<'a> {
                 if self.cancel_token.is_cancelled() {
                     "Aborted".to_string()
                 } else {
-                    "Error: clarification cancelled — no answers received from the user.".to_string()
+                    "Error: clarification cancelled — no answers received from the user."
+                        .to_string()
                 }
             }
         }
@@ -587,7 +593,10 @@ impl<'a> ToolOrchestrator<'a> {
         let mut modified_args = args;
         if let Some(ref sid) = self.session_id {
             if let Some(obj) = modified_args.as_object_mut() {
-                obj.insert("_session_id".to_string(), serde_json::Value::String(sid.clone()));
+                obj.insert(
+                    "_session_id".to_string(),
+                    serde_json::Value::String(sid.clone()),
+                );
             }
         }
         if let Some(ref run_id) = self.run_id {
@@ -597,7 +606,10 @@ impl<'a> ToolOrchestrator<'a> {
         }
         if let Some(ref wd) = self.working_dir {
             if let Some(obj) = modified_args.as_object_mut() {
-                obj.insert("_working_dir".to_string(), serde_json::Value::String(wd.clone()));
+                obj.insert(
+                    "_working_dir".to_string(),
+                    serde_json::Value::String(wd.clone()),
+                );
             }
         }
         if let Some(obj) = modified_args.as_object_mut() {
@@ -605,6 +617,12 @@ impl<'a> ToolOrchestrator<'a> {
                 "_parent_call_id".to_string(),
                 serde_json::Value::String(tool_call_id.to_string()),
             );
+            if tool_name == "task_execute" {
+                obj.insert(
+                    "_parent_tools".to_string(),
+                    serde_json::json!(self.registry.list_names()),
+                );
+            }
         }
 
         // Create event channel for tools that emit structured events (e.g. subagent) and streaming updates.
@@ -721,7 +739,10 @@ fn invocation_paths(args: &Value) -> Vec<String> {
                         match value {
                             Value::String(path) => paths.push(path.clone()),
                             Value::Array(values) => paths.extend(
-                                values.iter().filter_map(Value::as_str).map(ToOwned::to_owned),
+                                values
+                                    .iter()
+                                    .filter_map(Value::as_str)
+                                    .map(ToOwned::to_owned),
                             ),
                             _ => {}
                         }
@@ -768,7 +789,10 @@ mod scope_tests {
             "operations": [{ "destination": "b.txt" }, { "paths": ["ignored"] }],
             "nested": { "file_path": ["c.txt", "d.txt"] }
         });
-        assert_eq!(invocation_paths(&args), vec!["a.txt", "b.txt", "c.txt", "d.txt"]);
+        assert_eq!(
+            invocation_paths(&args),
+            vec!["a.txt", "b.txt", "c.txt", "d.txt"]
+        );
     }
 
     #[test]
@@ -779,7 +803,10 @@ mod scope_tests {
 
     #[test]
     fn scopes_subagent_approval_waiters_to_the_parent_run() {
-        assert_eq!(scoped_approval_key(Some("run-a"), "prompt-1"), "run-a:prompt-1");
+        assert_eq!(
+            scoped_approval_key(Some("run-a"), "prompt-1"),
+            "run-a:prompt-1"
+        );
         assert_ne!(
             scoped_approval_key(Some("run-a"), "prompt-1"),
             scoped_approval_key(Some("run-b"), "prompt-1")

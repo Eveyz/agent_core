@@ -1,8 +1,8 @@
 use crate::config::ModelConfig;
 use crate::permission::PermissionConfig;
 use crate::session::SessionManager;
-use crate::subagent::{PersonaKey, ResultStrategy, Subagent, SubagentConfig};
 use crate::subagent::spec::{AgentSpawnRequest, EffectiveAgentSpec, ParentAgentSpec, PromptLayers};
+use crate::subagent::{PersonaKey, ResultStrategy, Subagent, SubagentConfig};
 use crate::tools::{Tool, ToolRegistry, ToolUpdateFn};
 use crate::types::{EventSender, Message, Role};
 use anyhow::Result;
@@ -58,7 +58,7 @@ pub fn register_subagent_tools(
     }
     registry.register(Box::new(single));
     registry.register(Box::new(spawn_all));
-    registry.register(Box::new(SubagentTranscriptTool));
+    registry.register(Box::new(SubagentTranscriptTool::default()));
 }
 
 /// Re-wire `subagent`/`subagents` tools in `registry` so that any spawn from
@@ -90,7 +90,16 @@ pub fn re_wire_subagent_tools(
         cancel_token,
         parent_depth,
         None,
+        ApprovalRouting::LegacyScoped,
     );
+}
+
+#[derive(Clone)]
+pub enum ApprovalRouting {
+    Run(crate::runtime::ApprovalResolver),
+    /// Use the run-id-scoped compatibility channel when no owning Run exists
+    /// (for example a standalone persisted workflow execution).
+    LegacyScoped,
 }
 
 /// Like [`re_wire_subagent_tools`], but also wires a shared [`SkillManager`]
@@ -104,6 +113,7 @@ pub fn re_wire_subagent_tools_with_skills(
     cancel_token: Option<tokio_util::sync::CancellationToken>,
     parent_depth: u8,
     skill_manager: Option<Arc<Mutex<crate::skills::SkillManager>>>,
+    approval_routing: ApprovalRouting,
 ) {
     if !registry.has("subagent") && !registry.has("subagents") {
         return;
@@ -114,6 +124,10 @@ pub fn re_wire_subagent_tools_with_skills(
         .map(|s| s.to_string())
         .collect();
     registry.remove_all(&["subagent", "subagents"]);
+    let approval_resolver = match approval_routing {
+        ApprovalRouting::Run(resolver) => Some(resolver),
+        ApprovalRouting::LegacyScoped => None,
+    };
     register_subagent_tools(
         registry,
         model_config,
@@ -124,13 +138,23 @@ pub fn re_wire_subagent_tools_with_skills(
         cancel_token,
         parent_depth,
         skill_manager,
-        None,
+        approval_resolver,
     );
 }
 
 // ── SubagentSpawnTool ────────────────────────────────────────────────
 
-struct SubagentTranscriptTool;
+#[derive(Default)]
+struct SubagentTranscriptTool {
+    root: Option<std::path::PathBuf>,
+}
+
+impl SubagentTranscriptTool {
+    #[cfg(test)]
+    fn with_root(root: std::path::PathBuf) -> Self {
+        Self { root: Some(root) }
+    }
+}
 
 #[async_trait::async_trait]
 impl Tool for SubagentTranscriptTool {
@@ -160,9 +184,34 @@ impl Tool for SubagentTranscriptTool {
             .ok_or_else(|| anyhow::anyhow!("missing 'runtime_id'"))?;
         let offset = args["offset"].as_u64().unwrap_or(0) as usize;
         let limit = (args["limit"].as_u64().unwrap_or(20) as usize).clamp(1, 100);
-        let path = crate::subagent::transcript::TranscriptRecorder::default_path(runtime_id)?;
+        let root = if let Some(root) = &self.root {
+            root.clone()
+        } else {
+            crate::subagent::transcript::TranscriptRecorder::default_path(runtime_id)?
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("transcript root unavailable"))?
+                .to_path_buf()
+        };
+        let expected_scope = crate::subagent::transcript::TranscriptScope {
+            session_id: args
+                .get("_session_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            parent_run_id: args
+                .get("_parent_run_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+        };
+        if expected_scope.parent_run_id.is_none() {
+            anyhow::bail!("subagent transcript lookup requires a parent run scope");
+        }
+        let runtime_id = runtime_id.to_string();
         let document = tokio::task::spawn_blocking(move || {
-            crate::subagent::transcript::TranscriptRecorder::read(&path)
+            crate::subagent::transcript::TranscriptRecorder::read_in(
+                &root,
+                &runtime_id,
+                &expected_scope,
+            )
         })
         .await
         .map_err(|error| anyhow::anyhow!("transcript reader task failed: {error}"))??;
@@ -224,7 +273,10 @@ impl SubagentSpawnTool {
         }
     }
 
-    pub fn with_supervisor(mut self, sv: Arc<Mutex<crate::runtime::supervisor::ProcessSupervisor>>) -> Self {
+    pub fn with_supervisor(
+        mut self,
+        sv: Arc<Mutex<crate::runtime::supervisor::ProcessSupervisor>>,
+    ) -> Self {
         self.supervisor = Some(sv);
         self
     }
@@ -311,7 +363,7 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
         let strategy = parse_result_strategy(&args);
         let id = args["id"].as_str().unwrap_or("unknown").to_string();
 
-        let (result, messages) = spawn_single(
+        let spawned = spawn_single(
             &args,
             &self.model_config,
             &self.available_tools,
@@ -325,7 +377,13 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
             self.skill_manager.clone(),
             self.approval_resolver.clone(),
         )
-        .await?;
+        .await;
+        let (result, messages) = match spawned {
+            Ok(value) => value,
+            Err(error) => {
+                return Ok(error.handoff(&id).render_for_parent());
+            }
+        };
 
         // Save subagent session if session manager is available
         if let Some(ref mgr) = self.session_mgr {
@@ -384,7 +442,10 @@ impl SubagentSpawnAllTool {
         }
     }
 
-    pub fn with_supervisor(mut self, sv: Arc<Mutex<crate::runtime::supervisor::ProcessSupervisor>>) -> Self {
+    pub fn with_supervisor(
+        mut self,
+        sv: Arc<Mutex<crate::runtime::supervisor::ProcessSupervisor>>,
+    ) -> Self {
         self.supervisor = Some(sv);
         self
     }
@@ -476,14 +537,13 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
 
         // Emit SubagentStart events immediately so TUI shows all boxes
         // before any subagent actually begins work.
-        let mut task_infos: Vec<(String, String, Option<Vec<String>>, usize, ResultStrategy)> = Vec::new();
+        let mut task_infos: Vec<(String, String, Option<Vec<String>>, usize, ResultStrategy)> =
+            Vec::new();
         for task_spec in tasks {
             let id = task_spec["id"].as_str().unwrap_or("unknown").to_string();
             let task = task_spec["task"].as_str().unwrap_or("").to_string();
-            let tools: Option<Vec<String>> = task_spec
-                .get("tools")
-                .and_then(Value::as_array)
-                .map(|arr| {
+            let tools: Option<Vec<String>> =
+                task_spec.get("tools").and_then(Value::as_array).map(|arr| {
                     arr.iter()
                         .filter_map(|v| v.as_str().map(String::from))
                         .collect()
@@ -548,28 +608,30 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                         .insert("tools".to_string(), serde_json::json!(tools));
                 }
                 if let Some(ref session_id) = parent_session_id {
-                    args.as_object_mut().expect("subagent args are an object").insert(
-                        "_session_id".to_string(),
-                        Value::String(session_id.clone()),
-                    );
+                    args.as_object_mut()
+                        .expect("subagent args are an object")
+                        .insert("_session_id".to_string(), Value::String(session_id.clone()));
                 }
                 if let Some(ref working_dir) = parent_working_dir {
-                    args.as_object_mut().expect("subagent args are an object").insert(
-                        "_working_dir".to_string(),
-                        Value::String(working_dir.clone()),
-                    );
+                    args.as_object_mut()
+                        .expect("subagent args are an object")
+                        .insert(
+                            "_working_dir".to_string(),
+                            Value::String(working_dir.clone()),
+                        );
                 }
                 if let Some(ref run_id) = parent_run_id {
-                    args.as_object_mut().expect("subagent args are an object").insert(
-                        "_parent_run_id".to_string(),
-                        Value::String(run_id.clone()),
-                    );
+                    args.as_object_mut()
+                        .expect("subagent args are an object")
+                        .insert("_parent_run_id".to_string(), Value::String(run_id.clone()));
                 }
                 if let Some(ref call_id) = parent_call_id {
-                    args.as_object_mut().expect("subagent args are an object").insert(
-                        "_parent_call_id".to_string(),
-                        Value::String(call_id.clone()),
-                    );
+                    args.as_object_mut()
+                        .expect("subagent args are an object")
+                        .insert(
+                            "_parent_call_id".to_string(),
+                            Value::String(call_id.clone()),
+                        );
                 }
 
                 let result = spawn_single(
@@ -636,10 +698,15 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                     output.push_str(&entry);
                 }
                 Ok((id, Err(e), _)) => {
-                    output.push_str(&format!("[{}] {} — ERROR: {}\n\n", idx + 1, id, e));
+                    let handoff = e.handoff(id);
+                    output.push_str(&format!("[{}] {}\n{}\n\n", idx + 1, id, handoff.render_for_parent()));
                 }
                 Err(e) => {
-                    output.push_str(&format!("[{}] — JOIN ERROR: {}\n\n", idx + 1, e));
+                    let handoff = crate::subagent::handoff::SubagentHandoff::from_error(
+                        format!("batch-join-{}", idx + 1),
+                        e.to_string(),
+                    );
+                    output.push_str(&format!("[{}]\n{}\n\n", idx + 1, handoff.render_for_parent()));
                 }
             }
         }
@@ -679,9 +746,9 @@ fn build_tool_summary(messages: &[Message]) -> String {
                 let tool_name = msg.name.as_deref().unwrap_or("?").to_string();
                 let content = msg.content.as_deref().unwrap_or("");
                 if !content.is_empty() {
-                    let (call_name, call_args) = pending_calls.pop_front().unwrap_or_else(|| {
-                        (tool_name.clone(), String::new())
-                    });
+                    let (call_name, call_args) = pending_calls
+                        .pop_front()
+                        .unwrap_or_else(|| (tool_name.clone(), String::new()));
                     let result_summary = summarise_tool_content(&call_name, content);
                     entries.push((call_name, call_args, result_summary));
                 }
@@ -725,16 +792,15 @@ fn summarise_tool_content(tool_name: &str, content: &str) -> String {
 
 fn summarise_grep(content: &str) -> String {
     let lines: Vec<&str> = content.lines().collect();
-    let file_set: HashSet<&str> = lines
-        .iter()
-        .filter_map(|l| l.split(':').next())
-        .collect();
+    let file_set: HashSet<&str> = lines.iter().filter_map(|l| l.split(':').next()).collect();
     let total_lines = lines.len();
     let sample: Vec<&str> = lines.iter().take(8).copied().collect();
     let sample_str = truncate_str(&sample.join(" | "), 800);
     format!(
         "found {} matches in {} file(s). samples: {}",
-        total_lines, file_set.len(), sample_str
+        total_lines,
+        file_set.len(),
+        sample_str
     )
 }
 
@@ -758,21 +824,14 @@ fn summarise_read_file(content: &str) -> String {
     let chars = content.len();
     // Keep a meaningful prefix so the main agent can see actual code content.
     let snippet = truncate_str(content, 1500);
-    format!(
-        "[{} lines, {} chars] {}",
-        lines, chars, snippet
-    )
+    format!("[{} lines, {} chars] {}", lines, chars, snippet)
 }
 
 fn summarise_shell(content: &str) -> String {
     let lines: Vec<&str> = content.lines().collect();
     let total = lines.len();
     let first: Vec<&str> = lines.iter().take(10).copied().collect();
-    let s = format!(
-        "[{} lines] {}",
-        total,
-        first.join("\n  ")
-    );
+    let s = format!("[{} lines] {}", total, first.join("\n  "));
     truncate_str(&s, TOOL_SUMMARY_PER_RESULT_MAX).to_string()
 }
 
@@ -833,6 +892,35 @@ struct SpawnResult {
     tool_count: usize,
     tool_summary: String,
     transcript_ref: Option<String>,
+}
+
+#[derive(Debug)]
+struct SpawnFailure {
+    runtime_id: Option<String>,
+    transcript_ref: Option<String>,
+    error: anyhow::Error,
+}
+
+impl std::fmt::Display for SpawnFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}", self.error)
+    }
+}
+
+impl From<anyhow::Error> for SpawnFailure {
+    fn from(error: anyhow::Error) -> Self {
+        Self { runtime_id: None, transcript_ref: None, error }
+    }
+}
+
+impl SpawnFailure {
+    fn handoff(&self, fallback_id: &str) -> crate::subagent::handoff::SubagentHandoff {
+        crate::subagent::handoff::SubagentHandoff::from_error_with_transcript(
+            self.runtime_id.clone().unwrap_or_else(|| fallback_id.to_string()),
+            self.error.to_string(),
+            self.transcript_ref.clone(),
+        )
+    }
 }
 
 impl crate::session::SubagentResultLike for SpawnResult {
@@ -907,17 +995,7 @@ fn parse_result_strategy(args: &Value) -> ResultStrategy {
 /// `skill_reload`) are meta tools that orchestrate OTHER pieces of work
 /// from the parent — they should never be inherited implicitly.
 pub(crate) fn is_meta_dispatch_tool(name: &str) -> bool {
-    matches!(
-        name,
-        "subagent"
-            | "subagents"
-            | "subagent_transcript"
-            | "skill_list"
-            | "skill_search"
-            | "skill_load"
-            | "skill_deactivate"
-            | "skill_reload"
-    )
+    crate::subagent::spec::is_meta_dispatch_tool(name)
 }
 
 /// Resolve a child's tool set as a strict subset of the concrete tools held by
@@ -979,10 +1057,7 @@ fn effective_subagent_working_dir(args: &Value) -> std::path::PathBuf {
     find_workspace_root(&cwd)
 }
 
-async fn read_persona_file(
-    persona_root: &std::path::Path,
-    key: &PersonaKey,
-) -> Option<String> {
+async fn read_persona_file(persona_root: &std::path::Path, key: &PersonaKey) -> Option<String> {
     let canonical_root = tokio::fs::canonicalize(persona_root).await.ok()?;
     let target = persona_root.join(format!("{}.md", key.as_str()));
     let canonical_target = tokio::fs::canonicalize(target).await.ok()?;
@@ -1010,7 +1085,7 @@ async fn spawn_single(
     parent_depth: u8,
     skill_manager: Option<Arc<Mutex<crate::skills::SkillManager>>>,
     approval_resolver: Option<crate::runtime::ApprovalResolver>,
-) -> Result<(SpawnResult, Vec<crate::types::Message>)> {
+) -> std::result::Result<(SpawnResult, Vec<crate::types::Message>), SpawnFailure> {
     use crate::skills::SkillManager;
 
     let id = args["id"]
@@ -1153,11 +1228,12 @@ Do NOT attempt to bypass a missing capability through another tool.";
         tool_registry,
         effective.permission,
     );
-    subagent.session_id = session_id.map(|s| s.to_string());
-    subagent.parent_run_id = args
-        .get("_parent_run_id")
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned);
+    subagent = subagent.with_runtime_scope(
+        session_id.map(ToOwned::to_owned),
+        args.get("_parent_run_id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+    );
     if let Some(sv) = supervisor {
         subagent = subagent.with_supervisor(sv);
     }
@@ -1181,16 +1257,21 @@ Do NOT attempt to bypass a missing capability through another tool.";
         Ok(result) => result,
         Err(error) => {
             if let Some(path) = &transcript_ref {
-                return Err(error.context(format!(
-                    "partial subagent transcript persisted to {}",
-                    path
-                )));
+                return Err(SpawnFailure {
+                    runtime_id: Some(runtime_subagent_id),
+                    transcript_ref: Some(path.clone()),
+                    error,
+                });
             }
             tracing::warn!(
                 subagent_id = %runtime_subagent_id,
                 "Failed to persist partial subagent transcript"
             );
-            return Err(error);
+            return Err(SpawnFailure {
+                runtime_id: Some(runtime_subagent_id),
+                transcript_ref: None,
+                error,
+            });
         }
     };
 
@@ -1233,6 +1314,38 @@ mod capability_tests {
         symlink(&outside, persona_root.join("reviewer.md")).expect("persona symlink");
         let key = PersonaKey::parse("reviewer").expect("valid persona key");
         assert!(read_persona_file(&persona_root, &key).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn parent_can_page_a_subagent_transcript_by_runtime_id() {
+        use crate::subagent::transcript::{TranscriptOutcome, TranscriptRecorder};
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let runtime_id = "550e8400-e29b-41d4-a716-446655440000";
+        let mut recorder = TranscriptRecorder::new_in(temp.path(), runtime_id).unwrap();
+        recorder.set_scope(Some("session-1".into()), Some("run-1".into()));
+        recorder
+            .finalize(
+                &[Message::user("task"), Message::assistant("answer")],
+                TranscriptOutcome::Succeeded,
+            )
+            .unwrap();
+
+        let tool = SubagentTranscriptTool::with_root(temp.path().to_path_buf());
+        let page = tool
+            .execute(serde_json::json!({
+                "runtime_id": runtime_id,
+                "offset": 1,
+                "limit": 1,
+                "_session_id": "session-1",
+                "_parent_run_id": "run-1"
+            }))
+            .await
+            .unwrap();
+        let page: Value = serde_json::from_str(&page).unwrap();
+        assert_eq!(page["total"], 2);
+        assert_eq!(page["returned"], 1);
+        assert_eq!(page["messages"][0]["content"], "answer");
     }
 
     #[test]

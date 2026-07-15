@@ -10,15 +10,15 @@ use crate::agent_registry::memory::AgentMemoryStore;
 use crate::client::OpenAIClient;
 use crate::config::ModelConfig;
 use crate::context::Context;
-use crate::runtime::EventGuard;
 use crate::runtime::supervisor::ProcessSupervisor;
+use crate::runtime::EventGuard;
 use crate::tools::ToolRegistry;
 use crate::types::{AgentEvent, EventSender, Message, MessageDelta, StreamEvent, ToolCall};
 use transcript::{TranscriptOutcome, TranscriptRecorder};
 
-pub mod transcript;
-pub mod spec;
 pub mod handoff;
+pub mod spec;
+pub mod transcript;
 
 /// How the subagent's result should be formatted before returning to the parent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -166,11 +166,18 @@ pub struct AgentMemoryIdentity {
 
 impl AgentMemoryIdentity {
     pub fn new(agent_id: impl Into<String>, memory_key: impl Into<String>) -> Self {
-        Self { agent_id: agent_id.into(), memory_key: memory_key.into() }
+        Self {
+            agent_id: agent_id.into(),
+            memory_key: memory_key.into(),
+        }
     }
 
-    pub fn agent_id(&self) -> &str { &self.agent_id }
-    pub fn memory_key(&self) -> &str { &self.memory_key }
+    pub fn agent_id(&self) -> &str {
+        &self.agent_id
+    }
+    pub fn memory_key(&self) -> &str {
+        &self.memory_key
+    }
 }
 
 pub struct Subagent {
@@ -274,6 +281,19 @@ impl Subagent {
         self
     }
 
+    pub fn with_runtime_scope(
+        mut self,
+        session_id: Option<String>,
+        parent_run_id: Option<String>,
+    ) -> Self {
+        self.session_id = session_id.clone();
+        self.parent_run_id = parent_run_id.clone();
+        if let Some(recorder) = &self.transcript {
+            recorder.lock().set_scope(session_id, parent_run_id);
+        }
+        self
+    }
+
     pub fn approval_resolver(&self) -> Option<&crate::runtime::ApprovalResolver> {
         self.approval_resolver.as_ref()
     }
@@ -286,12 +306,11 @@ impl Subagent {
                 .working_dir
                 .as_ref()
                 .map(|p| p.to_string_lossy().to_string());
-            self.registry.register(Box::new(
-                crate::tools::shell::ShellTool::with_supervisor(
+            self.registry
+                .register(Box::new(crate::tools::shell::ShellTool::with_supervisor(
                     supervisor.clone(),
                     working_dir,
-                ),
-            ));
+                )));
         }
     }
 
@@ -371,7 +390,8 @@ impl Subagent {
         // PLAN-0009: inject relevant memories before the task is added.
         self.inject_memory(task);
 
-        self.context.add(Message::user_with_model(task, &self.client.model.model_id));
+        self.context
+            .add(Message::user_with_model(task, &self.client.model.model_id));
         self.checkpoint_transcript(None);
 
         // Emit SubagentStart
@@ -569,7 +589,9 @@ impl Subagent {
 
             // Execute tools, emitting SubagentToolStart/SubagentToolEnd events
             let results = {
-                let cancel = self.cancel_token.clone()
+                let cancel = self
+                    .cancel_token
+                    .clone()
                     .unwrap_or_else(|| tokio_util::sync::CancellationToken::new());
                 let mut orchestrator = crate::runtime::tool_orchestrator::ToolOrchestrator {
                     registry: &self.registry,
@@ -581,7 +603,11 @@ impl Subagent {
                     input_resolver: None, // ask_user only on main Run (v1)
                     session_id: self.session_id.clone(),
                     run_id: self.parent_run_id.clone().or_else(|| Some(self.id.clone())),
-                    working_dir: self.config.working_dir.as_ref().map(|p| p.to_string_lossy().to_string()),
+                    working_dir: self
+                        .config
+                        .working_dir
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string()),
                 };
 
                 let sender_clone = event_sender.clone();
@@ -651,8 +677,11 @@ impl Subagent {
                         is_error,
                     });
                 }
-                self.context
-                    .add(Message::tool(call.id.clone(), result.clone(), Some(call.function.name.clone())));
+                self.context.add(Message::tool(
+                    call.id.clone(),
+                    result.clone(),
+                    Some(call.function.name.clone()),
+                ));
                 self.checkpoint_transcript(None);
             }
         }
@@ -669,7 +698,11 @@ impl Subagent {
         }
 
         let truncated_output = if all_text.len() > 1000 {
-            format!("{}... [truncated, total {} chars]", &all_text[..1000], all_text.len())
+            format!(
+                "{}... [truncated, total {} chars]",
+                &all_text[..1000],
+                all_text.len()
+            )
         } else if all_text.is_empty() {
             "(no output produced)".to_string()
         } else {
@@ -707,7 +740,13 @@ impl Subagent {
         stream: impl futures::Stream<Item = Result<StreamEvent>>,
         event_sender: Option<&EventSender>,
         partial: &mut StreamPartial,
-    ) -> Result<(String, String, crate::types::ReasoningState, Vec<ToolCall>, String)> {
+    ) -> Result<(
+        String,
+        String,
+        crate::types::ReasoningState,
+        Vec<ToolCall>,
+        String,
+    )> {
         use crate::client::streaming::{TokenAccumulator, ToolCallAccumulator};
         use futures::StreamExt;
 
@@ -842,7 +881,13 @@ impl Subagent {
             vec![]
         };
 
-        Ok((text_buffer, thinking_buffer, reasoning_blob, tool_calls, message_id))
+        Ok((
+            text_buffer,
+            thinking_buffer,
+            reasoning_blob,
+            tool_calls,
+            message_id,
+        ))
     }
 
     fn record_final_response(
@@ -881,7 +926,8 @@ impl Subagent {
         if existing.is_empty() {
             self.context.set_active_memory(&injection);
         } else {
-            self.context.set_active_memory(&format!("{existing}\n\n{injection}"));
+            self.context
+                .set_active_memory(&format!("{existing}\n\n{injection}"));
         }
     }
 
@@ -934,7 +980,7 @@ impl Subagent {
     pub fn transcript_path(&self) -> Option<std::path::PathBuf> {
         self.transcript
             .as_ref()
-            .map(|recorder| recorder.lock().path().to_path_buf())
+            .and_then(|recorder| recorder.lock().persisted_path().map(ToOwned::to_owned))
     }
 
     pub fn id(&self) -> &str {
@@ -969,7 +1015,14 @@ mod identity_tests {
     fn persona_key_accepts_only_a_safe_single_path_component() {
         assert!(PersonaKey::parse("code-reviewer").is_ok());
         assert!(PersonaKey::parse("reviewer_2").is_ok());
-        for unsafe_value in ["../secret", "nested/agent", "nested\\agent", ".", "", "agent name"] {
+        for unsafe_value in [
+            "../secret",
+            "nested/agent",
+            "nested\\agent",
+            ".",
+            "",
+            "agent name",
+        ] {
             assert!(PersonaKey::parse(unsafe_value).is_err());
         }
     }

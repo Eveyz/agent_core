@@ -15,9 +15,27 @@ use crate::permission::ApprovalChoice;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::OnceLock;
 
 /// Type alias for the pending approval map: prompt_id → oneshot sender.
 pub type PendingApprovalMap = HashMap<String, tokio::sync::oneshot::Sender<ApprovalChoice>>;
+
+fn run_resolvers() -> &'static Mutex<HashMap<String, ApprovalResolver>> {
+    static RESOLVERS: OnceLock<Mutex<HashMap<String, ApprovalResolver>>> = OnceLock::new();
+    RESOLVERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(crate) fn register_run_resolver(run_id: &str, resolver: ApprovalResolver) {
+    run_resolvers().lock().insert(run_id.to_string(), resolver);
+}
+
+pub(crate) fn resolver_for_run(run_id: &str) -> Option<ApprovalResolver> {
+    run_resolvers().lock().get(run_id).cloned()
+}
+
+pub(crate) fn unregister_run_resolver(run_id: &str) {
+    run_resolvers().lock().remove(run_id);
+}
 
 /// A shared, mutable map of pending approvals, scoped to a single Run.
 ///
@@ -125,5 +143,15 @@ mod tests {
         resolver.insert("p1".into(), tx);
         // Clone sees the same map
         assert_eq!(cloned.len(), 1);
+    }
+
+    #[test]
+    fn run_resolver_registry_is_scoped_and_removed() {
+        let resolver = ApprovalResolver::new();
+        register_run_resolver("run-a", resolver.clone());
+        assert!(resolver_for_run("run-a").is_some());
+        assert!(resolver_for_run("run-b").is_none());
+        unregister_run_resolver("run-a");
+        assert!(resolver_for_run("run-a").is_none());
     }
 }

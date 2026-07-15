@@ -4,15 +4,14 @@ use anyhow::Result;
 use std::path::PathBuf;
 
 pub const SUBAGENT_PROMPT_SCHEMA: &str = "subagent-prompt/v1";
-
 pub fn output_contract(strategy: ResultStrategy) -> &'static str {
     match strategy {
-        ResultStrategy::Full => "Return complete evidence and artifact references.",
+        ResultStrategy::Full => "Return complete evidence and artifact references. End with <context_status>{\"sufficient\":true|false,\"missing\":[...],\"unresolved\":[...]}</context_status>.",
         ResultStrategy::Summary => {
-            "Return concise findings, missing context, and artifact references."
+            "Return concise findings, missing context, and artifact references. End with <context_status>{\"sufficient\":true|false,\"missing\":[...],\"unresolved\":[...]}</context_status>."
         }
         ResultStrategy::Auto => {
-            "Return decision-ready findings and explicitly identify any missing context."
+            "Return decision-ready findings and explicitly identify any missing context. End with <context_status>{\"sufficient\":true|false,\"missing\":[...],\"unresolved\":[...]}</context_status>."
         }
     }
 }
@@ -27,7 +26,10 @@ pub struct PromptLayers {
 
 impl PromptLayers {
     pub fn render(&self) -> String {
-        let mut sections = vec![format!("[{SUBAGENT_PROMPT_SCHEMA}]"), self.base.trim().to_string()];
+        let mut sections = vec![
+            format!("[{SUBAGENT_PROMPT_SCHEMA}]"),
+            self.base.trim().to_string(),
+        ];
         for (heading, body) in [
             ("Persona", self.persona.trim()),
             ("Runtime Scope", self.runtime.trim()),
@@ -120,11 +122,13 @@ impl EffectiveAgentSpec {
     }
 }
 
-fn is_meta_dispatch_tool(name: &str) -> bool {
+pub fn is_meta_dispatch_tool(name: &str) -> bool {
     matches!(
         name,
         "subagent"
             | "subagents"
+            | "subagent_transcript"
+            | "task_execute"
             | "skill_list"
             | "skill_search"
             | "skill_load"
@@ -174,7 +178,9 @@ mod tests {
         assert_eq!(effective.permission.mode, PermissionMode::Paranoid);
         assert_eq!(effective.recursion_depth, 1);
         assert!(effective.system_prompt.starts_with("[subagent-prompt/v1]"));
-        assert!(effective.system_prompt.find("Persona").unwrap()
-            < effective.system_prompt.find("Runtime Scope").unwrap());
+        assert!(
+            effective.system_prompt.find("Persona").unwrap()
+                < effective.system_prompt.find("Runtime Scope").unwrap()
+        );
     }
 }
