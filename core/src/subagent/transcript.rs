@@ -48,10 +48,21 @@ impl TranscriptRecorder {
     }
 
     pub fn in_default_root(runtime_id: &str) -> Option<Self> {
+        let path = Self::default_path(runtime_id).ok()?;
+        Self::new_in(path.parent()?, runtime_id).ok()
+    }
+
+    pub fn default_path(runtime_id: &str) -> Result<PathBuf> {
+        let runtime_id = uuid::Uuid::parse_str(runtime_id)
+            .context("transcript runtime id must be a UUID")?
+            .to_string();
         let home = std::env::var("HOME")
             .or_else(|_| std::env::var("USERPROFILE"))
-            .ok()?;
-        Self::new_in(&PathBuf::from(home).join(".agverse").join("subagents"), runtime_id).ok()
+            .context("home directory unavailable")?;
+        Ok(PathBuf::from(home)
+            .join(".agverse")
+            .join("subagents")
+            .join(format!("{runtime_id}.transcript.json")))
     }
 
     pub fn path(&self) -> &Path {

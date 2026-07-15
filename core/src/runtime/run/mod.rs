@@ -223,6 +223,7 @@ impl Run {
         let supervisor = Arc::new(Mutex::new(ProcessSupervisor::new()));
         let working_dir_for_tool = working_dir.clone();
         let cancel_token = CancellationToken::new();
+        let approval_resolver = ApprovalResolver::new();
 
         // Skill discovery follows a stable workspace-scoped manager rather
         // than mutating the desktop process' global path precedence.
@@ -270,6 +271,7 @@ impl Run {
                 Some(cancel_token.clone()),
                 0,
                 skill_manager.clone(),
+                Some(approval_resolver.clone()),
             );
         }
 
@@ -347,7 +349,7 @@ impl Run {
             join_set: JoinSet::new(),
             steering_queue: VecDeque::new(),
             follow_up_queue: VecDeque::new(),
-            approval_resolver: ApprovalResolver::new(),
+            approval_resolver,
             input_resolver: InputResolver::new(),
             working_dir,
             mode,

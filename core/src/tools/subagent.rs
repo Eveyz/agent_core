@@ -2,6 +2,7 @@ use crate::config::ModelConfig;
 use crate::permission::PermissionConfig;
 use crate::session::SessionManager;
 use crate::subagent::{PersonaKey, ResultStrategy, Subagent, SubagentConfig};
+use crate::subagent::spec::{AgentSpawnRequest, EffectiveAgentSpec, ParentAgentSpec, PromptLayers};
 use crate::tools::{Tool, ToolRegistry, ToolUpdateFn};
 use crate::types::{EventSender, Message, Role};
 use anyhow::Result;
@@ -20,6 +21,7 @@ pub fn register_subagent_tools(
     cancel_token: Option<tokio_util::sync::CancellationToken>,
     parent_depth: u8,
     skill_manager: Option<Arc<Mutex<crate::skills::SkillManager>>>,
+    approval_resolver: Option<crate::runtime::ApprovalResolver>,
 ) {
     let parent_max_iterations = model_config.max_iterations;
     let mut single = SubagentSpawnTool::new(
@@ -50,8 +52,13 @@ pub fn register_subagent_tools(
         single = single.with_cancel_token(ct.clone());
         spawn_all = spawn_all.with_cancel_token(ct);
     }
+    if let Some(resolver) = approval_resolver {
+        single = single.with_approval_resolver(resolver.clone());
+        spawn_all = spawn_all.with_approval_resolver(resolver);
+    }
     registry.register(Box::new(single));
     registry.register(Box::new(spawn_all));
+    registry.register(Box::new(SubagentTranscriptTool));
 }
 
 /// Re-wire `subagent`/`subagents` tools in `registry` so that any spawn from
@@ -117,10 +124,67 @@ pub fn re_wire_subagent_tools_with_skills(
         cancel_token,
         parent_depth,
         skill_manager,
+        None,
     );
 }
 
 // ── SubagentSpawnTool ────────────────────────────────────────────────
+
+struct SubagentTranscriptTool;
+
+#[async_trait::async_trait]
+impl Tool for SubagentTranscriptTool {
+    fn name(&self) -> &str {
+        "subagent_transcript"
+    }
+
+    fn description(&self) -> &str {
+        "Read a paginated canonical subagent transcript by runtime_id when a handoff reports missing context or more evidence is needed."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "runtime_id": { "type": "string" },
+                "offset": { "type": "integer", "minimum": 0, "default": 0 },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20 }
+            },
+            "required": ["runtime_id"]
+        })
+    }
+
+    async fn execute(&self, args: Value) -> Result<String> {
+        let runtime_id = args["runtime_id"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("missing 'runtime_id'"))?;
+        let offset = args["offset"].as_u64().unwrap_or(0) as usize;
+        let limit = (args["limit"].as_u64().unwrap_or(20) as usize).clamp(1, 100);
+        let path = crate::subagent::transcript::TranscriptRecorder::default_path(runtime_id)?;
+        let document = tokio::task::spawn_blocking(move || {
+            crate::subagent::transcript::TranscriptRecorder::read(&path)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("transcript reader task failed: {error}"))??;
+        let total = document.messages.len();
+        let messages: Vec<_> = document
+            .messages
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect();
+        Ok(serde_json::to_string_pretty(&serde_json::json!({
+            "schema": "subagent-transcript-page/v1",
+            "runtime_id": document.runtime_id,
+            "outcome": document.outcome,
+            "offset": offset,
+            "returned": messages.len(),
+            "total": total,
+            "has_more": offset.saturating_add(messages.len()) < total,
+            "messages": messages,
+        }))?)
+    }
+}
 
 pub(crate) struct SubagentSpawnTool {
     model_config: ModelConfig,
@@ -135,6 +199,7 @@ pub(crate) struct SubagentSpawnTool {
     /// is refused past `MAX_SUBAGENT_DEPTH`.
     parent_depth: u8,
     skill_manager: Option<Arc<Mutex<crate::skills::SkillManager>>>,
+    approval_resolver: Option<crate::runtime::ApprovalResolver>,
 }
 
 impl SubagentSpawnTool {
@@ -155,6 +220,7 @@ impl SubagentSpawnTool {
             cancel_token: None,
             parent_depth: 0,
             skill_manager: None,
+            approval_resolver: None,
         }
     }
 
@@ -175,6 +241,11 @@ impl SubagentSpawnTool {
 
     pub fn with_skill_manager(mut self, sm: Arc<Mutex<crate::skills::SkillManager>>) -> Self {
         self.skill_manager = Some(sm);
+        self
+    }
+
+    pub fn with_approval_resolver(mut self, resolver: crate::runtime::ApprovalResolver) -> Self {
+        self.approval_resolver = Some(resolver);
         self
     }
 }
@@ -252,16 +323,9 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
             self.cancel_token.clone(),
             self.parent_depth,
             self.skill_manager.clone(),
+            self.approval_resolver.clone(),
         )
         .await?;
-
-        // Persist full subagent conversation to disk so the parent context
-        // stays small (cache-friendly) while preserving the complete history.
-        let file_ref = result
-            .transcript_ref
-            .as_ref()
-            .map(|path| format!("\n\n---\n⚠️ Full subagent transcript: {path}"))
-            .unwrap_or_default();
 
         // Save subagent session if session manager is available
         if let Some(ref mgr) = self.session_mgr {
@@ -278,7 +342,7 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
             );
         }
 
-        Ok(format!("{}{}", result.format_output(strategy), file_ref))
+        Ok(result.format_output(strategy))
     }
 }
 
@@ -295,6 +359,7 @@ pub(crate) struct SubagentSpawnAllTool {
     /// Recursion depth of the agent that owns this tool.
     parent_depth: u8,
     skill_manager: Option<Arc<Mutex<crate::skills::SkillManager>>>,
+    approval_resolver: Option<crate::runtime::ApprovalResolver>,
 }
 
 impl SubagentSpawnAllTool {
@@ -315,6 +380,7 @@ impl SubagentSpawnAllTool {
             cancel_token: None,
             parent_depth: 0,
             skill_manager: None,
+            approval_resolver: None,
         }
     }
 
@@ -335,6 +401,11 @@ impl SubagentSpawnAllTool {
 
     pub fn with_skill_manager(mut self, sm: Arc<Mutex<crate::skills::SkillManager>>) -> Self {
         self.skill_manager = Some(sm);
+        self
+    }
+
+    pub fn with_approval_resolver(mut self, resolver: crate::runtime::ApprovalResolver) -> Self {
+        self.approval_resolver = Some(resolver);
         self
     }
 }
@@ -459,6 +530,7 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
             let ct_clone = self.cancel_token.clone();
             let parent_depth = self.parent_depth;
             let skill_manager = self.skill_manager.clone();
+            let approval_resolver = self.approval_resolver.clone();
             let parent_session_id = parent_session_id.clone();
             let parent_working_dir = parent_working_dir.clone();
             let parent_run_id = parent_run_id.clone();
@@ -512,14 +584,9 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                     ct_clone,
                     parent_depth,
                     skill_manager,
+                    approval_resolver,
                 )
                 .await;
-
-                // Persist messages to file (cache-friendly: parent context stays small).
-                let file_ref = result
-                    .as_ref()
-                    .ok()
-                    .and_then(|(sub_result, _)| sub_result.transcript_ref.clone());
 
                 if let Some(ref mgr) = mgr_clone {
                     let mgr = mgr.lock();
@@ -534,7 +601,7 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                     }
                 }
 
-                (id, result, strategy, file_ref)
+                (id, result, strategy)
             });
         }
 
@@ -553,7 +620,7 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
 
         for (idx, result) in results.iter().enumerate() {
             match result {
-                Ok((id, Ok((sub_result, _msgs)), strategy, file_ref)) => {
+                Ok((id, Ok((sub_result, _msgs)), strategy)) => {
                     let mut entry = format!(
                         "[{}] {} — {}\n{}\n",
                         idx + 1,
@@ -565,15 +632,10 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                         },
                         sub_result.format_output(*strategy)
                     );
-                    if let Some(path) = file_ref {
-                        entry.push_str(&format!(
-                            "⚠️ Full messages persisted to: {path}\n"
-                        ));
-                    }
                     entry.push('\n');
                     output.push_str(&entry);
                 }
-                Ok((id, Err(e), _, _)) => {
+                Ok((id, Err(e), _)) => {
                     output.push_str(&format!("[{}] {} — ERROR: {}\n\n", idx + 1, id, e));
                 }
                 Err(e) => {
@@ -762,6 +824,7 @@ use crate::util::floor_char_boundary;
 
 /// Result from spawning a single subagent.
 struct SpawnResult {
+    runtime_id: String,
     success: bool,
     iterations_used: usize,
     output: String,
@@ -782,68 +845,24 @@ impl crate::session::SubagentResultLike for SpawnResult {
 }
 
 impl SpawnResult {
-    /// Legacy summary format (all text + tool summary). Used by Auto strategy.
-    fn summary(&self) -> String {
-        let mut s = format!(
-            "[Sub-agent] ({} iterations, {} tools, {})\n\n{}",
-            self.iterations_used,
-            self.tool_count,
-            if self.success {
-                "success"
-            } else {
-                "incomplete"
-            },
-            self.output
-        );
-        if !self.tool_summary.is_empty() {
-            s.push_str("\n\n--- Tool Execution Summary ---\n");
-            s.push_str(&self.tool_summary);
-        }
-        s
-    }
-
     /// Format the subagent output according to the chosen ResultStrategy.
     fn format_output(&self, strategy: ResultStrategy) -> String {
-        match strategy {
-            ResultStrategy::Full => {
-                // Full: return last-turn text + tool_summary so the main agent
-                // sees both the subagent's final analysis AND the raw tool data.
-                let content = if self.last_text.is_empty() {
-                    &self.output
-                } else {
-                    &self.last_text
-                };
-                let mut s = format!(
-                    "[Sub-agent] ({} iterations, {} tools, {})\n\n{}",
-                    self.iterations_used,
-                    self.tool_count,
-                    if self.success { "success" } else { "incomplete" },
-                    content
-                );
-                if !self.tool_summary.is_empty() {
-                    s.push_str("\n\n--- Tool Execution Summary ---\n");
-                    s.push_str(&self.tool_summary);
-                }
-                s
+        let summary = match strategy {
+            ResultStrategy::Full | ResultStrategy::Summary if !self.last_text.is_empty() => {
+                self.last_text.clone()
             }
-            ResultStrategy::Summary => {
-                // Summary: return only the last-turn text (the system prompt
-                // already instructed the subagent to summarise).
-                let content = if self.last_text.is_empty() {
-                    &self.output
-                } else {
-                    &self.last_text
-                };
-                format!(
-                    "[Sub-agent] ({} iterations, {} tools, {})\n\n{}",
-                    self.iterations_used,
-                    self.tool_count,
-                    if self.success { "success" } else { "incomplete" },
-                    content
-                )
-            }
-            ResultStrategy::Auto => self.summary(),
-        }
+            _ => self.output.clone(),
+        };
+        crate::subagent::handoff::SubagentHandoff::from_runtime_result(
+            self.runtime_id.clone(),
+            self.success,
+            summary,
+            self.tool_summary.clone(),
+            self.transcript_ref.clone(),
+            self.iterations_used,
+            self.tool_count,
+        )
+        .render_for_parent()
     }
 }
 
@@ -892,6 +911,7 @@ pub(crate) fn is_meta_dispatch_tool(name: &str) -> bool {
         name,
         "subagent"
             | "subagents"
+            | "subagent_transcript"
             | "skill_list"
             | "skill_search"
             | "skill_load"
@@ -989,9 +1009,9 @@ async fn spawn_single(
     cancel_token: Option<tokio_util::sync::CancellationToken>,
     parent_depth: u8,
     skill_manager: Option<Arc<Mutex<crate::skills::SkillManager>>>,
+    approval_resolver: Option<crate::runtime::ApprovalResolver>,
 ) -> Result<(SpawnResult, Vec<crate::types::Message>)> {
     use crate::skills::SkillManager;
-    use crate::subagent::MAX_SUBAGENT_DEPTH;
 
     let id = args["id"]
         .as_str()
@@ -999,19 +1019,6 @@ async fn spawn_single(
     let task = args["task"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing 'task'"))?;
-
-    // Hard cap on recursion depth: don't let a subagent spawn another if we
-    // are already at MAX_SUBAGENT_DEPTH. Returning Err propagates up to the
-    // parent LLM, which can decide to inline the work instead.
-    if parent_depth >= MAX_SUBAGENT_DEPTH {
-        return Err(anyhow::anyhow!(
-            "Refusing to spawn subagent '{}' at recursion depth {}: \
-             that would exceed the max depth of {}. \
-             Do the work inline in the parent context instead.",
-            id, parent_depth, MAX_SUBAGENT_DEPTH,
-        ));
-    }
-    let child_depth = parent_depth + 1;
 
     let default_system_prompt = "You are a focused sub-agent. Complete the given task and return the result. Be concise. \
 Only use tools actually present in your tool schema; capabilities are delegated by the parent and may be empty. \
@@ -1035,21 +1042,14 @@ Do NOT attempt to bypass a missing capability through another tool.";
         }
     }
 
-    let base_prompt = args["system_prompt"]
+    let mut base_prompt = args["system_prompt"]
         .as_str()
         .unwrap_or(default_system_prompt)
         .to_string();
 
-    let system_prompt = if persona_content.is_empty() {
-        base_prompt
-    } else {
-        format!("{}\n\n=== Subagent Persona ===\n{}", base_prompt, persona_content)
-    };
-
     // Inject the exact parent execution root so the child cannot silently
     // widen a worktree-scoped Run back to the process checkout.
     let ws_root = workspace_root.to_string_lossy().to_string();
-    let mut system_prompt = format!("{system_prompt}\n\nWorking Directory: {ws_root}");
 
     let session_id = args.get("_session_id").and_then(|v| v.as_str());
 
@@ -1070,20 +1070,44 @@ Do NOT attempt to bypass a missing capability through another tool.";
         declared
     };
     if !effective_skills.is_empty() {
-        system_prompt = SkillManager::inject_skill_content_into(
+        base_prompt = SkillManager::inject_skill_content_into(
             skill_manager.as_ref(),
             &effective_skills,
-            &system_prompt,
+            &base_prompt,
         );
     }
 
     let requested_iterations = args["max_iterations"]
         .as_u64()
-        .and_then(|value| usize::try_from(value).ok())
-        .unwrap_or(parent_max_iterations);
-    let max_iterations = requested_iterations.clamp(1, parent_max_iterations.max(1));
+        .and_then(|value| usize::try_from(value).ok());
 
-    let final_tool_names = select_subagent_tools(args, available_tools);
+    let selected_tools = select_subagent_tools(args, available_tools);
+    let output_contract = crate::subagent::spec::output_contract(result_strategy);
+    let effective = EffectiveAgentSpec::resolve(
+        ParentAgentSpec {
+            available_tools: available_tools.to_vec(),
+            max_iterations: parent_max_iterations,
+            max_context_tokens: model_config.max_context_tokens,
+            permission: permission_config.clone(),
+            working_dir: workspace_root.clone(),
+            recursion_depth: parent_depth,
+        },
+        AgentSpawnRequest {
+            role_name: id.to_string(),
+            requested_tools: Some(selected_tools),
+            requested_max_iterations: requested_iterations,
+            skills: effective_skills,
+            prompt: PromptLayers {
+                base: base_prompt,
+                persona: persona_content,
+                runtime: format!("Working Directory: {ws_root}"),
+                output_contract: output_contract.to_string(),
+            },
+            result_strategy,
+            memory_identity: None,
+        },
+    )?;
+    let final_tool_names = effective.tools.clone();
 
     let tool_count = final_tool_names.len();
 
@@ -1092,33 +1116,33 @@ Do NOT attempt to bypass a missing capability through another tool.";
     // Skill scripts are executable capabilities. The parent Run only exposes
     // `shell` in Build mode, so use that inherited capability as the hard
     // boundary for dynamic script registration in children as well.
-    if !effective_skills.is_empty() && child_allows_skill_scripts(available_tools) {
+    if !effective.skills.is_empty() && child_allows_skill_scripts(available_tools) {
         SkillManager::sync_skill_scripts_for_skills(
             skill_manager.as_ref(),
-            &effective_skills,
+            &effective.skills,
             &mut tool_registry,
             supervisor.clone(),
         );
         let unauthorized: Vec<String> = tool_registry
             .clone_names()
             .into_iter()
-            .filter(|name| !is_authorized_child_tool(name, available_tools, &effective_skills))
+            .filter(|name| !is_authorized_child_tool(name, available_tools, &effective.skills))
             .collect();
         let unauthorized_refs: Vec<&str> = unauthorized.iter().map(String::as_str).collect();
         tool_registry.remove_all(&unauthorized_refs);
     }
 
     let config = SubagentConfig {
-        system_prompt,
+        system_prompt: effective.system_prompt,
         tools: final_tool_names,
-        max_iterations,
+        max_iterations: effective.max_iterations,
         // Inherit parent model's context window so subagents can run long tasks.
         // Previously hard-coded at 32000 tokens — far below modern 1M+ models.
-        max_context_tokens: model_config.max_context_tokens,
-        result_strategy,
-        working_dir: Some(workspace_root.clone()),
-        recursion_depth: child_depth,
-        skills: effective_skills,
+        max_context_tokens: effective.max_context_tokens,
+        result_strategy: effective.result_strategy,
+        working_dir: Some(effective.working_dir),
+        recursion_depth: effective.recursion_depth,
+        skills: effective.skills,
         ..SubagentConfig::default()
     };
 
@@ -1127,7 +1151,7 @@ Do NOT attempt to bypass a missing capability through another tool.";
         config,
         model_config,
         tool_registry,
-        permission_config.clone(),
+        effective.permission,
     );
     subagent.session_id = session_id.map(|s| s.to_string());
     subagent.parent_run_id = args
@@ -1139,6 +1163,9 @@ Do NOT attempt to bypass a missing capability through another tool.";
     }
     if let Some(ct) = cancel_token {
         subagent = subagent.with_cancel_token(ct);
+    }
+    if let Some(resolver) = approval_resolver {
+        subagent = subagent.with_approval_resolver(resolver);
     }
 
     let runtime_subagent_id = subagent.id().to_string();
@@ -1172,6 +1199,7 @@ Do NOT attempt to bypass a missing capability through another tool.";
 
     Ok((
         SpawnResult {
+            runtime_id: runtime_subagent_id,
             success: result.success,
             iterations_used: result.iterations_used,
             output: result.output,

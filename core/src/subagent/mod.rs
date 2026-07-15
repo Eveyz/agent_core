@@ -17,6 +17,8 @@ use crate::types::{AgentEvent, EventSender, Message, MessageDelta, StreamEvent, 
 use transcript::{TranscriptOutcome, TranscriptRecorder};
 
 pub mod transcript;
+pub mod spec;
+pub mod handoff;
 
 /// How the subagent's result should be formatted before returning to the parent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,16 +196,31 @@ pub struct Subagent {
     /// replaced with a supervised version for process-group isolation.
     pub supervisor: Option<Arc<Mutex<ProcessSupervisor>>>,
     transcript: Option<Mutex<TranscriptRecorder>>,
+    approval_resolver: Option<crate::runtime::ApprovalResolver>,
 }
 
 impl Subagent {
     pub fn new(
         role_name: &str,
-        config: SubagentConfig,
+        mut config: SubagentConfig,
         model_config: &ModelConfig,
         registry: ToolRegistry,
         permission_config: crate::permission::PermissionConfig,
     ) -> Self {
+        if !config
+            .system_prompt
+            .starts_with(spec::SUBAGENT_PROMPT_SCHEMA)
+            && !config
+                .system_prompt
+                .starts_with(&format!("[{}]", spec::SUBAGENT_PROMPT_SCHEMA))
+        {
+            config.system_prompt = spec::PromptLayers {
+                base: config.system_prompt.clone(),
+                output_contract: spec::output_contract(config.result_strategy).to_string(),
+                ..Default::default()
+            }
+            .render();
+        }
         let client = OpenAIClient::new(model_config.clone());
         let context = Context::new(&config.system_prompt, config.max_context_tokens);
 
@@ -234,6 +251,7 @@ impl Subagent {
             cancel_token: None,
             supervisor: None,
             transcript,
+            approval_resolver: None,
         }
     }
 
@@ -249,6 +267,15 @@ impl Subagent {
     pub fn with_cancel_token(mut self, ct: CancellationToken) -> Self {
         self.cancel_token = Some(ct);
         self
+    }
+
+    pub fn with_approval_resolver(mut self, resolver: crate::runtime::ApprovalResolver) -> Self {
+        self.approval_resolver = Some(resolver);
+        self
+    }
+
+    pub fn approval_resolver(&self) -> Option<&crate::runtime::ApprovalResolver> {
+        self.approval_resolver.as_ref()
     }
 
     /// Replace the ShellTool in the registry with a supervised version.
@@ -343,31 +370,6 @@ impl Subagent {
 
         // PLAN-0009: inject relevant memories before the task is added.
         self.inject_memory(task);
-
-        // Inject strategy-specific instructions as a system message before the task.
-        // This ensures the subagent understands how its output will be consumed.
-        match self.config.result_strategy {
-            ResultStrategy::Summary => {
-                self.context.add(Message::system(
-                    "CRITICAL: In your final response (when you have no more tool calls to make), \
-                    provide ONLY a concise summary of your key findings and conclusions. \
-                    Do NOT repeat raw data, tool outputs, or intermediate reasoning. \
-                    Filter out noise, ads, boilerplate, and irrelevant content. \
-                    Only return actionable key findings."
-                ));
-            }
-            ResultStrategy::Full => {
-                self.context.add(Message::system(
-                    "CRITICAL: Output ALL findings and data verbatim in your final response. \
-                    Do NOT summarize, paraphrase, or omit anything. \
-                    Your complete response will be forwarded directly to the main agent \
-                    as the authoritative result. Include every detail from the tools you executed."
-                ));
-            }
-            ResultStrategy::Auto => {
-                // Default behaviour — no extra instruction.
-            }
-        }
 
         self.context.add(Message::user_with_model(task, &self.client.model.model_id));
         self.checkpoint_transcript(None);
@@ -575,7 +577,7 @@ impl Subagent {
                     hook_registry: self.hook_registry.clone(),
                     tool_execution_mode: crate::types::ToolExecutionMode::Sequential,
                     cancel_token: cancel,
-                    approval_resolver: None,
+                    approval_resolver: self.approval_resolver.clone(),
                     input_resolver: None, // ask_user only on main Run (v1)
                     session_id: self.session_id.clone(),
                     run_id: self.parent_run_id.clone().or_else(|| Some(self.id.clone())),
@@ -985,6 +987,26 @@ mod identity_tests {
         let final_message = subagent.messages().pop().expect("final assistant message");
         assert_eq!(final_message.role, Role::Assistant);
         assert_eq!(final_message.content.as_deref(), Some("final answer"));
+    }
+
+    #[test]
+    fn child_approval_resolver_is_the_parent_run_resolver() {
+        let parent = crate::runtime::ApprovalResolver::new();
+        let subagent = Subagent::new(
+            "reviewer",
+            SubagentConfig::default(),
+            &ModelConfig::default(),
+            ToolRegistry::new(),
+            PermissionConfig::default(),
+        )
+        .with_approval_resolver(parent.clone());
+
+        let (tx, _rx) = tokio::sync::oneshot::channel();
+        subagent
+            .approval_resolver()
+            .expect("delegated resolver")
+            .insert("child-prompt".into(), tx);
+        assert_eq!(parent.len(), 1);
     }
 }
 

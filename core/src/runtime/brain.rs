@@ -459,6 +459,7 @@ impl Brain {
                 None,
                 0,
                 self.skill_manager.clone(),
+                None,
             );
         }
 
