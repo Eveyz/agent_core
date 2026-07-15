@@ -901,9 +901,7 @@ async fn delete_session(state: State<'_, AppState>, session_id: String) -> Resul
     {
         let manager = state.run_manager.lock().await;
         manager.brain().todo_lists.remove_session(&session_id);
-        if let Some(ref sm) = manager.brain().skill_manager {
-            sm.lock().clear_session(&session_id);
-        }
+        manager.brain().clear_skill_session(&session_id);
     }
     let sm = state.session_manager.clone();
     tokio::task::spawn_blocking(move || {
@@ -1186,44 +1184,87 @@ async fn read_file(path: String) -> Result<String, String> {
 
 // ── Skills cache ───────────────────────────────────────────────────────
 
-static SKILL_CACHE: Mutex<Option<(Instant, Vec<agent_core::skills::manifest::SkillManifest>)>> = Mutex::new(None);
+static SKILL_CACHE: std::sync::LazyLock<
+    Mutex<std::collections::HashMap<String, (Instant, Vec<agent_core::skills::manifest::SkillManifest>)>>,
+> = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 const SKILL_CACHE_TTL: u64 = 30; // seconds
 
 #[tauri::command]
-async fn get_skills(state: State<'_, AppState>) -> Result<Vec<agent_core::skills::manifest::SkillManifest>, String> {
-    // Prefer Brain's SkillManager (runtime source of truth) over a separate scan.
+async fn get_skills(
+    state: State<'_, AppState>,
+    session_id: Option<String>,
+    workspace: Option<String>,
+) -> Result<Vec<agent_core::skills::manifest::SkillManifest>, String> {
+    let workspace = if let Some(session_id) = session_id {
+        let session_manager = state.session_manager.clone();
+        tokio::task::spawn_blocking(move || session_manager.resume(&session_id))
+            .await
+            .map_err(|e| format!("session resume task failed: {e}"))?
+            .map_err(|e| format!("failed to resolve skill workspace: {e}"))?
+            .map(|session| std::path::PathBuf::from(session.meta.cwd))
+    } else if let Some(workspace) = workspace.filter(|value| !value.trim().is_empty()) {
+        Some(std::path::PathBuf::from(workspace))
+    } else {
+        None
+    };
+    let scope_key = workspace
+        .as_deref()
+        .and_then(|path| path.canonicalize().ok())
+        .or_else(|| workspace.clone())
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "__global__".to_string());
+
+    // Prefer the exact workspace manager used by Runs. Listing an already
+    // scanned manager is cheap and avoids returning a stale TTL entry after a
+    // runtime `skill_reload`.
     {
         let run_manager = state.run_manager.lock().await;
-        if let Some(ref sm) = run_manager.brain().skill_manager {
+        if let Some(sm) = run_manager
+            .brain()
+            .skill_manager_for_workspace(workspace.as_deref())
+            .map_err(|e| e.to_string())?
+        {
             let mgr = sm.lock();
             let skills: Vec<_> = mgr.list().into_iter().cloned().collect();
-            *SKILL_CACHE.lock() = Some((Instant::now(), skills.clone()));
+            SKILL_CACHE
+                .lock()
+                .insert(scope_key, (Instant::now(), skills.clone()));
             return Ok(skills);
         }
     }
 
     // Fallback: independent scan (Brain has no skill_manager).
-    if let Some((cached_at, cached)) = SKILL_CACHE.lock().as_ref() {
+    if let Some((cached_at, cached)) = SKILL_CACHE.lock().get(&scope_key) {
         if cached_at.elapsed().as_secs() < SKILL_CACHE_TTL {
             return Ok(cached.clone());
         }
     }
-    let mut manager = agent_core::skills::SkillManager::with_defaults();
+    let mut manager = if workspace.is_some() {
+        agent_core::skills::SkillManager::with_global_defaults()
+    } else {
+        agent_core::skills::SkillManager::with_defaults()
+    };
+    if let Some(workspace) = workspace.as_deref() {
+        manager.add_workspace_root(workspace);
+    }
     manager.scan().map_err(|e| e.to_string())?;
     let skills: Vec<agent_core::skills::manifest::SkillManifest> = manager.list().into_iter().cloned().collect();
-    *SKILL_CACHE.lock() = Some((Instant::now(), skills.clone()));
+    SKILL_CACHE
+        .lock()
+        .insert(scope_key, (Instant::now(), skills.clone()));
     Ok(skills)
 }
 
 #[tauri::command]
 async fn invalidate_skills_cache(state: State<'_, AppState>) -> Result<(), String> {
-    *SKILL_CACHE.lock() = None;
-    // Rescan Brain so newly installed skills are activatable without skill_reload.
+    SKILL_CACHE.lock().clear();
+    // Rescan global + every cached workspace manager so newly installed skills
+    // are activatable everywhere without waiting for a new process.
     let run_manager = state.run_manager.lock().await;
-    if let Some(ref sm) = run_manager.brain().skill_manager {
-        let mut mgr = sm.lock();
-        let _ = mgr.reload_preserving_active().map_err(|e| e.to_string())?;
-    }
+    let _ = run_manager
+        .brain()
+        .reload_all_skill_managers()
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1635,7 +1676,7 @@ async fn run_agent_standalone(
         registry,
         permission_config,
         memory,
-        Some(def.id.clone()),
+        Some(def.memory_identity()),
     )
     .with_supervisor(supervisor.clone())
     .with_cancel_token(cancel_token);

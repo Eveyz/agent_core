@@ -5,7 +5,7 @@
 id: PLAN-0006
 type: PLAN
 title: Skill Selector in Input Box
-status: Draft
+status: Implemented
 author: agent_core
 created: 2026-06-28
 updated: 2026-06-28
@@ -310,16 +310,22 @@ Dropdown renders with skill list
 
 | ID | Task | Owner | Status | ETA |
 |----|------|-------|--------|-----|
-| T1 | Add `OnceLock` TTL cache to `get_skills` in `app/src-tauri/src/lib.rs` | agent_core | Todo | 2026-06-28 |
-| T2 | Add cache invalidation command `invalidate_skills_cache` in `app/src-tauri/src/lib.rs` | agent_core | Todo | 2026-06-28 |
-| T3 | Extend `chatSlice.ts` — add `skillsCache` state, `cacheSkills` reducer, `fetchSkills` thunk | agent_core | Todo | 2026-06-28 |
-| T4 | Create `app/src/hooks/useSkills.ts` with cache-aware hook | agent_core | Todo | 2026-06-28 |
-| T5 | Create `app/src/components/chat/SkillSelector.tsx` dropdown component with refresh button, badge, recent skills | agent_core | Todo | 2026-06-28 |
-| T6 | Create `app/src/styles/skill-selector.css` with skill item styles | agent_core | Todo | 2026-06-28 |
-| T7 | Integrate `SkillSelector` into `ChatInput.tsx` — icon button + selection handler | agent_core | Todo | 2026-06-28 |
-| T8 | Add keyboard shortcut (Cmd/Ctrl+K) to open SkillSelector | agent_core | Todo | 2026-06-28 |
-| T9 | Add accessibility enhancements (ARIA labels, keyboard navigation) | agent_core | Todo | 2026-06-28 |
-| T10 | Update `docs/index.md` with PLAN-0006 entry | agent_core | Todo | 2026-06-28 |
+| T1 | Add backend skill cache to `get_skills` in `app/src-tauri/src/lib.rs` | agent_core | Done | 2026-07-15 |
+| T2 | Add cache invalidation command `invalidate_skills_cache` in `app/src-tauri/src/lib.rs` | agent_core | Done | 2026-07-15 |
+| T3 | Extend `chatSlice.ts` — add workspace-scoped `skillsCache`, reducer, and thunk | agent_core | Done | 2026-07-15 |
+| T4 | Create `app/src/hooks/useSkills.ts` with scope-aware cache hook | agent_core | Done | 2026-07-15 |
+| T5 | Create `app/src/components/chat/SkillSelector.tsx` dropdown component with refresh button and recent skills | agent_core | Done | 2026-07-15 |
+| T6 | Create `app/src/styles/skill-selector.css` with skill item styles | agent_core | Done | 2026-07-15 |
+| T7 | Integrate `SkillSelector` into `ChatInput.tsx` — icon button + selection handler | agent_core | Done | 2026-07-15 |
+| T8 | Add keyboard shortcut (Cmd/Ctrl+K) to open SkillSelector | agent_core | Done | 2026-07-15 |
+| T9 | Add accessibility enhancements (ARIA labels, keyboard navigation) | agent_core | Done | 2026-07-15 |
+| T10 | Update `docs/index.md` with PLAN-0006 entry | agent_core | Done | 2026-07-15 |
+
+The final implementation keys both frontend and backend results by the active
+session workspace. Refresh reloads the global manager and every cached
+workspace manager; deleting a session clears its activation state from all of
+them. This extends the original TTL design so switching projects cannot expose
+another workspace's local skills.
 
 ## Milestones
 

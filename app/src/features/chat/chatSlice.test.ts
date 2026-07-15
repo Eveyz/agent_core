@@ -21,6 +21,7 @@ async function loadModules() {
     clarificationAnswered: chat.clarificationAnswered,
     btwAsked: chat.btwAsked,
     steerMessageQueued: chat.steerMessageQueued,
+    cacheSkills: chat.cacheSkills,
   };
 }
 
@@ -29,6 +30,21 @@ beforeEach(() => {
 });
 
 describe('chat reducer session routing', () => {
+  it('stores the workspace scope with the skill cache', async () => {
+    const { reducer, cacheSkills } = await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(
+      state,
+      cacheSkills({
+        scopeKey: 'session-a',
+        skills: [{ name: 'review', description: 'Review code' }],
+      }),
+    );
+
+    expect(state.skillsCache?.scopeKey).toBe('session-a');
+    expect(state.skillsCache?.skills[0]?.name).toBe('review');
+  });
+
   it('routes run events to the session mapped by runIdSet', async () => {
     const { reducer, userMessageSent, runIdSet, agentEventsBatch } = await loadModules();
     let state = reducer(undefined, { type: '@@INIT' });

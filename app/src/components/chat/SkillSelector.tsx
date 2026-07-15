@@ -5,7 +5,9 @@ import RefreshIcon from 'lucide-react/dist/esm/icons/refresh-cw.mjs';
 import ClockIcon from 'lucide-react/dist/esm/icons/clock.mjs';
 import ZapIcon from 'lucide-react/dist/esm/icons/zap.mjs';
 import { useSkills } from '../../hooks/useSkills';
+import { useAppDispatch } from '../../hooks/useAppDispatch';
 import type { SkillManifest } from '../../features/chat/types';
+import { openSettings, setActiveTab } from '../../features/settings/settingsSlice';
 
 const RECENT_SKILLS_KEY = 'recent_skills';
 const MAX_RECENT_SKILLS = 5;
@@ -17,6 +19,7 @@ interface SkillSelectorProps {
 }
 
 export function SkillSelector({ onSelect, externalOpen, onExternalOpenChange }: SkillSelectorProps) {
+  const dispatch = useAppDispatch();
   const { skills, loading, refresh, invalidate } = useSkills();
   const [internalOpen, setInternalOpen] = useState(false);
   const open = externalOpen ?? internalOpen;
@@ -94,15 +97,17 @@ export function SkillSelector({ onSelect, externalOpen, onExternalOpenChange }: 
 
   // Filter recent skills (exclude those already in filtered results)
   const filteredRecent = useMemo(() => {
-    if (!search.trim()) return recentSkills;
+    const availableNames = new Set(skills.map((skill) => skill.name));
+    const availableRecent = recentSkills.filter((skill) => availableNames.has(skill.name));
+    if (!search.trim()) return availableRecent;
     const q = search.toLowerCase();
-    return recentSkills.filter(
+    return availableRecent.filter(
       (skill) =>
         skill.name.toLowerCase().includes(q) ||
         skill.description.toLowerCase().includes(q) ||
         skill.triggers?.some((t) => t.toLowerCase().includes(q))
     );
-  }, [recentSkills, search]);
+  }, [recentSkills, skills, search]);
 
   // All items for keyboard navigation
   const allItems = useMemo(() => {
@@ -121,9 +126,11 @@ export function SkillSelector({ onSelect, externalOpen, onExternalOpenChange }: 
     (e: React.KeyboardEvent) => {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
+        if (allItems.length === 0) return;
         setSelectedIndex((prev) => (prev + 1) % allItems.length);
       } else if (e.key === 'ArrowUp') {
         e.preventDefault();
+        if (allItems.length === 0) return;
         setSelectedIndex((prev) => (prev - 1 + allItems.length) % allItems.length);
       } else if (e.key === 'Enter') {
         e.preventDefault();
@@ -166,6 +173,12 @@ export function SkillSelector({ onSelect, externalOpen, onExternalOpenChange }: 
     await invalidate();
     await refresh();
   }, [invalidate, refresh]);
+
+  const handleOpenSkillSettings = useCallback(() => {
+    setOpen(false);
+    dispatch(setActiveTab('skills'));
+    dispatch(openSettings());
+  }, [dispatch, setOpen]);
 
 
 
@@ -213,9 +226,9 @@ export function SkillSelector({ onSelect, externalOpen, onExternalOpenChange }: 
                 No skills found
                 {skills.length === 0 && (
                   <div style={{ marginTop: '8px', fontSize: '12px' }}>
-                    <a href="#settings" onClick={(e) => { e.preventDefault(); /* TODO: open settings */ }}>
+                    <button type="button" className="skill-settings-link" onClick={handleOpenSkillSettings}>
                       Install skills in Settings
-                    </a>
+                    </button>
                   </div>
                 )}
               </div>

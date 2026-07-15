@@ -73,7 +73,7 @@ export function AgentConfigTab({ agent }: AgentConfigTabProps) {
 
   const loadSkills = async () => {
     try {
-      const data = await invoke<SkillInfo[]>("get_skills");
+      const data = await invoke<SkillInfo[]>("get_skills", { sessionId: null, workspace: null });
       setSkillsList(data.map((s) => ({ id: s.name, name: s.name })));
     } catch (e) {
       console.error(e);

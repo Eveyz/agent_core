@@ -5,10 +5,10 @@
 id: PLAN-0004
 type: PLAN
 title: Skill 系统激活 + Legacy Agent 迁移到 Runtime
-status: Draft
+status: Implemented
 author: zniverse
 created: 2026-06-25
-updated: 2026-06-25
+updated: 2026-07-15
 reviewers: []
 related: [ADR-0001, PLAN-0001, PLAN-0002, PLAN-0003]
 supersedes: ~
@@ -60,14 +60,15 @@ Runtime 路径用 `Brain` + `RunManager` → `Run`，通过 command/event 通道
 
 | ID | Task | 涉及文件 | Status |
 |----|------|---------|--------|
-| S1 | Brain 构建 SkillManager + 注册 skill tools | `core/src/runtime/brain.rs` | Todo |
-| S2 | Run 注入 catalog + auto-trigger | `core/src/runtime/run.rs` | Todo |
-| S3 | Segment 6 刷新策略改为 PerTurn | `core/src/context.rs` | Todo |
-| S4 | CLI 迁移到 Runtime | `cli/src/main.rs`, `cli/src/tui/` | Todo |
-| S5 | cargo check + cargo test | — | Todo |
+| S1 | Brain 构建 SkillManager + 注册 skill tools | `core/src/runtime/brain.rs` | Done |
+| S2 | Run 注入 catalog + auto-trigger | `core/src/runtime/run/` | Done |
+| S3 | Skill context segments 刷新策略改为 PerTurn | `core/src/context.rs` | Done |
+| S4 | CLI 迁移到 Runtime | `cli/src/main.rs` | Done |
+| S5 | cargo check + cargo test | — | Done |
 
 ## Change Log
 
 | Date | Author | Change |
 |------|--------|--------|
 | 2026-06-25 | zniverse | Created as Draft |
+| 2026-07-15 | agent_core | Verified Runtime/CLI migration and marked implemented |

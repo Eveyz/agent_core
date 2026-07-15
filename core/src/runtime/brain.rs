@@ -262,6 +262,42 @@ impl Brain {
         Ok(Some(manager))
     }
 
+    /// Reload the global manager and every workspace-scoped manager while
+    /// preserving each manager's requested/active session state.
+    pub fn reload_all_skill_managers(&self) -> Result<(usize, usize)> {
+        let mut managers = Vec::new();
+        if let Some(manager) = &self.skill_manager {
+            managers.push(manager.clone());
+        }
+        managers.extend(self.workspace_skill_managers.lock().values().cloned());
+
+        let mut discovered = 0usize;
+        let mut reactivated = 0usize;
+        for manager in managers {
+            let (manager_discovered, manager_reactivated) =
+                manager.lock().reload_preserving_active()?;
+            discovered += manager_discovered;
+            reactivated += manager_reactivated;
+        }
+        Ok((discovered, reactivated))
+    }
+
+    /// Remove session-scoped activation state from every manager cache.
+    pub fn clear_skill_session(&self, session_id: &str) {
+        if let Some(manager) = &self.skill_manager {
+            manager.lock().clear_session(session_id);
+        }
+        let managers: Vec<_> = self
+            .workspace_skill_managers
+            .lock()
+            .values()
+            .cloned()
+            .collect();
+        for manager in managers {
+            manager.lock().clear_session(session_id);
+        }
+    }
+
     fn build_reflector(config: &Config) -> Option<Reflector> {
         if !config.reflector_enabled {
             return None;
@@ -606,5 +642,55 @@ default = { model_id = "mock" }
         brain.switch_model("test/default").unwrap();
         // Switching to a nonexistent model should fail.
         assert!(brain.switch_model("nonexistent").is_err());
+    }
+
+    #[test]
+    fn workspace_skill_managers_are_isolated_reloaded_and_cleared_together() {
+        let brain = Brain::from_config(test_config()).unwrap();
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        for (root, body) in [(first.path(), "first"), (second.path(), "second")] {
+            let skill = root.join(".agents/skills/shared");
+            std::fs::create_dir_all(&skill).unwrap();
+            std::fs::write(
+                skill.join("SKILL.md"),
+                format!("---\nname: shared\ndescription: {body}\n---\n{body}"),
+            )
+            .unwrap();
+        }
+
+        let first_manager = brain
+            .skill_manager_for_workspace(Some(first.path()))
+            .unwrap()
+            .unwrap();
+        let second_manager = brain
+            .skill_manager_for_workspace(Some(second.path()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            first_manager.lock().find_by_name("shared").unwrap().description,
+            "first"
+        );
+        assert_eq!(
+            second_manager.lock().find_by_name("shared").unwrap().description,
+            "second"
+        );
+
+        first_manager.lock().activate_for(Some("session-a"), "shared");
+        second_manager.lock().activate_for(Some("session-a"), "shared");
+        brain.clear_skill_session("session-a");
+        assert!(!first_manager.lock().is_active_for(Some("session-a"), "shared"));
+        assert!(!second_manager.lock().is_active_for(Some("session-a"), "shared"));
+
+        let new_skill = first.path().join(".agents/skills/new-skill");
+        std::fs::create_dir_all(&new_skill).unwrap();
+        std::fs::write(
+            new_skill.join("SKILL.md"),
+            "---\nname: new-skill\ndescription: new\n---\nnew",
+        )
+        .unwrap();
+        brain.reload_all_skill_managers().unwrap();
+        assert!(first_manager.lock().find_by_name("new-skill").is_some());
+        assert!(second_manager.lock().find_by_name("new-skill").is_none());
     }
 }

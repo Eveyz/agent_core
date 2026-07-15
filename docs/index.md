@@ -36,8 +36,9 @@
 | PLAN-0001 | Agent Self-Planning Todo System | Draft | zniverse | 2026-06-25 |
 | PLAN-0002 | Memory & Reflector 激活计划 | Draft | zniverse | 2026-06-25 |
 | PLAN-0003 | Context Engine 修复与激活 | Draft | zniverse | 2026-06-25 |
+| PLAN-0004 | Skill 系统激活 + Legacy Agent 迁移 | Implemented | zniverse | 2026-07-15 |
 | PLAN-0005 | Prompt Cache Hit Rate Optimization | Draft | agent_core | 2026-06-26 |
-| PLAN-0006 | Skill Selector in Input Box | Draft | agent_core | 2026-06-28 |
+| PLAN-0006 | Skill Selector in Input Box | Implemented | agent_core | 2026-07-15 |
 | PLAN-0007 | Cronjob System Implementation | Draft | agent_core | 2026-06-29 |
 | PLAN-0008 | Truncation Architecture Redesign + Read File Segmented Reading | In Progress | zniverse | 2026-06-30 |
 | PLAN-0009 | User-Defined Agents & Multi-Agent Workflow System | Draft | agent_core | 2026-06-30 |

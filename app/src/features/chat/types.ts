@@ -173,6 +173,7 @@ export interface ChatState {
   skillsCache: {
     skills: SkillManifest[];
     loadedAt: number;
+    scopeKey: string;
   } | null;
   resyncingByRun: Record<string, boolean>;
   pendingGapByRun: Record<string, { fromSeq: number; toSeq: number }>;

@@ -4,6 +4,10 @@ Date: 2026-07-13
 Scope: `@skill:` mention → activation → Segment 6 injection → agent filesystem behavior  
 Constraint: read-only review; no code changes
 
+> Resolution (2026-07-15): all findings in this audit are implemented by
+> PLAN-0012 and the workspace-scoped SkillSelector/cache follow-up. This file
+> remains a historical record of the pre-fix behavior.
+
 ## Verdict
 
 When `@skill:<name>` successfully activates, the agent **does** receive:

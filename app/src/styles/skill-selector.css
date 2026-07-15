@@ -142,5 +142,19 @@
   max-width: 260px;
 }
 
-/* Animation: uses @keyframes slide-up defined in settings.css */
+.skill-settings-link {
+  padding: 0;
+  color: var(--accent);
+  background: transparent;
+  border: 0;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
 
+.skill-settings-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Animation: uses @keyframes slide-up defined in settings.css */

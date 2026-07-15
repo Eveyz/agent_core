@@ -1,5 +1,6 @@
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
 import { invoke } from '@tauri-apps/api/core';
+import { resolveSkillScope, type SkillScopeProjectState } from './skillScope';
 import { resumeSession, deleteSession } from '../project/projectSlice';
 
 import type {
@@ -141,13 +142,14 @@ export const resyncRun = createAsyncThunk<
 export const fetchSkills = createAsyncThunk(
   'chat/fetchSkills',
   async (_, { getState, dispatch }) => {
-    const state = getState() as { chat: ChatState };
+    const state = getState() as { chat: ChatState; project?: SkillScopeProjectState };
+    const { sessionId, workspace, scopeKey } = resolveSkillScope(state.project);
     const cached = state.chat.skillsCache;
-    if (cached && Date.now() - cached.loadedAt < 25000) {
+    if (cached && cached.scopeKey === scopeKey && Date.now() - cached.loadedAt < 25000) {
       return cached.skills;
     }
-    const skills = await invoke<import('./types').SkillManifest[]>('get_skills');
-    dispatch(cacheSkills(skills));
+    const skills = await invoke<import('./types').SkillManifest[]>('get_skills', { sessionId, workspace });
+    dispatch(cacheSkills({ skills, scopeKey }));
     return skills;
   }
 );
@@ -651,10 +653,14 @@ export const chatSlice = createSlice({
     clearPendingGap: (state, action: PayloadAction<string>) => {
       delete state.pendingGapByRun[action.payload];
     },
-    cacheSkills: (state, action: PayloadAction<import('./types').SkillManifest[]>) => {
+    cacheSkills: (state, action: PayloadAction<{
+      skills: import('./types').SkillManifest[];
+      scopeKey: string;
+    }>) => {
       state.skillsCache = {
-        skills: action.payload,
+        skills: action.payload.skills,
         loadedAt: Date.now(),
+        scopeKey: action.payload.scopeKey,
       };
     },
     clearSkillsCache: (state) => {
