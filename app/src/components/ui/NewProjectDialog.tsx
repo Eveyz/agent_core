@@ -38,6 +38,7 @@ export const NewProjectDialog = memo(function NewProjectDialog({
   const [path, setPath] = useState("");
   const [documentsDir, setDocumentsDir] = useState("");
   const [pathTouched, setPathTouched] = useState(false);
+  const pathTouchedRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -45,6 +46,7 @@ export const NewProjectDialog = memo(function NewProjectDialog({
     setName("");
     setPath("");
     setPathTouched(false);
+    pathTouchedRef.current = false;
     setError(null);
     let cancelled = false;
     (async () => {
@@ -52,7 +54,12 @@ export const NewProjectDialog = memo(function NewProjectDialog({
         const dir = await invoke<string>("get_documents_dir");
         if (!cancelled) {
           setDocumentsDir(dir);
-          setPath(joinPath(dir, "untitled"));
+          setPath((currentPath) => {
+            if (pathTouchedRef.current) return currentPath;
+            const currentName = nameRef.current?.value || "";
+            const folder = sanitizeFolderName(currentName || "untitled");
+            return joinPath(dir, folder);
+          });
         }
       } catch {
         if (!cancelled) setDocumentsDir("");
@@ -71,7 +78,11 @@ export const NewProjectDialog = memo(function NewProjectDialog({
       setPath(joinPath(documentsDir, folder));
     } else {
       invoke<string>("get_default_project_path", { name: name || "untitled" })
-        .then(setPath)
+        .then((p) => {
+          if (!pathTouchedRef.current) {
+            setPath(p);
+          }
+        })
         .catch(() => undefined);
     }
   }, [name, documentsDir, isOpen, pathTouched]);
@@ -82,6 +93,7 @@ export const NewProjectDialog = memo(function NewProjectDialog({
       const folder = sanitizeFolderName(name || "untitled");
       setPath(joinPath(selected, folder));
       setPathTouched(true);
+      pathTouchedRef.current = true;
     }
   }, [name]);
 
@@ -144,6 +156,7 @@ export const NewProjectDialog = memo(function NewProjectDialog({
             onChange={(e) => {
               setPath(e.target.value);
               setPathTouched(true);
+              pathTouchedRef.current = true;
             }}
             onKeyDown={(e) => {
               if (e.key === "Enter") handleSubmit();

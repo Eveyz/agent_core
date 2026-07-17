@@ -10,20 +10,37 @@ export function useGitBranch(projectPath: string | undefined) {
   const [branches, setBranches] = useState<string[]>([]);
   const [activeBranch, setActiveBranch] = useState<string>('');
   const [branchError, setBranchError] = useState<string>('');
+  const [isGitRepo, setIsGitRepo] = useState<boolean>(false);
   const [showBranchDropdown, setShowBranchDropdown] = useState(false);
   const branchDropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!projectPath) return;
+    if (!projectPath) {
+      setBranches([]);
+      setActiveBranch('');
+      setBranchError('');
+      setIsGitRepo(false);
+      return;
+    }
+
+    // Reset immediately when switching projects to avoid showing stale branches/states
+    setBranches([]);
+    setActiveBranch('');
+    setBranchError('');
+    setIsGitRepo(false);
+
     invoke<GitBranchInfo>('list_git_branches', { path: projectPath })
       .then((info) => {
         setBranches(info.branches);
         setActiveBranch(info.active);
         setBranchError('');
+        setIsGitRepo(true);
       })
       .catch((e) => {
         setBranches([]);
         setBranchError(String(e));
+        setActiveBranch('');
+        setIsGitRepo(false);
       });
   }, [projectPath]);
 
@@ -63,6 +80,7 @@ export function useGitBranch(projectPath: string | undefined) {
     branches,
     activeBranch,
     branchError,
+    isGitRepo,
     showBranchDropdown,
     setShowBranchDropdown,
     branchDropdownRef,

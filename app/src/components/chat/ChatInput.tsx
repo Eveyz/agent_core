@@ -91,6 +91,7 @@ export const ChatInput = memo(function ChatInput({
     branches,
     activeBranch,
     branchError,
+    isGitRepo,
     showBranchDropdown,
     setShowBranchDropdown,
     branchDropdownRef,
@@ -357,7 +358,7 @@ export const ChatInput = memo(function ChatInput({
       {!disabled && (
       <div className="input-footer">
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          {!(activeProjectId === '__adhoc_chat__') && (
+          {!(activeProjectId === '__adhoc_chat__') && isGitRepo && (
             <div ref={branchDropdownRef} style={{ position: 'relative' }}>
               <span
                 style={{
