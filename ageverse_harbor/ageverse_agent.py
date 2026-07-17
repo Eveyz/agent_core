@@ -5,11 +5,12 @@ one-shot mode against ``~/.agverse/config.toml`` (same schema as the desktop app
 
 Usage::
 
+    export PYTHONPATH="/path/to/agent_core:$PYTHONPATH"
     harbor run -d terminal-bench@2.0 \\
-      --agent harbor.ageverse_agent:AgeverseAgent \\
+      --agent ageverse_harbor.ageverse_agent:AgeverseAgent \\
       --model hunyuan/tencent/hy3:free \\
-      --ak binary_path:/path/to/ageverse \\
-      --ak config_path:/path/to/config.toml
+      --ak binary_path=/path/to/ageverse \\
+      --ak config_path=/path/to/config.toml
 
 Environment variables referenced by the installed config (e.g. API keys) must
 be available in the trial via ``--ae KEY=value`` or the host environment.

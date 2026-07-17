@@ -33,3 +33,6 @@ CLAUDE.md
 .cursor
 
 evals/out/
+jobs
+/harbor
+__pycache__
