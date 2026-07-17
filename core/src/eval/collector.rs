@@ -398,6 +398,7 @@ mod tests {
             env(0, 1000, RunEvent::RunCreated {
                 id: "run-1".into(),
                 session_id: None,
+                prompt_id: None,
             }),
             env(1, 1000, RunEvent::RunStarted),
             env(2, 1001, RunEvent::TurnStarted { index: 0 }),

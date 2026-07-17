@@ -302,7 +302,7 @@ embedding_enabled = false
     };
 
     let t0 = Instant::now();
-    let run_id = manager
+    let created = manager
         .create_run_with_workdir(
             &prompt,
             None,
@@ -312,6 +312,7 @@ embedding_enabled = false
             false,
         )
         .await?;
+    let run_id = created.run_id;
 
     let mut rx = manager.subscribe(&run_id).await?;
     manager.command(&run_id, RunCommand::Start).await?;

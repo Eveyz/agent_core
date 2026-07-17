@@ -57,7 +57,7 @@ pub use input::{
     ClarificationAnswers, ClarificationOption, ClarificationQuestion, ClarificationRequest,
     InputResolver,
 };
-pub use manager::{RunHandle, RunManager};
+pub use manager::{CreateRunResult, RunHandle, RunManager};
 pub use run::Run;
 pub use state::RunState;
 pub use platform_shell::{is_shell_tool, shell_command, shell_label, shell_program};

@@ -27,6 +27,6 @@ pub struct CliState {
     pub skill_manager: Arc<Mutex<SkillManager>>,
     /// MCP client manager.
     pub mcp_mgr: Arc<tokio::sync::Mutex<McpClientManager>>,
-    /// Session manager for persistence.
-    pub session_mgr: Arc<Mutex<SessionManager>>,
+    /// Session manager for persistence (shared with RunManager prompt lifecycle).
+    pub session_mgr: Arc<SessionManager>,
 }

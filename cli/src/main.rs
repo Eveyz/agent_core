@@ -567,7 +567,14 @@ async fn main() -> anyhow::Result<()> {
         .clone()
         .expect("Brain always initializes a SkillManager");
 
-    let run_manager = RunManager::new(brain);
+    // Session manager — shared with RunManager so prompt_id is created in core.
+    let session_db_path = agent_core::paths::get_memory_db_path();
+    let session_db = session_db_path.to_string_lossy();
+    let session_storage =
+        agent_core::memory::storage::Storage::new(&session_db).expect("Failed to open session DB");
+    let session_mgr = Arc::new(SessionManager::new(session_storage));
+
+    let run_manager = RunManager::new(brain).with_session_manager(session_mgr.clone());
 
     // Optional subsystems
     let todo_list: Arc<Mutex<TodoList>> = Arc::new(Mutex::new(TodoList::new()));
@@ -585,13 +592,6 @@ async fn main() -> anyhow::Result<()> {
             tasks::register_task_tools(reg, tb.clone(), mc.clone().unwrap_or_default(), pc.clone());
         }));
     }
-
-    // Session manager — create before subagent tool registration
-    let session_db_path = agent_core::paths::get_memory_db_path();
-    let session_db = session_db_path.to_string_lossy();
-    let session_storage =
-        agent_core::memory::storage::Storage::new(&session_db).expect("Failed to open session DB");
-    let session_mgr = Arc::new(Mutex::new(SessionManager::new(session_storage)));
 
     // MCP — connect to configured servers
     let mcp_mgr = {
@@ -717,7 +717,7 @@ async fn main() -> anyhow::Result<()> {
                         .and_then(|p| p.to_str().map(|s| s.to_string()))
                         .unwrap_or_default();
                     let model = state.brain.current_model_name().to_string();
-                    let mgr = session_mgr.lock();
+                    let mgr = &*session_mgr;
                     let current_id = state.session_id.clone();
                     if let Ok(id) = mgr.save(current_id.as_deref(), &messages, &cwd, &model) {
                         println!("Session auto-saved: {}", &id[..8]);
@@ -908,7 +908,7 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
             "/sessions" => {
-                let mgr = session_mgr.lock();
+                let mgr = &*session_mgr;
                 match mgr.list(false) {
                     Ok(sessions) => {
                         if sessions.is_empty() {
@@ -926,7 +926,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             cmd if cmd.starts_with("/session") => {
-                let mgr = session_mgr.lock();
+                let mgr = &*session_mgr;
                 let args: Vec<&str> = cmd.splitn(4, ' ').collect();
 
                 match args.get(1).copied() {
@@ -1513,10 +1513,13 @@ async fn run_agent(
 ) {
     let session_id = state.session_id.clone();
     let history = std::mem::take(&mut state.context_history);
-    let run_id = match state.run_manager.create_run(input, session_id.clone(), history).await {
-        Ok(id) => id,
+    let created = match state.run_manager.create_run(input, session_id.clone(), history).await {
+        Ok(result) => result,
         Err(e) => { eprintln!("Error creating run: {e}"); return; }
     };
+    let run_id = created.run_id;
+    // Canonical prompt id from the shared backend (same as Tauri).
+    let _prompt_id = created.prompt_id;
     state.current_run_id = Some(run_id.clone());
     if let Err(e) = state.run_manager.command(&run_id, RunCommand::Start).await {
         eprintln!("Error starting run: {e}");

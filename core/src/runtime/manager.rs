@@ -33,6 +33,7 @@ use crate::runtime::event::{Envelope, RunEvent, RunId};
 use crate::runtime::event_log::EventLog;
 use crate::runtime::run::{Run, default_runs_dir};
 use crate::runtime::state::RunState;
+use crate::session::SessionManager;
 use crate::worktree::WorktreeManager;
 use crate::types::Message;
 
@@ -42,10 +43,23 @@ const EVENT_CHANNEL_CAPACITY: usize = 1024;
 /// Capacity for the command channel per Run.
 const COMMAND_CHANNEL_CAPACITY: usize = 64;
 
+/// Result of [`RunManager::create_run`] / [`RunManager::create_run_with_workdir`].
+///
+/// `prompt_id` is the canonical `prompts` table id when a session is attached
+/// and a [`SessionManager`] is configured. Clients (Tauri, CLI) must use this
+/// for transcript rewind — never the ephemeral `run_id`.
+#[derive(Debug, Clone)]
+pub struct CreateRunResult {
+    pub run_id: RunId,
+    pub prompt_id: Option<String>,
+}
+
 /// A handle to an active (or recently completed) Run.
 pub struct RunHandle {
     pub id: RunId,
     pub session_id: Option<String>,
+    /// Canonical session prompt id (source of truth for rewind), if any.
+    pub prompt_id: Option<String>,
     /// Sender for commands (Start, Pause, Cancel, Steer, Approve, etc.)
     cmd_tx: mpsc::Sender<RunCommand>,
     /// Broadcast sender for events. Subscribers call `.subscribe()` on this.
@@ -110,6 +124,9 @@ impl RunHandle {
 pub struct RunManager {
     brain: Arc<Brain>,
     runs: Mutex<HashMap<RunId, RunHandle>>,
+    /// Optional session store. When set, create_run allocates a canonical
+    /// prompt row and terminal events persist the transcript against it.
+    session_manager: Option<Arc<SessionManager>>,
 }
 
 impl RunManager {
@@ -118,7 +135,15 @@ impl RunManager {
         Self {
             brain: Arc::new(brain),
             runs: Mutex::new(HashMap::new()),
+            session_manager: None,
         }
+    }
+
+    /// Attach the shared session store so prompt lifecycle is owned here
+    /// (Tauri, CLI, and eval all see the same prompt_id source of truth).
+    pub fn with_session_manager(mut self, session_manager: Arc<SessionManager>) -> Self {
+        self.session_manager = Some(session_manager);
+        self
     }
 
     /// Load config from a file and create a RunManager.
@@ -174,14 +199,14 @@ impl RunManager {
 
     /// Create a new Run for a user request.
     ///
-    /// Returns the RunId. The Run starts in `Created` state — call
+    /// Returns [`CreateRunResult`]. The Run starts in `Created` state — call
     /// `command(run_id, RunCommand::Start)` to begin execution.
     pub async fn create_run(
         &self,
         user_input: &str,
         session_id: Option<String>,
         history: Vec<crate::types::Message>,
-    ) -> Result<RunId> {
+    ) -> Result<CreateRunResult> {
         self.create_run_with_workdir(user_input, session_id, None, history, None, false)
             .await
     }
@@ -201,8 +226,28 @@ impl RunManager {
         history: Vec<crate::types::Message>,
         initial_goal: Option<String>,
         initial_goal_completed: bool,
-    ) -> Result<RunId> {
+    ) -> Result<CreateRunResult> {
         let run_id = uuid::Uuid::new_v4().to_string();
+
+        // Canonical prompt row — sole source of truth for session rewind.
+        let prompt_id: Option<String> = if let (Some(sid), Some(sm)) =
+            (session_id.as_ref(), self.session_manager.as_ref())
+        {
+            let sm = sm.clone();
+            let sid = sid.clone();
+            let model = self
+                .brain
+                .current_model_config()
+                .map(|m| m.model_id.clone())
+                .unwrap_or_else(|_| "unknown".to_string());
+            let result = tokio::task::spawn_blocking(move || sm.create_prompt(&sid, &model))
+                .await
+                .context("create_prompt task failed")?
+                .context("failed to create prompt")?;
+            Some(result.0)
+        } else {
+            None
+        };
 
         // Get the current model config
         let model_config = self.brain.current_model_config()?;
@@ -228,7 +273,7 @@ impl RunManager {
         let context_snapshot = Arc::new(RwLock::new(Vec::<Message>::new()));
 
         // Create the Run
-        let run = Run::new(
+        let run = match Run::new(
             run_id.clone(),
             session_id.clone(),
             self.brain.clone(),
@@ -242,7 +287,25 @@ impl RunManager {
             context_snapshot.clone(),
             initial_goal,
             initial_goal_completed,
-        )?;
+        ) {
+            Ok(run) => run,
+            Err(e) => {
+                if let (Some(sm), Some(pid)) = (self.session_manager.as_ref(), prompt_id.as_ref()) {
+                    let sm = sm.clone();
+                    let pid = pid.clone();
+                    let err = e.to_string();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        let _ = sm.finish_prompt(
+                            &pid,
+                            "failed",
+                            &serde_json::json!({ "setup_error": err }),
+                        );
+                    })
+                    .await;
+                }
+                return Err(e);
+            }
+        };
         // Clone the approval resolver before spawning so we can store
         // it in the RunHandle for direct (non-command-channel) resolution.
         let approval_resolver = run.approval_resolver().clone();
@@ -255,6 +318,10 @@ impl RunManager {
         let writer_broadcast = event_tx.clone();
         let writer_cancel = cancel_token.clone();
         let writer_state = shared_state.clone();
+        let writer_snapshot = context_snapshot.clone();
+        let writer_sm = self.session_manager.clone();
+        let writer_session_id = session_id.clone();
+        let writer_prompt_id = prompt_id.clone();
         let writer_handle = tokio::spawn(async move {
             let mut event_log = EventLog::new(&writer_run_id, &default_runs_dir());
             let mut next_seq = 0u64;
@@ -263,12 +330,13 @@ impl RunManager {
                 // closes the fetch_add/send scheduling race across producers.
                 env.seq = next_seq;
                 next_seq += 1;
-                let is_terminal = matches!(
-                    env.event,
-                    RunEvent::RunCompleted { .. }
-                        | RunEvent::RunCancelled { .. }
-                        | RunEvent::RunFailed { .. }
-                );
+                let terminal_status = match &env.event {
+                    RunEvent::RunCompleted { .. } => Some("completed"),
+                    RunEvent::RunCancelled { .. } => Some("cancelled"),
+                    RunEvent::RunFailed { .. } => Some("failed"),
+                    _ => None,
+                };
+                let is_terminal = terminal_status.is_some();
                 if let Err(error) = event_log.append(env.clone()) {
                     tracing::error!(run_id = %writer_run_id, %error, "event writer failed; stopping publication");
                     writer_cancel.cancel();
@@ -287,12 +355,48 @@ impl RunManager {
                     });
                     break;
                 }
+
+                // Persist transcript + finish prompt BEFORE broadcasting so
+                // CLI and Tauri both see a consistent prompts-table identity.
+                if let Some(status) = terminal_status {
+                    if let (Some(sm), Some(sid), Some(pid)) = (
+                        writer_sm.as_ref(),
+                        writer_session_id.as_ref(),
+                        writer_prompt_id.as_ref(),
+                    ) {
+                        let sm = sm.clone();
+                        let sid = sid.clone();
+                        let pid = pid.clone();
+                        let messages = writer_snapshot.read().clone();
+                        let status = status.to_string();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            if !messages.is_empty() {
+                                if let Err(e) =
+                                    sm.save_canonical_transcript_for_prompt(&sid, &messages, &pid)
+                                {
+                                    tracing::warn!(
+                                        error = %e,
+                                        "failed to persist canonical transcript"
+                                    );
+                                }
+                            }
+                            if let Err(e) =
+                                sm.finish_prompt(&pid, &status, &serde_json::json!({}))
+                            {
+                                tracing::warn!(error = %e, "failed to finish prompt");
+                            }
+                        })
+                        .await;
+                    }
+                }
+
                 let _ = writer_broadcast.send(env);
                 if is_terminal {
                     break;
                 }
             }
         });
+        let _ = writer_handle;
 
         // Emit RunCreated through the writer, so it is always present in the
         // durable trace even when no frontend subscriber exists yet.
@@ -307,6 +411,7 @@ impl RunManager {
             event: RunEvent::RunCreated {
                 id: run_id.clone(),
                 session_id: session_id.clone(),
+                prompt_id: prompt_id.clone(),
             },
         });
 
@@ -421,6 +526,7 @@ impl RunManager {
         let handle = RunHandle {
             id: run_id.clone(),
             session_id,
+            prompt_id: prompt_id.clone(),
             cmd_tx,
             event_tx,
             join_handle: Some(join_handle),
@@ -433,7 +539,10 @@ impl RunManager {
 
         self.runs.lock().await.insert(run_id.clone(), handle);
 
-        Ok(run_id)
+        Ok(CreateRunResult {
+            run_id,
+            prompt_id,
+        })
     }
 
     /// Send a command to a specific Run.
@@ -602,7 +711,7 @@ impl RunManager {
         let record = wt.create(&uuid::Uuid::new_v4().to_string(), branch_name)?;
         let worktree_path = record.path.to_string_lossy().to_string();
 
-        let run_id = self
+        let result = self
             .create_run_with_workdir(
                 user_input,
                 session_id,
@@ -613,7 +722,7 @@ impl RunManager {
             )
             .await?;
 
-        Ok((run_id, worktree_path))
+        Ok((result.run_id, worktree_path))
     }
 
     /// Remove a git worktree by path. Called after a worktree-isolated
@@ -673,7 +782,7 @@ default = { model_id = "mock" }
     async fn create_run_returns_id() {
         let brain = Brain::from_config(test_config()).unwrap();
         let manager = RunManager::new(brain);
-        let run_id = manager.create_run("hello", None, vec![]).await.unwrap();
+        let run_id = manager.create_run("hello", None, vec![]).await.unwrap().run_id;
         assert!(!run_id.is_empty());
     }
 
@@ -690,7 +799,7 @@ default = { model_id = "mock" }
     async fn cancel_run_sends_command() {
         let brain = Brain::from_config(test_config()).unwrap();
         let manager = RunManager::new(brain);
-        let run_id = manager.create_run("hello", None, vec![]).await.unwrap();
+        let run_id = manager.create_run("hello", None, vec![]).await.unwrap().run_id;
         // Cancel before start should work
         manager.cancel_run(&run_id).await.unwrap();
     }
@@ -710,7 +819,8 @@ default = { model_id = "mock" }
         let run_id = manager
             .create_run_with_workdir("hello", None, Some("/tmp".to_string()), vec![], None, false)
             .await
-            .unwrap();
+            .unwrap()
+            .run_id;
         assert!(!run_id.is_empty());
     }
 
@@ -720,8 +830,8 @@ default = { model_id = "mock" }
         let manager = RunManager::new(brain);
 
         // Create two runs — they should coexist
-        let id1 = manager.create_run("task 1", None, vec![]).await.unwrap();
-        let id2 = manager.create_run("task 2", None, vec![]).await.unwrap();
+        let id1 = manager.create_run("task 1", None, vec![]).await.unwrap().run_id;
+        let id2 = manager.create_run("task 2", None, vec![]).await.unwrap().run_id;
 
         let runs = manager.list_runs().await;
         assert_eq!(runs.len(), 2);

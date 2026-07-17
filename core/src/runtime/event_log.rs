@@ -256,6 +256,7 @@ mod tests {
             event: RunEvent::RunCreated {
                 id: "run-1".into(),
                 session_id: None,
+                prompt_id: None,
             },
         }).unwrap();
         log.append(Envelope {
@@ -292,9 +293,10 @@ mod tests {
                 turn_id: None,
                 parent_call_id: None,
                 ts: chrono::Utc::now(),
-            event: RunEvent::RunCreated {
+                event: RunEvent::RunCreated {
                     id: "run-2".into(),
                     session_id: None,
+                    prompt_id: None,
                 },
             }).unwrap();
             log.append(Envelope {

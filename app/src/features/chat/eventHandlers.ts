@@ -219,6 +219,19 @@ function pushClarification(
 
 // ── Turn lookup ──────────────────────────────────────────────────────
 
+/** Canonical prompts-table id for the current live turn (never runId). */
+function currentPromptId(state: ChatState, sessionId: string): string | undefined {
+  const entries = state.entries[sessionId];
+  if (!entries) return undefined;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if ((entry.type === 'user' || entry.type === 'turn') && entry.promptId) {
+      return entry.promptId;
+    }
+  }
+  return undefined;
+}
+
 export function getActiveTurn(state: ChatState, sessionId: string): ChatEntry | undefined {
   const entries = state.entries[sessionId];
   if (!entries) return undefined;
@@ -301,7 +314,7 @@ export function handleTurnStart(state: ChatState, sessionId: string, turnIndex: 
     entries.push({
       id: turnId ? `turn-${turnId}` : `turn-${turnIndex}-${Date.now()}`,
       type: 'turn',
-      promptId: state.runId[sessionId] || undefined,
+      promptId: currentPromptId(state, sessionId),
       turnId,
       turnIds: turnId ? [turnId] : [],
       turnIndex,
@@ -492,7 +505,7 @@ export function handleError(state: ChatState, sessionId: string, errorText: stri
     state.entries[sessionId].push({
       id: `error-${Date.now()}`,
       type: 'turn',
-      promptId: state.runId[sessionId] || undefined,
+      promptId: currentPromptId(state, sessionId),
       turnIndex: 0,
       blocks: [{ type: 'error', text: errorText }],
       startTime: Date.now(),
@@ -511,6 +524,17 @@ export function handleNotice(
   const turn = getActiveTurn(state, sessionId);
   if (turn && turn.type === 'turn' && turn.blocks) {
     closeStreamingBlock(turn.blocks);
+    // Replace prior notice with the same code (e.g. model_retry) so retries
+    // update in place instead of stacking warning banners.
+    if (code) {
+      for (let i = turn.blocks.length - 1; i >= 0; i--) {
+        const block = turn.blocks[i];
+        if (block.type === 'notice' && block.code === code) {
+          turn.blocks[i] = { type: 'notice', text: message, code, severity };
+          return;
+        }
+      }
+    }
     turn.blocks.push({ type: 'notice', text: message, code, severity });
   }
 }

@@ -307,11 +307,40 @@ impl SessionManager {
     /// Replace a session with the exact raw runtime transcript. UI projections
     /// must never call this path.
     pub fn save_canonical_transcript(&self, session_id: &str, messages: &[Message]) -> Result<()> {
+        self.save_canonical_transcript_inner(session_id, messages, None)
+    }
+
+    /// Like [`save_canonical_transcript`], but forces the latest prompt group to
+    /// use the pre-created lifecycle `prompt_id` (source of truth for rewind).
+    pub fn save_canonical_transcript_for_prompt(
+        &self,
+        session_id: &str,
+        messages: &[Message],
+        prompt_id: &str,
+    ) -> Result<()> {
+        self.save_canonical_transcript_inner(session_id, messages, Some(prompt_id))
+    }
+
+    fn save_canonical_transcript_inner(
+        &self,
+        session_id: &str,
+        messages: &[Message],
+        binding_prompt_id: Option<&str>,
+    ) -> Result<()> {
         validate_transcript(messages)?;
         let meta = self
             .get_meta(session_id)?
             .ok_or_else(|| anyhow::anyhow!("session '{session_id}' does not exist"))?;
-        self.save(Some(session_id), messages, &meta.cwd, &meta.model_used)?;
+        self.save_full(
+            Some(session_id),
+            messages,
+            &meta.cwd,
+            &meta.model_used,
+            None,
+            "main",
+            None,
+            binding_prompt_id,
+        )?;
         let snapshot = Self::snapshot_path(session_id);
         if snapshot.exists() {
             std::fs::remove_file(snapshot)?;
@@ -439,7 +468,7 @@ impl SessionManager {
         project_id: Option<&str>,
     ) -> Result<String> {
         self.save_full(
-            session_id, messages, cwd, model_used, None, "main", project_id,
+            session_id, messages, cwd, model_used, None, "main", project_id, None,
         )
     }
 
@@ -456,7 +485,7 @@ impl SessionManager {
         ];
         self.save_full(
             None, // always create new
-            &messages, "", "subagent", None, "subagent", None,
+            &messages, "", "subagent", None, "subagent", None, None,
         )
     }
 
@@ -483,6 +512,7 @@ impl SessionManager {
             "subagent",
             parent_session_id,
             "subagent",
+            None,
             None,
         )?;
         let child_run_id = uuid::Uuid::new_v4().to_string();
@@ -519,6 +549,9 @@ impl SessionManager {
     }
 
     /// Save with full control over parent, type, and project.
+    ///
+    /// When `binding_prompt_id` is set, the last prompt group is forced to use
+    /// that id so the pre-created lifecycle row remains the rewind key.
     fn save_full(
         &self,
         session_id: Option<&str>,
@@ -528,6 +561,7 @@ impl SessionManager {
         parent_session_id: Option<&str>,
         session_type: &str,
         project_id: Option<&str>,
+        binding_prompt_id: Option<&str>,
     ) -> Result<String> {
         let mut db = self.storage.conn();
 
@@ -593,6 +627,7 @@ impl SessionManager {
         // Upsert prompts (preserve lifecycle status for existing ones)
         // and insert their messages.
         let mut global_msg_idx = 0;
+        let last_prompt_idx = prompt_groups.len().saturating_sub(1);
         for (prompt_idx, group) in prompt_groups.iter().enumerate() {
             let turn_idx = prompt_idx as i64;
             let prompt_model = group
@@ -609,7 +644,53 @@ impl SessionManager {
                 )
                 .ok();
 
-            let prompt_id = if let Some(pid) = existing_id {
+            let prompt_id = if prompt_idx == last_prompt_idx {
+                if let Some(bound) = binding_prompt_id {
+                    // Canonical lifecycle id wins over turn_index guessing.
+                    if let Some(ref existing) = existing_id {
+                        if existing != bound {
+                            tx.execute(
+                                "DELETE FROM prompts WHERE id = ?1",
+                                rusqlite::params![existing],
+                            )?;
+                        }
+                    }
+                    let bound_exists: bool = tx
+                        .query_row(
+                            "SELECT 1 FROM prompts WHERE id = ?1",
+                            rusqlite::params![bound],
+                            |_| Ok(true),
+                        )
+                        .unwrap_or(false);
+                    if bound_exists {
+                        tx.execute(
+                            "UPDATE prompts SET session_id = ?1, turn_index = ?2, model = ?3 WHERE id = ?4",
+                            rusqlite::params![id, turn_idx, prompt_model, bound],
+                        )?;
+                    } else {
+                        tx.execute(
+                            "INSERT INTO prompts (id, session_id, turn_index, model, status, started_at, created_at) \
+                             VALUES (?1, ?2, ?3, ?4, 'completed', ?5, ?5)",
+                            rusqlite::params![bound, id, turn_idx, prompt_model, now],
+                        )?;
+                    }
+                    bound.to_string()
+                } else if let Some(pid) = existing_id {
+                    tx.execute(
+                        "UPDATE prompts SET model = ?1 WHERE id = ?2",
+                        rusqlite::params![prompt_model, pid],
+                    )?;
+                    pid
+                } else {
+                    let pid = uuid::Uuid::new_v4().to_string();
+                    tx.execute(
+                        "INSERT INTO prompts (id, session_id, turn_index, model, status, started_at, created_at) \
+                         VALUES (?1, ?2, ?3, ?4, 'completed', ?5, ?5)",
+                        rusqlite::params![pid, id, turn_idx, prompt_model, now],
+                    )?;
+                    pid
+                }
+            } else if let Some(pid) = existing_id {
                 // Update existing prompt (keep its lifecycle status + timestamps).
                 tx.execute(
                     "UPDATE prompts SET model = ?1 WHERE id = ?2",
@@ -1453,6 +1534,44 @@ mod tests {
     }
 
     #[test]
+    fn save_for_prompt_keeps_precreated_prompt_id_as_rewind_key() {
+        let (mgr, _dir) = make_manager();
+        let session_id = mgr
+            .save(
+                None,
+                &[Message::user("seed"), Message::assistant("ok")],
+                "/tmp",
+                "m",
+            )
+            .unwrap();
+        let (prompt_id, turn) = mgr.create_prompt(&session_id, "m").unwrap();
+        assert_eq!(turn, 1);
+
+        let messages = vec![
+            Message::user("seed"),
+            Message::assistant("ok"),
+            Message::user("weather?"),
+        ];
+        mgr.save_canonical_transcript_for_prompt(&session_id, &messages, &prompt_id)
+            .unwrap();
+
+        let resumed = mgr.resume(&session_id).unwrap().unwrap();
+        assert_eq!(resumed.prompts.len(), 2);
+        assert_eq!(resumed.prompts[1].id, prompt_id);
+        assert_eq!(
+            resumed.prompts[1].messages[0].content.as_deref(),
+            Some("weather?")
+        );
+
+        // Rewind by the same id the frontend would hold after runIdSet.
+        mgr.truncate_before_prompt(&session_id, &prompt_id).unwrap();
+        let rewound = mgr.resume(&session_id).unwrap().unwrap();
+        assert_eq!(rewound.messages.len(), 2);
+        assert_eq!(rewound.messages[0].content.as_deref(), Some("seed"));
+        assert!(!rewound.prompts.iter().any(|p| p.id == prompt_id));
+    }
+
+    #[test]
     fn test_create_prompt_bumps_session_updated_at() {
         let (mgr, _dir) = make_manager();
         let msgs = vec![Message::user("hello")];
@@ -1931,6 +2050,7 @@ mod tests {
                 "gpt",
                 Some(&parent_id),
                 "subagent",
+                None,
                 None,
             )
             .unwrap();

@@ -317,8 +317,15 @@ function App() {
       }
 
       try {
-        const id = await invoke<string>('send_message', { message: msg, sessionId, model: defaultModel });
-        dispatch(runIdSet({ runId: id, sessionId }));
+        const result = await invoke<{ run_id: string; prompt_id?: string | null }>(
+          'send_message',
+          { message: msg, sessionId, model: defaultModel },
+        );
+        dispatch(runIdSet({
+          runId: result.run_id,
+          sessionId,
+          promptId: result.prompt_id ?? undefined,
+        }));
       } catch (e) {
         console.error('Invoke error:', e);
         dispatch(sendFailed({ sessionId, error: String(e) }));
@@ -347,8 +354,15 @@ function App() {
         });
         dispatch(retryFromEntry({ sessionId: activeSessionId, id: entryId, text: msg }));
         scrollToBottom();
-        const id = await invoke<string>('send_message', { message: msg, sessionId: activeSessionId, model: defaultModel });
-        dispatch(runIdSet({ runId: id, sessionId: activeSessionId }));
+        const result = await invoke<{ run_id: string; prompt_id?: string | null }>(
+          'send_message',
+          { message: msg, sessionId: activeSessionId, model: defaultModel },
+        );
+        dispatch(runIdSet({
+          runId: result.run_id,
+          sessionId: activeSessionId,
+          promptId: result.prompt_id ?? undefined,
+        }));
       } catch (e) {
         console.error('Retry invoke error:', e);
         dispatch(sendFailed({ sessionId: activeSessionId, error: String(e) }));

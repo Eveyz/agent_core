@@ -74,9 +74,9 @@ pub use project::{
 pub use reflector::{Digester, Reflector, Suggestion, SuggestionAction, SuggestionKind};
 pub use runtime::{
     ApprovalResolver, Brain, ChildId, ClarificationAnswers, ClarificationOption,
-    ClarificationQuestion, ClarificationRequest, Envelope, EventGuard, EventLog, ExecutionPhase,
-    ExecutionState, InputResolver, ProcessSupervisor, Run, RunCommand, RunEvent, RunHandle, RunId,
-    RunManager, RunState, STEER_MID_RUN_PREFIX, SteerEntry, SupervisedChild,
+    ClarificationQuestion, ClarificationRequest, CreateRunResult, Envelope, EventGuard, EventLog,
+    ExecutionPhase, ExecutionState, InputResolver, ProcessSupervisor, Run, RunCommand, RunEvent,
+    RunHandle, RunId, RunManager, RunState, STEER_MID_RUN_PREFIX, SteerEntry, SupervisedChild,
 };
 pub use session::{
     Prompt, Session, SessionCounts, SessionManager, SessionMeta, SubagentResultLike,

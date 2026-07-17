@@ -58,11 +58,22 @@ struct FrontendSession {
     prompts: Vec<agent_core::Prompt>,
 }
 
+/// Result of starting a user message run.
+///
+/// `prompt_id` is the canonical session prompt row id (source of truth for
+/// transcript rewind / retry). `run_id` is only the ephemeral execution id.
+#[derive(serde::Serialize)]
+struct SendMessageResult {
+    run_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_id: Option<String>,
+}
+
 // ── Run lifecycle commands ───────────────────────────────────────────
 
-/// Create a new Run for a user message. Returns the run_id.
-/// The Run starts in `Created` state — the frontend should call
-/// `start_run(run_id)` to begin execution.
+/// Create a new Run for a user message.
+/// Returns `{ run_id, prompt_id }` — use `prompt_id` for session identity
+/// and `run_id` for run control / event routing.
 #[tauri::command]
 async fn send_message(
     state: State<'_, AppState>,
@@ -70,7 +81,7 @@ async fn send_message(
     message: String,
     session_id: Option<String>,
     model: Option<String>,
-) -> Result<String, String> {
+) -> Result<SendMessageResult, String> {
     // Load history + session-level pinned goal
     let mut history = vec![];
     let mut working_dir = None;
@@ -119,8 +130,8 @@ async fn send_message(
         }
     }
 
-    // Validate and activate the requested model before creating a running
-    // prompt, so an invalid model cannot leave an orphaned lifecycle row.
+    // Validate and activate the requested model before creating a run, so an
+    // invalid model cannot leave an orphaned lifecycle prompt row.
     {
         let mut manager = state.run_manager.lock().await;
         if let Some(ref m) = model {
@@ -130,6 +141,7 @@ async fn send_message(
                     session_id.as_deref(),
                     &history,
                     &message,
+                    None,
                 )
                 .await;
                 return Err(error.to_string());
@@ -137,35 +149,11 @@ async fn send_message(
         }
     }
 
-    // ── Prompt lifecycle: create prompt with 'running' status ──────
-    // This way, if the app crashes mid-run, startup repair will mark
-    // the orphaned prompt as 'interrupted' instead of leaving the
-    // frontend stuck on "Working...".
-    let prompt_id: Option<String> = if let Some(ref sid) = session_id {
-        let sm = state.session_manager.clone();
-        let m = model.clone().unwrap_or_else(|| "unknown".to_string());
-        let sid_owned = sid.clone();
-        match tokio::task::spawn_blocking(move || {
-            sm.create_prompt(&sid_owned, &m)
-        }).await {
-            Ok(Ok((pid, _turn))) => Some(pid),
-            Ok(Err(e)) => {
-                persist_failed_user_message(&state.session_manager, session_id.as_deref(), &history, &message).await;
-                return Err(format!("failed to create prompt: {e}"));
-            }
-            Err(e) => {
-                persist_failed_user_message(&state.session_manager, session_id.as_deref(), &history, &message).await;
-                return Err(format!("create_prompt task failed: {e}"));
-            }
-        }
-    } else {
-        None
-    };
-
     let manager = state.run_manager.lock().await;
 
-    // Create the Run
-    let run_id = match manager
+    // Prompt lifecycle (create / finish / persist) lives in RunManager so CLI
+    // and Tauri share one prompts-table source of truth.
+    let created = match manager
         .create_run_with_workdir(
             &message,
             session_id.clone(),
@@ -176,20 +164,35 @@ async fn send_message(
         )
         .await
     {
-        Ok(run_id) => run_id,
+        Ok(created) => created,
         Err(e) => {
-            persist_failed_user_message(&state.session_manager, session_id.as_deref(), &history, &message).await;
-            finish_setup_prompt(&state.session_manager, prompt_id.as_deref(), &e.to_string()).await;
+            persist_failed_user_message(
+                &state.session_manager,
+                session_id.as_deref(),
+                &history,
+                &message,
+                None,
+            )
+            .await;
             return Err(e.to_string());
         }
     };
+    let run_id = created.run_id;
+    let prompt_id = created.prompt_id;
 
     // Subscribe to events BEFORE starting, so we don't miss any.
     let mut event_rx = match manager.subscribe(&run_id).await {
         Ok(rx) => rx,
         Err(e) => {
             let _ = manager.command(&run_id, RunCommand::Cancel).await;
-            persist_failed_user_message(&state.session_manager, session_id.as_deref(), &history, &message).await;
+            persist_failed_user_message(
+                &state.session_manager,
+                session_id.as_deref(),
+                &history,
+                &message,
+                prompt_id.as_deref(),
+            )
+            .await;
             finish_setup_prompt(&state.session_manager, prompt_id.as_deref(), &e.to_string()).await;
             return Err(e.to_string());
         }
@@ -198,7 +201,14 @@ async fn send_message(
     // Start the Run
     if let Err(e) = manager.command(&run_id, RunCommand::Start).await {
         let _ = manager.command(&run_id, RunCommand::Cancel).await;
-        persist_failed_user_message(&state.session_manager, session_id.as_deref(), &history, &message).await;
+        persist_failed_user_message(
+            &state.session_manager,
+            session_id.as_deref(),
+            &history,
+            &message,
+            prompt_id.as_deref(),
+        )
+        .await;
         finish_setup_prompt(&state.session_manager, prompt_id.as_deref(), &e.to_string()).await;
         return Err(e.to_string());
     }
@@ -207,23 +217,20 @@ async fn send_message(
     drop(manager);
 
     // Spawn a task to forward events to the frontend.
+    // Transcript + prompt finish are already persisted by RunManager before
+    // terminal events are broadcast.
     let app_handle_clone = app_handle.clone();
     let sm_for_task = state.session_manager.clone();
-    let manager_for_task = state.run_manager.clone();
-    let pid_for_task = prompt_id.clone();
-    let run_id_for_task = run_id.clone();
-    let session_id_for_task = session_id.clone();
     tokio::spawn(async move {
         loop {
             match event_rx.recv().await {
                 Ok(event) => {
-                    // Check if this is a terminal event
-                    let maybe_terminal = match &event.event {
-                        RunEvent::RunCompleted { .. } => Some("completed"),
-                        RunEvent::RunCancelled { .. } => Some("cancelled"),
-                        RunEvent::RunFailed { .. } => Some("failed"),
-                        _ => None,
-                    };
+                    let is_terminal = matches!(
+                        event.event,
+                        RunEvent::RunCompleted { .. }
+                            | RunEvent::RunCancelled { .. }
+                            | RunEvent::RunFailed { .. }
+                    );
 
                     // Persist goal completion on the session when the Run signals it.
                     if let RunEvent::GoalCompleted { .. } = &event.event {
@@ -236,48 +243,10 @@ async fn send_message(
                         }
                     }
 
-                    if let Some(status) = maybe_terminal {
-                        // Persist the exact runtime transcript before telling
-                        // React that the run is terminal. This makes the backend
-                        // transcript authoritative and prevents a UI projection
-                        // save from winning the race.
-                        if let Some(ref sid) = session_id_for_task {
-                            let messages = {
-                                let manager = manager_for_task.lock().await;
-                                manager.context_snapshot_for_run(&run_id_for_task).await
-                            };
-                            if let Some(messages) = messages {
-                                let sm = sm_for_task.clone();
-                                let sid_owned = sid.clone();
-                                let _ = tokio::task::spawn_blocking(move || {
-                                    if let Err(e) = sm.save_canonical_transcript(&sid_owned, &messages) {
-                                        eprintln!("[session] failed to persist canonical transcript: {e}");
-                                    }
-                                })
-                                .await;
-                            }
-                        }
-
-                        // ── Prompt lifecycle: mark prompt as finished ──
-                        if let Some(ref pid) = pid_for_task {
-                            let sm = sm_for_task.clone();
-                            let pid_owned = pid.clone();
-                            let status_owned = status.to_string();
-                            let _ = tokio::task::spawn_blocking(move || {
-                                if let Err(e) = sm.finish_prompt(
-                                    &pid_owned, &status_owned,
-                                    &serde_json::json!({}),
-                                ) {
-                                    eprintln!("[prompt] failed to finish prompt: {e}");
-                                }
-                            }).await;
-                        }
-                    }
-
                     if let Err(e) = app_handle_clone.emit("agent-event", &event) {
                         eprintln!("Failed to emit agent event: {}", e);
                     }
-                    if maybe_terminal.is_some() {
+                    if is_terminal {
                         break;
                     }
                 }
@@ -290,7 +259,10 @@ async fn send_message(
         }
     });
 
-    Ok(run_id)
+    Ok(SendMessageResult {
+        run_id,
+        prompt_id,
+    })
 }
 
 async fn finish_setup_prompt(
@@ -317,14 +289,19 @@ async fn persist_failed_user_message(
     session_id: Option<&str>,
     history: &[agent_core::Message],
     message: &str,
+    prompt_id: Option<&str>,
 ) {
     let Some(session_id) = session_id else { return };
     let sm = session_manager.clone();
     let session_id = session_id.to_string();
     let mut messages = history.to_vec();
     messages.push(agent_core::Message::user(message));
+    let bound = prompt_id.map(|p| p.to_string());
     let _ = tokio::task::spawn_blocking(move || {
-        let _ = sm.save_canonical_transcript(&session_id, &messages);
+        match bound.as_deref() {
+            Some(pid) => sm.save_canonical_transcript_for_prompt(&session_id, &messages, pid),
+            None => sm.save_canonical_transcript(&session_id, &messages),
+        }
     })
     .await;
 }
@@ -1581,7 +1558,9 @@ async fn run_agent_standalone(
     use agent_core::runtime::supervisor::ProcessSupervisor;
     use agent_core::skills::SkillManager;
     use agent_core::subagent::Subagent;
-    use agent_core::tools::subagent::re_wire_subagent_tools_with_skills;
+    use agent_core::tools::subagent::{
+        ApprovalRouting, re_wire_subagent_tools_with_skills,
+    };
     use agent_core::CancellationToken;
 
     let run_manager = state.run_manager.lock().await;
@@ -1644,6 +1623,7 @@ async fn run_agent_standalone(
         Some(cancel_token.clone()),
         0,
         brain.skill_manager.clone(),
+        ApprovalRouting::LegacyScoped,
     );
 
     // Ensure ShellTool (when present) is the supervised version.
@@ -2157,8 +2137,9 @@ pub fn run() {
                 agent_core::SessionManager::new(storage.clone())
             );
 
-            // Build the RunManager
-            let run_manager = RunManager::new(brain);
+            // Build the RunManager — prompt lifecycle is owned here so CLI and
+            // Tauri share the same prompts-table source of truth.
+            let run_manager = RunManager::new(brain).with_session_manager(session_manager.clone());
 
             // ── MCP: connect to configured servers and register tools ─
             // Tool definitions live in a parking_lot RwLock so the

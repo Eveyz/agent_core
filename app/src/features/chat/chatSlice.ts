@@ -408,16 +408,28 @@ export const chatSlice = createSlice({
       state._resumedFromBackend[sid] = false;
       markDirty(state, sid);
       state.todo[sid] = [];
+
+      state.entries[sid].push({
+        id: `turn-pending-${Date.now()}`,
+        type: 'turn',
+        promptId: newPrompt.id,
+        turnIndex: state.allPrompts[sid].length - 1,
+        blocks: [],
+        startTime: Date.now(),
+      });
     },
-    runIdSet: (state, action: PayloadAction<{ runId: string; sessionId: string }>) => {
-      const { runId, sessionId: sid } = action.payload;
+    runIdSet: (state, action: PayloadAction<{ runId: string; sessionId: string; promptId?: string }>) => {
+      const { runId, sessionId: sid, promptId } = action.payload;
       ensureSession(state, sid);
 
       state.runId[sid] = runId;
       state.runIdToSessionId[runId] = sid;
       state.runState[sid] = 'running';
 
-      // Update the ID of the latest user entry to use the new runId
+      // Bind entry/prompt identity ONLY from the backend prompts-table id.
+      // Never use runId as promptId — they are different UUIDs.
+      if (!promptId) return;
+
       const entries = state.entries[sid];
       let lastUserIndex = -1;
       for (let i = entries.length - 1; i >= 0; i--) {
@@ -427,11 +439,10 @@ export const chatSlice = createSlice({
         }
       }
       if (lastUserIndex !== -1) {
-        entries[lastUserIndex].id = `user-${runId}`;
-        entries[lastUserIndex].promptId = runId;
+        entries[lastUserIndex].id = `user-${promptId}`;
+        entries[lastUserIndex].promptId = promptId;
       }
 
-      // Update the ID of the latest turn entry if it exists
       let lastTurnIndex = -1;
       for (let i = entries.length - 1; i >= 0; i--) {
         if (entries[i].type === 'turn') {
@@ -440,16 +451,15 @@ export const chatSlice = createSlice({
         }
       }
       if (lastTurnIndex !== -1 && lastTurnIndex > lastUserIndex) {
-        entries[lastTurnIndex].id = `turn-${runId}`;
-        entries[lastTurnIndex].promptId = runId;
+        entries[lastTurnIndex].id = `turn-${promptId}`;
+        entries[lastTurnIndex].promptId = promptId;
       }
 
-      // Update the ID of the last prompt in allPrompts
       const prompts = state.allPrompts[sid];
       if (prompts.length > 0) {
         const lastPrompt = prompts[prompts.length - 1];
-        if (lastPrompt.status === 'running' || lastPrompt.id.startsWith('user-prompt-')) {
-          lastPrompt.id = runId;
+        if (lastPrompt.status === 'running' || lastPrompt.id.startsWith('user-prompt-') || lastPrompt.id.startsWith('retry-prompt-')) {
+          lastPrompt.id = promptId;
         }
       }
     },
@@ -617,6 +627,15 @@ export const chatSlice = createSlice({
       state.processing[sid] = true;
       state._resumedFromBackend[sid] = false;
       markDirty(state, sid);
+
+      state.entries[sid].push({
+        id: `turn-pending-${Date.now()}`,
+        type: 'turn',
+        promptId,
+        turnIndex: state.allPrompts[sid].length - 1,
+        blocks: [],
+        startTime: Date.now(),
+      });
     },
     sendFailed: (state, action: PayloadAction<{ sessionId: string; error: string }>) => {
       const sid = action.payload.sessionId;
@@ -624,13 +643,20 @@ export const chatSlice = createSlice({
       state.processing[sid] = false;
       state.runState[sid] = 'failed';
       markDirty(state, sid);
-      state.entries[sid].push({
-        id: `error-${Date.now()}`,
-        type: 'turn',
-        blocks: [{ type: 'error', text: action.payload.error }],
-        startTime: Date.now(),
-        endTime: Date.now(),
-      });
+      const entries = state.entries[sid];
+      const lastEntry = entries[entries.length - 1];
+      if (lastEntry && lastEntry.type === 'turn' && !lastEntry.endTime) {
+        lastEntry.endTime = Date.now();
+        lastEntry.blocks = [{ type: 'error', text: action.payload.error }];
+      } else {
+        entries.push({
+          id: `error-${Date.now()}`,
+          type: 'turn',
+          blocks: [{ type: 'error', text: action.payload.error }],
+          startTime: Date.now(),
+          endTime: Date.now(),
+        });
+      }
     },
     viewSubagent: (state, action: PayloadAction<{ sessionId: string; id: string; name: string }>) => {
       const sid = action.payload.sessionId;

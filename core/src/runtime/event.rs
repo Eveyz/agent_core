@@ -25,6 +25,9 @@ pub enum RunEvent {
     RunCreated {
         id: RunId,
         session_id: Option<String>,
+        /// Canonical `prompts` table id when a session store is attached.
+        #[serde(default)]
+        prompt_id: Option<String>,
     },
     RunStarted,
     RunPaused,

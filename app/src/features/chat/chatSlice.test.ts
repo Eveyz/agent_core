@@ -278,17 +278,49 @@ describe('chat reducer session routing', () => {
     const { reducer, userMessageSent, runIdSet, retryFromEntry } = await loadModules();
     let state = reducer(undefined, { type: '@@INIT' });
     state = reducer(state, userMessageSent({ text: 'one', model: 'm1', sessionId: 's1' }));
-    state = reducer(state, runIdSet({ runId: 'run-1', sessionId: 's1' }));
+    state = reducer(state, runIdSet({ runId: 'run-1', sessionId: 's1', promptId: 'prompt-1' }));
     state = structuredClone(state);
-    state.entries.s1.push({ id: 'turn-run-1', type: 'turn', promptId: 'run-1', blocks: [{ type: 'assistant', text: 'old answer', isStreaming: false }] });
+    state.entries.s1.push({ id: 'turn-prompt-1', type: 'turn', promptId: 'prompt-1', blocks: [{ type: 'assistant', text: 'old answer', isStreaming: false }] });
     state = reducer(state, userMessageSent({ text: 'two', model: 'm2', sessionId: 's1' }));
 
-    state = reducer(state, retryFromEntry({ sessionId: 's1', id: 'user-run-1', text: 'edited one' }));
+    state = reducer(state, retryFromEntry({ sessionId: 's1', id: 'user-prompt-1', text: 'edited one' }));
 
-    expect(state.entries.s1.map((e) => e.text ?? e.type)).toEqual(['edited one']);
+    expect(state.entries.s1.map((e) => e.text ?? e.type)).toEqual(['edited one', 'turn']);
     expect(state.entries.s1[0].model).toBe('m1');
     expect(state.allPrompts.s1).toHaveLength(1);
     expect(state.allPrompts.s1[0].messages[0].content).toBe('edited one');
+  });
+
+  it('runIdSet binds prompt identity from backend promptId, never from runId', async () => {
+    const { reducer, userMessageSent, runIdSet } = await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, userMessageSent({ text: 'hello', model: 'm1', sessionId: 's1' }));
+    state = reducer(
+      state,
+      runIdSet({ runId: 'run-uuid', sessionId: 's1', promptId: 'prompt-uuid' }),
+    );
+
+    expect(state.runId.s1).toBe('run-uuid');
+    const user = state.entries.s1.find((e) => e.type === 'user');
+    const turn = state.entries.s1.find((e) => e.type === 'turn');
+    expect(user?.promptId).toBe('prompt-uuid');
+    expect(user?.id).toBe('user-prompt-uuid');
+    expect(turn?.promptId).toBe('prompt-uuid');
+    expect(turn?.id).toBe('turn-prompt-uuid');
+    expect(state.allPrompts.s1.at(-1)?.id).toBe('prompt-uuid');
+    expect(user?.promptId).not.toBe(state.runId.s1);
+  });
+
+  it('runIdSet without promptId leaves placeholder prompt ids untouched', async () => {
+    const { reducer, userMessageSent, runIdSet } = await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, userMessageSent({ text: 'hello', model: 'm1', sessionId: 's1' }));
+    const beforeUser = state.entries.s1.find((e) => e.type === 'user');
+    const beforePromptId = beforeUser?.promptId;
+    state = reducer(state, runIdSet({ runId: 'run-only', sessionId: 's1' }));
+
+    expect(state.runId.s1).toBe('run-only');
+    expect(state.entries.s1.find((e) => e.type === 'user')?.promptId).toBe(beforePromptId);
   });
 
   it('loadMorePrompts preserves live prompt blocks when rebuilding visible entries', async () => {
@@ -383,6 +415,56 @@ describe('runtime notice and error events', () => {
     const turn = state.entries.s1.find((e) => e.type === 'turn');
     expect(turn?.endTime).toBeUndefined();
     expect(turn?.blocks?.some((b) => b.type === 'notice' && b.text.includes('retrying'))).toBe(true);
+  });
+
+  it('replaces prior notice with the same code instead of stacking', async () => {
+    const { reducer, userMessageSent, runIdSet, agentEventsBatch } = await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, userMessageSent({ text: 'hello', model: 'm1', sessionId: 's1' }));
+    state = reducer(state, runIdSet({ runId: 'run-1', sessionId: 's1' }));
+
+    state = reducer(
+      state,
+      agentEventsBatch([
+        { event: 'turn_started', run_id: 'run-1', turn_id: 'turn-1', index: 0 },
+        {
+          event: 'notice',
+          run_id: 'run-1',
+          turn_id: 'turn-1',
+          code: 'model_retry',
+          severity: 'warning',
+          recoverable: true,
+          message: 'Failed to connect to remote model (stream failed), retrying in 1s (attempt 1/5)',
+        },
+        {
+          event: 'notice',
+          run_id: 'run-1',
+          turn_id: 'turn-1',
+          code: 'model_retry',
+          severity: 'warning',
+          recoverable: true,
+          message: 'Failed to connect to remote model (stream failed), retrying in 2s (attempt 2/5)',
+        },
+        {
+          event: 'notice',
+          run_id: 'run-1',
+          turn_id: 'turn-1',
+          code: 'model_retry',
+          severity: 'warning',
+          recoverable: true,
+          message: 'Failed to connect to remote model (stream failed), retrying in 4s (attempt 3/5)',
+        },
+      ]),
+    );
+
+    const turn = state.entries.s1.find((e) => e.type === 'turn');
+    const notices = turn?.blocks?.filter((b) => b.type === 'notice') ?? [];
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({
+      type: 'notice',
+      code: 'model_retry',
+      text: 'Failed to connect to remote model (stream failed), retrying in 4s (attempt 3/5)',
+    });
   });
 
   it('clears processing on terminal Error events', async () => {
