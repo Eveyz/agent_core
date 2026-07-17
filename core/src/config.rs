@@ -397,7 +397,10 @@ impl Config {
         }
         config.rebuild_models();
 
-        if !config.models.contains_key(&config.default_model) {
+        if !config
+            .resolve_model_name(&config.default_model)
+            .is_some_and(|key| config.models.contains_key(&key))
+        {
             let available: Vec<_> = config.models.keys().map(|s| s.as_str()).collect();
             anyhow::bail!(
                 "default_model '{}' not found in config.\n\
@@ -494,12 +497,29 @@ impl Config {
     }
 
     pub fn get_model(&self, name: &str) -> Option<&ModelConfig> {
-        self.models.get(name)
+        self.models
+            .get(name)
+            .or_else(|| self.resolve_model_name(name).and_then(|key| self.models.get(&key)))
+    }
+
+    /// Match a model key ignoring invisible Unicode characters (e.g. U+200B).
+    pub fn resolve_model_name(&self, name: &str) -> Option<String> {
+        if self.models.contains_key(name) {
+            return Some(name.to_string());
+        }
+        let normalized = normalize_model_lookup_key(name);
+        self.models
+            .keys()
+            .find(|key| normalize_model_lookup_key(key) == normalized)
+            .cloned()
     }
 
     pub fn default_model(&self) -> Result<&ModelConfig> {
+        let resolved = self
+            .resolve_model_name(&self.default_model)
+            .with_context(|| format!("default model '{}' not found in config", self.default_model))?;
         self.models
-            .get(&self.default_model)
+            .get(&resolved)
             .with_context(|| format!("default model '{}' not found in config", self.default_model))
     }
 
@@ -662,6 +682,12 @@ pub fn resolve_env_value(raw: &str) -> String {
 
 pub fn default_config_path() -> PathBuf {
     crate::paths::get_agverse_dir().join("config.toml")
+}
+
+fn normalize_model_lookup_key(name: &str) -> String {
+    name.chars()
+        .filter(|c| !matches!(*c, '\u{200b}' | '\u{feff}' | '\u{200c}' | '\u{200d}'))
+        .collect()
 }
 
 /// Scaffold used when neither `~/.agverse/config.toml` nor env vars are available.
@@ -1169,5 +1195,28 @@ model_id = "claude-3"
         assert!(config.get_model("openai/gpt").is_some());
         assert!(config.get_model("anthropic/claude").is_some());
         assert_eq!(config.default_model, "openai/gpt");
+    }
+
+    #[test]
+    fn resolve_model_name_ignores_zero_width_characters() {
+        let path = write_temp_config(
+            r#"
+default_model = "volces/deepseek-v4-pro​"
+
+[providers.volces]
+name = "volces"
+base_url = "http://localhost"
+api_key = "k"
+
+[providers.volces.models."deepseek-v4-pro​"]
+model_id = "deepseek-v4-pro​"
+"#,
+        );
+        let config = Config::load(path.to_str().unwrap()).unwrap();
+        let resolved = config
+            .resolve_model_name("volces/deepseek-v4-pro")
+            .expect("normalized lookup");
+        assert_eq!(resolved, "volces/deepseek-v4-pro​");
+        assert!(config.get_model("volces/deepseek-v4-pro").is_some());
     }
 }

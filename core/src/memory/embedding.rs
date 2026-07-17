@@ -1,9 +1,12 @@
-use anyhow::Result;
-use fastembed::{InitOptions, TextEmbedding};
+use anyhow::{Result, bail};
 use parking_lot::Mutex;
+
+#[cfg(feature = "embeddings")]
+use fastembed::{InitOptions, TextEmbedding};
 
 pub struct EmbeddingModel {
     model_name: String,
+    #[cfg(feature = "embeddings")]
     inner: Mutex<Option<TextEmbedding>>,
 }
 
@@ -11,29 +14,40 @@ impl EmbeddingModel {
     pub fn new(model_name: &str) -> Result<Self> {
         Ok(Self {
             model_name: model_name.to_string(),
+            #[cfg(feature = "embeddings")]
             inner: Mutex::new(None),
         })
     }
 
     pub fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        let mut guard = self.inner.lock();
-        if guard.is_none() {
-            tracing::info!(
-                "loading embedding model: {} (first use — this may take a moment)",
-                self.model_name
-            );
-            let model_enum = match self.model_name.as_str() {
-                "BAAI/bge-small-en-v1.5" => fastembed::EmbeddingModel::BGESmallENV15,
-                "BAAI/bge-base-en-v1.5" => fastembed::EmbeddingModel::BGEBaseENV15,
-                "sentence-transformers/all-MiniLM-L6-v2" => fastembed::EmbeddingModel::AllMiniLML6V2,
-                _ => fastembed::EmbeddingModel::BGESmallENV15,
-            };
-            let init_options = InitOptions::new(model_enum);
-            *guard = Some(TextEmbedding::try_new(init_options)?);
+        #[cfg(feature = "embeddings")]
+        {
+            let mut guard = self.inner.lock();
+            if guard.is_none() {
+                tracing::info!(
+                    "loading embedding model: {} (first use — this may take a moment)",
+                    self.model_name
+                );
+                let model_enum = match self.model_name.as_str() {
+                    "BAAI/bge-small-en-v1.5" => fastembed::EmbeddingModel::BGESmallENV15,
+                    "BAAI/bge-base-en-v1.5" => fastembed::EmbeddingModel::BGEBaseENV15,
+                    "sentence-transformers/all-MiniLM-L6-v2" => {
+                        fastembed::EmbeddingModel::AllMiniLML6V2
+                    }
+                    _ => fastembed::EmbeddingModel::BGESmallENV15,
+                };
+                let init_options = InitOptions::new(model_enum);
+                *guard = Some(TextEmbedding::try_new(init_options)?);
+            }
+            let model = guard.as_mut().unwrap();
+            let embeddings = model.embed(texts, None)?;
+            Ok(embeddings)
         }
-        let model = guard.as_mut().unwrap();
-        let embeddings = model.embed(texts, None)?;
-        Ok(embeddings)
+        #[cfg(not(feature = "embeddings"))]
+        {
+            let _ = texts;
+            bail!("embeddings feature not enabled in this build")
+        }
     }
 
     pub fn embed_single(&self, text: &str) -> Result<Vec<f32>> {

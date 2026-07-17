@@ -8,7 +8,7 @@ name = "ageverse"
 path = "src/main.rs"
 
 [dependencies]
-agent_core = { path = "../core" }
+agent_core = { path = "../core", default-features = false }
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 termimad = "0.34"

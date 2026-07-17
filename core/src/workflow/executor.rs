@@ -657,7 +657,7 @@ fn apply_router(
 /// Build an [`AgentMemoryStore`] from the Brain's embedding configuration.
 pub fn build_agent_memory_store(brain: &Brain, storage: Storage) -> AgentMemoryStore {
     if let Some(ref mem) = brain.config.memory {
-        if mem.embedding_enabled {
+        if cfg!(feature = "embeddings") && mem.embedding_enabled {
             if let Ok(model) = EmbeddingModel::new(&mem.embedding_model) {
                 return AgentMemoryStore::new(storage, Arc::new(model));
             }

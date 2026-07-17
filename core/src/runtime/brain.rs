@@ -151,7 +151,8 @@ impl Brain {
         let block_max_chars = mem_config
             .map(|m| m.default_block_max_chars)
             .unwrap_or(2000);
-        let embedding_enabled = mem_config.map(|m| m.embedding_enabled).unwrap_or(true);
+        let embedding_enabled = cfg!(feature = "embeddings")
+            && mem_config.map(|m| m.embedding_enabled).unwrap_or(true);
         let salience_config = mem_config.and_then(|m| m.salience.as_ref());
 
         let result = if embedding_enabled {
@@ -339,10 +340,11 @@ impl Brain {
 
     /// Switch the active model by name (must exist in config).
     pub fn switch_model(&mut self, name: &str) -> Result<()> {
-        if self.config.get_model(name).is_none() {
-            anyhow::bail!("model '{name}' not found in config");
-        }
-        self.current_model_name = name.to_string();
+        let resolved = self
+            .config
+            .resolve_model_name(name)
+            .ok_or_else(|| anyhow::anyhow!("model '{name}' not found in config"))?;
+        self.current_model_name = resolved;
         Ok(())
     }
 
