@@ -1,13 +1,16 @@
 #![allow(deprecated)]
+mod bootstrap;
 mod cli_completer;
+mod oneshot;
 mod state;
 
 use agent_core::{
-    AgentEvent, Brain, ApprovalChoice, CancellationToken, McpClientManager, Message, MessageDelta,
-    PermissionMode, PermissionPolicy, Role, RunCommand, RunEvent, RunManager, SessionManager,
-    SkillManager, SkillManifest, SteerEntry, TaskBoard, TaskStatus,
-    TodoItem, TodoList, TodoStatus, ToolExecutionMode, hooks::LoggingHook, tasks, tools,
+    ApprovalChoice, Message, MessageDelta, PermissionMode, Role, RunCommand, RunEvent,
+    SkillManager, SkillManifest, TaskBoard, TaskStatus, TodoItem, TodoList, TodoStatus,
+    ToolExecutionMode,
 };
+use bootstrap::{bootstrap_runtime, parse_permission_mode, resolve_config_path, BootstrapOptions};
+use oneshot::{run_oneshot, OneshotArgs};
 use state::CliState;
 
 use argh::FromArgs;
@@ -17,11 +20,8 @@ use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
 use rustyline::validate::Validator;
 use rustyline::{CompletionType, Config, EditMode, Editor, Helper};
-use std::cell::Cell;
-use std::collections::HashMap;
 use std::io::{self, IsTerminal, Write};
-use std::path::Path;
-use std::sync::atomic::Ordering;
+use std::process::ExitCode;
 use parking_lot::Mutex;
 use std::sync::Arc;
 
@@ -168,12 +168,33 @@ fn truncate(s: &str, max_len: usize) -> String {
         format!("{}...", &s[..end])
     }
 }
-/// CLI arguments for agent-cli
+/// CLI arguments for ageverse
 #[derive(FromArgs)]
+/// Ageverse agent CLI
 struct Args {
     /// launch TUI mode
     #[argh(switch, short = 't')]
     tui: bool,
+
+    /// one-shot prompt (non-interactive)
+    #[argh(option, short = 'p')]
+    instruction: Option<String>,
+
+    /// model key from ~/.agverse/config.toml (e.g. hunyuan/tencent/hy3:free)
+    #[argh(option)]
+    model: Option<String>,
+
+    /// permission mode: paranoid|standard|developer|permissive|yolo (oneshot default: yolo)
+    #[argh(option)]
+    permission: Option<String>,
+
+    /// working directory for the agent run
+    #[argh(option)]
+    workdir: Option<String>,
+
+    /// path to config.toml (default: ~/.agverse/config.toml)
+    #[argh(option)]
+    config: Option<String>,
 
     #[argh(subcommand)]
     nested: Option<SubCommand>,
@@ -252,80 +273,6 @@ struct EvalRunCommand {
     ablate: Option<String>,
 }
 
-
-/// Try to load config.toml; if the file doesn't exist, generate a template and
-/// still attempt the env-var fallback.
-fn try_load_config() -> anyhow::Result<Brain> {
-    match Brain::load_config("config.toml") {
-        Ok(b) => return Ok(b),
-        Err(e) => {
-            if !Path::new("config.toml").exists() {
-                generate_config_template("config.toml");
-            } else {
-                eprintln!("config.toml: {e}");
-            }
-            eprintln!("Falling back to OPENAI_API_KEY environment variable...");
-            let config = agent_core::Config::from_env()?;
-            Brain::from_config(config)
-        }
-    }
-}
-
-/// Write a well-commented config.toml template so the user only needs to fill in their API keys.
-fn generate_config_template(path: &str) {
-    let template = r#"# =============================================================================
-# Agent Core 配置文件
-# 刚生成模板 — 请填入你的 API Key 后重新运行
-# =============================================================================
-# 语法说明:
-#   api_key = "sk-xxx"             → 直接写明文
-#   api_key = "${DEEPSEEK_KEY}"    → 从环境变量读取 (更安全)
-# =============================================================================
-
-# 默认使用的模型 (必须与下方 [models.xxx] 中的某一个一致)
-default_model = "deepseek"
-
-# ── 记忆系统 (可选，全部可省略使用默认值) ────────────────────────────
-[memory]
-# db_path = "~/.agverse/memory.db"
-# embedding_model = "BAAI/bge-small-en-v1.5"
-# max_core_blocks = 5
-# default_block_max_chars = 2000
-# consolidation_enabled = true
-
-# ── DeepSeek ──────────────────────────────────────────────────────────
-[models.deepseek]
-base_url = "https://api.deepseek.com/v1"
-api_key = "${DEEPSEEK_KEY}"              # 改成你的 key，或用环境变量 DEEPSEEK_KEY
-model_id = "deepseek-chat"
-max_context_tokens = 65536
-# temperature = 0.7
-# max_tokens = 4096
-# react_enabled = true
-# max_iterations = 10
-
-# ── OpenAI GPT-4o ─────────────────────────────────────────────────────
-[models.gpt4o]
-base_url = "https://api.openai.com/v1"
-api_key = "${OPENAI_API_KEY}"
-model_id = "gpt-4o"
-max_context_tokens = 128000
-# temperature = 0.7
-
-# ── 本地 Ollama (取消注释即可使用) ────────────────────────────────────
-# [models.local]
-# base_url = "http://localhost:11434/v1"
-# api_key = "ollama"
-# model_id = "qwen2.5:7b"
-# max_context_tokens = 32768
-"#;
-    if let Err(e) = std::fs::write(path, template) {
-        eprintln!("warning: could not write config template to {path}: {e}");
-    } else {
-        eprintln!("No config.toml found — a template has been generated at {path}");
-        eprintln!("Please edit it with your API keys and re-run.\n");
-    }
-}
 
 async fn run_tui_mode() -> anyhow::Result<()> {
     eprintln!("TUI mode not yet ported to CliState. Use CLI mode instead.");
@@ -503,7 +450,17 @@ async fn run_eval_suite(run: EvalRunCommand) -> anyhow::Result<()> {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> ExitCode {
+    match run_main().await {
+        Ok(code) => code,
+        Err(e) => {
+            eprintln!("error: {e:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run_main() -> anyhow::Result<ExitCode> {
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -514,42 +471,43 @@ async fn main() -> anyhow::Result<()> {
     let args: Args = argh::from_env();
 
     if let Some(SubCommand::Eval(eval)) = args.nested {
-        return run_eval_command(eval).await;
+        run_eval_command(eval).await?;
+        return Ok(ExitCode::SUCCESS);
     }
 
-    // ── TUI mode ──────────────────────────────────────────────────
     if args.tui {
-        return run_tui_mode().await;
+        run_tui_mode().await?;
+        return Ok(ExitCode::SUCCESS);
     }
-    // ── CLI mode (existing) ───────────────────────────────────────
-    let mut brain = try_load_config()?;
 
-    // Detect whether stdout is a terminal for styled output
+    // ── One-shot mode (Harbor / CI) ─────────────────────────────────
+    if let Some(instruction) = args.instruction {
+        return run_oneshot(OneshotArgs {
+            instruction,
+            model: args.model,
+            permission: args.permission,
+            workdir: args.workdir,
+            config: args.config,
+        })
+        .await;
+    }
+
+    // ── Interactive REPL ────────────────────────────────────────────
     let use_styles = std::io::stdout().is_terminal();
-    println!("=== Agent Core CLI ===\n");
+    println!("=== Ageverse CLI ===\n");
 
-    // Permission
     print!("Enable permission system? (Y/n): ");
     io::stdout().flush()?;
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
     let enable_permission = input.trim().to_lowercase() != "n";
 
-    // Hooks
     print!("Enable hook system? (Y/n): ");
     io::stdout().flush()?;
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
     let enable_hooks = input.trim().to_lowercase() != "n";
-    if enable_hooks {
-        let mut hooks = agent_core::HookRegistry::new();
-        hooks.register(Box::new(LoggingHook));
-        // Merge hooks into Brain's shared registry
-        let mut brain_hooks = brain.hook_registry.lock();
-        brain_hooks.register(Box::new(LoggingHook));
-    }
 
-    // Tool execution mode
     print!("Tool execution mode (parallel/sequential) [parallel]: ");
     io::stdout().flush()?;
     let mut input = String::new();
@@ -558,95 +516,28 @@ async fn main() -> anyhow::Result<()> {
         "sequential" | "seq" => ToolExecutionMode::Sequential,
         _ => ToolExecutionMode::Parallel,
     };
-    brain.set_tool_execution_mode(tool_mode);
 
-    // Use Brain's SkillManager as the single source of truth. A second manager
-    // would let skill_load mutate different active state from Segment 6.
-    let skill_manager = brain
-        .skill_manager
-        .clone()
-        .expect("Brain always initializes a SkillManager");
-
-    // Session manager — shared with RunManager so prompt_id is created in core.
-    let session_db_path = agent_core::paths::get_memory_db_path();
-    let session_db = session_db_path.to_string_lossy();
-    let session_storage =
-        agent_core::memory::storage::Storage::new(&session_db).expect("Failed to open session DB");
-    let session_mgr = Arc::new(SessionManager::new(session_storage));
-
-    let run_manager = RunManager::new(brain).with_session_manager(session_mgr.clone());
-
-    // Optional subsystems
-    let todo_list: Arc<Mutex<TodoList>> = Arc::new(Mutex::new(TodoList::new()));
-    let task_board: Arc<Mutex<TaskBoard>> = Arc::new(Mutex::new(TaskBoard::new()));
-
-    // Register tool callbacks on Brain so they flow into every Run
-    let brain = run_manager.brain();
-    {
-        let tl = todo_list.clone();
-        let tb = task_board.clone();
-        let mc = brain.current_model_config().ok();
-        let pc = brain.config.permissions.clone();
-        brain.register_tool_fn(Box::new(move |reg: &mut agent_core::ToolRegistry| {
-            tools::todo::register_todo_tools(reg, tl.clone());
-            tasks::register_task_tools(reg, tb.clone(), mc.clone().unwrap_or_default(), pc.clone());
-        }));
-    }
-
-    // MCP — connect to configured servers
-    let mcp_mgr = {
-        let mut mgr = McpClientManager::from_config(&run_manager.brain().config.mcp);
-        let errors = mgr.connect_all().await;
-        for (name, errs) in &errors {
-            for err in errs {
-                eprintln!("[MCP] Server '{}' connection failed: {}", name, err);
-            }
-        }
-        if mgr.tool_count() > 0 {
-            println!(
-                "[MCP] {} tools from {} servers",
-                mgr.tool_count(),
-                mgr.connected_servers().len()
-            );
-            // Register MCP tools for display AND for execution
-            let mgr_arc = Arc::new(tokio::sync::Mutex::new(mgr));
-            {
-                let mut reg = run_manager.brain().display_registry();
-                agent_core::McpTool::register_all(&mut reg, mgr_arc.clone());
-            }
-            // Register into Runs via callback
-            let mgr_arc2 = mgr_arc.clone();
-            run_manager.brain().register_tool_fn(Box::new({
-                let mgr = mgr_arc2.clone();
-                move |reg: &mut agent_core::ToolRegistry| {
-                    // Try to register MCP tools — may fail if not connected yet, which is fine
-                    let _ = tokio::runtime::Handle::try_current().map(|_| {
-                        // MCP tools need live connections; they'll be added per-Run
-                    });
-                }
-            }));
-            mgr_arc
-        } else {
-            Arc::new(tokio::sync::Mutex::new(mgr))
-        }
+    let permission = if enable_permission {
+        None
+    } else {
+        Some(PermissionMode::Yolo)
     };
 
-    // Build CliState
-    let mut state = CliState {
-        brain: (**run_manager.brain()).clone(),
-        run_manager,
-        context_history: Vec::new(),
-        session_id: None,
-        current_run_id: None,
-        cancel_token: None,
-        todo_list: todo_list.clone(),
-        task_board: task_board.clone(),
-        skill_manager: skill_manager.clone(),
-        mcp_mgr: mcp_mgr.clone(),
-        session_mgr: session_mgr.clone(),
-    };
+    let mut state = bootstrap_runtime(BootstrapOptions {
+        config_path: resolve_config_path(args.config.as_deref()),
+        model: args.model.clone(),
+        permission,
+        tool_mode,
+        enable_hooks,
+    })
+    .await?;
 
-    // Print status
+    let todo_list = state.todo_list.clone();
+    let task_board = state.task_board.clone();
+    let skill_manager = state.skill_manager.clone();
+    let mcp_mgr = state.mcp_mgr.clone();
+    let session_mgr = state.session_mgr.clone();
+
     println!("\n--- Status ---");
     println!("Memory:      enabled");
     println!(
@@ -662,7 +553,10 @@ async fn main() -> anyhow::Result<()> {
         if enable_hooks { "enabled" } else { "disabled" }
     );
     println!("Tool mode:   {:?}", state.brain.tool_execution_mode);
-    println!("Tools:       {}", state.brain.display_registry().list_names().len());
+    println!(
+        "Tools:       {}",
+        state.brain.display_registry().list_names().len()
+    );
     println!("Model:       {}", state.brain.current_model_name());
     println!("--------------\n");
     println!("Type /help for commands, /quit to exit\n");
@@ -684,7 +578,6 @@ async fn main() -> anyhow::Result<()> {
                 trimmed
             }
             Err(ReadlineError::Interrupted) => {
-                // Ctrl-C
                 println!("^C");
                 continue;
             }
@@ -703,9 +596,6 @@ async fn main() -> anyhow::Result<()> {
 
         match input.as_str() {
             "/quit" | "/exit" => {
-                // ── Graceful shutdown ────────────────────────────────
-
-                // 1. Auto-save session
                 let all_messages = state.context_history.clone();
                 let messages: Vec<Message> = all_messages
                     .into_iter()
@@ -724,7 +614,6 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
 
-                // 2. Shut down MCP connections (kill child processes)
                 {
                     let mut mgr = mcp_mgr.lock().await;
                     if let Err(e) = mgr.shutdown_all().await {
@@ -732,7 +621,6 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
 
-                // 3. Save command history
                 if let Err(e) = rl.save_history(&agent_core::paths::get_cli_history_dir()) {
                     eprintln!("History save warning: {e}");
                 }
@@ -760,7 +648,6 @@ async fn main() -> anyhow::Result<()> {
             cmd if cmd.starts_with("/rewind") => {
                 let rest = cmd.strip_prefix("/rewind").unwrap_or("").trim();
                 if rest.is_empty() {
-                    // Show rewindable points
                     let msgs = state.context_history.clone();
                     let user_indices: Vec<(usize, &str)> = msgs
                         .iter()
@@ -871,7 +758,6 @@ async fn main() -> anyhow::Result<()> {
                 } else {
                     println!("=== Available Skills ===");
 
-                    // Group by source directory
                     let mut by_source: std::collections::BTreeMap<String, Vec<&SkillManifest>> =
                         std::collections::BTreeMap::new();
                     for (skill, source) in &skills {
@@ -890,7 +776,6 @@ async fn main() -> anyhow::Result<()> {
                             } else {
                                 desc
                             };
-                            // Replace newlines in description for single-line display
                             let desc_one_line = truncated.replace('\n', " ");
                             println!("  {}  {}", skill.name, desc_one_line);
                         }
@@ -932,8 +817,6 @@ async fn main() -> anyhow::Result<()> {
                 match args.get(1).copied() {
                     Some("save") => {
                         let all_messages = state.context_history.clone();
-                        // Filter out system messages — they're generated from segments,
-                        // not part of the conversation history
                         let messages: Vec<Message> = all_messages
                             .into_iter()
                             .filter(|m| m.role != Role::System)
@@ -960,12 +843,11 @@ async fn main() -> anyhow::Result<()> {
                             match mgr.resume(session_id) {
                                 Ok(Some(session)) => {
                                     state.context_history.clear();
-                state.session_id = None;
+                                    state.session_id = None;
                                     for msg in &session.messages {
                                         state.context_history.extend_from_slice(&[msg.clone()]);
                                     }
-                                    state.session_id =
-                                        Some(session_id.to_string());
+                                    state.session_id = Some(session_id.to_string());
                                     println!(
                                         "Resumed session '{}' ({} messages).",
                                         session.meta.title,
@@ -1045,23 +927,34 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             "/abort" => {
-                if let Some(ref rid) = state.current_run_id { let _ = state.run_manager.cancel_run(rid); };
+                if let Some(ref rid) = state.current_run_id {
+                    let _ = state.run_manager.cancel_run(rid);
+                };
                 println!("Abort signal sent. The agent will stop at the next opportunity.");
             }
             "/state" => {
-                println!("Agent state: {:?}", state.current_run_id.as_ref().map(|_| "Running").unwrap_or("Idle"));
+                println!(
+                    "Agent state: {:?}",
+                    state
+                        .current_run_id
+                        .as_ref()
+                        .map(|_| "Running")
+                        .unwrap_or("Idle")
+                );
             }
             "/tool-mode" => {
                 println!("Tool execution mode: {:?}", state.brain.tool_execution_mode);
             }
             "/clear-queues" => {
-                
                 println!("Steering and follow-up queues cleared.");
             }
             cmd if cmd.starts_with("/model ") => {
                 let name = cmd.strip_prefix("/model ").unwrap().trim();
-                match state.brain.switch_model(name) {
-                    Ok(()) => println!("Switched to model: {name}"),
+                match state.run_manager.switch_model(name) {
+                    Ok(()) => {
+                        state.brain = (**state.run_manager.brain()).clone();
+                        println!("Switched to model: {name}");
+                    }
                     Err(e) => eprintln!("Error: {e}"),
                 }
             }
@@ -1104,19 +997,31 @@ async fn main() -> anyhow::Result<()> {
             cmd if cmd.starts_with("/steer ") => {
                 let msg = cmd.strip_prefix("/steer ").unwrap().trim();
                 if let Some(ref rid) = state.current_run_id {
-                    let _ = state.run_manager.command(rid, RunCommand::Steer {
-                        steer_id: format!("steer-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()),
-                        message: msg.to_string(),
-                    });
+                    let _ = state.run_manager.command(
+                        rid,
+                        RunCommand::Steer {
+                            steer_id: format!(
+                                "steer-{}",
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_nanos()
+                            ),
+                            message: msg.to_string(),
+                        },
+                    );
                 }
                 println!("Steering message queued. It will be injected after the current turn.");
             }
             cmd if cmd.starts_with("/follow-up ") => {
                 let msg = cmd.strip_prefix("/follow-up ").unwrap().trim();
                 if let Some(ref rid) = state.current_run_id {
-                    let _ = state.run_manager.command(rid, RunCommand::FollowUp {
-                        message: msg.to_string(),
-                    });
+                    let _ = state.run_manager.command(
+                        rid,
+                        RunCommand::FollowUp {
+                            message: msg.to_string(),
+                        },
+                    );
                 }
                 println!(
                     "Follow-up message queued. It will be processed after the agent finishes."
@@ -1157,7 +1062,6 @@ async fn main() -> anyhow::Result<()> {
                         println!("Active skills: {}", active.join(", "));
                     }
                 } else {
-                    // Default: load skill
                     let mgr = skill_manager.lock();
                     match mgr.load_skill_context(rest) {
                         Ok(Some(content)) => {
@@ -1177,32 +1081,30 @@ async fn main() -> anyhow::Result<()> {
                     let parts: Vec<&str> = rest.splitn(2, ' ').collect();
                     let tool_name = parts[0];
                     let tool_input = parts.get(1).unwrap_or(&"{}");
-                    let decision = state
-                        .brain.build_permission_policy()
-                        .check(tool_name, tool_input, None, None, None);
+                    let decision = state.brain.build_permission_policy().check(
+                        tool_name,
+                        tool_input,
+                        None,
+                        None,
+                        None,
+                    );
                     println!(
                         "Permission check: {}({}) -> {:?}",
                         tool_name, tool_input, decision
                     );
                 } else if args.starts_with("mode ") {
                     let mode_str = args.strip_prefix("mode ").unwrap().trim();
-                    use agent_core::PermissionMode;
-                    let mode = match mode_str.to_lowercase().as_str() {
-                        "paranoid" => PermissionMode::Paranoid,
-                        "standard" => PermissionMode::Standard,
-                        "permissive" => PermissionMode::Permissive,
-                        "yolo" => PermissionMode::Yolo,
-                        _ => {
-                            eprintln!("Invalid mode. Use: paranoid | standard | permissive | yolo");
-                            continue;
+                    match parse_permission_mode(mode_str) {
+                        Ok(mode) => {
+                            state.brain.build_permission_policy().set_mode(mode);
+                            println!("Permission mode set to: {:?}", mode);
                         }
-                    };
-                    state.brain.build_permission_policy().set_mode(mode);
-                    println!("Permission mode set to: {:?}", mode);
+                        Err(e) => eprintln!("{e}"),
+                    }
                 } else {
                     eprintln!("Usage:");
                     eprintln!("  /perm test <tool_name> <input_json>");
-                    eprintln!("  /perm mode <paranoid|standard|permissive|yolo>");
+                    eprintln!("  /perm mode <paranoid|standard|developer|permissive|yolo>");
                 }
             }
             "/context" => {
@@ -1293,7 +1195,6 @@ async fn main() -> anyhow::Result<()> {
                     println!("Memory is disabled.");
                 }
             }
-            // Catch unknown /commands before they hit the agent
             input if input.starts_with('/') => {
                 eprintln!(
                     "Unknown command: {}. Type /help for available commands.",
@@ -1301,15 +1202,12 @@ async fn main() -> anyhow::Result<()> {
                 );
             }
             _ => {
-                // Reset abort flag before each run
-                // The cancel_token is recreated by agent run loop on next start.
-                // state.cancel_token.cancel() would cancel it, but to clear it we do nothing.
                 run_agent(&mut state, &input, use_styles).await;
             }
         }
     }
 
-    Ok(())
+    Ok(ExitCode::SUCCESS)
 }
 
 fn handle_todo_cmd(cmd: &str, todo_list: &Arc<Mutex<TodoList>>) {
@@ -1568,7 +1466,6 @@ async fn run_agent(
                             print!("{}{}{}", dim(use_styles), t, reset(use_styles));
                             io::stdout().flush().ok();
                         }
-                        _ => {}
                     },
                     RunEvent::ToolEnded { name, result, .. } => {
                         let r = result;
@@ -1576,7 +1473,7 @@ async fn run_agent(
                             print_tool_line(&name, &serde_json::Value::Null, &r, false, use_styles);
                         }
                     }
-                    RunEvent::ApprovalRequired { prompt_id, tool_name, tool_input, explanation, .. } => {
+                    RunEvent::ApprovalRequired { prompt_id, tool_name, tool_input: _, explanation, .. } => {
                         println!();
                         println!("  {}⚠  Approval required:{}", yellow(use_styles), reset(use_styles));
                         println!("  Tool: {}\n  Reason: {}", tool_name, explanation);
@@ -1604,11 +1501,11 @@ async fn run_agent(
                     _ => {}
                 }
             }
-            Err(_) => break,
             Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                 eprintln!("  (skipped {n} events)");
                 continue;
             }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         }
     }
     state.context_history = Vec::new();
@@ -1617,7 +1514,13 @@ async fn run_agent(
 
 fn print_help() {
     println!(
-        r#"=== Agent Core CLI ===
+        r#"=== Ageverse CLI ===
+
+  Usage (one-shot / Harbor):
+    ageverse -p "instruction" --model <key> --permission yolo
+    ageverse --instruction "..." --model hunyuan/tencent/hy3:free
+
+  Config: ~/.agverse/config.toml (same as desktop app)
 
   General
     /help              Show this help

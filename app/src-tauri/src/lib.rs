@@ -2006,65 +2006,9 @@ pub fn run() {
     }
 
     tauri::Builder::default()        .setup(|app| {
-            // Resolve home directory
-            let agverse_dir = agent_core::paths::get_agverse_dir();
-            let config_path = agverse_dir.join("config.toml");
-            let config_path_str = config_path.to_string_lossy().to_string();
-
-            // Ensure .agverse directory exists
-            std::fs::create_dir_all(&agverse_dir)
-                .unwrap_or_else(|e| eprintln!("warning: could not create ~/.agverse: {e}"));
-
-            // Load config
-            let config = if let Ok(cfg) = agent_core::config::Config::load(&config_path_str) {
-                cfg
-            } else if let Ok(cfg) = agent_core::config::Config::from_env() {
-                let _ = cfg.save(&config_path_str);
-                cfg
-            } else {
-                let mut default_config = agent_core::config::Config {
-                    default_model: "default/default".to_string(),
-                    providers: {
-                        let mut p = std::collections::HashMap::new();
-                        let mut m = std::collections::HashMap::new();
-                        m.insert("default".to_string(), agent_core::config::ProviderModelEntry {
-                            model_id: "gpt-4o-mini".to_string(),
-                            temperature: None,
-                            max_tokens: None,
-                            system_prompt: None,
-                            max_context_tokens: None,
-                            reasoning_effort: None,
-                            thinking_enabled: false,
-                            api_mode: None,
-                        });
-                        p.insert("default".to_string(), agent_core::config::ProviderConfig {
-                            name: "default".to_string(),
-                            base_url: "https://api.openai.com/v1".to_string(),
-                            api_key: "".to_string(),
-                            max_context_tokens: 128000,
-                            temperature: None,
-                            max_tokens: None,
-                            react_enabled: true,
-                            system_prompt: None,
-                            max_iterations: 100,
-                            request_timeout_secs: 60,
-                            models: m,
-                        });
-                        p
-                    },
-                    legacy_models: std::collections::HashMap::new(),
-                    models: std::collections::HashMap::new(),
-                    memory: None,
-                    permissions: Default::default(),
-                    mcp: Default::default(),
-                    reflector_enabled: false,
-                    btw_model: None,
-                    learn_model: None,
-                };
-                default_config.rebuild_models();
-                let _ = default_config.save(&config_path_str);
-                default_config
-            };
+            // Load config the same way as the CLI (`~/.agverse/config.toml`).
+            let (config, _config_path) = agent_core::load_or_init_default(None)
+                .expect("Failed to load or init ~/.agverse/config.toml");
 
             // Build the Brain (reusable across all Runs)
             let brain = Brain::from_config(config)

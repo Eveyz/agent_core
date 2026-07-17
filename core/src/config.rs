@@ -664,6 +664,132 @@ pub fn default_config_path() -> PathBuf {
     crate::paths::get_agverse_dir().join("config.toml")
 }
 
+/// Scaffold used when neither `~/.agverse/config.toml` nor env vars are available.
+/// Matches the Tauri app's first-run default so CLI and desktop stay aligned.
+pub fn default_scaffold_config() -> Config {
+    let mut models = HashMap::new();
+    models.insert(
+        "default".to_string(),
+        ProviderModelEntry {
+            model_id: "gpt-4o-mini".to_string(),
+            temperature: None,
+            max_tokens: None,
+            system_prompt: None,
+            max_context_tokens: None,
+            reasoning_effort: None,
+            thinking_enabled: false,
+            api_mode: None,
+        },
+    );
+    let mut providers = HashMap::new();
+    providers.insert(
+        "default".to_string(),
+        ProviderConfig {
+            name: "default".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            api_key: String::new(),
+            max_context_tokens: 128000,
+            temperature: None,
+            max_tokens: None,
+            react_enabled: true,
+            system_prompt: None,
+            max_iterations: 100,
+            request_timeout_secs: 60,
+            models,
+        },
+    );
+    let mut config = Config {
+        default_model: "default/default".to_string(),
+        providers,
+        legacy_models: HashMap::new(),
+        models: HashMap::new(),
+        memory: None,
+        permissions: Default::default(),
+        mcp: Default::default(),
+        reflector_enabled: false,
+        btw_model: None,
+        learn_model: None,
+    };
+    config.rebuild_models();
+    config
+}
+
+/// Load config the same way as the Tauri app:
+/// 1. Ensure `~/.agverse` exists
+/// 2. `Config::load(path)` when present/valid
+/// 3. else `Config::from_env()` and save
+/// 4. else scaffold default and save
+///
+/// `path` defaults to [`default_config_path`] (`~/.agverse/config.toml`).
+pub fn load_or_init_default(path: Option<&std::path::Path>) -> Result<(Config, PathBuf)> {
+    let config_path = path
+        .map(PathBuf::from)
+        .unwrap_or_else(default_config_path);
+    let agverse_dir = crate::paths::get_agverse_dir();
+    if let Err(e) = std::fs::create_dir_all(&agverse_dir) {
+        tracing::warn!(
+            path = %agverse_dir.display(),
+            error = %e,
+            "could not create ~/.agverse"
+        );
+    }
+    // When overriding path, also ensure its parent exists.
+    if let Some(parent) = config_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    let path_str = config_path.to_string_lossy().to_string();
+    let config = if let Ok(cfg) = Config::load(&path_str) {
+        cfg
+    } else if let Ok(cfg) = Config::from_env() {
+        let _ = cfg.save(&path_str);
+        cfg
+    } else {
+        let default_config = default_scaffold_config();
+        let _ = default_config.save(&path_str);
+        default_config
+    };
+    Ok((config, config_path))
+}
+
+#[cfg(test)]
+mod load_or_init_tests {
+    use super::*;
+
+    #[test]
+    fn load_or_init_default_creates_scaffold_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        assert!(!path.exists());
+        let (cfg, loaded) = load_or_init_default(Some(&path)).unwrap();
+        assert_eq!(loaded, path);
+        assert!(path.exists());
+        assert_eq!(cfg.default_model, "default/default");
+        assert!(cfg.models.contains_key("default/default"));
+    }
+
+    #[test]
+    fn load_or_init_default_reads_existing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let content = r#"
+default_model = "p/m"
+
+[providers.p]
+name = "p"
+base_url = "http://localhost"
+api_key = "k"
+
+[providers.p.models.m]
+model_id = "m"
+"#;
+        std::fs::write(&path, content).unwrap();
+        let (cfg, _) = load_or_init_default(Some(&path)).unwrap();
+        assert_eq!(cfg.default_model, "p/m");
+        assert!(cfg.models.contains_key("p/m"));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

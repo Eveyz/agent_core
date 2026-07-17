@@ -33,7 +33,10 @@ pub mod util;
 pub mod worktree;
 
 pub use context_processor::{ContextProcessor, TransformContextFn};
-pub use config::{ApiMode, Config, MemoryConfig, MemoryMode, ModelConfig, ReflectionConfig, RuntimeOverrides, resolve_env_value};
+pub use config::{
+    ApiMode, Config, MemoryConfig, MemoryMode, ModelConfig, ReflectionConfig, RuntimeOverrides,
+    default_config_path, default_scaffold_config, load_or_init_default, resolve_env_value,
+};
 pub use context::{CacheHint, Context, ContextEngine, ContextSegment, RefreshPolicy, Stability};
 pub use memory::{
     LifecycleReport, MemoryCategory, MemoryManager, MemoryStats, RecallIntent, SalienceConfig,

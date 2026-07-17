@@ -3,6 +3,10 @@ name = "agent-cli"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "ageverse"
+path = "src/main.rs"
+
 [dependencies]
 agent_core = { path = "../core" }
 tokio = { version = "1", features = ["full"] }
