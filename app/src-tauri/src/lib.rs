@@ -2007,8 +2007,9 @@ pub fn run() {
 
     tauri::Builder::default()        .setup(|app| {
             // Load config the same way as the CLI (`~/.agverse/config.toml`).
-            let (config, _config_path) = agent_core::load_or_init_default(None)
+            let (config, config_path) = agent_core::load_or_init_default(None)
                 .expect("Failed to load or init ~/.agverse/config.toml");
+            let config_path_str = config_path.to_string_lossy().into_owned();
 
             // Build the Brain (reusable across all Runs)
             let brain = Brain::from_config(config)
