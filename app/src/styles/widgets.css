@@ -892,6 +892,76 @@
   overflow-wrap: anywhere;
 }
 
+/* ── Recovery / remote-retry notice ── */
+.recovery-notice {
+  color: var(--warning);
+  font-size: 13px;
+  padding: 10px 14px;
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
+  border-radius: var(--radius-md);
+  margin-top: 12px;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  animation: recovery-notice-in 0.28s ease-out;
+}
+
+.recovery-notice--active {
+  animation:
+    recovery-notice-in 0.28s ease-out,
+    recovery-notice-pulse 2.2s ease-in-out infinite;
+}
+
+.recovery-notice-icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+  animation: recovery-notice-spin 1.1s linear infinite;
+}
+
+.recovery-notice-icon-static {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.recovery-notice-text {
+  flex-grow: 1;
+  min-width: 0;
+  line-height: 1.4;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+@keyframes recovery-notice-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes recovery-notice-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes recovery-notice-pulse {
+  0%,
+  100% {
+    border-color: var(--warning-border);
+    box-shadow: 0 0 0 0 transparent;
+  }
+  50% {
+    border-color: color-mix(in srgb, var(--warning) 55%, var(--warning-border));
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 12%, transparent);
+  }
+}
+
 /* ── Bash / Shell widget ──────────────────────────────────────────── */
 .bash-details-wrapper {
   margin: 8px 12px 8px 19px;

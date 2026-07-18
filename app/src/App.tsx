@@ -5,7 +5,6 @@ import { RootState } from './store';
 import {
   userMessageSent,
   agentAborted,
-  retryFromEntry,
   sendFailed,
   runIdSet,
   selectEntryIds,
@@ -346,17 +345,15 @@ function App() {
         dispatch(setActiveSession(activeSessionId));
       }
 
+      const model = entry.model ?? defaultModel;
+      // Append-only: keep prior turns and send the same (or edited) text as a new prompt.
+      dispatch(userMessageSent({ text: msg, model, sessionId: activeSessionId }));
+      scrollToBottom();
+
       try {
-        if (!entry.promptId) throw new Error('Cannot retry an entry without a canonical prompt id');
-        await invoke('retry_session_from_prompt', {
-          sessionId: activeSessionId,
-          promptId: entry.promptId,
-        });
-        dispatch(retryFromEntry({ sessionId: activeSessionId, id: entryId, text: msg }));
-        scrollToBottom();
         const result = await invoke<{ run_id: string; prompt_id?: string | null }>(
           'send_message',
-          { message: msg, sessionId: activeSessionId, model: defaultModel },
+          { message: msg, sessionId: activeSessionId, model },
         );
         dispatch(runIdSet({
           runId: result.run_id,

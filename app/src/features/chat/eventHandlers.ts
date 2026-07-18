@@ -51,7 +51,24 @@ function finalizeAllBlocks(blocks: AnyBlock[] | undefined): void {
 
 // ── Unified block operations (work on any block array) ──────────────
 
+/** Drop in-flight recovery banners once the model stream resumes (or hard-fails). */
+function clearRecoverableNotices(blocks: AnyBlock[]): void {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i];
+    if (b.type !== 'notice') continue;
+    if (
+      b.recoverable ||
+      b.code === 'model_retry' ||
+      b.code === 'model_stream_retry'
+    ) {
+      blocks.splice(i, 1);
+    }
+  }
+}
+
 function pushMessageStart(blocks: AnyBlock[], messageId: string | undefined): void {
+  // Retry succeeded — stream is back; don't leave the retry banner hanging.
+  clearRecoverableNotices(blocks);
   blocks.push({
     type: 'thinking',
     text: '',
@@ -68,6 +85,9 @@ function applyMessageUpdate(
   messageId: string | undefined,
   delta: DeltaPayload
 ): void {
+  // Runtime stream retries resume via model_streaming (no message_start),
+  // so clear the hanging retry banner as soon as tokens arrive again.
+  clearRecoverableNotices(blocks);
   const processed = processThinkBuffer(thinkBuffers, thinkKey, delta);
   appendDeltaToBlocks(blocks, processed, messageId);
 }
@@ -82,6 +102,8 @@ function applyMessageEnd(
 }
 
 function pushToolStart(blocks: AnyBlock[], callId: string, name: string, args?: unknown): void {
+  // Stream may resume with a tool call instead of text after a retry.
+  clearRecoverableNotices(blocks);
   // Upgrade an existing preparing placeholder when possible.
   const preparingIdx = blocks.findIndex((b) => {
     if (b.type !== 'tool' || b.phase !== 'preparing') return false;
@@ -484,6 +506,7 @@ export function handleAgentEnd(state: ChatState, sessionId: string): void {
   for (const entry of state.entries[sessionId]) {
     if (entry.type === 'turn' && !entry.endTime) {
       entry.endTime = Date.now();
+      if (entry.blocks) clearRecoverableNotices(entry.blocks);
       stopDanglingSubagents(state.subagents[sessionId], entry);
     }
   }
@@ -494,6 +517,7 @@ export function handleError(state: ChatState, sessionId: string, errorText: stri
   const turn = getActiveTurn(state, sessionId);
   if (turn && turn.type === 'turn' && turn.blocks) {
     closeStreamingBlock(turn.blocks);
+    clearRecoverableNotices(turn.blocks);
     stopDanglingSubagents(state.subagents[sessionId], turn);
     const lastBlock = turn.blocks[turn.blocks.length - 1];
     if (lastBlock && lastBlock.type === 'error') {
@@ -520,6 +544,7 @@ export function handleNotice(
   message: string,
   code?: string,
   severity?: string,
+  recoverable?: boolean,
 ): void {
   const turn = getActiveTurn(state, sessionId);
   if (turn && turn.type === 'turn' && turn.blocks) {
@@ -530,12 +555,12 @@ export function handleNotice(
       for (let i = turn.blocks.length - 1; i >= 0; i--) {
         const block = turn.blocks[i];
         if (block.type === 'notice' && block.code === code) {
-          turn.blocks[i] = { type: 'notice', text: message, code, severity };
+          turn.blocks[i] = { type: 'notice', text: message, code, severity, recoverable };
           return;
         }
       }
     }
-    turn.blocks.push({ type: 'notice', text: message, code, severity });
+    turn.blocks.push({ type: 'notice', text: message, code, severity, recoverable });
   }
 }
 
@@ -543,6 +568,7 @@ export function handleTurnEnded(state: ChatState, sessionId: string): void {
   const turn = getActiveTurn(state, sessionId);
   if (turn && turn.type === 'turn' && turn.blocks) {
     closeStreamingBlock(turn.blocks);
+    clearRecoverableNotices(turn.blocks);
     for (const b of turn.blocks) {
       if (b.type === 'tool' && b.active) {
         b.active = false;
@@ -941,6 +967,7 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
         typeof ev.message === 'string' ? ev.message : ev.code ?? 'runtime notice',
         ev.code,
         ev.severity,
+        ev.recoverable,
       );
       break;
     case 'subagent_started':

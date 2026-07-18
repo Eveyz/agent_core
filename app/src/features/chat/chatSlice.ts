@@ -577,66 +577,6 @@ export const chatSlice = createSlice({
         }
       }
     },
-    retryFromEntry: (state, action: PayloadAction<{ sessionId: string; id: string; text?: string }>) => {
-      const sid = action.payload.sessionId;
-      ensureSession(state, sid);
-
-      const entries = state.entries[sid];
-      const entryId = action.payload.id;
-      const idx = entries.findIndex((e) => e.id === entryId);
-      if (idx === -1) return;
-      const original = entries[idx];
-      const userText = action.payload.text ?? original.text ?? '';
-      const originalModel = original.model;
-      const originalPromptId = original.promptId;
-      entries.splice(idx);
-      if (originalPromptId) {
-        const promptIdx = state.allPrompts[sid].findIndex((p) => p.id === originalPromptId);
-        if (promptIdx !== -1) {
-          state.allPrompts[sid].splice(promptIdx);
-        }
-      }
-      const promptId = `retry-prompt-${Date.now()}-${Math.random()}`;
-      entries.push({
-        id: `user-${crypto.randomUUID()}`,
-        type: 'user',
-        promptId,
-        text: userText,
-        model: originalModel,
-      });
-      state.allPrompts[sid].push({
-        id: promptId,
-        session_id: sid,
-        turn_index: state.allPrompts[sid].length,
-        model: originalModel ?? '',
-        status: 'running',
-        token_usage: {},
-        started_at: new Date().toISOString(),
-        ended_at: null,
-        created_at: new Date().toISOString(),
-        messages: [{
-          role: 'user',
-          content: userText,
-          model: originalModel,
-        }],
-      });
-      state.visiblePromptsCount[sid] = Math.min(
-        state.allPrompts[sid].length,
-        state.visiblePromptsCount[sid] + 1,
-      );
-      state.processing[sid] = true;
-      state._resumedFromBackend[sid] = false;
-      markDirty(state, sid);
-
-      state.entries[sid].push({
-        id: `turn-pending-${Date.now()}`,
-        type: 'turn',
-        promptId,
-        turnIndex: state.allPrompts[sid].length - 1,
-        blocks: [],
-        startTime: Date.now(),
-      });
-    },
     sendFailed: (state, action: PayloadAction<{ sessionId: string; error: string }>) => {
       const sid = action.payload.sessionId;
       ensureSession(state, sid);
@@ -845,7 +785,6 @@ export const {
   clearChat,
   agentAborted,
   loadMorePrompts,
-  retryFromEntry,
   sendFailed,
   runIdSet,
   runStateChanged,

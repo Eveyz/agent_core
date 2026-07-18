@@ -4,10 +4,6 @@ import {
   resumeSession,
   setActiveSession,
 } from '../features/project/projectSlice';
-import { setDefaultModel } from '../features/settings/settingsSlice';
-
-/** Session placeholders stored before a real model is chosen; don't overwrite global default. */
-const PLACEHOLDER_SESSION_MODELS = new Set(['default', 'unknown']);
 
 interface UseSessionLoaderProps {
   projectsLoaded: boolean;
@@ -40,11 +36,8 @@ export function useSessionLoader({
       if (!resumeSession.fulfilled.match(result)) {
         dispatch(setActiveSession(null));
       } else {
-        const modelUsed = result.payload.meta.model_used;
-        if (modelUsed && !PLACEHOLDER_SESSION_MODELS.has(modelUsed)) {
-          dispatch(setDefaultModel(modelUsed));
-        }
-        // Scroll to bottom after session is loaded from backend
+        // Keep the global default_model (cross-session). Per-prompt models are
+        // already restored on each message; do not overwrite the input selector.
         setTimeout(() => scrollToBottom('auto'), 150);
       }
     });

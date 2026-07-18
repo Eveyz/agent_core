@@ -35,6 +35,7 @@ import { SkillSelector } from './SkillSelector';
 import ModeSelector from './ModeSelector';
 import { useAutocomplete } from '../../hooks/useAutocomplete';
 import { useGitBranch } from '../../hooks/useGitBranch';
+import { useSessionDraft } from '../../hooks/useSessionDraft';
 import { useTokenCount, useTurnCount, useCacheHitRate } from '../../hooks/useTokenCount';
 import type { SkillManifest } from '../../features/chat/types';
 import '../../styles/skill-selector.css';
@@ -60,7 +61,6 @@ export const ChatInput = memo(function ChatInput({
   disabledMessage?: string;
   pendingSteerCount?: number;
 }) {
-  const [input, setInput] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const overlayRef = useRef<HTMLPreElement>(null);
   const isComposingRef = useRef(false);
@@ -73,6 +73,8 @@ export const ChatInput = memo(function ChatInput({
   const projects = useSelector((state: RootState) => state.project.projects);
   const activeProject = projects.find((p) => p.id === activeProjectId);
   const steerQueue = useSelector((state: RootState) => state.chat.steerQueue[state.project.activeSessionId ?? '']);
+
+  const { input, setInput, clearDraft } = useSessionDraft(activeSessionId);
 
   const {
     showAutocomplete,
@@ -113,16 +115,16 @@ export const ChatInput = memo(function ChatInput({
     // /btw and /learn bypass the isProcessing gate (side-channel, parallel with the main run)
     if (trimmed === '/btw' || trimmed.startsWith('/btw ')) {
       const question = trimmed === '/btw' ? '' : trimmed.slice(5).trim();
-      if (question) { setInput(''); onBtwQuery?.(question); closeAutocomplete(); }
+      if (question) { clearDraft(); onBtwQuery?.(question); closeAutocomplete(); }
       return;
     }
 
 
     if (isProcessing) return;
-    setInput('');
+    clearDraft();
     onSend(trimmed);
     closeAutocomplete();
-  }, [input, isProcessing, onSend, onBtwQuery, closeAutocomplete]);
+  }, [input, isProcessing, onSend, onBtwQuery, closeAutocomplete, clearDraft]);
 
   const handleAbort = useCallback(() => {
     onAbort();
@@ -172,7 +174,7 @@ export const ChatInput = memo(function ChatInput({
           const trimmed = input.trim();
           if (trimmed) {
             onSteer(trimmed);
-            setInput('');
+            clearDraft();
             closeAutocomplete();
           }
         } else {
@@ -180,7 +182,7 @@ export const ChatInput = memo(function ChatInput({
         }
       }
     },
-    [handleAutocompleteKeydown, handleMentionBackspace, handleSend]
+    [handleAutocompleteKeydown, handleMentionBackspace, handleSend, isProcessing, onSteer, input, clearDraft, closeAutocomplete]
   );
 
   const onChange = useCallback(
@@ -331,7 +333,7 @@ export const ChatInput = memo(function ChatInput({
                 {onSteer && input.trim() && (
                   <button
                     className="send-btn steer-send-btn"
-                    onClick={() => { onSteer(input.trim()); setInput(''); }}
+                    onClick={() => { onSteer(input.trim()); clearDraft(); }}
                     title="Steer — inject this message mid-run"
                   >
                     <SendIcon size={14} />

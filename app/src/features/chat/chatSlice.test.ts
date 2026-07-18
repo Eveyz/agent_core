@@ -14,7 +14,6 @@ async function loadModules() {
     reducer: chat.default as Reducer<ChatState, AnyAction>,
     agentEventsBatch: chat.agentEventsBatch,
     loadMorePrompts: chat.loadMorePrompts,
-    retryFromEntry: chat.retryFromEntry,
     runIdSet: chat.runIdSet,
     userMessageSent: chat.userMessageSent,
     toolApprovalResponded: chat.toolApprovalResponded,
@@ -274,8 +273,8 @@ describe('chat reducer session routing', () => {
     expect(state.btwEntries.s2[0].question).toBe('q2');
   });
 
-  it('retryFromEntry truncates entries and prompts at the retried user message', async () => {
-    const { reducer, userMessageSent, runIdSet, retryFromEntry } = await loadModules();
+  it('retry appends a new user message without truncating history', async () => {
+    const { reducer, userMessageSent, runIdSet } = await loadModules();
     let state = reducer(undefined, { type: '@@INIT' });
     state = reducer(state, userMessageSent({ text: 'one', model: 'm1', sessionId: 's1' }));
     state = reducer(state, runIdSet({ runId: 'run-1', sessionId: 's1', promptId: 'prompt-1' }));
@@ -283,12 +282,13 @@ describe('chat reducer session routing', () => {
     state.entries.s1.push({ id: 'turn-prompt-1', type: 'turn', promptId: 'prompt-1', blocks: [{ type: 'assistant', text: 'old answer', isStreaming: false }] });
     state = reducer(state, userMessageSent({ text: 'two', model: 'm2', sessionId: 's1' }));
 
-    state = reducer(state, retryFromEntry({ sessionId: 's1', id: 'user-prompt-1', text: 'edited one' }));
+    // Retry is append-only: re-send the earlier prompt as a new user message.
+    state = reducer(state, userMessageSent({ text: 'edited one', model: 'm1', sessionId: 's1' }));
 
-    expect(state.entries.s1.map((e) => e.text ?? e.type)).toEqual(['edited one', 'turn']);
-    expect(state.entries.s1[0].model).toBe('m1');
-    expect(state.allPrompts.s1).toHaveLength(1);
-    expect(state.allPrompts.s1[0].messages[0].content).toBe('edited one');
+    const userTexts = state.entries.s1.filter((e) => e.type === 'user').map((e) => e.text);
+    expect(userTexts).toEqual(['one', 'two', 'edited one']);
+    expect(state.allPrompts.s1).toHaveLength(3);
+    expect(state.allPrompts.s1.at(-1)?.messages[0].content).toBe('edited one');
   });
 
   it('runIdSet binds prompt identity from backend promptId, never from runId', async () => {
@@ -464,7 +464,87 @@ describe('runtime notice and error events', () => {
       type: 'notice',
       code: 'model_retry',
       text: 'Failed to connect to remote model (stream failed), retrying in 4s (attempt 3/5)',
+      recoverable: true,
     });
+  });
+
+  it('clears recoverable model_retry notice once the stream resumes', async () => {
+    const { reducer, userMessageSent, runIdSet, agentEventsBatch } = await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, userMessageSent({ text: 'hello', model: 'm1', sessionId: 's1' }));
+    state = reducer(state, runIdSet({ runId: 'run-1', sessionId: 's1' }));
+
+    state = reducer(
+      state,
+      agentEventsBatch([
+        { event: 'turn_started', run_id: 'run-1', turn_id: 'turn-1', index: 0 },
+        {
+          event: 'notice',
+          run_id: 'run-1',
+          turn_id: 'turn-1',
+          code: 'model_retry',
+          severity: 'warning',
+          recoverable: true,
+          message: 'Failed to connect to remote model (stream failed), retrying in 2s (attempt 2/5)',
+        },
+        {
+          event: 'message_start',
+          run_id: 'run-1',
+          turn_id: 'turn-1',
+          message_id: 'msg-1',
+        },
+      ]),
+    );
+
+    const turn = state.entries.s1.find((e) => e.type === 'turn');
+    expect(turn?.blocks?.some((b) => b.type === 'notice')).toBe(false);
+    expect(turn?.blocks?.some((b) => b.type === 'thinking')).toBe(true);
+  });
+
+  it('clears recoverable model_stream_retry notice when model_streaming resumes', async () => {
+    const { reducer, userMessageSent, runIdSet, agentEventsBatch } = await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, userMessageSent({ text: 'hello', model: 'm1', sessionId: 's1' }));
+    state = reducer(state, runIdSet({ runId: 'run-1', sessionId: 's1' }));
+
+    state = reducer(
+      state,
+      agentEventsBatch([
+        { event: 'turn_started', run_id: 'run-1', turn_id: 'turn-1', index: 0 },
+        {
+          event: 'model_streaming',
+          run_id: 'run-1',
+          turn_id: 'turn-1',
+          message_id: 'msg-1',
+          delta: { Text: 'partial before drop' },
+        },
+        {
+          event: 'notice',
+          run_id: 'run-1',
+          turn_id: 'turn-1',
+          code: 'model_stream_retry',
+          severity: 'warning',
+          recoverable: true,
+          message:
+            'Failed to connect to remote model (stream failed), retrying in 1s (attempt 1/5)',
+        },
+        {
+          event: 'model_streaming',
+          run_id: 'run-1',
+          turn_id: 'turn-1',
+          message_id: 'msg-2',
+          delta: { Text: 'resumed after retry' },
+        },
+      ]),
+    );
+
+    const turn = state.entries.s1.find((e) => e.type === 'turn');
+    expect(turn?.blocks?.some((b) => b.type === 'notice')).toBe(false);
+    expect(
+      turn?.blocks?.some(
+        (b) => b.type === 'assistant' && b.text.includes('resumed after retry'),
+      ),
+    ).toBe(true);
   });
 
   it('clears processing on terminal Error events', async () => {

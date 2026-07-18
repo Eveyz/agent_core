@@ -64,7 +64,7 @@ export type TurnBlock =
       answers?: ClarificationAnswers;
     }
   | { type: 'error'; text: string }
-  | { type: 'notice'; text: string; code?: string; severity?: string }
+  | { type: 'notice'; text: string; code?: string; severity?: string; recoverable?: boolean }
   | { type: 'subagent_ref'; subagent_id: string; parent_call_id?: string };
 
 /** Same shape as TurnBlock, minus nested `subagent_ref` (subagents don't spawn further). */
@@ -82,7 +82,7 @@ export type SubagentBlock =
       answers?: ClarificationAnswers;
     }
   | { type: 'error'; text: string }
-  | { type: 'notice'; text: string; code?: string; severity?: string };
+  | { type: 'notice'; text: string; code?: string; severity?: string; recoverable?: boolean };
 
 export interface SubagentEntry {
   id: string;
