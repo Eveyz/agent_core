@@ -150,47 +150,20 @@ impl ModelConfig {
             .unwrap_or_else(|| ApiMode::infer(&self.base_url, &self.model_id))
     }
 
-    pub fn auto_detect_max_context_tokens(&mut self) {
-        let model_lower = self.model_id.to_lowercase();
-        if self.max_context_tokens == 128000 {
-            if model_lower.contains("deepseek") {
-                self.max_context_tokens = 64000;
-            } else if model_lower.contains("claude") {
-                self.max_context_tokens = 200000;
-            } else if model_lower.contains("gemini") {
-                if model_lower.contains("flash") {
-                    self.max_context_tokens = 1000000;
-                } else if model_lower.contains("pro") {
-                    self.max_context_tokens = 2000000;
-                } else {
-                    self.max_context_tokens = 1000000;
-                }
-            } else if model_lower.contains("o1") || model_lower.contains("o3") {
-                self.max_context_tokens = 200000;
-            } else if model_lower.contains("llama-3") || model_lower.contains("llama3") {
-                if model_lower.contains("llama-3-") || model_lower.contains("llama-3.1") || model_lower.contains("llama3.1") {
-                    self.max_context_tokens = 128000;
-                } else {
-                    self.max_context_tokens = 8192;
-                }
-            } else if model_lower.contains("llama-2") || model_lower.contains("llama2") {
-                self.max_context_tokens = 4096;
-            } else if model_lower.contains("gpt-4") {
-                if model_lower.contains("gpt-4-32k") {
-                    self.max_context_tokens = 32768;
-                } else if model_lower.contains("gpt-4o") || model_lower.contains("gpt-4-turbo") || model_lower.contains("gpt-4-1106") || model_lower.contains("gpt-4-0125") {
-                    self.max_context_tokens = 128000;
-                } else {
-                    self.max_context_tokens = 8192;
-                }
-            } else if model_lower.contains("gpt-3.5") {
-                if model_lower.contains("16k") {
-                    self.max_context_tokens = 16384;
-                } else {
-                    self.max_context_tokens = 4096;
-                }
-            }
+    /// Fill context / max_output from the curated model capability registry when
+    /// the config is still at the provider default (or max_tokens is unset).
+    pub fn apply_capability_defaults(&mut self) {
+        self.max_context_tokens =
+            crate::model_capabilities::resolve_context_tokens(&self.model_id, self.max_context_tokens);
+        if self.max_tokens.is_none() {
+            self.max_tokens =
+                crate::model_capabilities::resolve_max_output_tokens(&self.model_id, None);
         }
+    }
+
+    /// Backward-compatible alias — prefer `apply_capability_defaults`.
+    pub fn auto_detect_max_context_tokens(&mut self) {
+        self.apply_capability_defaults();
     }
 }
 
@@ -902,7 +875,8 @@ gpt = { model_id = "gpt-4o-mini" }
         let model = config.get_model("openai/gpt").unwrap();
         assert_eq!(model.max_context_tokens, 128000);
         assert_eq!(model.temperature, None);
-        assert_eq!(model.max_tokens, None);
+        // Registry fills default max_output when unset
+        assert_eq!(model.max_tokens, Some(16_384));
         assert!(model.react_enabled);
         assert_eq!(model.max_iterations, 50);
         assert_eq!(model.system_prompt, None);

@@ -809,6 +809,28 @@ async fn switch_model(state: State<'_, AppState>, name: String) -> Result<(), St
 }
 
 #[tauri::command]
+async fn get_context_usage(
+    state: State<'_, AppState>,
+    session_id: Option<String>,
+    run_id: Option<String>,
+) -> Result<agent_core::ContextUsageSnapshot, String> {
+    let manager = state.run_manager.lock().await;
+    if let Some(rid) = run_id.as_deref() {
+        if let Some(snap) = manager.context_usage_for_run(rid).await {
+            return Ok(snap);
+        }
+    }
+    if let Some(sid) = session_id.as_deref() {
+        if let Some(snap) = manager.context_usage_for_session(sid).await {
+            return Ok(snap);
+        }
+    }
+    Ok(agent_core::ContextUsageSnapshot::empty(
+        manager.current_max_context_tokens(),
+    ))
+}
+
+#[tauri::command]
 async fn set_mode(state: State<'_, AppState>, mode: String) -> Result<(), String> {
     let agent_mode = match mode.as_str() {
         "ask" => AgentMode::Ask,
@@ -2254,7 +2276,7 @@ pub fn run() {
             btw_query,
             pause_run, resume_run, steer_run, cancel_steer, get_run_state,
             list_directory, search_files,
-            get_config, save_config, switch_model, set_mode, get_mode,
+            get_config, save_config, switch_model, get_context_usage, set_mode, get_mode,
             create_session, delete_session, rename_session,
             retry_session_from_prompt, resume_session,
             list_projects, create_project, create_new_project, get_documents_dir, get_default_project_path,

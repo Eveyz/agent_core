@@ -103,6 +103,49 @@
       "approvalRequired": "Approval Required",
       "viewDetails": "View Details"
     },
+    "modelSelector": {
+      "selectModel": "Select model",
+      "searchPlaceholder": "Search models...",
+      "noModels": "No models found",
+      "noOptions": "No adjustable options for this model",
+      "options": "Options",
+      "thinking": "Thinking",
+      "fast": "Fast",
+      "context": "Context",
+      "effort": "Effort",
+      "thinkBadge": "Think",
+      "saving": "Saving...",
+      "effortLevels": {
+        "low": "Low",
+        "medium": "Medium",
+        "high": "High",
+        "xhigh": "Extra High",
+        "max": "Max"
+      }
+    },
+    "contextUsage": {
+      "title": "Context Usage",
+      "close": "Close",
+      "percentFull": "{{pct}}% Full",
+      "tokenCounts": "~{{used}} / {{max}} Tokens",
+      "loading": "Loading…",
+      "empty": "No context loaded yet — start a conversation",
+      "ariaLabel": "Context usage {{pct}}%",
+      "titleHint": "{{pct}}% · {{used}} / {{max}}",
+      "segments": {
+        "system": "System prompt",
+        "tools": "Tool definitions",
+        "rules": "Rules / memory",
+        "skills": "Skills",
+        "plan": "Plan",
+        "environment": "Environment",
+        "conversation": "Conversation"
+      }
+    },
+    "stats": {
+      "turns": "{{count}} turns",
+      "cacheHit": "Cache hit: {{pct}}%"
+    },
     "tools": {
       "input": "INPUT",
       "output": "OUTPUT",

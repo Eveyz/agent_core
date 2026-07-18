@@ -103,6 +103,49 @@
       "approvalRequired": "需要审批",
       "viewDetails": "查看详情"
     },
+    "modelSelector": {
+      "selectModel": "选择模型",
+      "searchPlaceholder": "搜索模型...",
+      "noModels": "未找到模型",
+      "noOptions": "该模型无可调节选项",
+      "options": "选项",
+      "thinking": "思考",
+      "fast": "快速",
+      "context": "上下文",
+      "effort": "力度",
+      "thinkBadge": "思考",
+      "saving": "保存中...",
+      "effortLevels": {
+        "low": "低",
+        "medium": "中",
+        "high": "高",
+        "xhigh": "更高",
+        "max": "最大"
+      }
+    },
+    "contextUsage": {
+      "title": "上下文用量",
+      "close": "关闭",
+      "percentFull": "{{pct}}% 已用",
+      "tokenCounts": "~{{used}} / {{max}} Tokens",
+      "loading": "加载中…",
+      "empty": "暂无上下文 — 开始对话后即可查看",
+      "ariaLabel": "上下文用量 {{pct}}%",
+      "titleHint": "{{pct}}% · {{used}} / {{max}}",
+      "segments": {
+        "system": "系统提示",
+        "tools": "工具定义",
+        "rules": "规则 / 记忆",
+        "skills": "技能",
+        "plan": "计划",
+        "environment": "环境",
+        "conversation": "对话"
+      }
+    },
+    "stats": {
+      "turns": "{{count}} 轮",
+      "cacheHit": "缓存命中: {{pct}}%"
+    },
     "tools": {
       "input": "输入参数",
       "output": "输出结果",

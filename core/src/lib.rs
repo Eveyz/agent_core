@@ -14,6 +14,7 @@ pub mod hygiene;
 pub mod mcp;
 pub mod memory;
 pub mod mode;
+pub mod model_capabilities;
 pub mod paths;
 pub mod permission;
 pub mod project;
@@ -37,12 +38,19 @@ pub use config::{
     ApiMode, Config, MemoryConfig, MemoryMode, ModelConfig, ReflectionConfig, RuntimeOverrides,
     default_config_path, default_scaffold_config, load_or_init_default, resolve_env_value,
 };
-pub use context::{CacheHint, Context, ContextEngine, ContextSegment, RefreshPolicy, Stability};
+pub use context::{
+    CacheHint, Context, ContextEngine, ContextSegment, ContextSegmentUsage, ContextUsageSnapshot,
+    RefreshPolicy, Stability,
+};
 pub use memory::{
     LifecycleReport, MemoryCategory, MemoryManager, MemoryStats, RecallIntent, SalienceConfig,
     SalienceScorer, ScoredRecord,
 };
 pub use mode::AgentMode;
+pub use model_capabilities::{
+    format_context_label, lookup_capabilities, resolve_context_tokens, resolve_max_output_tokens,
+    ModelCapabilities, DEFAULT_CONTEXT_TOKENS,
+};
 pub use tokio_util::sync::CancellationToken;
 pub use tools::{Tool, ToolRegistry, ToolUpdateFn, build_tool_by_name};
 pub use types::{

@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect, memo } from 'react';
 import { useSelector } from 'react-redux';
+import { useTranslation } from 'react-i18next';
 import DOMPurify from 'dompurify';
 import { RootState } from '../../store';
 import SendIcon from 'lucide-react/dist/esm/icons/send.mjs';
@@ -33,10 +34,11 @@ import {
 import { ModelSelector } from './ModelSelector';
 import { SkillSelector } from './SkillSelector';
 import ModeSelector from './ModeSelector';
+import { ContextUsagePopover } from './ContextUsagePopover';
 import { useAutocomplete } from '../../hooks/useAutocomplete';
 import { useGitBranch } from '../../hooks/useGitBranch';
 import { useSessionDraft } from '../../hooks/useSessionDraft';
-import { useTokenCount, useTurnCount, useCacheHitRate } from '../../hooks/useTokenCount';
+import { useTurnCount, useCacheHitRate } from '../../hooks/useTokenCount';
 import type { SkillManifest } from '../../features/chat/types';
 import '../../styles/skill-selector.css';
 
@@ -309,6 +311,7 @@ export const ChatInput = memo(function ChatInput({
             />
           </div>
           <div className="input-actions-right">
+            <ContextUsagePopover />
             {isProcessing ? (
               <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
                 {pendingSteerCount > 0 && (
@@ -411,15 +414,14 @@ export const ChatInput = memo(function ChatInput({
 });
 
 const ChatStats = memo(function ChatStats() {
-  const tokenCount = useTokenCount();
+  const { t } = useTranslation();
   const turnCount = useTurnCount();
   const cacheHitRate = useCacheHitRate();
   return (
     <>
-      <span>{tokenCount >= 1000 ? `${(tokenCount / 1000).toFixed(1)}k` : tokenCount} tokens</span>
-      <span>{turnCount} turns</span>
+      <span>{t('chat.stats.turns', { count: turnCount })}</span>
       {cacheHitRate !== null && (
-        <span>Cache hit: {Math.round(cacheHitRate * 100)}%</span>
+        <span>{t('chat.stats.cacheHit', { pct: Math.round(cacheHitRate * 100) })}</span>
       )}
     </>
   );

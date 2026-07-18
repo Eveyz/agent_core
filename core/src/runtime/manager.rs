@@ -36,6 +36,7 @@ use crate::runtime::state::RunState;
 use crate::session::SessionManager;
 use crate::worktree::WorktreeManager;
 use crate::types::Message;
+use crate::context::ContextUsageSnapshot;
 
 /// Capacity for the event broadcast channel per Run.
 const EVENT_CHANNEL_CAPACITY: usize = 1024;
@@ -79,6 +80,8 @@ pub struct RunHandle {
     pub cancel_token: CancellationToken,
     /// Shared context snapshot (refreshed by the Run at turn boundaries).
     context_snapshot: Arc<RwLock<Vec<Message>>>,
+    /// Shared context usage breakdown (refreshed with context_snapshot).
+    usage_snapshot: Arc<RwLock<ContextUsageSnapshot>>,
 }
 
 impl RunHandle {
@@ -109,6 +112,11 @@ impl RunHandle {
     /// Used by side-channel `/btw` queries that must not touch the main Run.
     pub fn context_snapshot(&self) -> Vec<Message> {
         self.context_snapshot.read().clone()
+    }
+
+    /// Best-effort read-only context usage breakdown.
+    pub fn usage_snapshot(&self) -> ContextUsageSnapshot {
+        self.usage_snapshot.read().clone()
     }
 
     /// Wait for the Run's task to complete.
@@ -183,6 +191,37 @@ impl RunManager {
             .await
             .get(run_id)
             .map(RunHandle::context_snapshot)
+    }
+
+    /// Context usage for a session's most recent active run, if any.
+    pub async fn context_usage_for_session(
+        &self,
+        session_id: &str,
+    ) -> Option<ContextUsageSnapshot> {
+        let runs = self.runs.lock().await;
+        for handle in runs.values() {
+            if handle.session_id.as_deref() == Some(session_id) {
+                return Some(handle.usage_snapshot());
+            }
+        }
+        None
+    }
+
+    /// Context usage for a specific run.
+    pub async fn context_usage_for_run(&self, run_id: &str) -> Option<ContextUsageSnapshot> {
+        let runs = self.runs.lock().await;
+        runs.get(run_id).map(RunHandle::usage_snapshot)
+    }
+
+    /// Resolved max context for the current default model (registry-aware).
+    pub fn current_max_context_tokens(&self) -> usize {
+        let brain = self.brain();
+        let name = &brain.config.default_model;
+        brain
+            .config
+            .get_model(name)
+            .map(|m| m.max_context_tokens)
+            .unwrap_or(crate::model_capabilities::DEFAULT_CONTEXT_TOKENS)
     }
 
     /// The current agent mode. New Runs inherit this mode.
@@ -271,6 +310,8 @@ impl RunManager {
 
         // Shared context snapshot for side-channel `/btw` queries.
         let context_snapshot = Arc::new(RwLock::new(Vec::<Message>::new()));
+        let max_ctx = model_config.max_context_tokens;
+        let usage_snapshot = Arc::new(RwLock::new(ContextUsageSnapshot::empty(max_ctx)));
 
         // Create the Run
         let run = match Run::new(
@@ -285,6 +326,7 @@ impl RunManager {
             history,
             mode,
             context_snapshot.clone(),
+            usage_snapshot.clone(),
             initial_goal,
             initial_goal_completed,
         ) {
@@ -535,6 +577,7 @@ impl RunManager {
             input_resolver,
             cancel_token,
             context_snapshot,
+            usage_snapshot,
         };
 
         self.runs.lock().await.insert(run_id.clone(), handle);

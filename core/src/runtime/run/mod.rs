@@ -49,6 +49,7 @@ use parking_lot::{Mutex, RwLock};
 use crate::client::OpenAIClient;
 use crate::config::ModelConfig;
 use crate::context::ContextEngine as Context;
+use crate::context::ContextUsageSnapshot;
 use crate::context_processor::ContextProcessor;
 use crate::error_recovery::{RecoveryContext, RecoveryEngine};
 use crate::hooks::HookRegistry;
@@ -190,6 +191,9 @@ pub struct Run {
     /// Shared, read-only context snapshot for side-channel `/btw` queries.
     /// Refreshed at turn boundaries; read via `RunHandle::context_snapshot()`.
     context_snapshot: Arc<RwLock<Vec<Message>>>,
+
+    /// Shared context usage breakdown for the Context Usage popover.
+    usage_snapshot: Arc<RwLock<ContextUsageSnapshot>>,
 }
 
 impl Run {
@@ -206,6 +210,7 @@ impl Run {
         history: Vec<crate::types::Message>,
         mode: AgentMode,
         context_snapshot: Arc<RwLock<Vec<Message>>>,
+        usage_snapshot: Arc<RwLock<ContextUsageSnapshot>>,
         initial_goal: Option<String>,
         initial_goal_completed: bool,
     ) -> anyhow::Result<Self> {
@@ -326,6 +331,11 @@ impl Run {
         });
 
         crate::runtime::approval::register_run_resolver(&id, approval_resolver.clone());
+
+        // Seed shared snapshots so Context Usage / btw work before the first turn.
+        *context_snapshot.write() = context.raw_messages().to_vec();
+        *usage_snapshot.write() = context.usage_snapshot();
+
         Ok(Self {
             id,
             session_id,
@@ -363,6 +373,7 @@ impl Run {
             session_snapshot_path,
             session_snapshot_gen: Arc::new(AtomicU64::new(0)),
             context_snapshot,
+            usage_snapshot,
             goal: initial_goal,
             goal_completed: initial_goal_completed,
             goal_continue_nudges: 0,
@@ -394,6 +405,7 @@ impl Run {
         // context injection and the synthetic system prefix are reconstructed
         // per turn and must never be written back as conversation history.
         *self.context_snapshot.write() = self.context.raw_messages().to_vec();
+        *self.usage_snapshot.write() = self.context.usage_snapshot();
     }
 
     /// Todo list for this Run's session (isolated from other sessions).

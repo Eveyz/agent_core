@@ -236,6 +236,79 @@ export const switchModel = createAsyncThunk(
   }
 );
 
+export type ModelSettingPatch = {
+  thinking_enabled?: boolean;
+  reasoning_effort?: string | null;
+  max_context_tokens?: number;
+  max_tokens?: number;
+};
+
+/** Patch a provider model entry and persist to config (chat menu / settings). */
+export const updateModelSettings = createAsyncThunk(
+  'settings/updateModelSettings',
+  async (
+    {
+      modelKey,
+      patch,
+      currentConfig,
+      alsoSwitch = false,
+    }: {
+      modelKey: string;
+      patch: ModelSettingPatch;
+      currentConfig: AppConfig;
+      alsoSwitch?: boolean;
+    },
+    { rejectWithValue }
+  ) => {
+    const slash = modelKey.indexOf('/');
+    if (slash < 0) return rejectWithValue('Invalid model key');
+    const providerKey = modelKey.slice(0, slash);
+    const entryKey = modelKey.slice(slash + 1);
+    const provider = currentConfig.providers[providerKey];
+    if (!provider?.models[entryKey]) return rejectWithValue('Model not found');
+
+    const prev = provider.models[entryKey];
+    const nextEntry: ProviderModelEntry = {
+      ...prev,
+      ...(patch.thinking_enabled !== undefined
+        ? { thinking_enabled: patch.thinking_enabled }
+        : {}),
+      ...(patch.reasoning_effort !== undefined
+        ? { reasoning_effort: patch.reasoning_effort ?? undefined }
+        : {}),
+      ...(patch.max_context_tokens !== undefined
+        ? { max_context_tokens: patch.max_context_tokens }
+        : {}),
+      ...(patch.max_tokens !== undefined ? { max_tokens: patch.max_tokens } : {}),
+    };
+
+    const newConfig: AppConfig = {
+      ...currentConfig,
+      default_model: alsoSwitch ? modelKey : currentConfig.default_model,
+      providers: {
+        ...currentConfig.providers,
+        [providerKey]: {
+          ...provider,
+          models: {
+            ...provider.models,
+            [entryKey]: nextEntry,
+          },
+        },
+      },
+    };
+
+    try {
+      await invoke('save_config', { config: newConfig });
+      if (alsoSwitch || modelKey === currentConfig.default_model) {
+        await invoke('switch_model', { name: modelKey });
+      }
+      return newConfig;
+    } catch (e) {
+      return rejectWithValue(String(e));
+    }
+  }
+);
+
 export const settingsSlice = createSlice({
   name: 'settings',
   initialState,
@@ -344,6 +417,18 @@ export const settingsSlice = createSlice({
       })
       .addCase(switchModel.fulfilled, (state, action) => {
         state.config = action.payload;
+      })
+      .addCase(updateModelSettings.pending, (state) => {
+        state.saving = true;
+        state.error = null;
+      })
+      .addCase(updateModelSettings.fulfilled, (state, action) => {
+        state.saving = false;
+        state.config = action.payload;
+      })
+      .addCase(updateModelSettings.rejected, (state, action) => {
+        state.saving = false;
+        state.error = action.payload as string;
       });
   },
 });

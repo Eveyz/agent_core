@@ -1,0 +1,172 @@
+/* Context Usage ring + popover (input toolbar right) */
+
+.context-usage-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.context-usage-ring-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-xs, 4px);
+  cursor: pointer;
+  color: var(--text-muted);
+}
+
+.context-usage-ring-btn:hover {
+  background: var(--bg-hover, var(--overlay-0_04));
+  color: var(--text-main);
+}
+
+.context-usage-ring {
+  display: block;
+}
+
+/* Theme-aware track — never hardcode white overlays (invisible in light mode). */
+.context-usage-ring-track {
+  stroke: var(--border-color, var(--text-dim));
+  opacity: 0.85;
+}
+
+.context-usage-ring-fill {
+  transition: stroke-dashoffset 0.35s ease, stroke 0.2s ease;
+}
+
+.context-usage-popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  width: 280px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 32px var(--shadow-xl);
+  z-index: 120;
+  padding: 12px 14px 14px;
+  animation: slide-up 0.15s ease;
+}
+
+.context-usage-popover-right {
+  right: 0;
+  left: auto;
+}
+
+.context-usage-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-main);
+  margin-bottom: 10px;
+}
+
+.context-usage-close {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.context-usage-close:hover {
+  color: var(--text-main);
+}
+
+.context-usage-summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.context-usage-pct {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.context-usage-counts {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.context-usage-bar {
+  display: flex;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--overlay-0_06, rgba(255, 255, 255, 0.06));
+  margin-bottom: 12px;
+}
+
+.context-usage-bar-empty {
+  width: 100%;
+  height: 100%;
+}
+
+.context-usage-bar-seg {
+  height: 100%;
+  min-width: 2px;
+}
+
+.context-usage-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.context-usage-legend-empty {
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 4px 0;
+}
+
+.context-usage-legend-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-main);
+}
+
+.context-usage-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.context-usage-legend-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-usage-legend-tokens {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+:root {
+  --ctx-seg-system: #8b8b8b;
+  --ctx-seg-tools: #a78bfa;
+  --ctx-seg-rules: #4ade80;
+  --ctx-seg-skills: #fbbf24;
+  --ctx-seg-plan: #60a5fa;
+  --ctx-seg-env: #67e8f9;
+  --ctx-seg-conversation: #f87171;
+}

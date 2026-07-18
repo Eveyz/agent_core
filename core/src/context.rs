@@ -30,7 +30,45 @@
 
 use crate::compressor::{CompressionResult, Compressor, SummarizeRequest};
 use crate::types::Message;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+/// One aggregated bucket for the Context Usage UI.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextSegmentUsage {
+    /// Stable key for coloring (`system`, `tools`, `rules`, …).
+    pub key: String,
+    /// Human-readable label.
+    pub label: String,
+    pub tokens: usize,
+}
+
+/// Snapshot of context window usage for the chat Context Usage popover.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextUsageSnapshot {
+    pub used_tokens: usize,
+    pub max_context_tokens: usize,
+    pub segments: Vec<ContextSegmentUsage>,
+    pub conversation_tokens: usize,
+}
+
+impl ContextUsageSnapshot {
+    pub fn empty(max_context_tokens: usize) -> Self {
+        Self {
+            used_tokens: 0,
+            max_context_tokens,
+            segments: Vec::new(),
+            conversation_tokens: 0,
+        }
+    }
+
+    pub fn percent_full(&self) -> f64 {
+        if self.max_context_tokens == 0 {
+            return 0.0;
+        }
+        (self.used_tokens as f64 / self.max_context_tokens as f64) * 100.0
+    }
+}
 
 // ── KV Cache hints ────────────────────────────────────────────────────
 
@@ -769,6 +807,61 @@ impl ContextEngine {
         total
     }
 
+    /// Token budget for this engine (model context window).
+    pub fn max_tokens(&self) -> usize {
+        self.max_tokens
+    }
+
+    /// Build a UI-facing usage breakdown (aggregated segment buckets + conversation).
+    pub fn usage_snapshot(&self) -> ContextUsageSnapshot {
+        let seg = |name: &str| -> usize {
+            self.segments
+                .get(name)
+                .map(|s| s.token_estimate())
+                .unwrap_or(0)
+        };
+
+        let system_tokens = seg("identity") + seg("principles");
+        let tools_tokens = seg("tool_catalog");
+        let rules_tokens = seg("active_memory");
+        let skills_tokens = seg("loaded_skills") + seg("skill_catalog");
+        let plan_tokens = seg("execution_plan");
+        let env_tokens = seg("environment");
+        let conversation_tokens: usize = self.messages.iter().map(message_token_count).sum();
+
+        let mut segments = Vec::new();
+        let push = |segments: &mut Vec<ContextSegmentUsage>, key: &str, label: &str, tokens: usize| {
+            if tokens > 0 {
+                segments.push(ContextSegmentUsage {
+                    key: key.to_string(),
+                    label: label.to_string(),
+                    tokens,
+                });
+            }
+        };
+        push(&mut segments, "system", "System prompt", system_tokens);
+        push(&mut segments, "tools", "Tool definitions", tools_tokens);
+        push(&mut segments, "rules", "Rules / memory", rules_tokens);
+        push(&mut segments, "skills", "Skills", skills_tokens);
+        push(&mut segments, "plan", "Plan", plan_tokens);
+        push(&mut segments, "environment", "Environment", env_tokens);
+        push(
+            &mut segments,
+            "conversation",
+            "Conversation",
+            conversation_tokens,
+        );
+
+        let used_tokens = segments.iter().map(|s| s.tokens).sum();
+
+        ContextUsageSnapshot {
+            used_tokens,
+            max_context_tokens: self.max_tokens,
+            segments,
+            conversation_tokens,
+        }
+    }
+
     /// Run Stage 1-3 compression (snip, dedup, chunk).
     /// Does NOT drain messages — the caller is responsible for LLM
     /// summarization (Stage 4) via `prepare_summary()` / `apply_summary()`
@@ -1202,6 +1295,25 @@ mod tests {
         assert_eq!(seg.refresh, RefreshPolicy::Never);
         assert_eq!(seg.stability, Stability::Stable);
         assert!(seg.content.contains("TestBot"));
+    }
+
+    #[test]
+    fn test_usage_snapshot_aggregates_segments() {
+        let mut engine = ContextEngine::new("I am Bot", 200_000);
+        engine.set_principles("Be safe.");
+        engine.set_tool_catalog("read_file — Read a file");
+        engine.set_active_memory("rule: always test");
+        engine.add(Message::user("hello world"));
+
+        let snap = engine.usage_snapshot();
+        assert_eq!(snap.max_context_tokens, 200_000);
+        assert!(snap.used_tokens > 0);
+        assert!(snap.conversation_tokens > 0);
+        let keys: Vec<_> = snap.segments.iter().map(|s| s.key.as_str()).collect();
+        assert!(keys.contains(&"system"));
+        assert!(keys.contains(&"tools"));
+        assert!(keys.contains(&"rules"));
+        assert!(keys.contains(&"conversation"));
     }
 
     #[test]
