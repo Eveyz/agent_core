@@ -607,13 +607,15 @@ impl Run {
 
                     match stream_res {
                         Ok(s) => {
+                            let cancel = self.cancel.clone();
+                            let event_tx = self.event_tx.clone();
                             // Connection is up again. Thinking models can sit
                             // silent for a long time before the first token —
                             // clear the retry banner immediately, don't wait
                             // for model_streaming deltas.
-                            self.emit(RunEvent::ModelCallStarted);
-                            let cancel = self.cancel.clone();
-                            let event_tx = self.event_tx.clone();
+                            // Use wrap+send (&self) rather than emit (&mut self)
+                            // so we don't conflict with the stream borrow.
+                            let _ = event_tx.send(self.wrap(RunEvent::ModelCallStarted));
                             let res = self
                                 .collect_stream(s, &event_tx, &mut attempt_partial)
                                 .await;
