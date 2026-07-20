@@ -433,26 +433,40 @@ export const AgentTurnUI = memo(function AgentTurnUI({
     return Array.from(files.values()).filter(f => f.additions > 0 || f.deletions > 0);
   }, [entry.blocks]);
 
+  // Show duration even when the turn had no tools/thinking — only the timer/summary.
+  const showTurnHeader = hasIntermediateSteps || isProcessing || !!totalTimeText;
+
   return (
     <div className="agent-turn">
-      {(hasIntermediateSteps || isProcessing) && (
+      {showTurnHeader && (
         <>
           <div
-            className={`turn-header ${isProcessing ? 'processing-pulse step-row-default' : 'step-row-pointer'}`}
+            className={`turn-header ${
+              isProcessing
+                ? 'processing-pulse step-row-default'
+                : hasIntermediateSteps
+                  ? 'step-row-pointer'
+                  : 'step-row-default'
+            }`}
             onClick={() => {
-              if (!isProcessing) setCollapsed(!collapsed);
+              if (!isProcessing && hasIntermediateSteps) setCollapsed(!collapsed);
             }}
           >
             {isProcessing ? (
               <>
                 <LoaderIcon className="tool-loader-icon" size={12} />
                 <ProcessingTimer startTime={entry.startTime} endTime={entry.endTime} />
-                <ChevronDownIcon size={12} className="ml-4" />
+                {hasIntermediateSteps && <ChevronDownIcon size={12} className="ml-4" />}
               </>
             ) : (
               <>
                 <span>{t('chat.turn.worked', { summary: summaryParts.join(' · ') })}</span>
-                {collapsed ? <ChevronRightIcon size={12} className="ml-4" /> : <ChevronDownIcon size={12} className="ml-4" />}
+                {hasIntermediateSteps &&
+                  (collapsed ? (
+                    <ChevronRightIcon size={12} className="ml-4" />
+                  ) : (
+                    <ChevronDownIcon size={12} className="ml-4" />
+                  ))}
               </>
             )}
           </div>

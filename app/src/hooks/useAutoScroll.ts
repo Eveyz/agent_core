@@ -1,5 +1,10 @@
 import { useEffect, useRef, useCallback, useState, useLayoutEffect } from 'react';
-import { isNearBottom as isNearBottomMetrics, maxScrollTop as maxScrollTopMetrics, pinnedScrollTop } from './scrollPin';
+import {
+  decideStickAfterScroll,
+  isNearBottom as isNearBottomMetrics,
+  maxScrollTop as maxScrollTopMetrics,
+  pinnedScrollTop,
+} from './scrollPin';
 
 interface UseAutoScrollOptions {
   /** When these change, pin to bottom if stick-to-bottom is enabled (new message, session switch). */
@@ -27,6 +32,10 @@ function isNearBottom(el: HTMLElement): boolean {
  * - Do not infer "user scrolled up" from scrollTop deltas — height shrinks
  *   look identical to scrolling up and falsely disable sticking.
  * - Ignore scroll events caused by our own programmatic pins.
+ * - Keep `isAtBottom` in sync when we pin, so the floating button does not
+ *   stick around after the viewport is already near the bottom.
+ * - Wheel/touch-up releases stick immediately; scroll must not re-stick while
+ *   still in the soft near zone (that felt like "too much gravity" during stream).
  */
 export function useAutoScroll<
   T extends HTMLElement,
@@ -57,19 +66,30 @@ export function useAutoScroll<
     });
   }, []);
 
+  const syncAtBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el || el.clientHeight === 0) return;
+    if (stickToBottom.current && isNearBottom(el)) {
+      setIsAtBottom(true);
+    }
+  }, []);
+
   const pinToBottom = useCallback(() => {
     const el = scrollRef.current;
     if (!el || el.clientHeight === 0) return;
     markProgrammatic();
     el.scrollTop = maxScrollTop(el);
+    setIsAtBottom(true);
   }, [markProgrammatic]);
 
-  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
-    const el = scrollRef.current;
-    if (!el || el.clientHeight === 0) return;
-
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
+    // Always re-enable stick first so a no-op (ref not mounted yet, e.g.
+    // EmptyState → ChatArea) still leaves stick on for the next layout pin.
     stickToBottom.current = true;
     setIsAtBottom(true);
+
+    const el = scrollRef.current;
+    if (!el || el.clientHeight === 0) return;
 
     const top = maxScrollTop(el);
     markProgrammatic();
@@ -82,6 +102,7 @@ export function useAutoScroll<
         if (!scrollRef.current || !stickToBottom.current) return;
         markProgrammatic();
         scrollRef.current.scrollTop = maxScrollTop(scrollRef.current);
+        setIsAtBottom(true);
       });
     }
   }, [markProgrammatic]);
@@ -99,7 +120,10 @@ export function useAutoScroll<
       markProgrammatic();
       el.scrollTop = next;
     }
-  }, [markProgrammatic]);
+    // Pin writes are ignored by the scroll listener (programmatic), so sync
+    // the floating-button flag here whenever we are sticking near bottom.
+    syncAtBottom();
+  }, [markProgrammatic, syncAtBottom]);
 
   // Non-streaming updates (new entry, session switch, stream end): pin once in layout.
   useLayoutEffect(() => {
@@ -147,53 +171,64 @@ export function useAutoScroll<
     const el = scrollRef.current;
     if (!el) return;
 
+    let touchLastY: number | null = null;
+
+    const leaveBottom = () => {
+      stickToBottom.current = false;
+      setIsAtBottom(false);
+    };
+
     const handleScroll = () => {
       if (programmaticScroll.current) return;
-      // Overshoot (scrollTop past max) is a layout artifact, not user intent —
-      // keep sticking and let the pin loop pull us back.
-      if (el.scrollTop > maxScrollTop(el) + 1) return;
-      const near = isNearBottom(el);
-      if (near) {
-        stickToBottom.current = true;
-        setIsAtBottom(true);
-        return;
-      }
-      // During streaming, content can grow faster than the pin frame and briefly
-      // look "not near bottom" — that must not disable stick (blank viewport).
-      // Wheel / touch are the leave-bottom signals while processing.
-      if (!isProcessing) {
-        stickToBottom.current = false;
-      }
-      setIsAtBottom(false);
+      const next = decideStickAfterScroll(
+        el.scrollTop,
+        el.scrollHeight,
+        el.clientHeight,
+        stickToBottom.current,
+        isProcessing,
+      );
+      if (!next) return;
+      stickToBottom.current = next.stickToBottom;
+      setIsAtBottom(next.isAtBottom);
     };
 
     // Wheel up is the reliable "user wants to leave the bottom" signal.
     // Do not use scrollTop deltas — height shrinks look identical to scrolling up.
     const handleWheel = (e: WheelEvent) => {
-      if (e.deltaY < 0) {
-        stickToBottom.current = false;
-        setIsAtBottom(false);
-      }
+      if (e.deltaY < 0) leaveBottom();
     };
 
-    const handleTouchMove = () => {
-      // Touch drag away from bottom is reflected in scroll; if still near bottom, keep sticking.
-      if (programmaticScroll.current) return;
-      if (el.scrollTop > maxScrollTop(el) + 1) return;
-      if (!isNearBottom(el)) {
-        stickToBottom.current = false;
-        setIsAtBottom(false);
-      }
+    const handleTouchStart = (e: TouchEvent) => {
+      touchLastY = e.touches[0]?.clientY ?? null;
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      // Finger moving down → content scrolls up. Release stick immediately;
+      // waiting for the soft threshold fails while the stream pin loop fights.
+      const y = e.touches[0]?.clientY;
+      if (y == null || touchLastY == null) return;
+      if (y - touchLastY > 4) leaveBottom();
+      touchLastY = y;
+    };
+
+    const handleTouchEnd = () => {
+      touchLastY = null;
     };
 
     el.addEventListener('scroll', handleScroll, { passive: true });
     el.addEventListener('wheel', handleWheel, { passive: true });
+    el.addEventListener('touchstart', handleTouchStart, { passive: true });
     el.addEventListener('touchmove', handleTouchMove, { passive: true });
+    el.addEventListener('touchend', handleTouchEnd, { passive: true });
+    el.addEventListener('touchcancel', handleTouchEnd, { passive: true });
 
     return () => {
       el.removeEventListener('scroll', handleScroll);
       el.removeEventListener('wheel', handleWheel);
+      el.removeEventListener('touchstart', handleTouchStart);
       el.removeEventListener('touchmove', handleTouchMove);
+      el.removeEventListener('touchend', handleTouchEnd);
+      el.removeEventListener('touchcancel', handleTouchEnd);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isProcessing, ...deps]);

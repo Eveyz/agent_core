@@ -1,8 +1,24 @@
-/** Distance from the bottom (px) at which we still consider the user "at bottom". */
-export const BOTTOM_THRESHOLD_PX = 40;
+/** Soft zone: hide the jump button / treat as "near bottom" for UI. */
+export const BOTTOM_THRESHOLD_PX = 48;
+
+/**
+ * Must get this close to the bottom before stick re-enables after the user
+ * scrolled away. Larger than this (but still inside BOTTOM_THRESHOLD) must
+ * NOT re-stick — otherwise a wheel-up escape is undone by the next scroll
+ * event while the stream pin loop yanks the viewport back down.
+ */
+export const STICK_REJOIN_PX = 12;
 
 export function maxScrollTop(scrollHeight: number, clientHeight: number): number {
   return Math.max(0, scrollHeight - clientHeight);
+}
+
+export function distanceFromBottom(
+  scrollTop: number,
+  scrollHeight: number,
+  clientHeight: number,
+): number {
+  return maxScrollTop(scrollHeight, clientHeight) - scrollTop;
 }
 
 export function isNearBottom(
@@ -11,7 +27,48 @@ export function isNearBottom(
   clientHeight: number,
   threshold = BOTTOM_THRESHOLD_PX,
 ): boolean {
-  return maxScrollTop(scrollHeight, clientHeight) - scrollTop <= threshold;
+  return distanceFromBottom(scrollTop, scrollHeight, clientHeight) <= threshold;
+}
+
+export type StickScrollDecision = {
+  stickToBottom: boolean;
+  isAtBottom: boolean;
+};
+
+/**
+ * Decide stick / at-bottom flags after a *user* scroll (not programmatic).
+ * Returns null when the event should be ignored (layout overshoot).
+ */
+export function decideStickAfterScroll(
+  scrollTop: number,
+  scrollHeight: number,
+  clientHeight: number,
+  stickToBottom: boolean,
+  isProcessing: boolean,
+): StickScrollDecision | null {
+  const max = maxScrollTop(scrollHeight, clientHeight);
+  // Overshoot is a layout artifact — keep sticking; the pin loop corrects it.
+  if (scrollTop > max + 1) return null;
+
+  const distance = max - scrollTop;
+
+  // Truly docked → rejoin (or stay) stuck.
+  if (distance <= STICK_REJOIN_PX) {
+    return { stickToBottom: true, isAtBottom: true };
+  }
+
+  // Soft near zone: never force stick back on. Preserve an intentional leave
+  // so streaming pins cannot re-capture the user mid-gesture.
+  if (distance <= BOTTOM_THRESHOLD_PX) {
+    return { stickToBottom, isAtBottom: stickToBottom };
+  }
+
+  // Far from bottom. While streaming, only wheel/touch may clear stick —
+  // content can outrun a pin frame and briefly look far.
+  return {
+    stickToBottom: isProcessing ? stickToBottom : false,
+    isAtBottom: false,
+  };
 }
 
 /**

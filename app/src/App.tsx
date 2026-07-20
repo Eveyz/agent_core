@@ -307,7 +307,7 @@ function App() {
       }
 
       dispatch(userMessageSent({ text: msg, model: defaultModel, sessionId }));
-      scrollToBottom();
+      scrollToBottom('auto');
 
       const shouldRename = isNewSession || sessionTitle === 'New Session' || sessionTitle === '';
       if (shouldRename && sessionId && activeProjectId) {
@@ -348,7 +348,7 @@ function App() {
       const model = entry.model ?? defaultModel;
       // Append-only: keep prior turns and send the same (or edited) text as a new prompt.
       dispatch(userMessageSent({ text: msg, model, sessionId: activeSessionId }));
-      scrollToBottom();
+      scrollToBottom('auto');
 
       try {
         const result = await invoke<{ run_id: string; prompt_id?: string | null }>(
