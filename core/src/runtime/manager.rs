@@ -193,24 +193,58 @@ impl RunManager {
             .map(RunHandle::context_snapshot)
     }
 
-    /// Context usage for a session's most recent active run, if any.
+    /// Context usage for a session's most recent run.
+    /// Prefers an active (non-terminal) run; falls back to a completed run
+    /// that has not been reaped yet.
     pub async fn context_usage_for_session(
         &self,
         session_id: &str,
     ) -> Option<ContextUsageSnapshot> {
         let runs = self.runs.lock().await;
+        let mut completed: Option<ContextUsageSnapshot> = None;
         for handle in runs.values() {
-            if handle.session_id.as_deref() == Some(session_id) {
+            if handle.session_id.as_deref() != Some(session_id) {
+                continue;
+            }
+            if !handle.is_done() {
                 return Some(handle.usage_snapshot());
             }
+            completed = Some(handle.usage_snapshot());
         }
-        None
+        completed
     }
 
     /// Context usage for a specific run.
     pub async fn context_usage_for_run(&self, run_id: &str) -> Option<ContextUsageSnapshot> {
         let runs = self.runs.lock().await;
         runs.get(run_id).map(RunHandle::usage_snapshot)
+    }
+
+    /// Estimate context usage from persisted session messages when no live
+    /// Run exists (idle / resumed old sessions). Rebuilds a lightweight
+    /// Context with identity + principles + tool catalog + conversation so
+    /// the ring is not stuck at 0%.
+    pub fn estimate_usage_from_messages(&self, messages: &[Message]) -> ContextUsageSnapshot {
+        use crate::context::Context;
+        use std::collections::HashMap;
+
+        let max = self.current_max_context_tokens();
+        let brain = self.brain();
+        let mut ctx = Context::new(&brain.identity_text(), max);
+
+        let perm = format!("{:?}", brain.build_permission_policy().mode());
+        ctx.set_principles(&brain.principles_text(&perm));
+
+        let registry = brain.build_tool_registry(brain.mode());
+        let defs = registry.tool_definitions();
+        let empty_danger: HashMap<String, crate::permission::DangerLevel> = HashMap::new();
+        let catalog = Context::build_tool_catalog_string(&defs, &empty_danger);
+        ctx.set_tool_catalog(&catalog);
+
+        for msg in messages {
+            ctx.add(msg.clone());
+        }
+        ctx.usage_snapshot()
     }
 
     /// Resolved max context for the current default model (registry-aware).

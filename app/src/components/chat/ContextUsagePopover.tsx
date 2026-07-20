@@ -143,12 +143,12 @@ export function ContextUsagePopover() {
   const segmentLabel = (key: string, fallback: string) =>
     t(`chat.contextUsage.segments.${key}`, { defaultValue: fallback });
 
+  // Used tokens come from the live/estimated snapshot; the denominator always
+  // follows the currently selected model so switching models updates the %.
   const data = snapshot ?? emptySnapshot(resolvedMax);
-  const max = data.max_context_tokens || resolvedMax || 1;
+  const max = resolvedMax || data.max_context_tokens || 1;
   const pct = Math.min(100, Math.round((data.used_tokens / max) * 100));
-  // Keep a tiny visible arc when empty so the control is discoverable.
-  const visualPct = pct === 0 ? 8 : Math.max(pct, 4);
-  const dashOffset = RING_CIRC * (1 - visualPct / 100);
+  const dashOffset = RING_CIRC * (1 - pct / 100);
   const color = ringColor(pct);
   const usedLabel = formatTokens(data.used_tokens);
   const maxLabel = formatContextLabel(max);
@@ -182,20 +182,21 @@ export function ContextUsagePopover() {
             fill="none"
             strokeWidth={RING_STROKE}
           />
-          <circle
-            className="context-usage-ring-fill"
-            cx={RING_SIZE / 2}
-            cy={RING_SIZE / 2}
-            r={RING_RADIUS}
-            fill="none"
-            strokeWidth={RING_STROKE}
-            stroke={color}
-            strokeOpacity={pct === 0 ? 0.45 : 1}
-            strokeDasharray={RING_CIRC}
-            strokeDashoffset={dashOffset}
-            strokeLinecap="round"
-            transform={`rotate(-90 ${RING_SIZE / 2} ${RING_SIZE / 2})`}
-          />
+          {pct > 0 && (
+            <circle
+              className="context-usage-ring-fill"
+              cx={RING_SIZE / 2}
+              cy={RING_SIZE / 2}
+              r={RING_RADIUS}
+              fill="none"
+              strokeWidth={RING_STROKE}
+              stroke={color}
+              strokeDasharray={RING_CIRC}
+              strokeDashoffset={dashOffset}
+              strokeLinecap="round"
+              transform={`rotate(-90 ${RING_SIZE / 2} ${RING_SIZE / 2})`}
+            />
+          )}
         </svg>
       </button>
 

@@ -30,10 +30,10 @@
   display: block;
 }
 
-/* Theme-aware track — never hardcode white overlays (invisible in light mode). */
+/* Theme-aware empty ring — visible in light and dark without faking usage. */
 .context-usage-ring-track {
-  stroke: var(--border-color, var(--text-dim));
-  opacity: 0.85;
+  stroke: var(--text-muted, var(--border-color));
+  opacity: 0.18;
 }
 
 .context-usage-ring-fill {

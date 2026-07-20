@@ -1175,6 +1175,27 @@ fn message_token_count(msg: &Message) -> usize {
         count += rough_token_count(name);
     }
 
+    // Thinking / reasoning occupies context on the wire.
+    // Plaintext CoT is usually already embedded in content via <think> tags
+    // (wrap_thinking); only count reasoning.text when it is not duplicated.
+    // Opaque blobs / signatures are never in content — always count them.
+    if let Some(ref reasoning) = msg.reasoning {
+        if let Some(ref text) = reasoning.text {
+            let already_in_content = msg.content.as_deref().is_some_and(|c| {
+                c.contains("<think>") || (!text.is_empty() && c.contains(text.as_str()))
+            });
+            if !already_in_content {
+                count += rough_token_count(text);
+            }
+        }
+        if let Some(ref blob) = reasoning.encrypted_content {
+            count += rough_token_count(blob);
+        }
+        if let Some(ref sig) = reasoning.signature {
+            count += rough_token_count(sig);
+        }
+    }
+
     count
 }
 
@@ -1314,6 +1335,77 @@ mod tests {
         assert!(keys.contains(&"tools"));
         assert!(keys.contains(&"rules"));
         assert!(keys.contains(&"conversation"));
+    }
+
+    #[test]
+    fn usage_snapshot_counts_thinking_in_content_tags() {
+        let mut engine = ContextEngine::new("Bot", 128_000);
+        let visible = Message::assistant("short answer");
+        let with_think = Message::assistant(
+            "<think>long chain of thought about the problem space and next steps</think>\nshort answer",
+        );
+        engine.add(Message::user("q"));
+        engine.add(visible.clone());
+        let without = engine.usage_snapshot().conversation_tokens;
+
+        engine = ContextEngine::new("Bot", 128_000);
+        engine.add(Message::user("q"));
+        engine.add(with_think);
+        let with = engine.usage_snapshot().conversation_tokens;
+
+        assert!(
+            with > without,
+            "thinking tags in content must increase conversation tokens ({with} vs {without})"
+        );
+    }
+
+    #[test]
+    fn usage_snapshot_counts_reasoning_text_when_not_in_content() {
+        use crate::types::ReasoningState;
+
+        let mut engine = ContextEngine::new("Bot", 128_000);
+        engine.add(Message::user("q"));
+        engine.add(
+            Message::assistant("answer").with_reasoning(ReasoningState::from_text(
+                "private reasoning that never appears in the visible content body",
+            )),
+        );
+        let with_reasoning = engine.usage_snapshot().conversation_tokens;
+
+        engine = ContextEngine::new("Bot", 128_000);
+        engine.add(Message::user("q"));
+        engine.add(Message::assistant("answer"));
+        let without = engine.usage_snapshot().conversation_tokens;
+
+        assert!(
+            with_reasoning > without,
+            "reasoning.text must count when content has no <think> tags"
+        );
+    }
+
+    #[test]
+    fn usage_snapshot_does_not_double_count_wrapped_thinking() {
+        use crate::types::ReasoningState;
+
+        let think = "same reasoning body used in both places";
+        let content = format!("<think>{think}</think>\nvisible");
+
+        let mut engine = ContextEngine::new("Bot", 128_000);
+        engine.add(Message::user("q"));
+        engine.add(Message::assistant(&content));
+        let tags_only = engine.usage_snapshot().conversation_tokens;
+
+        engine = ContextEngine::new("Bot", 128_000);
+        engine.add(Message::user("q"));
+        engine.add(
+            Message::assistant(&content).with_reasoning(ReasoningState::from_text(think)),
+        );
+        let tags_and_field = engine.usage_snapshot().conversation_tokens;
+
+        assert_eq!(
+            tags_only, tags_and_field,
+            "reasoning.text duplicated in <think> tags must not double-count"
+        );
     }
 
     #[test]

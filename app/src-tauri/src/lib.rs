@@ -814,20 +814,44 @@ async fn get_context_usage(
     session_id: Option<String>,
     run_id: Option<String>,
 ) -> Result<agent_core::ContextUsageSnapshot, String> {
+    {
+        let manager = state.run_manager.lock().await;
+        if let Some(rid) = run_id.as_deref() {
+            if let Some(snap) = manager.context_usage_for_run(rid).await {
+                return Ok(snap);
+            }
+        }
+        if let Some(sid) = session_id.as_deref() {
+            if let Some(snap) = manager.context_usage_for_session(sid).await {
+                // Live / just-finished run has a real snapshot — use it.
+                if snap.used_tokens > 0 || !snap.segments.is_empty() {
+                    return Ok(snap);
+                }
+            }
+        } else {
+            return Ok(agent_core::ContextUsageSnapshot::empty(
+                manager.current_max_context_tokens(),
+            ));
+        }
+    }
+
+    // Idle / old session: no in-memory Run — rebuild from persisted history
+    // so the ring reflects prior messages (including thinking) instead of 0%.
+    let sid = session_id.ok_or_else(|| "session_id required".to_string())?;
+    let sm = state.session_manager.clone();
+    let sid_owned = sid.clone();
+    let messages = tokio::task::spawn_blocking(move || {
+        sm.resume(&sid_owned)
+            .ok()
+            .flatten()
+            .map(|s| s.messages)
+            .unwrap_or_default()
+    })
+    .await
+    .map_err(|e| format!("session resume task failed: {e}"))?;
+
     let manager = state.run_manager.lock().await;
-    if let Some(rid) = run_id.as_deref() {
-        if let Some(snap) = manager.context_usage_for_run(rid).await {
-            return Ok(snap);
-        }
-    }
-    if let Some(sid) = session_id.as_deref() {
-        if let Some(snap) = manager.context_usage_for_session(sid).await {
-            return Ok(snap);
-        }
-    }
-    Ok(agent_core::ContextUsageSnapshot::empty(
-        manager.current_max_context_tokens(),
-    ))
+    Ok(manager.estimate_usage_from_messages(&messages))
 }
 
 #[tauri::command]
