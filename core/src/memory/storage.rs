@@ -153,6 +153,27 @@ impl Storage {
             "agverse_owned",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
+        // P2 fact metadata: scope / status / provenance for lifecycle.
+        storage.add_column_if_not_exists(
+            "reflection_facts",
+            "scope",
+            "TEXT NOT NULL DEFAULT 'global'",
+        )?;
+        storage.add_column_if_not_exists(
+            "reflection_facts",
+            "status",
+            "TEXT NOT NULL DEFAULT 'active'",
+        )?;
+        storage.add_column_if_not_exists(
+            "reflection_facts",
+            "source_session",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        storage.add_column_if_not_exists(
+            "reflection_facts",
+            "updated_at",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
         storage.initialize_reflection_sequence()?;
         storage.recover_reflection_file_operations()?;
         Ok(storage)
@@ -228,6 +249,10 @@ impl Storage {
                 section TEXT NOT NULL,
                 archival_id TEXT NOT NULL,
                 agverse_owned INTEGER NOT NULL DEFAULT 0,
+                scope TEXT NOT NULL DEFAULT 'global',
+                status TEXT NOT NULL DEFAULT 'active',
+                source_session TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL
             );
 

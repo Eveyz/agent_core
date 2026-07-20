@@ -1177,6 +1177,38 @@ async fn get_agverse_md() -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn clear_agverse_pending_notes() -> Result<usize, String> {
+    let path = agent_core::paths::get_global_agverse_md_path();
+    tokio::task::spawn_blocking(move || {
+        agent_core::memory::agverse_md::clear_pending_notes_file(&path)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("clear pending task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn promote_agverse_pending_notes() -> Result<usize, String> {
+    let path = agent_core::paths::get_global_agverse_md_path();
+    tokio::task::spawn_blocking(move || {
+        agent_core::memory::agverse_md::promote_pending_notes_file(&path)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("promote pending task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn maintain_agverse_md() -> Result<agent_core::memory::agverse_md::MaintainReport, String> {
+    let path = agent_core::paths::get_global_agverse_md_path();
+    tokio::task::spawn_blocking(move || {
+        agent_core::memory::agverse_md::maintain_agverse_file(&path).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("maintain agverse task failed: {e}"))?
+}
+
+#[tauri::command]
 async fn get_reflection_status(
     state: State<'_, AppState>,
 ) -> Result<agent_core::memory::reflection::ReflectionStatus, String> {
@@ -2307,7 +2339,8 @@ pub fn run() {
             set_project_pinned, set_session_pinned,
             delete_project, rename_project, open_in_explorer,
             list_git_branches, switch_git_branch, get_project_sessions,
-            get_agverse_md, get_reflection_status, read_file, get_skills, invalidate_skills_cache,
+            get_agverse_md, clear_agverse_pending_notes, promote_agverse_pending_notes,
+            maintain_agverse_md, get_reflection_status, read_file, get_skills, invalidate_skills_cache,
             list_cronjobs, create_cronjob, update_cronjob, delete_cronjob, toggle_cronjob,
             list_available_tools,
             create_agent, list_agents, get_agent, update_agent, delete_agent,

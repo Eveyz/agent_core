@@ -269,11 +269,22 @@ pub const MEMORY_PROMPT_STATELESS: &str = "You have no memory of previous conver
 
 /// Prompt instructions for Standard memory mode.
 /// Injected into the Active Memory segment alongside agverse.md.
-pub const MEMORY_PROMPT_STANDARD: &str = "You have long-term memory. Core Memory blocks (human/persona), Global Memory (cross-project catalog), and Project Instructions (cwd) are always in context. Resolve the active repo from Working Directory first. Use `core_memory_*` for short cross-project traits; use `edit` on project-local agverse.md for project-specific knowledge. Call `conversation_search` when a question may depend on past discussions.";
+pub const MEMORY_PROMPT_STANDARD: &str = "You have long-term memory with clear write boundaries:
+- Core Memory blocks (`core_memory_*`): short cross-project personal traits only (identity, language, hard constraints). Prefer replace over append.
+- Global Memory (`~/.agverse/agverse.md`): cross-project preferences, agent instructions, and the Known Projects catalog. Keep condensed; never dump session progress or file:line audits here.
+- Project Instructions (`{cwd}/agverse.md`): repo-specific architecture, stack, and conventions for the active Working Directory only.
+- Details, progress, and audits belong in archival / conversation history — use `conversation_search` or `archival_memory_search` when needed.
+Resolve the active repo from Working Directory first. Do not treat Known Projects catalog entries as the active project.";
 
 /// Prompt instructions for Deep memory mode.
 /// Same as Standard, with additional emphasis on proactive recall.
-pub const MEMORY_PROMPT_DEEP: &str = "You have deep long-term memory. Core Memory blocks, Global Memory (cross-project), Project Instructions (cwd), and relevant past conversations may be pre-injected below. Resolve the active repo from Working Directory first. Use `core_memory_*` for personal traits, `edit` on project-local agverse.md for project rules, `archival_memory_search` for long-term facts. Proactively search when unsure. Background reflection may update agverse.md between turns.";
+pub const MEMORY_PROMPT_DEEP: &str = "You have deep long-term memory with clear write boundaries:
+- Core Memory blocks (`core_memory_*`): short personal traits only. Prefer replace-first.
+- Global Memory: cross-project preferences + agent instructions + project catalog. Pending Notes are staging and may not be injected — do not rely on them.
+- Project Instructions (cwd): stable repo architecture/stack/conventions only.
+- Never write transient progress, line-number audits, or compile/test snapshots into core or agverse.md; use archival tools for those.
+- Past conversations may be pre-injected or reachable via `conversation_search` / `archival_memory_search`. Proactively search when unsure.
+Background reflection may update agverse.md between turns with durable facts only.";
 
 /// Get the memory prompt for a given mode string.
 pub fn memory_mode_prompt(mode: &crate::config::MemoryMode) -> &'static str {

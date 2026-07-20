@@ -55,6 +55,9 @@ const ALL_COMMANDS: &[&str] = &[
     "/memory",
     "/memory search",
     "/memory stats",
+    "/memory pending clear",
+    "/memory pending promote",
+    "/memory maintain",
     // Permission & Hooks
     "/permission",
     "/perm",
@@ -1179,8 +1182,34 @@ async fn run_main() -> anyhow::Result<ExitCode> {
                     } else {
                         println!("Memory is disabled.");
                     }
+                } else if rest == "pending clear" {
+                    let path = agent_core::paths::get_global_agverse_md_path();
+                    match agent_core::memory::agverse_md::clear_pending_notes_file(&path) {
+                        Ok(n) => println!("Cleared {n} pending note(s) from {}", path.display()),
+                        Err(e) => eprintln!("Clear pending failed: {e}"),
+                    }
+                } else if rest == "pending promote" {
+                    let path = agent_core::paths::get_global_agverse_md_path();
+                    match agent_core::memory::agverse_md::promote_pending_notes_file(&path) {
+                        Ok(n) => println!("Promoted {n} pending note(s) in {}", path.display()),
+                        Err(e) => eprintln!("Promote pending failed: {e}"),
+                    }
+                } else if rest == "maintain" {
+                    let path = agent_core::paths::get_global_agverse_md_path();
+                    match agent_core::memory::agverse_md::maintain_agverse_file(&path) {
+                        Ok(r) => println!(
+                            "Maintained {}: expired={}, trimmed={}, sections_ensured={}",
+                            path.display(),
+                            r.pending_expired,
+                            r.trimmed_bullets,
+                            r.sections_ensured
+                        ),
+                        Err(e) => eprintln!("Maintain failed: {e}"),
+                    }
                 } else {
-                    eprintln!("Usage: /memory search <query> | /memory stats");
+                    eprintln!(
+                        "Usage: /memory search <query> | /memory stats | /memory pending clear | /memory pending promote | /memory maintain"
+                    );
                 }
             }
             "/memory" => {
@@ -1552,6 +1581,9 @@ fn print_help() {
     /memory            Show core memory blocks
     /memory search <q> Search conversation memory
     /memory stats      Show memory statistics (count, strength, importance)
+    /memory pending clear    Discard Pending Notes from ~/.agverse/agverse.md
+    /memory pending promote  Move tagged Pending Notes into standard sections
+    /memory maintain         Expire old Pending + trim oversized agverse.md
 
   Permission & Hooks
     /permission        Show permission policy

@@ -344,26 +344,99 @@ export default function MemoryTab() {
             <h3 className="settings-section-title" style={{ marginBottom: 0 }}>
               <FileTextIcon size={14} /> Core Memory (agverse.md)
             </h3>
-            <button
-              onClick={loadAgverseMd}
-              disabled={loadingMd}
-              style={{
-                background: 'transparent',
-                border: '1px solid var(--border-color)',
-                borderRadius: '6px',
-                padding: '3px 8px',
-                cursor: loadingMd ? 'wait' : 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '4px',
-                fontSize: '11px',
-                color: 'var(--text-secondary)',
-              }}
-            >
-              <RefreshIcon size={12} className={loadingMd ? 'settings-spinner' : ''} />
-              Refresh
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <button
+                onClick={async () => {
+                  try {
+                    const n = await invoke<number>('promote_agverse_pending_notes');
+                    await loadAgverseMd();
+                    if (n === 0) console.info('No pending notes to promote');
+                  } catch (err) {
+                    console.error('Failed to promote pending notes', err);
+                  }
+                }}
+                style={{
+                  background: 'transparent',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '6px',
+                  padding: '3px 8px',
+                  cursor: 'pointer',
+                  fontSize: '11px',
+                  color: 'var(--text-secondary)',
+                }}
+                title="Promote Pending Notes into standard sections"
+              >
+                Promote Pending
+              </button>
+              <button
+                onClick={async () => {
+                  if (!window.confirm('Clear all Pending Notes from agverse.md?')) return;
+                  try {
+                    await invoke<number>('clear_agverse_pending_notes');
+                    await loadAgverseMd();
+                  } catch (err) {
+                    console.error('Failed to clear pending notes', err);
+                  }
+                }}
+                style={{
+                  background: 'transparent',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '6px',
+                  padding: '3px 8px',
+                  cursor: 'pointer',
+                  fontSize: '11px',
+                  color: 'var(--danger, #ef4444)',
+                }}
+                title="Discard Pending Notes"
+              >
+                Clear Pending
+              </button>
+              <button
+                onClick={async () => {
+                  try {
+                    await invoke('maintain_agverse_md');
+                    await loadAgverseMd();
+                  } catch (err) {
+                    console.error('Failed to maintain agverse.md', err);
+                  }
+                }}
+                style={{
+                  background: 'transparent',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '6px',
+                  padding: '3px 8px',
+                  cursor: 'pointer',
+                  fontSize: '11px',
+                  color: 'var(--text-secondary)',
+                }}
+                title="Expire old Pending + trim oversized Architecture bullets"
+              >
+                Maintain
+              </button>
+              <button
+                onClick={loadAgverseMd}
+                disabled={loadingMd}
+                style={{
+                  background: 'transparent',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: '6px',
+                  padding: '3px 8px',
+                  cursor: loadingMd ? 'wait' : 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  fontSize: '11px',
+                  color: 'var(--text-secondary)',
+                }}
+              >
+                <RefreshIcon size={12} className={loadingMd ? 'settings-spinner' : ''} />
+                Refresh
+              </button>
+            </div>
           </div>
+          <p style={{ fontSize: '11px', marginTop: '8px', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+            Pending Notes are staging only and are not injected into every turn. Prefer Promote, then Clear leftovers.
+          </p>
           {loadingMd ? (
             <div className="settings-empty" style={{ padding: '20px 0', fontSize: '13px' }}>Loading...</div>
           ) : agverseContent ? (

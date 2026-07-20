@@ -39,10 +39,11 @@ An underlying SQLite database contains historical conversation logs (Recall Memo
 Your primary responsibility is to keep this Global Memory highly condensed, strictly structured, and up-to-date. You are forbidden from allowing this file to become a dump for raw conversational logs.
 
 When you interact with the user, silently evaluate if the new information alters the global state:
-- **Write/Replace:** If the user updates a global preference, coding convention, or the project catalog, use the `edit` tool to update the corresponding section below.
+- **Write/Replace:** If the user updates a global preference, coding convention, or the project catalog, use the `edit` tool to update the corresponding section below. Prefer replace over append when facts conflict.
 - **Compaction (Delete):** If an existing rule is deprecated, overridden, or resolved, delete or overwrite the old information to free up Core Memory space. Do not append contradictory rules.
-- **Offload to Archival (Ignore):** If the information is a specific debugging step, a one-off script, or a transient thought, do NOT write it here. Trust that Archival Memory will capture it for future retrieval.
+- **Offload to Archival (Ignore):** If the information is a specific debugging step, file:line audit, compile/test snapshot, or transient thought, do NOT write it here. Trust that Archival Memory will capture it for future retrieval.
 - **Project-local:** Architecture and conventions for a specific repo belong in that repo's `agverse.md`, not here.
+- **Pending Notes:** Staging only — not injected into every turn. Promote into a real section or delete.
 
 Never mention your memory management process to the user unless explicitly asked. Maintain a seamless conversational flow while quietly updating this file in the background.
 
@@ -52,6 +53,8 @@ Never mention your memory management process to the user unless explicitly asked
 The active project is determined ONLY by the Working Directory (and Project Instructions for that cwd).
 
 # Known Projects (catalog)
+
+# Project Overview
 
 # Tech Stack & Commands
 

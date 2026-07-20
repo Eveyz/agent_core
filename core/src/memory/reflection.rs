@@ -7,11 +7,16 @@
 
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
+use rusqlite::OptionalExtension;
 use std::collections::{HashSet, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::client::OpenAIClient;
+use crate::memory::agverse_md::{
+    self, classify_fact, normalize_section_name, scope_for_section, FactDisposition, FactScope,
+};
 use crate::memory::MemoryManager;
 use crate::memory::storage::Storage;
 use crate::types::Message;
@@ -374,31 +379,96 @@ impl ReflectionRepository {
         )?)
     }
 
+    fn session_cwd(&self, session_id: &str) -> Result<Option<String>> {
+        let db = self.storage.conn();
+        let cwd: Option<String> = db
+            .query_row(
+                "SELECT cwd FROM sessions WHERE id = ?1",
+                [session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(cwd.filter(|c| !c.trim().is_empty()))
+    }
+
     fn store_fact(
         &self,
         fact: &ExtractedFact,
         session_id: &str,
         agverse_owned: bool,
+        scope: &str,
+        status: &str,
         metadata: &str,
         embedding: &[u8],
     ) -> Result<bool> {
         let now = chrono::Utc::now().to_rfc3339();
         let archival_id = uuid::Uuid::new_v4().to_string();
+        let fact_key = normalize_fact(&fact.text);
         let mut db = self.storage.conn();
         let tx = db.transaction()?;
+
+        // Supersede older active facts in the same section that conflict.
+        {
+            let mut stmt = tx.prepare(
+                "SELECT fact_key, content FROM reflection_facts \
+                 WHERE section = ?1 AND status = 'active'",
+            )?;
+            let conflicts: Vec<(String, String)> = stmt
+                .query_map([&fact.section], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .filter(|(_, content)| {
+                    crate::memory::agverse_md::facts_conflict(content, &fact.text)
+                })
+                .collect();
+            drop(stmt);
+            for (old_key, _) in &conflicts {
+                if old_key == &fact_key {
+                    continue;
+                }
+                tx.execute(
+                    "UPDATE reflection_facts SET status = 'superseded', updated_at = ?1 \
+                     WHERE fact_key = ?2",
+                    rusqlite::params![now, old_key],
+                )?;
+            }
+        }
+
         let inserted = tx.execute(
-            "INSERT OR IGNORE INTO reflection_facts (fact_key, content, section, archival_id, agverse_owned, created_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT OR IGNORE INTO reflection_facts \
+             (fact_key, content, section, archival_id, agverse_owned, scope, status, source_session, updated_at, created_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
             rusqlite::params![
-                normalize_fact(&fact.text),
+                fact_key,
                 fact.text,
                 fact.section,
                 archival_id,
                 agverse_owned as i32,
+                scope,
+                status,
+                session_id,
                 now,
             ],
         )?;
-        if inserted == 1 {
+        if inserted == 0 {
+            // Refresh metadata on duplicate key (same normalized text).
+            tx.execute(
+                "UPDATE reflection_facts SET content = ?1, section = ?2, agverse_owned = ?3, \
+                 scope = ?4, status = ?5, source_session = ?6, updated_at = ?7 \
+                 WHERE fact_key = ?8",
+                rusqlite::params![
+                    fact.text,
+                    fact.section,
+                    agverse_owned as i32,
+                    scope,
+                    status,
+                    session_id,
+                    now,
+                    fact_key,
+                ],
+            )?;
+        } else {
             tx.execute(
                 "INSERT INTO archival_memory (id, content, embedding, metadata, created_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -408,7 +478,7 @@ impl ReflectionRepository {
         tx.execute(
             "INSERT OR IGNORE INTO reflection_fact_sources (fact_key, session_id, created_at) \
              VALUES (?1, ?2, ?3)",
-            rusqlite::params![normalize_fact(&fact.text), session_id, now],
+            rusqlite::params![fact_key, session_id, now],
         )?;
         tx.commit()?;
         Ok(inserted == 1)
@@ -828,41 +898,103 @@ async fn persist_reflection_output(
     if !repository.owns_claim(&batch.session_id, claim_token)? {
         anyhow::bail!("reflection claim was cancelled before persistence");
     }
+
+    // Normalize + quality-filter before any persistence.
     let mut seen = HashSet::new();
-    let unique_facts: Vec<_> = output
-        .facts
-        .into_iter()
-        .filter(|fact| {
-            let key = normalize_fact(&fact.text);
-            !key.is_empty() && seen.insert(key)
-        })
-        .collect();
+    let mut always_on: Vec<ExtractedFact> = Vec::new();
+    let mut archival_only: Vec<ExtractedFact> = Vec::new();
+    for mut fact in output.facts {
+        if let Some(canonical) = normalize_section_name(&fact.section) {
+            fact.section = canonical.to_string();
+        }
+        let key = normalize_fact(&fact.text);
+        if key.is_empty() || !seen.insert(key) {
+            continue;
+        }
+        match classify_fact(&fact.section, &fact.text) {
+            FactDisposition::Reject => {}
+            FactDisposition::ArchivalOnly => archival_only.push(fact),
+            FactDisposition::AlwaysOn => always_on.push(fact),
+        }
+    }
 
     // Serialize all derived-product writes with permanent session deletion.
     let _persist_guard = reflection_persistence_guard();
     if !repository.owns_claim(&batch.session_id, claim_token)? {
         anyhow::bail!("reflection claim was cancelled before writing memory");
     }
-    let existing_memory = match std::fs::read_to_string(agverse_path) {
-        Ok(content) => content,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(e).context("failed to read agverse.md while persisting reflection"),
+
+    let project_cwd = repository.session_cwd(&batch.session_id)?;
+    let project_path = project_cwd.as_ref().map(|cwd| PathBuf::from(cwd).join("agverse.md"));
+
+    let existing_global = read_md_or_empty(agverse_path)?;
+    let existing_project = match &project_path {
+        Some(p) => read_md_or_empty(p)?,
+        None => String::new(),
     };
-    let core_facts: Vec<_> = unique_facts
+
+    let mut global_facts: Vec<(String, String)> = Vec::new();
+    let mut project_facts: Vec<(String, String)> = Vec::new();
+    for fact in &always_on {
+        match scope_for_section(&fact.section) {
+            FactScope::Global => {
+                if !contains_fact(&existing_global, &fact.text) {
+                    global_facts.push((fact.section.clone(), fact.text.clone()));
+                }
+            }
+            FactScope::Project => {
+                // Prefer project-local agverse.md when cwd is known; else global.
+                if project_path.is_some() {
+                    if !contains_fact(&existing_project, &fact.text) {
+                        project_facts.push((fact.section.clone(), fact.text.clone()));
+                    }
+                } else if !contains_fact(&existing_global, &fact.text) {
+                    global_facts.push((fact.section.clone(), fact.text.clone()));
+                }
+            }
+        }
+    }
+
+    let always_on_keys: HashSet<_> = always_on
         .iter()
-        .filter(|fact| !contains_fact(&existing_memory, &fact.text))
-        .cloned()
+        .filter(|f| {
+            global_facts
+                .iter()
+                .any(|(_, t)| normalize_fact(t) == normalize_fact(&f.text))
+                || project_facts
+                    .iter()
+                    .any(|(_, t)| normalize_fact(t) == normalize_fact(&f.text))
+        })
+        .map(|f| normalize_fact(&f.text))
         .collect();
-    let core_fact_keys: HashSet<_> = core_facts
-        .iter()
-        .map(|fact| normalize_fact(&fact.text))
-        .collect();
+
     let mut archived = 0;
     let embedding_model = memory.lock().archival().embedding_model().cloned();
-    for fact in &unique_facts {
+    let all_for_db: Vec<(ExtractedFact, bool, &str)> = always_on
+        .into_iter()
+        .map(|f| {
+            let scope = match scope_for_section(&f.section) {
+                FactScope::Global => "global",
+                FactScope::Project => {
+                    if project_path.is_some() {
+                        "project"
+                    } else {
+                        "global"
+                    }
+                }
+            };
+            let owned = always_on_keys.contains(&normalize_fact(&f.text));
+            (f, owned, scope)
+        })
+        .chain(archival_only.into_iter().map(|f| (f, false, "archival")))
+        .collect();
+
+    for (fact, agverse_owned, scope) in &all_for_db {
         let metadata = serde_json::json!({
             "source": "reflection",
             "section": &fact.section,
+            "scope": scope,
+            "agverse_owned": agverse_owned,
         })
         .to_string();
         let embedding = if let Some(model) = &embedding_model {
@@ -873,7 +1005,9 @@ async fn persist_reflection_output(
         if repository.store_fact(
             fact,
             &batch.session_id,
-            core_fact_keys.contains(&normalize_fact(&fact.text)),
+            *agverse_owned,
+            scope,
+            "active",
             &metadata,
             &embedding,
         )? {
@@ -884,15 +1018,40 @@ async fn persist_reflection_output(
     // Ownership is durable before the file mutation. If writing the file or
     // advancing the cursor fails, the next retry can safely finish the same
     // idempotent operation without losing provenance.
-    if !core_facts.is_empty() {
-        write_atomic(
-            agverse_path,
-            &append_facts_to_sections(&existing_memory, &core_facts),
-        )?;
+    if !global_facts.is_empty() {
+        let mut updated = agverse_md::append_facts_to_sections(&existing_global, &global_facts);
+        let (maintained, report) = agverse_md::maintain_agverse_content(&updated);
+        updated = maintained;
+        if report.pending_expired > 0 || report.trimmed_bullets > 0 {
+            tracing::info!(
+                pending_expired = report.pending_expired,
+                trimmed = report.trimmed_bullets,
+                "agverse.md maintenance applied after reflection"
+            );
+        }
+        write_atomic(agverse_path, &updated)?;
+    } else {
+        // Still run TTL/capacity maintenance even when no new always-on facts.
+        let _ = agverse_md::maintain_agverse_file(agverse_path);
+    }
+
+    if !project_facts.is_empty() {
+        if let Some(ref path) = project_path {
+            let updated = agverse_md::append_facts_to_sections(&existing_project, &project_facts);
+            write_atomic(path, &updated)?;
+        }
     }
 
     repository.complete_batch(batch, output.summary.trim(), claim_token)?;
     Ok(archived)
+}
+
+fn read_md_or_empty(path: &Path) -> Result<String> {
+    match std::fs::read_to_string(path) {
+        Ok(content) => Ok(content),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e).with_context(|| format!("failed to read {}", path.display())),
+    }
 }
 
 fn write_atomic(path: &std::path::Path, content: &str) -> Result<()> {
@@ -999,33 +1158,14 @@ fn contains_fact(existing_memory: &str, fact: &str) -> bool {
 }
 
 /// Append extracted facts to their matching sections in agverse.md.
-/// If a section doesn't exist, the fact is appended to the end under a
-/// "## Pending Notes" header for the agent to review and integrate.
+/// Delegates to `agverse_md` which ensures standard sections and replaces conflicts.
+#[cfg(test)]
 fn append_facts_to_sections(content: &str, facts: &[ExtractedFact]) -> String {
-    let mut result = content.to_string();
-
-    for fact in facts {
-        let section_header = format!("# {}", fact.section);
-        if let Some(pos) = result.find(&section_header) {
-            // Find the next section header or end of file
-            let after_header = pos + section_header.len();
-            let next_section = result[after_header..]
-                .find("\n# ")
-                .map(|p| after_header + p)
-                .unwrap_or(result.len());
-
-            // Insert before the next section
-            result.insert_str(next_section, &format!("\n- {}", fact.text));
-        } else {
-            // Section not found — append to Pending Notes
-            if !result.contains("# Pending Notes") {
-                result.push_str("\n\n# Pending Notes\n");
-            }
-            result.push_str(&format!("- [{}] {}\n", fact.section, fact.text));
-        }
-    }
-
-    result
+    let pairs: Vec<(String, String)> = facts
+        .iter()
+        .map(|f| (f.section.clone(), f.text.clone()))
+        .collect();
+    agverse_md::append_facts_to_sections(content, &pairs)
 }
 
 fn build_extraction_prompt(conversation: &str, existing_memory: &str) -> String {
@@ -1033,15 +1173,21 @@ fn build_extraction_prompt(conversation: &str, existing_memory: &str) -> String 
         r#"You maintain two distinct memory products for an AI agent.
 
 Return strict JSON with this shape:
-{{"summary":"A concise session-scoped summary of what happened in this batch.","facts":[{{"section":"Architecture Decisions","text":"A durable fact"}}]}}
+{{"summary":"A concise session-scoped summary of what happened in this batch.","facts":[{{"section":"User Preferences","text":"A durable fact"}}]}}
 
 Rules:
 - summary: capture decisions, outcomes, and unresolved work in this conversation batch.
-- facts: ONLY new durable facts useful across future conversations: preferences, decisions, conventions, architecture, or tool choices.
+- facts: ONLY new durable facts that will still be true in 3+ months across future conversations.
+- Prefer: user preferences, hard constraints, agent instructions, stable architecture decisions, coding conventions, tool choices.
+- Do NOT put into facts:
+  - file paths with line numbers (e.g. foo.rs:123)
+  - audit checklists, defect inventories, or numbered bug dumps
+  - transient progress / coverage / compile status ("now has", "passing tests", "as of this batch")
+  - session-only TODOs, greetings, questions, or a general recap
+- Each fact text must be <= 200 characters and stand alone as one bullet.
 - Do not repeat anything already present in Existing Core Memory.
-- Do not put transient progress, questions, greetings, or a general recap into facts.
 - Valid fact sections: "Project Overview", "Tech Stack & Commands", "Architecture Decisions", "Coding Conventions", "User Preferences", "Agent Instructions".
-- If there are no new durable facts, return an empty facts array. The summary is still required.
+- Empty facts array is preferred when unsure. The summary is still required.
 
 Existing Core Memory:
 {existing_memory}
@@ -1368,12 +1514,12 @@ mod tests {
         };
         assert!(
             repository
-                .store_fact(&fact, "s1", false, "{}", &[])
+                .store_fact(&fact, "s1", false, "global", "active", "{}", &[])
                 .unwrap()
         );
         assert!(
             !repository
-                .store_fact(&fact, "s2", false, "{}", &[])
+                .store_fact(&fact, "s2", false, "global", "active", "{}", &[])
                 .unwrap()
         );
 
@@ -1496,6 +1642,8 @@ This follows the requested schema."#;
         assert!(prompt.contains("Existing Core Memory"));
         assert!(prompt.contains("existing fact"));
         assert!(prompt.contains("test conversation"));
+        assert!(prompt.contains("<= 200 characters"));
+        assert!(prompt.contains("line numbers"));
     }
 
     #[test]
@@ -1511,14 +1659,15 @@ This follows the requested schema."#;
     }
 
     #[test]
-    fn test_append_facts_to_missing_section() {
+    fn test_append_facts_creates_missing_section_not_pending() {
         let content = "# Project Overview\n\nSome overview.\n";
         let facts = vec![ExtractedFact {
             section: "User Preferences".to_string(),
             text: "User prefers dark mode".to_string(),
         }];
         let result = append_facts_to_sections(content, &facts);
-        assert!(result.contains("# Pending Notes"));
-        assert!(result.contains("[User Preferences] User prefers dark mode"));
+        assert!(result.contains("# User Preferences"));
+        assert!(result.contains("- User prefers dark mode"));
+        assert!(!result.contains("# Pending Notes"));
     }
 }

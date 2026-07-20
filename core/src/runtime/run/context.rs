@@ -102,16 +102,31 @@ impl Run {
                 // 1. Global (cross-project — NOT the active project)
                 let global_path = crate::paths::get_global_agverse_md_path();
                 if let Ok(content) = std::fs::read_to_string(&global_path) {
-                    instructions.push(("Global Memory (cross-project)".to_string(), content));
+                    let injected = crate::memory::agverse_md::prepare_for_injection(
+                        &content,
+                        &crate::memory::agverse_md::InjectOptions::default(),
+                    );
+                    if !injected.is_empty() {
+                        instructions.push(("Global Memory (cross-project)".to_string(), injected));
+                    }
                 }
 
                 let mut global_local_path = global_path.clone();
                 global_local_path.set_file_name("agverse.local.md");
                 if let Ok(content) = std::fs::read_to_string(&global_local_path) {
-                    instructions.push((
-                        "Global User Preferences (cross-project)".to_string(),
-                        content,
-                    ));
+                    let injected = crate::memory::agverse_md::prepare_for_injection(
+                        &content,
+                        &crate::memory::agverse_md::InjectOptions {
+                            budget_chars: 1_500,
+                            pending_inject_max: 0,
+                        },
+                    );
+                    if !injected.is_empty() {
+                        instructions.push((
+                            "Global User Preferences (cross-project)".to_string(),
+                            injected,
+                        ));
+                    }
                 }
 
                 // Extract recent conversation text to match path-scoped rules
@@ -131,8 +146,19 @@ impl Run {
                     for name in &["agverse.md", "AGENTS.md"] {
                         let path = std::path::Path::new(dir).join(name);
                         if let Ok(content) = std::fs::read_to_string(&path) {
-                            instructions
-                                .push((format!("Project Instructions (cwd: {name})"), content));
+                            let injected = crate::memory::agverse_md::prepare_for_injection(
+                                &content,
+                                &crate::memory::agverse_md::InjectOptions {
+                                    budget_chars: 3_000,
+                                    pending_inject_max: 0,
+                                },
+                            );
+                            if !injected.is_empty() {
+                                instructions.push((
+                                    format!("Project Instructions (cwd: {name})"),
+                                    injected,
+                                ));
+                            }
                             break;
                         }
                     }
