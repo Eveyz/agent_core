@@ -17,6 +17,7 @@ import TurnFooter from './TurnFooter';
 import { isSubagentTool, groupBlocksIntoItems, basename, parseEditSummary, parseUnifiedDiff, isTrivialAssistantText } from './turnHelpers';
 import { getFileIcon } from '../layout/FileTree';
 import { useTranslation } from 'react-i18next';
+import { isActiveRecoveryNotice, translateRecoveryMessage } from './recoveryNotice';
 
 interface FileChangeItem {
   path: string;
@@ -30,102 +31,13 @@ interface FileChangeItem {
  *  content, collapse it so the timeline stays scannable. */
 const PROGRESS_COLLAPSE_CHARS = 160;
 
-const REMOTE_RETRY_RE =
-  /Failed to connect to remote model \(([^)]+)\), retrying in (\d+)s \(attempt (\d+)\/(\d+)\)/i;
-
-function parseRemoteRetry(text: string) {
-  const match = text.match(REMOTE_RETRY_RE);
-  if (!match) return null;
-  return {
-    reasonKey: match[1].replace(' ', '_'),
-    delaySec: Number(match[2]),
-    attempt: match[3],
-    maxAttempts: match[4],
-  };
-}
-
-function translateRecoveryMessage(text: string, t: (key: string, opts?: Record<string, unknown>) => string, countdownSec?: number): string {
-  // 1. Compacting
-  const compactMatch = text.match(/context too long;\s*compacting to\s*(\d+)%\s*before retry/i);
-  if (compactMatch) {
-    return t('chat.recovery.compacting', { percentage: compactMatch[1] });
-  }
-
-  // 2. Escalating
-  const escalateMatch = text.match(/escalating max_tokens to\s*(\d+)/i);
-  if (escalateMatch) {
-    return t('chat.recovery.escalating', { maxTokens: escalateMatch[1] });
-  }
-
-  // 3. Retrying delay
-  const delayMatch = text.match(/retrying model call after\s*(\d+)ms/i);
-  if (delayMatch) {
-    return t('chat.recovery.retryingDelay', { delay: delayMatch[1] });
-  }
-
-  // 4. Switching model
-  const switchMatch = text.match(/switching to fallback model:\s*(.*)/i);
-  if (switchMatch) {
-    return t('chat.recovery.switchingModel', { model: switchMatch[1] });
-  }
-
-  // 5. Structured remote model retry
-  const remoteRetry = parseRemoteRetry(text);
-  if (remoteRetry) {
-    return t(`chat.recovery.remoteRetry.${remoteRetry.reasonKey}`, {
-      time: countdownSec ?? remoteRetry.delaySec,
-      attempt: remoteRetry.attempt,
-      maxAttempts: remoteRetry.maxAttempts,
-    });
-  }
-
-  // 6. Legacy retrying in
-  const retryingInMatch = text.match(/retrying in\s*(.*)/i);
-  if (retryingInMatch) {
-    return t('chat.recovery.retryingIn', { time: retryingInMatch[1] });
-  }
-
-  // 7. Generic retrying model call
-  if (text.toLowerCase().includes('retrying model call')) {
-    return t('chat.recovery.retrying');
-  }
-
-  return text;
-}
-
 function RecoveryNotice({ text, code }: { text: string; code?: string }) {
   const { t } = useTranslation();
-  const remoteRetry = useMemo(() => parseRemoteRetry(text), [text]);
-  const isActiveRetry =
-    code === 'model_retry' ||
-    !!remoteRetry ||
-    /retrying|compacting|escalating|switching to fallback/i.test(text);
-
-  const [remaining, setRemaining] = useState<number | null>(
-    remoteRetry ? remoteRetry.delaySec : null,
-  );
-
-  useEffect(() => {
-    if (!remoteRetry) {
-      setRemaining(null);
-      return;
-    }
-    setRemaining(remoteRetry.delaySec);
-    const startedAt = Date.now();
-    const id = window.setInterval(() => {
-      const left = Math.max(
-        0,
-        remoteRetry.delaySec - Math.floor((Date.now() - startedAt) / 1000),
-      );
-      setRemaining(left);
-    }, 200);
-    return () => window.clearInterval(id);
-  }, [text, remoteRetry]);
-
+  const isActiveRetry = isActiveRecoveryNotice(text, code);
   const label = translateRecoveryMessage(
     text,
     t as (key: string, opts?: Record<string, unknown>) => string,
-    remaining ?? undefined,
+    code,
   );
 
   return (

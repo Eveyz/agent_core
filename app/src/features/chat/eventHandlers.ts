@@ -557,8 +557,44 @@ export function handleNotice(
   const turn = getActiveTurn(state, sessionId);
   if (turn && turn.type === 'turn' && turn.blocks) {
     closeStreamingBlock(turn.blocks);
-    // Replace prior notice with the same code (e.g. model_retry) so retries
-    // update in place instead of stacking warning banners.
+
+    // Nested retry layers (SSE restart vs recovery engine) emit different
+    // codes for the same user-facing situation — keep one connection banner.
+    const isConnectionRetry =
+      code === 'model_retry' ||
+      code === 'model_stream_retry' ||
+      /Failed to connect to remote model/i.test(message);
+
+    if (isConnectionRetry) {
+      for (let i = turn.blocks.length - 1; i >= 0; i--) {
+        const block = turn.blocks[i];
+        if (block.type !== 'notice') continue;
+        if (
+          block.code === 'model_retry' ||
+          block.code === 'model_stream_retry' ||
+          /Failed to connect to remote model/i.test(block.text)
+        ) {
+          turn.blocks[i] = {
+            type: 'notice',
+            text: message,
+            code: 'model_retry',
+            severity,
+            recoverable: true,
+          };
+          return;
+        }
+      }
+      turn.blocks.push({
+        type: 'notice',
+        text: message,
+        code: 'model_retry',
+        severity,
+        recoverable: true,
+      });
+      return;
+    }
+
+    // Other notices (compact / fallback / …): replace same code only.
     if (code) {
       for (let i = turn.blocks.length - 1; i >= 0; i--) {
         const block = turn.blocks[i];

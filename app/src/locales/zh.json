@@ -76,18 +76,15 @@
     },
     "recovery": {
       "compacting": "上下文过长；重试前将压缩至 {{percentage}}%",
+      "compactingGeneric": "上下文过长；重试前正在压缩…",
       "escalating": "正在将 max_tokens 提升至 {{maxTokens}}",
+      "escalatingGeneric": "正在提升 max_tokens…",
       "retryingDelay": "将在 {{delay}} 毫秒后重试模型调用",
       "switchingModel": "正在切换至备用模型: {{model}}",
-      "retrying": "正在重试模型调用...",
+      "switchingModelGeneric": "正在切换至备用模型…",
+      "retrying": "正在重试模型调用…",
       "retryingIn": "将在 {{time}} 后重试",
-      "remoteRetry": {
-        "rate_limit": "远程模型服务正处于限流状态。将在 {{time}} 秒后重试（第 {{attempt}}/{{maxAttempts}} 次尝试）...",
-        "network_error": "远程模型连接因网络问题失败。将在 {{time}} 秒后重试（第 {{attempt}}/{{maxAttempts}} 次尝试）...",
-        "server_error": "远程模型服务返回临时服务器错误。将在 {{time}} 秒后重试（第 {{attempt}}/{{maxAttempts}} 次尝试）...",
-        "stream_failed": "远程模型流连接中断。将在 {{time}} 秒后重试（第 {{attempt}}/{{maxAttempts}} 次尝试）...",
-        "generic": "远程模型请求失败。将在 {{time}} 秒后重试（第 {{attempt}}/{{maxAttempts}} 次尝试）..."
-      }
+      "unreachable": "无法连接远端模型，正在重试…"
     },
     "subagent": {
       "spawning": "正在生成 {{count}} 个智能体...",

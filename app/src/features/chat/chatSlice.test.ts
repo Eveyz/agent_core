@@ -468,6 +468,50 @@ describe('runtime notice and error events', () => {
     });
   });
 
+  it('collapses stream-retry and recovery-retry notices into one banner', async () => {
+    const { reducer, userMessageSent, runIdSet, agentEventsBatch } = await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, userMessageSent({ text: 'hello', model: 'm1', sessionId: 's1' }));
+    state = reducer(state, runIdSet({ runId: 'run-1', sessionId: 's1' }));
+
+    state = reducer(
+      state,
+      agentEventsBatch([
+        { event: 'turn_started', run_id: 'run-1', turn_id: 'turn-1', index: 0 },
+        {
+          event: 'notice',
+          run_id: 'run-1',
+          turn_id: 'turn-1',
+          code: 'model_stream_retry',
+          severity: 'warning',
+          recoverable: true,
+          message:
+            'Failed to connect to remote model (stream failed), retrying in 1s (attempt 2/5)',
+        },
+        {
+          event: 'notice',
+          run_id: 'run-1',
+          turn_id: 'turn-1',
+          code: 'model_retry',
+          severity: 'warning',
+          recoverable: true,
+          message:
+            'Failed to connect to remote model (rate limit), retrying in 2s (attempt 2/3)',
+        },
+      ]),
+    );
+
+    const turn = state.entries.s1.find((e) => e.type === 'turn');
+    const notices = turn?.blocks?.filter((b) => b.type === 'notice') ?? [];
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({
+      type: 'notice',
+      code: 'model_retry',
+      recoverable: true,
+    });
+    expect(notices[0]?.type === 'notice' && notices[0].text).toContain('rate limit');
+  });
+
   it('clears recoverable model_retry notice once the stream resumes', async () => {
     const { reducer, userMessageSent, runIdSet, agentEventsBatch } = await loadModules();
     let state = reducer(undefined, { type: '@@INIT' });

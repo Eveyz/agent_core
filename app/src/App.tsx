@@ -345,7 +345,9 @@ function App() {
         dispatch(setActiveSession(activeSessionId));
       }
 
-      const model = entry.model ?? defaultModel;
+      // Use the currently selected model (same as send), not the original prompt's.
+      // That way switching models in the picker and hitting retry actually switches.
+      const model = defaultModel;
       // Append-only: keep prior turns and send the same (or edited) text as a new prompt.
       dispatch(userMessageSent({ text: msg, model, sessionId: activeSessionId }));
       scrollToBottom('auto');
