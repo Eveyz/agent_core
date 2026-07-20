@@ -547,6 +547,35 @@ describe('runtime notice and error events', () => {
     ).toBe(true);
   });
 
+  it('clears recoverable retry notice on model_call_started before any tokens', async () => {
+    const { reducer, userMessageSent, runIdSet, agentEventsBatch } = await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, userMessageSent({ text: 'hello', model: 'm1', sessionId: 's1' }));
+    state = reducer(state, runIdSet({ runId: 'run-1', sessionId: 's1' }));
+
+    state = reducer(
+      state,
+      agentEventsBatch([
+        { event: 'turn_started', run_id: 'run-1', turn_id: 'turn-1', index: 0 },
+        {
+          event: 'notice',
+          run_id: 'run-1',
+          turn_id: 'turn-1',
+          code: 'model_stream_retry',
+          severity: 'warning',
+          recoverable: true,
+          message:
+            'Failed to connect to remote model (stream failed), retrying in 1s (attempt 1/5)',
+        },
+        // Reconnected, but model may think silently for a long time — no deltas yet.
+        { event: 'model_call_started', run_id: 'run-1', turn_id: 'turn-1' },
+      ]),
+    );
+
+    const turn = state.entries.s1.find((e) => e.type === 'turn');
+    expect(turn?.blocks?.some((b) => b.type === 'notice')).toBe(false);
+  });
+
   it('clears processing on terminal Error events', async () => {
     const { reducer, userMessageSent, runIdSet, agentEventsBatch } = await loadModules();
     let state = reducer(undefined, { type: '@@INIT' });

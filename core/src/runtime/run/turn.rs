@@ -607,6 +607,11 @@ impl Run {
 
                     match stream_res {
                         Ok(s) => {
+                            // Connection is up again. Thinking models can sit
+                            // silent for a long time before the first token —
+                            // clear the retry banner immediately, don't wait
+                            // for model_streaming deltas.
+                            self.emit(RunEvent::ModelCallStarted);
                             let cancel = self.cancel.clone();
                             let event_tx = self.event_tx.clone();
                             let res = self

@@ -389,6 +389,14 @@ export function handleMessageStart(state: ChatState, sessionId: string, messageI
   }
 }
 
+/** Stream HTTP/SSE is up again — clear retry banners before any tokens arrive. */
+export function handleModelCallStarted(state: ChatState, sessionId: string): void {
+  const turn = getActiveTurn(state, sessionId);
+  if (turn && turn.type === 'turn' && turn.blocks) {
+    clearRecoverableNotices(turn.blocks);
+  }
+}
+
 export function handleMessageUpdate(state: ChatState, sessionId: string, messageId: string | undefined, delta: DeltaPayload): void {
   const turn = getActiveTurn(state, sessionId);
   if (turn && turn.type === 'turn' && turn.blocks) {
@@ -891,6 +899,9 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
       break;
     case 'turn_ended':
       handleTurnEnded(state, sessionId);
+      break;
+    case 'model_call_started':
+      handleModelCallStarted(state, sessionId);
       break;
     case 'message_start':
       if (ev.subagent_id) handleSubagentMessageStart(state, sessionId, ev.subagent_id, ev.message_id);
