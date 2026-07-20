@@ -39,7 +39,11 @@ impl Run {
     /// 2. **LLM summarize (fallback)**: If chunked_drop wasn't sufficient
     ///    (e.g., a single tool result is dominating), fall back to the
     ///    LLM-based summary compact with `micro_compact()` as last resort.
+    ///
+    /// Compaction mutates only the in-memory model window (`context.messages`).
+    /// The full transcript used for UI / SQLite persistence is never touched.
     pub(super) async fn maybe_compact(&mut self) {
+        let full_len_before = self.full_transcript.len();
         let current = self.context.current_token_count();
         let max_tokens = self.client.model.max_context_tokens;
         let context_len = self.context.len();
@@ -58,15 +62,27 @@ impl Run {
             // Dropped turns are gone; strip thinking from what remains so old
             // CoT does not linger across the compaction boundary.
             self.context.strip_thinking_after_compact();
+            let tokens_after = self.context.current_token_count();
             tracing::info!(
                 compact = "chunked_drop",
                 tokens_before = current,
-                tokens_after = self.context.current_token_count(),
+                tokens_after,
                 "Chunked drop compact applied"
+            );
+            self.emit_context_compacted(
+                "chunked_drop",
+                current,
+                tokens_after,
             );
             // Check if this brought us below the threshold.
             let threshold = (max_tokens as f64 * 0.80) as usize;
             if self.context.current_token_count() < threshold {
+                debug_assert_eq!(
+                    self.full_transcript.len(),
+                    full_len_before,
+                    "compaction must not mutate full_transcript"
+                );
+                self.refresh_usage_snapshot_only();
                 return;
             }
         }
@@ -76,6 +92,12 @@ impl Run {
 
         let threshold = (max_tokens as f64 * 0.80) as usize;
         if self.context.current_token_count() < threshold {
+            debug_assert_eq!(
+                self.full_transcript.len(),
+                full_len_before,
+                "compaction must not mutate full_transcript"
+            );
+            self.refresh_usage_snapshot_only();
             return;
         }
 
@@ -83,7 +105,10 @@ impl Run {
         let num_turns = context_len.max(4) * 2 / 5;
         let request = match self.context.prepare_summary(num_turns) {
             Some(r) => r,
-            None => return,
+            None => {
+                debug_assert_eq!(self.full_transcript.len(), full_len_before);
+                return;
+            }
         };
 
         let messages = vec![Message::system(&request.prompt)];
@@ -92,6 +117,13 @@ impl Run {
             Err(_) => {
                 // LLM call failed — fallback to micro_compact
                 self.context.micro_compact(context_len.max(4) / 3);
+                self.emit_context_compacted(
+                    "micro_compact",
+                    current,
+                    self.context.current_token_count(),
+                );
+                debug_assert_eq!(self.full_transcript.len(), full_len_before);
+                self.refresh_usage_snapshot_only();
                 return;
             }
         };
@@ -108,24 +140,52 @@ impl Run {
             Err(_) => {
                 // JSON parse failed — fallback to micro_compact
                 self.context.micro_compact(context_len.max(4) / 3);
+                self.emit_context_compacted(
+                    "micro_compact",
+                    current,
+                    self.context.current_token_count(),
+                );
+                debug_assert_eq!(self.full_transcript.len(), full_len_before);
+                self.refresh_usage_snapshot_only();
                 return;
             }
         };
 
         self.context
             .apply_summary(request.split_index, &summary, num_turns);
+        self.emit_context_compacted(
+            "llm_summary",
+            current,
+            self.context.current_token_count(),
+        );
+        debug_assert_eq!(
+            self.full_transcript.len(),
+            full_len_before,
+            "compaction must not mutate full_transcript"
+        );
+        self.refresh_usage_snapshot_only();
     }
 
     /// Force an LLM compaction of the oldest turns regardless of current token
     /// count. Used by the recovery path when the model returns a context-too-long
     /// error. Falls back to `micro_compact` if the LLM call or JSON parse fails.
+    /// Does not touch `full_transcript`.
     pub(super) async fn force_compact(&mut self, target_ratio: f64) {
+        let full_len_before = self.full_transcript.len();
+        let tokens_before = self.context.current_token_count();
         let remove_fraction = (1.0 - target_ratio).clamp(0.1, 0.6);
         let num_turns = (self.context.len().max(4) as f64 * remove_fraction) as usize;
         let request = match self.context.prepare_summary(num_turns) {
             Some(r) => r,
             None => {
                 self.context.micro_compact(self.context.len().max(4) / 3);
+                self.emit_context_compacted(
+                    "micro_compact",
+                    tokens_before,
+                    self.context.current_token_count(),
+                );
+                debug_assert_eq!(self.full_transcript.len(), full_len_before);
+                self.refresh_usage_snapshot_only();
                 return;
             }
         };
@@ -135,6 +195,13 @@ impl Run {
             Ok(r) => r,
             Err(_) => {
                 self.context.micro_compact(self.context.len().max(4) / 3);
+                self.emit_context_compacted(
+                    "micro_compact",
+                    tokens_before,
+                    self.context.current_token_count(),
+                );
+                debug_assert_eq!(self.full_transcript.len(), full_len_before);
+                self.refresh_usage_snapshot_only();
                 return;
             }
         };
@@ -143,18 +210,48 @@ impl Run {
             Ok(s) => s,
             Err(_) => {
                 self.context.micro_compact(self.context.len().max(4) / 3);
+                self.emit_context_compacted(
+                    "micro_compact",
+                    tokens_before,
+                    self.context.current_token_count(),
+                );
+                debug_assert_eq!(self.full_transcript.len(), full_len_before);
+                self.refresh_usage_snapshot_only();
                 return;
             }
         };
 
         self.context
             .apply_summary(request.split_index, &summary, num_turns);
+        self.emit_context_compacted(
+            "llm_summary",
+            tokens_before,
+            self.context.current_token_count(),
+        );
+        debug_assert_eq!(self.full_transcript.len(), full_len_before);
+        self.refresh_usage_snapshot_only();
+    }
+
+    fn emit_context_compacted(&mut self, strategy: &str, tokens_before: usize, tokens_after: usize) {
+        self.emit(crate::runtime::event::RunEvent::ContextCompacted {
+            summary: format!(
+                "{strategy}: {tokens_before} → {tokens_after} tokens (model window only; full transcript unchanged)"
+            ),
+        });
+    }
+
+    /// Update the Context Usage ring without rewriting the full-transcript snapshot.
+    fn refresh_usage_snapshot_only(&self) {
+        *self.usage_snapshot.write() = self.context.usage_snapshot();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compressor::TurnSummary;
+    use crate::context::ContextEngine;
+    use crate::types::Role;
 
     #[test]
     fn test_compact_decision_returns_none_under_threshold() {
@@ -207,5 +304,83 @@ mod tests {
         // 5 turns → keep = max(5/2, 4) = max(2, 4) = 4
         let keep = compact_decision(10_000, 9_000, 5, 6).unwrap();
         assert_eq!(keep, 4);
+    }
+
+    /// Dual-track invariant: chunked_drop + apply_summary shrink the model
+    /// window but leave a parallel full transcript untouched.
+    #[test]
+    fn dual_track_compact_leaves_full_transcript_intact() {
+        let mut full: Vec<Message> = Vec::new();
+        let mut engine = ContextEngine::new("identity", 200_000);
+
+        let push = |full: &mut Vec<Message>, engine: &mut ContextEngine, msg: Message| {
+            full.push(msg.clone());
+            engine.add(msg);
+        };
+
+        for i in 0..8 {
+            push(
+                &mut full,
+                &mut engine,
+                Message::user(&format!("user turn {i}")),
+            );
+            push(
+                &mut full,
+                &mut engine,
+                Message::assistant(&format!("assistant reply {i}")),
+            );
+        }
+
+        let full_len_before = full.len();
+        let first_user = full[0].content.clone();
+        let model_len_before = engine.len();
+        assert_eq!(full_len_before, model_len_before);
+
+        let dropped = engine.chunked_drop(6);
+        assert!(dropped > 0);
+        assert!(engine.len() < model_len_before);
+        assert_eq!(full.len(), full_len_before, "chunked_drop must not touch full");
+        assert_eq!(full[0].content, first_user);
+
+        let summary = TurnSummary {
+            decisions: vec!["keep going".into()],
+            files_modified: vec![],
+            errors_encountered: vec![],
+            unresolved: vec![],
+            key_facts: vec!["fact".into()],
+        };
+        let split = engine.len().saturating_sub(2).max(1);
+        // Summarize whatever is still in the model window front.
+        if engine.len() > 2 {
+            let num_turns = 1;
+            engine.apply_summary(1.min(split), &summary, num_turns);
+            assert!(
+                engine
+                    .raw_messages()
+                    .iter()
+                    .any(|m| {
+                        m.role == Role::Assistant
+                            && m.content
+                                .as_deref()
+                                .is_some_and(|c| c.contains("[Compressed turns"))
+                    }),
+                "summary lives only in the model window"
+            );
+        }
+
+        assert_eq!(
+            full.len(),
+            full_len_before,
+            "full transcript must survive summary compact"
+        );
+        assert_eq!(full[0].content, first_user);
+        assert!(
+            !full.iter().any(|m| {
+                m.content
+                    .as_deref()
+                    .is_some_and(|c| c.contains("[Compressed turns"))
+            }),
+            "summary must never appear in the full transcript"
+        );
     }
 }

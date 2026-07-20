@@ -183,8 +183,9 @@ impl RunManager {
         None
     }
 
-    /// Canonical raw transcript for one Run. Dynamic context segments are not
-    /// included, so the result is safe to persist as future model history.
+    /// Full (uncompressed) conversation transcript for one Run. Safe to
+    /// persist as the canonical session history — compaction never mutates it.
+    /// Dynamic context segments are not included.
     pub async fn context_snapshot_for_run(&self, run_id: &str) -> Option<Vec<Message>> {
         self.runs
             .lock()

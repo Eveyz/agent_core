@@ -154,7 +154,7 @@ impl Run {
             if !reasoning.is_empty() {
                 assistant_msg = assistant_msg.with_reasoning(reasoning);
             }
-            self.context.add(assistant_msg.clone());
+            self.append_conversation(assistant_msg.clone());
             self.save_session_snapshot();
             self.emit(RunEvent::MessageEnd {
                 message_id: message_id.clone(),
@@ -276,7 +276,7 @@ impl Run {
         if !reasoning.is_empty() {
             assistant_msg = assistant_msg.with_reasoning(reasoning);
         }
-        self.context.add(assistant_msg.clone());
+        self.append_conversation(assistant_msg.clone());
         let after_context_ms = post_model_t0.elapsed().as_millis() as u64;
         self.save_session_snapshot();
         let after_snapshot_ms = post_model_t0.elapsed().as_millis() as u64;
@@ -429,8 +429,11 @@ impl Run {
                 is_error: is_error || aborted,
             });
 
-            self.context
-                .add(Message::tool(call.id.clone(), result.clone(), Some(call.function.name.clone())));
+            self.append_conversation(Message::tool(
+                call.id.clone(),
+                result.clone(),
+                Some(call.function.name.clone()),
+            ));
         }
         self.save_session_snapshot();
 
@@ -1080,7 +1083,7 @@ impl Run {
         let Some(path) = self.session_snapshot_path.clone() else {
             return;
         };
-        let messages = crate::session::messages_for_snapshot(self.context.raw_messages());
+        let messages = crate::session::messages_for_snapshot(self.full_transcript());
         let generation = self
             .session_snapshot_gen
             .fetch_add(1, Ordering::Relaxed)

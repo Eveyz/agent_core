@@ -188,12 +188,21 @@ pub struct Run {
     /// avoid clobbering a fresher snapshot.
     session_snapshot_gen: Arc<AtomicU64>,
 
-    /// Shared, read-only context snapshot for side-channel `/btw` queries.
-    /// Refreshed at turn boundaries; read via `RunHandle::context_snapshot()`.
+    /// Shared, read-only **full** transcript snapshot for persistence and
+    /// side-channel `/btw` queries. Always the uncompressed conversation —
+    /// never the compactable model window. Refreshed at turn boundaries;
+    /// read via `RunHandle::context_snapshot()`.
     context_snapshot: Arc<RwLock<Vec<Message>>>,
 
     /// Shared context usage breakdown for the Context Usage popover.
+    /// Tracks the live **model window** (`context`), which may be compacted.
     usage_snapshot: Arc<RwLock<ContextUsageSnapshot>>,
+
+    /// Immutable (w.r.t. compaction) full conversation transcript.
+    /// Every real user/assistant/tool/(injected system) message is appended
+    /// here; `maybe_compact` only mutates `context.messages`. This is what
+    /// gets persisted to SQLite / crash snapshots so UI resume stays full.
+    full_transcript: Vec<Message>,
 }
 
 impl Run {
@@ -315,7 +324,8 @@ impl Run {
         let recovery_ctx = RecoveryContext::new(&model_config.model_id, max_context_tokens);
         let hooks = brain.build_hooks();
 
-        // Populate history
+        // Seed both tracks from session history (full archive + model window).
+        let full_transcript = history.clone();
         for msg in history {
             context.add(msg);
         }
@@ -333,7 +343,8 @@ impl Run {
         crate::runtime::approval::register_run_resolver(&id, approval_resolver.clone());
 
         // Seed shared snapshots so Context Usage / btw work before the first turn.
-        *context_snapshot.write() = context.raw_messages().to_vec();
+        // Persistence snapshot = full transcript; usage = live model window.
+        *context_snapshot.write() = full_transcript.clone();
         *usage_snapshot.write() = context.usage_snapshot();
 
         Ok(Self {
@@ -374,6 +385,7 @@ impl Run {
             session_snapshot_gen: Arc::new(AtomicU64::new(0)),
             context_snapshot,
             usage_snapshot,
+            full_transcript,
             goal: initial_goal,
             goal_completed: initial_goal_completed,
             goal_continue_nudges: 0,
@@ -399,12 +411,28 @@ impl Run {
         self.context.messages()
     }
 
-    /// Refresh the shared context snapshot (read by side-channel `/btw` queries).
+    /// Full (uncompressed) conversation transcript for this Run.
+    pub(crate) fn full_transcript(&self) -> &[Message] {
+        &self.full_transcript
+    }
+
+    /// Append a real conversation message to both the full transcript and the
+    /// compactable model window. Compaction must never call this — it only
+    /// mutates `context.messages` in place.
+    pub(crate) fn append_conversation(&mut self, msg: Message) {
+        self.full_transcript.push(msg.clone());
+        self.context.add(msg);
+    }
+
+    /// Refresh shared snapshots at turn boundaries.
+    ///
+    /// - `context_snapshot` ← **full transcript** (canonical persist / UI resume)
+    /// - `usage_snapshot` ← **live model window** (Context Usage ring)
+    ///
+    /// Dynamic system segments are reconstructed per turn and must never be
+    /// written back as conversation history.
     pub(crate) fn refresh_context_snapshot(&self) {
-        // This snapshot is also the canonical persisted transcript. Dynamic
-        // context injection and the synthetic system prefix are reconstructed
-        // per turn and must never be written back as conversation history.
-        *self.context_snapshot.write() = self.context.raw_messages().to_vec();
+        *self.context_snapshot.write() = self.full_transcript.clone();
         *self.usage_snapshot.write() = self.context.usage_snapshot();
     }
 

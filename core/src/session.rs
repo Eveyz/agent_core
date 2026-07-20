@@ -304,8 +304,9 @@ impl SessionManager {
         Ok(true)
     }
 
-    /// Replace a session with the exact raw runtime transcript. UI projections
-    /// must never call this path.
+    /// Replace a session with the exact full (uncompressed) transcript.
+    /// UI projections must never call this path. Compaction must never feed
+    /// the model window into this API — only the dual-track full transcript.
     pub fn save_canonical_transcript(&self, session_id: &str, messages: &[Message]) -> Result<()> {
         self.save_canonical_transcript_inner(session_id, messages, None)
     }
@@ -1659,6 +1660,73 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .contains("PermissionPolicy")
+        );
+    }
+
+    /// Dual-track: persisting the full transcript (not the compacted model
+    /// window) keeps older turns available on resume. A synthetic summary
+    /// that only exists in the model window must not land in SQLite.
+    #[test]
+    fn dual_track_persist_full_not_compacted_window() {
+        let (mgr, _dir) = make_manager();
+
+        let mut full = Vec::new();
+        for i in 0..6 {
+            full.push(Message::user(&format!("old user {i}")));
+            full.push(Message::assistant(&format!("old assistant {i}")));
+        }
+
+        let id = mgr.save(None, &full, "/tmp", "gpt").unwrap();
+
+        // Simulate what a compacted model window looks like (must never be
+        // the canonical write after dual-track).
+        let compacted_window = vec![
+            Message::assistant(
+                "[Compressed turns 1-4]\nDecisions made:\n  • keep going\nKey facts:\n  • fact",
+            ),
+            Message::user("old user 5"),
+            Message::assistant("old assistant 5"),
+        ];
+
+        // Correct path: rewrite from full (as Run.refresh_context_snapshot now does).
+        mgr.save_canonical_transcript(&id, &full).unwrap();
+        let resumed = mgr.resume(&id).unwrap().unwrap();
+        assert_eq!(resumed.messages.len(), full.len());
+        assert_eq!(
+            resumed.messages[0].content.as_deref(),
+            Some("old user 0"),
+            "oldest turns must survive resume"
+        );
+        assert!(
+            !resumed.messages.iter().any(|m| {
+                m.content
+                    .as_deref()
+                    .is_some_and(|c| c.contains("[Compressed turns"))
+            }),
+            "LLM summary must not appear in the persisted full transcript"
+        );
+
+        // Contrast: if we wrongly saved the model window, old turns vanish
+        // and the summary leaks into UI resume.
+        mgr.save_canonical_transcript(&id, &compacted_window)
+            .unwrap();
+        let wrong = mgr.resume(&id).unwrap().unwrap();
+        assert_eq!(wrong.messages.len(), compacted_window.len());
+        assert!(
+            wrong.messages[0]
+                .content
+                .as_deref()
+                .is_some_and(|c| c.contains("[Compressed turns")),
+            "sanity: compacted window really would poison resume if persisted"
+        );
+
+        // Restore full again — resume recovers all turns (the dual-track contract).
+        mgr.save_canonical_transcript(&id, &full).unwrap();
+        let recovered = mgr.resume(&id).unwrap().unwrap();
+        assert_eq!(recovered.messages.len(), full.len());
+        assert_eq!(
+            recovered.messages[0].content.as_deref(),
+            Some("old user 0")
         );
     }
 

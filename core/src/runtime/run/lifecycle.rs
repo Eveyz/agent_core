@@ -60,7 +60,7 @@ impl Run {
                 .clone()
                 .unwrap_or_else(|| user_input.to_string())
         };
-        self.context.add(Message::user_with_model(&display_input, &self.client.model.model_id));
+        self.append_conversation(Message::user_with_model(&display_input, &self.client.model.model_id));
         self.refresh_context_snapshot();
         self.save_session_snapshot();
 
@@ -103,7 +103,7 @@ impl Run {
                 )
             };
 
-            self.context.add(Message::system(&learn_prompt));
+            self.append_conversation(Message::system(&learn_prompt));
         }
 
         // Store in memory if enabled
@@ -304,7 +304,7 @@ impl Run {
                              (todo_update as you go). Do not replan unless force=true.",
                             self.execution.phase
                         );
-                        self.context.add(Message::system(&nudge));
+                        self.append_conversation(Message::system(&nudge));
                         self.last_turn_end_time = Some(Instant::now());
                         self.current_turn_id = None;
                         continue;
@@ -475,7 +475,7 @@ impl Run {
                     ),
                 });
             }
-            self.context.add(entry.message);
+            self.append_conversation(entry.message);
             return Ok(true);
         }
         Ok(false)
