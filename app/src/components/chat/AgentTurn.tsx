@@ -67,17 +67,10 @@ function ProgressNarration({
   const [expanded, setExpanded] = useState(false);
 
   if (isStreaming || !isLong || expanded) {
-    if (isStreaming) {
-      return (
-        <div className="assistant-msg" style={{ whiteSpace: 'pre-wrap' }}>
-          {text}
-        </div>
-      );
-    }
     return (
       <div>
         <MarkdownContent content={text} className="assistant-msg" />
-        {isLong && (
+        {isLong && !isStreaming && (
           <button
             type="button"
             className="progress-expand-btn"
@@ -401,16 +394,10 @@ export const AgentTurnUI = memo(function AgentTurnUI({
             {item.type === 'assistant' ? (
               showAssistant && (
                 isFinalAssistant ? (
-                  item.data.isStreaming ? (
-                    <div className="assistant-msg" style={{ whiteSpace: 'pre-wrap' }}>
-                      {item.data.text}
-                    </div>
-                  ) : (
-                    <MarkdownContent
-                      content={item.data.text}
-                      className="assistant-msg"
-                    />
-                  )
+                  <MarkdownContent
+                    content={item.data.text}
+                    className="assistant-msg"
+                  />
                 ) : (
                   <ProgressNarration
                     text={item.data.text}
