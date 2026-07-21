@@ -370,6 +370,35 @@ impl Storage {
 
             CREATE INDEX IF NOT EXISTS idx_session_msgs ON session_messages(session_id);
 
+            CREATE TABLE IF NOT EXISTS session_plans (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                title TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'parked',
+                source_prompt_id TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_plans_session
+                ON session_plans(session_id);
+            CREATE INDEX IF NOT EXISTS idx_session_plans_status
+                ON session_plans(session_id, status);
+            CREATE INDEX IF NOT EXISTS idx_session_plans_prompt
+                ON session_plans(session_id, source_prompt_id);
+
+            CREATE TABLE IF NOT EXISTS session_plan_items (
+                plan_id TEXT NOT NULL REFERENCES session_plans(id) ON DELETE CASCADE,
+                item_id TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                depends_on TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                completed_at TEXT,
+                PRIMARY KEY (plan_id, item_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_plan_items_plan
+                ON session_plan_items(plan_id);
+
             CREATE TABLE IF NOT EXISTS cronjobs (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,

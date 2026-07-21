@@ -637,12 +637,136 @@ async fn clear_session_goal(
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())?;
 
-    // Clear in-memory session todos so the Plan panel empties immediately.
+    // Clear all plans for this session (active + parked).
     {
         let manager = state.run_manager.lock().await;
         manager.brain().todo_lists.clear_session(&session_id);
     }
     Ok(())
+}
+
+/// Snapshot of active + parked plans for UI hydrate.
+#[derive(serde::Serialize)]
+struct PlansSnapshotDto {
+    active_plan_id: Option<String>,
+    active_plan_title: Option<String>,
+    items: Vec<TodoItemDto>,
+    parked: Vec<ParkedPlanDto>,
+}
+
+#[derive(serde::Serialize)]
+struct TodoItemDto {
+    id: String,
+    description: String,
+    status: String,
+}
+
+#[derive(serde::Serialize)]
+struct ParkedPlanDto {
+    id: String,
+    title: String,
+    completed: usize,
+    total: usize,
+    updated_at: String,
+}
+
+fn plans_snapshot_dto(store: &agent_core::SessionPlanStore, session_id: &str) -> PlansSnapshotDto {
+    let snap = store.snapshot(Some(session_id));
+    PlansSnapshotDto {
+        active_plan_id: snap.active_plan_id,
+        active_plan_title: snap.active_plan_title,
+        items: snap
+            .items
+            .iter()
+            .map(|i| TodoItemDto {
+                id: i.id.clone(),
+                description: i.description.clone(),
+                status: i.status.to_string(),
+            })
+            .collect(),
+        parked: snap
+            .parked
+            .iter()
+            .map(|p| ParkedPlanDto {
+                id: p.id.clone(),
+                title: p.title.clone(),
+                completed: p.completed,
+                total: p.total,
+                updated_at: p.updated_at.clone(),
+            })
+            .collect(),
+    }
+}
+
+/// Load durable plans for a session (for TodoPanel hydrate after app restart).
+#[tauri::command]
+async fn get_session_plans(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<PlansSnapshotDto, String> {
+    let manager = state.run_manager.lock().await;
+    Ok(plans_snapshot_dto(
+        manager.brain().todo_lists.as_ref(),
+        &session_id,
+    ))
+}
+
+/// Resume a parked plan (or resolve continue if plan_id empty).
+#[tauri::command]
+async fn resume_session_plan(
+    state: State<'_, AppState>,
+    session_id: String,
+    plan_id: Option<String>,
+) -> Result<PlansSnapshotDto, String> {
+    let manager = state.run_manager.lock().await;
+    let store = manager.brain().todo_lists.as_ref();
+    if let Some(id) = plan_id.filter(|s| !s.is_empty()) {
+        store
+            .activate(Some(&session_id), &id)
+            .map_err(|e| e)?;
+    } else {
+        match store.resolve_continue(Some(&session_id)) {
+            agent_core::ContinueResolution::Activated { .. }
+            | agent_core::ContinueResolution::NothingParked => {}
+            agent_core::ContinueResolution::Choose(_) => {
+                return Err(
+                    "Multiple parked plans — pass plan_id to resume a specific one".into(),
+                );
+            }
+        }
+    }
+    Ok(plans_snapshot_dto(store, &session_id))
+}
+
+/// Cancel (drop) a plan by id, or park the active plan when plan_id is null.
+#[tauri::command]
+async fn cancel_session_plan(
+    state: State<'_, AppState>,
+    session_id: String,
+    plan_id: Option<String>,
+) -> Result<PlansSnapshotDto, String> {
+    let manager = state.run_manager.lock().await;
+    let store = manager.brain().todo_lists.as_ref();
+    if let Some(id) = plan_id.filter(|s| !s.is_empty()) {
+        store.cancel(Some(&session_id), &id).map_err(|e| e)?;
+    } else {
+        let _ = store.park_active(Some(&session_id));
+    }
+    Ok(plans_snapshot_dto(store, &session_id))
+}
+
+/// Clear all plans for a session (`/plan clear`).
+#[tauri::command]
+async fn clear_session_plans(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<PlansSnapshotDto, String> {
+    let manager = state.run_manager.lock().await;
+    manager.brain().todo_lists.clear_session(&session_id);
+    Ok(plans_snapshot_dto(
+        manager.brain().todo_lists.as_ref(),
+        &session_id,
+    ))
 }
 
 /// Get the state of a Run.
@@ -1695,13 +1819,14 @@ async fn run_agent_standalone(
     re_wire_subagent_tools_with_skills(
         &mut registry,
         model_config.clone(),
-        None,
+        Some(state.session_manager.clone()),
         permission_config.clone(),
         Some(supervisor.clone()),
         Some(cancel_token.clone()),
         0,
         brain.skill_manager.clone(),
         ApprovalRouting::LegacyScoped,
+        Some(brain.todo_lists.clone()),
     );
 
     // Ensure ShellTool (when present) is the supervised version.
@@ -2329,6 +2454,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             send_message, approve_tool, answer_input, clear_session_goal, abort_agent, replay_since,
+            get_session_plans, resume_session_plan, cancel_session_plan, clear_session_plans,
             btw_query,
             pause_run, resume_run, steer_run, cancel_steer, get_run_state,
             list_directory, search_files,

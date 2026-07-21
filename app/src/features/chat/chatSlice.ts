@@ -5,8 +5,9 @@ import { resumeSession, deleteSession } from '../project/projectSlice';
 
 import type {
   TurnBlock, SubagentEntry, ChatState, RunState, ChatEntry, FrontendPrompt,
+  TodoItem, ParkedPlan,
 } from './types';
-import { processSingleEvent, stopDanglingSubagents } from './eventHandlers';
+import { processSingleEvent, stopDanglingSubagents, clearRecoverableNotices } from './eventHandlers';
 
 // ── Re-export public chat types and selectors ──────────────────────
 export {
@@ -19,7 +20,7 @@ export {
   selectIsResumingActive,
 } from './selectors';
 export type {
-  TodoItem, TurnBlock, SubagentBlock, SubagentEntry, ChatEntry,
+  TodoItem, ParkedPlan, TurnBlock, SubagentBlock, SubagentEntry, ChatEntry,
   ChatState, RunState, RunEventPayload, RunEventType, SteerMessage,
   ClarificationQuestion, ClarificationOption, ClarificationAnswers,
 } from './types';
@@ -34,6 +35,9 @@ function ensureSession(state: ChatState, sessionId: string) {
   if (state.runId[sessionId] === undefined) state.runId[sessionId] = null;
   if (state.runState[sessionId] === undefined) state.runState[sessionId] = null;
   if (state.todo[sessionId] === undefined) state.todo[sessionId] = [];
+  if (state.parkedPlans[sessionId] === undefined) state.parkedPlans[sessionId] = [];
+  if (state.activePlanId[sessionId] === undefined) state.activePlanId[sessionId] = null;
+  if (state.activePlanTitle[sessionId] === undefined) state.activePlanTitle[sessionId] = null;
   if (state.steerQueue[sessionId] === undefined) state.steerQueue[sessionId] = [];
   if (state.allPrompts[sessionId] === undefined) state.allPrompts[sessionId] = [];
   if (state.visiblePromptsCount[sessionId] === undefined) state.visiblePromptsCount[sessionId] = 1;
@@ -86,6 +90,9 @@ const initialState: ChatState = {
   runId: {},
   runState: {},
   todo: {},
+  parkedPlans: {},
+  activePlanId: {},
+  activePlanTitle: {},
   steerQueue: {},
   allPrompts: {},
   visiblePromptsCount: {},
@@ -407,7 +414,7 @@ export const chatSlice = createSlice({
       state.processing[sid] = true;
       state._resumedFromBackend[sid] = false;
       markDirty(state, sid);
-      state.todo[sid] = [];
+      // Keep durable plans across sends — do not wipe todo/parked on user message.
 
       state.entries[sid].push({
         id: `turn-pending-${Date.now()}`,
@@ -540,6 +547,9 @@ export const chatSlice = createSlice({
       state.goal[sid] = null;
       state.goalCompleted[sid] = false;
       state.todo[sid] = [];
+      state.parkedPlans[sid] = [];
+      state.activePlanId[sid] = null;
+      state.activePlanTitle[sid] = null;
       markDirty(state, sid);
     },
     clearChat: (state, action: PayloadAction<string>) => {
@@ -552,6 +562,9 @@ export const chatSlice = createSlice({
       markPersisted(state, sid);
       state._resumedFromBackend[sid] = false;
       state.todo[sid] = [];
+      state.parkedPlans[sid] = [];
+      state.activePlanId[sid] = null;
+      state.activePlanTitle[sid] = null;
       state.steerQueue[sid] = [];
       state.allPrompts[sid] = [];
       state.visiblePromptsCount[sid] = 1;
@@ -560,6 +573,23 @@ export const chatSlice = createSlice({
       state.btwEntries[sid] = [];
       state.isResuming[sid] = false;
       state._pendingTurnId[sid] = undefined;
+    },
+    plansHydrated: (
+      state,
+      action: PayloadAction<{
+        sessionId: string;
+        items: TodoItem[];
+        parked: ParkedPlan[];
+        activePlanId?: string | null;
+        activePlanTitle?: string | null;
+      }>,
+    ) => {
+      const { sessionId: sid, items, parked, activePlanId, activePlanTitle } = action.payload;
+      ensureSession(state, sid);
+      state.todo[sid] = items ?? [];
+      state.parkedPlans[sid] = parked ?? [];
+      state.activePlanId[sid] = activePlanId ?? null;
+      state.activePlanTitle[sid] = activePlanTitle ?? null;
     },
     agentAborted: (state, action: PayloadAction<{ sessionId: string }>) => {
       const sid = action.payload.sessionId;
@@ -573,6 +603,7 @@ export const chatSlice = createSlice({
         last.endTime = Date.now();
         stopDanglingSubagents(state.subagents[sid] ?? {}, last);
         if (last.blocks) {
+          clearRecoverableNotices(last.blocks);
           last.blocks.push({ type: 'error', text: '— Interrupted —' });
         }
       }
@@ -754,6 +785,9 @@ export const chatSlice = createSlice({
       delete state.runId[sessionId];
       delete state.runState[sessionId];
       delete state.todo[sessionId];
+      delete state.parkedPlans[sessionId];
+      delete state.activePlanId[sessionId];
+      delete state.activePlanTitle[sessionId];
       delete state.steerQueue[sessionId];
       delete state.allPrompts[sessionId];
       delete state.visiblePromptsCount[sessionId];
@@ -783,6 +817,7 @@ export const {
   clarificationAnswered,
   goalCleared,
   clearChat,
+  plansHydrated,
   agentAborted,
   loadMorePrompts,
   sendFailed,

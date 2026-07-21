@@ -1,6 +1,10 @@
-import { memo, useState } from 'react';
+import { memo, useState, useCallback } from 'react';
 import { useSelector } from 'react-redux';
+import { invoke } from '@tauri-apps/api/core';
 import { RootState } from '../../store';
+import { useAppDispatch } from '../../hooks/useAppDispatch';
+import { plansHydrated } from '../../features/chat/chatSlice';
+import type { ParkedPlan, TodoItem } from '../../features/chat/types';
 import CheckCircleIcon from 'lucide-react/dist/esm/icons/check-circle.mjs';
 import CircleIcon from 'lucide-react/dist/esm/icons/circle.mjs';
 import LoaderIcon from 'lucide-react/dist/esm/icons/loader.mjs';
@@ -22,52 +26,161 @@ function statusIcon(status: string) {
   }
 }
 
+type PlansDto = {
+  items: TodoItem[];
+  parked: ParkedPlan[];
+  active_plan_id?: string | null;
+  active_plan_title?: string | null;
+};
+
+function applyPlansDto(
+  dispatch: ReturnType<typeof useAppDispatch>,
+  sessionId: string,
+  dto: PlansDto,
+) {
+  dispatch(
+    plansHydrated({
+      sessionId,
+      items: dto.items ?? [],
+      parked: dto.parked ?? [],
+      activePlanId: dto.active_plan_id ?? null,
+      activePlanTitle: dto.active_plan_title ?? null,
+    }),
+  );
+}
+
 function TodoPanel() {
   const { t } = useTranslation();
-  const todo = useSelector((state: RootState) => state.chat.todo[state.project.activeSessionId ?? '']);
+  const dispatch = useAppDispatch();
+  const sessionId = useSelector((state: RootState) => state.project.activeSessionId ?? '');
+  const todo = useSelector((state: RootState) => state.chat.todo[sessionId] ?? []);
+  const parked = useSelector((state: RootState) => state.chat.parkedPlans[sessionId] ?? []);
+  const activeTitle = useSelector(
+    (state: RootState) => state.chat.activePlanTitle[sessionId] ?? null,
+  );
   const [collapsed, setCollapsed] = useState(true);
 
-  if (!todo || todo.length === 0) return null;
+  const resumePlan = useCallback(
+    async (planId?: string) => {
+      if (!sessionId) return;
+      try {
+        const dto = await invoke<PlansDto>('resume_session_plan', {
+          sessionId,
+          planId: planId ?? null,
+        });
+        applyPlansDto(dispatch, sessionId, dto);
+      } catch (e) {
+        console.error('resume_session_plan failed', e);
+      }
+    },
+    [dispatch, sessionId],
+  );
 
-  const completed = todo.filter((t) => t.status === 'completed').length;
-  const pct = Math.round((completed / todo.length) * 100);
+  const cancelPlan = useCallback(
+    async (planId: string) => {
+      if (!sessionId) return;
+      try {
+        const dto = await invoke<PlansDto>('cancel_session_plan', {
+          sessionId,
+          planId,
+        });
+        applyPlansDto(dispatch, sessionId, dto);
+      } catch (e) {
+        console.error('cancel_session_plan failed', e);
+      }
+    },
+    [dispatch, sessionId],
+  );
 
-  if (completed === todo.length) return null;
+  const incompleteActive = todo.filter((item) => item.status !== 'completed');
+  const showActive = incompleteActive.length > 0;
+  const showParked = parked.length > 0;
+  if (!showActive && !showParked) return null;
+
+  const completed = todo.filter((item) => item.status === 'completed').length;
+  const pct = todo.length ? Math.round((completed / todo.length) * 100) : 0;
 
   return (
     <div className="todo-panel">
-      <div 
-        className="todo-header" 
-        onClick={() => setCollapsed(!collapsed)}
-        style={{ cursor: 'pointer', userSelect: 'none', marginBottom: collapsed ? 0 : 8 }}
-      >
-        <span className="todo-title-group" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          {collapsed ? <ChevronRightIcon size={14} style={{ color: 'var(--text-dim)' }} /> : <ChevronDownIcon size={14} style={{ color: 'var(--text-dim)' }} />}
-          <span className="todo-title">{t('chat.todoPanel.plan')}</span>
-        </span>
-        <span className="todo-progress-text">
-          {t('chat.todoPanel.completed', { completed, total: todo.length })}
-        </span>
-      </div>
-      
-      {!collapsed && (
+      {showActive && (
         <>
-          <div className="todo-progress-bar">
-            <div className="todo-progress-fill" style={{ width: `${pct}%` }} />
+          <div
+            className="todo-header"
+            onClick={() => setCollapsed(!collapsed)}
+            style={{ cursor: 'pointer', userSelect: 'none', marginBottom: collapsed ? 0 : 8 }}
+          >
+            <span className="todo-title-group" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              {collapsed ? (
+                <ChevronRightIcon size={14} style={{ color: 'var(--text-dim)' }} />
+              ) : (
+                <ChevronDownIcon size={14} style={{ color: 'var(--text-dim)' }} />
+              )}
+              <span className="todo-title">
+                {activeTitle ? activeTitle : t('chat.todoPanel.plan')}
+              </span>
+            </span>
+            <span className="todo-progress-text">
+              {t('chat.todoPanel.completed', { completed, total: todo.length })}
+            </span>
+          </div>
+
+          {!collapsed && (
+            <>
+              <div className="todo-progress-bar">
+                <div className="todo-progress-fill" style={{ width: `${pct}%` }} />
+              </div>
+              <ul className="todo-list">
+                {todo.map((item) => (
+                  <li key={item.id} className={`todo-item todo-item-${item.status}`}>
+                    {statusIcon(item.status)}
+                    <span className="todo-desc">{item.description}</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </>
+      )}
+
+      {showParked && (
+        <div className="todo-parked" style={{ marginTop: showActive ? 8 : 0 }}>
+          <div className="todo-header" style={{ marginBottom: 4 }}>
+            <span className="todo-title">Parked</span>
+            <span className="todo-progress-text">{parked.length}</span>
           </div>
           <ul className="todo-list">
-            {todo.map((item) => (
-              <li key={item.id} className={`todo-item todo-item-${item.status}`}>
-                {statusIcon(item.status)}
-                <span className="todo-desc">{item.description}</span>
+            {parked.map((p) => (
+              <li
+                key={p.id}
+                className="todo-item"
+                style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}
+              >
+                <span className="todo-desc" style={{ flex: 1 }}>
+                  {p.title} ({p.completed}/{p.total})
+                </span>
+                <button
+                  type="button"
+                  className="btn-allow"
+                  style={{ fontSize: 11, padding: '2px 8px' }}
+                  onClick={() => resumePlan(p.id)}
+                >
+                  Resume
+                </button>
+                <button
+                  type="button"
+                  className="btn-deny"
+                  style={{ fontSize: 11, padding: '2px 8px' }}
+                  onClick={() => cancelPlan(p.id)}
+                >
+                  Cancel
+                </button>
               </li>
             ))}
           </ul>
-        </>
+        </div>
       )}
     </div>
   );
 }
 
 export default memo(TodoPanel);
-

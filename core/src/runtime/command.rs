@@ -31,6 +31,8 @@ pub struct SteerEntry {
 pub const STEER_MID_RUN_PREFIX: &str = "\
 [USER STEER MID-RUN]
 The user injected a mid-run follow-up. Adjust your approach for the CURRENT step. \
+Do NOT invent a new prompt or transfer plan ownership. Stay on the current plan: \
+todo_update to advance, todo_write to revise, or leave it if the steer is unrelated. \
 Do NOT call todo_write to replan unless the user explicitly asks to change the plan. \
 Address the steer in your next tool actions.
 

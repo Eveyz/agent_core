@@ -205,6 +205,12 @@ pub enum RunEvent {
     // ── Planning ──────────────────────────────────────────────────
     TodoUpdated {
         items: Vec<TodoItemPayload>,
+        #[serde(default)]
+        parked: Vec<ParkedPlanPayload>,
+        #[serde(default)]
+        active_plan_id: Option<String>,
+        #[serde(default)]
+        active_plan_title: Option<String>,
     },
 
     // ── Goal ─────────────────────────────────────────────────────────
@@ -256,6 +262,18 @@ pub struct TodoItemPayload {
     pub id: String,
     pub description: String,
     pub status: String,
+}
+
+/// Parked plan summary for the frontend parked stack.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParkedPlanPayload {
+    pub id: String,
+    pub title: String,
+    pub completed: usize,
+    pub total: usize,
+    pub updated_at: String,
+    #[serde(default)]
+    pub source_prompt_id: Option<String>,
 }
 
 /// Cumulative cache hit/miss statistics aggregated across all turns of a Run.

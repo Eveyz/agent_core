@@ -96,7 +96,11 @@ pub use skills::{parse_skill_mentions, SkillDiagnostic, SkillLoader, SkillManage
 pub use subagent::{Subagent, SubagentConfig, SubagentManager, SubagentResult};
 pub use tasks::{TaskBoard, TaskRecord, TaskStatus};
 pub use teams::{AgentTeam, MessageBus, TeamMessage, TeamMessageType};
-pub use todo::{SessionTodoStore, TodoItem, TodoList, TodoStatus};
+pub use todo::{
+    is_bare_continue, is_continue_cue, is_explicit_plan_resume, is_object_bearing_continue,
+    ContinueResolution, ParkedPlanSummary, Plan, PlanStatus, PlansSnapshot, SessionPlanStore,
+    SessionTodoStore, TodoItem, TodoList, TodoStatus,
+};
 pub use trace::TraceCollector;
 pub use worktree::{WorktreeManager, WorktreeRecord, WorktreeStatus};
 pub use rusqlite;

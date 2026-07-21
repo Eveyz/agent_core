@@ -8,7 +8,7 @@ use std::time::Instant;
 use crate::runtime::tool_orchestrator::ToolOrchestrator;
 use crate::client::streaming::{TokenAccumulator, ToolCallAccumulator};
 use crate::client::ClientCacheHint;
-use crate::runtime::event::{Envelope, RunEvent, TodoItemPayload};
+use crate::runtime::event::{Envelope, RunEvent};
 use crate::runtime::guard::EventGuard;
 use crate::types::{CacheUsage, Message, MessageDelta, ReasoningState, StreamEvent, ToolCall};
 
@@ -439,26 +439,26 @@ impl Run {
 
         // Sync execution phase from todos after tool batch.
         {
-            let todos = self.session_todos();
-            let mut list = todos.lock();
+            let list = self
+                .brain
+                .todo_lists
+                .active_list(self.session_id.as_deref());
             if todo_write_ok {
                 self.execution.on_plan_written(&list, todo_write_forced);
-                let _ = list.ensure_active_step();
             } else {
                 self.execution.sync_from_todos(&list);
             }
 
             // All steps done → Verify (then Done on next successful Final).
-            if !list.items.is_empty()
-                && list
-                    .items
-                    .iter()
-                    .all(|i| i.status == crate::todo::TodoStatus::Completed)
-            {
+            if list.all_completed() {
                 use crate::runtime::execution::ExecutionPhase;
                 if self.execution.phase == ExecutionPhase::Execute {
                     self.execution.phase = ExecutionPhase::Verify;
                 }
+                let _ = self
+                    .brain
+                    .todo_lists
+                    .finish_active_if_done(self.session_id.as_deref());
             }
 
             if saw_abort || todo_write_failed {
@@ -466,7 +466,13 @@ impl Run {
                     .execution
                     .active_step_id
                     .clone()
-                    .or_else(|| list.ensure_active_step())
+                    .or_else(|| {
+                        self.brain.todo_lists.with_active_mut(
+                            self.session_id.as_deref(),
+                            |l| l.ensure_active_step(),
+                        )
+                        .flatten()
+                    })
                     .unwrap_or_else(|| "?".into());
                 let reason = if saw_abort {
                     "The previous tool batch did not finish"
@@ -486,23 +492,12 @@ impl Run {
             g.complete();
         }
 
-        // If any todo tool was called, push the current todo snapshot to the frontend.
+        // If any todo tool was called, push the current plans snapshot to the frontend.
         let todo_changed = tool_calls
             .iter()
             .any(|c| matches!(c.function.name.as_str(), "todo_write" | "todo_update"));
         if todo_changed {
-            let list = self.session_todos();
-            let items: Vec<TodoItemPayload> = list
-                .lock()
-                .items
-                .iter()
-                .map(|item| TodoItemPayload {
-                    id: item.id.clone(),
-                    description: item.description.clone(),
-                    status: item.status.to_string(),
-                })
-                .collect();
-            self.emit(RunEvent::TodoUpdated { items });
+            self.emit_plans_updated();
         }
 
         self.emit(RunEvent::TurnEnded { index: turn_index });

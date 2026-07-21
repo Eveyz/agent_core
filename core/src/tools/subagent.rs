@@ -3,6 +3,7 @@ use crate::permission::PermissionConfig;
 use crate::session::SessionManager;
 use crate::subagent::spec::{AgentSpawnRequest, EffectiveAgentSpec, ParentAgentSpec, PromptLayers};
 use crate::subagent::{PersonaKey, ResultStrategy, Subagent, SubagentConfig};
+use crate::todo::SessionPlanStore;
 use crate::tools::{Tool, ToolRegistry, ToolUpdateFn};
 use crate::types::{EventSender, Message, Role};
 use anyhow::Result;
@@ -15,13 +16,14 @@ pub fn register_subagent_tools(
     registry: &mut ToolRegistry,
     model_config: ModelConfig,
     available_tool_names: Vec<String>,
-    session_mgr: Option<Arc<Mutex<SessionManager>>>,
+    session_mgr: Option<Arc<SessionManager>>,
     permission_config: PermissionConfig,
     supervisor: Option<Arc<Mutex<crate::runtime::supervisor::ProcessSupervisor>>>,
     cancel_token: Option<tokio_util::sync::CancellationToken>,
     parent_depth: u8,
     skill_manager: Option<Arc<Mutex<crate::skills::SkillManager>>>,
     approval_resolver: Option<crate::runtime::ApprovalResolver>,
+    plan_store: Option<Arc<SessionPlanStore>>,
 ) {
     let parent_max_iterations = model_config.max_iterations;
     let mut single = SubagentSpawnTool::new(
@@ -56,6 +58,10 @@ pub fn register_subagent_tools(
         single = single.with_approval_resolver(resolver.clone());
         spawn_all = spawn_all.with_approval_resolver(resolver);
     }
+    if let Some(store) = plan_store {
+        single = single.with_plan_store(store.clone());
+        spawn_all = spawn_all.with_plan_store(store);
+    }
     registry.register(Box::new(single));
     registry.register(Box::new(spawn_all));
     registry.register(Box::new(SubagentTranscriptTool::default()));
@@ -75,7 +81,7 @@ pub fn register_subagent_tools(
 pub fn re_wire_subagent_tools(
     registry: &mut ToolRegistry,
     model_config: ModelConfig,
-    session_mgr: Option<Arc<Mutex<SessionManager>>>,
+    session_mgr: Option<Arc<SessionManager>>,
     permission_config: PermissionConfig,
     supervisor: Option<Arc<Mutex<crate::runtime::supervisor::ProcessSupervisor>>>,
     cancel_token: Option<tokio_util::sync::CancellationToken>,
@@ -91,6 +97,7 @@ pub fn re_wire_subagent_tools(
         parent_depth,
         None,
         ApprovalRouting::LegacyScoped,
+        None,
     );
 }
 
@@ -107,13 +114,14 @@ pub enum ApprovalRouting {
 pub fn re_wire_subagent_tools_with_skills(
     registry: &mut ToolRegistry,
     model_config: ModelConfig,
-    session_mgr: Option<Arc<Mutex<SessionManager>>>,
+    session_mgr: Option<Arc<SessionManager>>,
     permission_config: PermissionConfig,
     supervisor: Option<Arc<Mutex<crate::runtime::supervisor::ProcessSupervisor>>>,
     cancel_token: Option<tokio_util::sync::CancellationToken>,
     parent_depth: u8,
     skill_manager: Option<Arc<Mutex<crate::skills::SkillManager>>>,
     approval_routing: ApprovalRouting,
+    plan_store: Option<Arc<SessionPlanStore>>,
 ) {
     if !registry.has("subagent") && !registry.has("subagents") {
         return;
@@ -139,6 +147,7 @@ pub fn re_wire_subagent_tools_with_skills(
         parent_depth,
         skill_manager,
         approval_resolver,
+        plan_store,
     );
 }
 
@@ -238,7 +247,7 @@ impl Tool for SubagentTranscriptTool {
 pub(crate) struct SubagentSpawnTool {
     model_config: ModelConfig,
     available_tools: Vec<String>,
-    session_mgr: Option<Arc<Mutex<SessionManager>>>,
+    session_mgr: Option<Arc<SessionManager>>,
     permission_config: PermissionConfig,
     parent_max_iterations: usize,
     supervisor: Option<Arc<Mutex<crate::runtime::supervisor::ProcessSupervisor>>>,
@@ -249,13 +258,14 @@ pub(crate) struct SubagentSpawnTool {
     parent_depth: u8,
     skill_manager: Option<Arc<Mutex<crate::skills::SkillManager>>>,
     approval_resolver: Option<crate::runtime::ApprovalResolver>,
+    plan_store: Option<Arc<SessionPlanStore>>,
 }
 
 impl SubagentSpawnTool {
     fn new(
         model_config: ModelConfig,
         available_tools: Vec<String>,
-        session_mgr: Option<Arc<Mutex<SessionManager>>>,
+        session_mgr: Option<Arc<SessionManager>>,
         permission_config: PermissionConfig,
         parent_max_iterations: usize,
     ) -> Self {
@@ -270,6 +280,7 @@ impl SubagentSpawnTool {
             parent_depth: 0,
             skill_manager: None,
             approval_resolver: None,
+            plan_store: None,
         }
     }
 
@@ -298,6 +309,11 @@ impl SubagentSpawnTool {
 
     pub fn with_approval_resolver(mut self, resolver: crate::runtime::ApprovalResolver) -> Self {
         self.approval_resolver = Some(resolver);
+        self
+    }
+
+    pub fn with_plan_store(mut self, store: Arc<SessionPlanStore>) -> Self {
+        self.plan_store = Some(store);
         self
     }
 }
@@ -376,29 +392,16 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
             self.parent_depth,
             self.skill_manager.clone(),
             self.approval_resolver.clone(),
+            self.session_mgr.clone(),
+            self.plan_store.clone(),
         )
         .await;
-        let (result, messages) = match spawned {
+        let (result, _messages) = match spawned {
             Ok(value) => value,
             Err(error) => {
                 return Ok(error.handoff(&id).render_for_parent());
             }
         };
-
-        // Save subagent session if session manager is available
-        if let Some(ref mgr) = self.session_mgr {
-            let mgr = mgr.lock();
-            let parent_session_id = args.get("_session_id").and_then(Value::as_str);
-            let parent_run_id = args.get("_parent_run_id").and_then(Value::as_str);
-            let parent_call_id = args.get("_parent_call_id").and_then(Value::as_str);
-            let _ = mgr.save_subagent_with_messages(
-                &id,
-                &messages,
-                parent_session_id,
-                parent_run_id,
-                parent_call_id,
-            );
-        }
 
         Ok(result.format_output(strategy))
     }
@@ -409,7 +412,7 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
 pub(crate) struct SubagentSpawnAllTool {
     model_config: ModelConfig,
     available_tools: Vec<String>,
-    session_mgr: Option<Arc<Mutex<SessionManager>>>,
+    session_mgr: Option<Arc<SessionManager>>,
     permission_config: PermissionConfig,
     parent_max_iterations: usize,
     supervisor: Option<Arc<Mutex<crate::runtime::supervisor::ProcessSupervisor>>>,
@@ -418,13 +421,14 @@ pub(crate) struct SubagentSpawnAllTool {
     parent_depth: u8,
     skill_manager: Option<Arc<Mutex<crate::skills::SkillManager>>>,
     approval_resolver: Option<crate::runtime::ApprovalResolver>,
+    plan_store: Option<Arc<SessionPlanStore>>,
 }
 
 impl SubagentSpawnAllTool {
     fn new(
         model_config: ModelConfig,
         available_tools: Vec<String>,
-        session_mgr: Option<Arc<Mutex<SessionManager>>>,
+        session_mgr: Option<Arc<SessionManager>>,
         permission_config: PermissionConfig,
         parent_max_iterations: usize,
     ) -> Self {
@@ -439,6 +443,7 @@ impl SubagentSpawnAllTool {
             parent_depth: 0,
             skill_manager: None,
             approval_resolver: None,
+            plan_store: None,
         }
     }
 
@@ -467,6 +472,11 @@ impl SubagentSpawnAllTool {
 
     pub fn with_approval_resolver(mut self, resolver: crate::runtime::ApprovalResolver) -> Self {
         self.approval_resolver = Some(resolver);
+        self
+    }
+
+    pub fn with_plan_store(mut self, store: Arc<SessionPlanStore>) -> Self {
+        self.plan_store = Some(store);
         self
     }
 }
@@ -585,6 +595,7 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
             let parent_available_tools = self.available_tools.clone();
 
             let mgr_clone = self.session_mgr.clone();
+            let plan_store_clone = self.plan_store.clone();
             let sub_sender = event_sender.clone();
             let sv_clone = self.supervisor.clone();
             let ct_clone = self.cancel_token.clone();
@@ -647,21 +658,10 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                     parent_depth,
                     skill_manager,
                     approval_resolver,
+                    mgr_clone,
+                    plan_store_clone,
                 )
                 .await;
-
-                if let Some(ref mgr) = mgr_clone {
-                    let mgr = mgr.lock();
-                    if let Ok((_, ref messages)) = result {
-                        let _ = mgr.save_subagent_with_messages(
-                            &id,
-                            messages,
-                            parent_session_id.as_deref(),
-                            parent_run_id.as_deref(),
-                            parent_call_id.as_deref(),
-                        );
-                    }
-                }
 
                 (id, result, strategy)
             });
@@ -1085,6 +1085,8 @@ async fn spawn_single(
     parent_depth: u8,
     skill_manager: Option<Arc<Mutex<crate::skills::SkillManager>>>,
     approval_resolver: Option<crate::runtime::ApprovalResolver>,
+    session_mgr: Option<Arc<SessionManager>>,
+    plan_store: Option<Arc<SessionPlanStore>>,
 ) -> std::result::Result<(SpawnResult, Vec<crate::types::Message>), SpawnFailure> {
     use crate::skills::SkillManager;
 
@@ -1126,7 +1128,29 @@ Do NOT attempt to bypass a missing capability through another tool.";
     // widen a worktree-scoped Run back to the process checkout.
     let ws_root = workspace_root.to_string_lossy().to_string();
 
-    let session_id = args.get("_session_id").and_then(|v| v.as_str());
+    let parent_session_id = args.get("_session_id").and_then(|v| v.as_str());
+    let parent_run_id = args.get("_parent_run_id").and_then(Value::as_str);
+    let parent_call_id = args.get("_parent_call_id").and_then(Value::as_str);
+
+    // Pre-allocate child session + prompt so todo tools can bind before run.
+    let allocated = session_mgr.as_ref().and_then(|mgr| {
+        match mgr.pre_allocate_subagent_session(
+            id,
+            parent_session_id,
+            parent_run_id,
+            parent_call_id,
+        ) {
+            Ok(ids) => Some(ids),
+            Err(error) => {
+                tracing::warn!(
+                    subagent_id = %id,
+                    error = %error,
+                    "Failed to pre-allocate subagent session"
+                );
+                None
+            }
+        }
+    });
 
     // Inherit parent session actives ∪ any declared skills on the spawn args.
     let declared: Vec<String> = args
@@ -1140,7 +1164,7 @@ Do NOT attempt to bypass a missing capability through another tool.";
         .unwrap_or_default();
     let effective_skills = if let Some(ref sm) = skill_manager {
         let mgr = sm.lock();
-        mgr.resolve_subagent_skills(&declared, session_id)
+        mgr.resolve_subagent_skills(&declared, parent_session_id)
     } else {
         declared
     };
@@ -1207,6 +1231,15 @@ Do NOT attempt to bypass a missing capability through another tool.";
         tool_registry.remove_all(&unauthorized_refs);
     }
 
+    if let (Some(store), Some((child_sid, child_pid))) = (&plan_store, &allocated) {
+        crate::tools::todo::register_todo_tools(
+            &mut tool_registry,
+            store.clone(),
+            Some(child_sid.clone()),
+            Some(child_pid.clone()),
+        );
+    }
+
     let config = SubagentConfig {
         system_prompt: effective.system_prompt,
         tools: final_tool_names,
@@ -1229,10 +1262,8 @@ Do NOT attempt to bypass a missing capability through another tool.";
         effective.permission,
     );
     subagent = subagent.with_runtime_scope(
-        session_id.map(ToOwned::to_owned),
-        args.get("_parent_run_id")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
+        parent_session_id.map(ToOwned::to_owned),
+        parent_run_id.map(ToOwned::to_owned),
     );
     if let Some(sv) = supervisor {
         subagent = subagent.with_supervisor(sv);
@@ -1252,6 +1283,10 @@ Do NOT attempt to bypass a missing capability through another tool.";
 
     // Collect subagent messages for session saving
     let messages = subagent.into_messages();
+
+    if let (Some(mgr), Some((child_sid, child_pid))) = (session_mgr.as_ref(), &allocated) {
+        let _ = mgr.finalize_subagent_session(child_sid, child_pid, id, &messages);
+    }
 
     let result = match run_result {
         Ok(result) => result,

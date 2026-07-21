@@ -1,23 +1,45 @@
-use crate::todo::{TodoList, TodoStatus};
+use crate::todo::{SessionPlanStore, TodoStatus};
 use crate::tools::{Tool, ToolRegistry};
 use anyhow::Result;
-use parking_lot::Mutex;
 use serde_json::Value;
 use std::sync::Arc;
 
-pub fn register_todo_tools(registry: &mut ToolRegistry, todo_list: Arc<Mutex<TodoList>>) {
-    registry.register(Box::new(TodoWriteTool::new(todo_list.clone())));
-    registry.register(Box::new(TodoReadTool::new(todo_list.clone())));
-    registry.register(Box::new(TodoUpdateTool::new(todo_list)));
+pub fn register_todo_tools(
+    registry: &mut ToolRegistry,
+    store: Arc<SessionPlanStore>,
+    session_id: Option<String>,
+    prompt_id: Option<String>,
+) {
+    registry.register(Box::new(TodoWriteTool::new(
+        store.clone(),
+        session_id.clone(),
+        prompt_id.clone(),
+    )));
+    registry.register(Box::new(TodoReadTool::new(
+        store.clone(),
+        session_id.clone(),
+        prompt_id.clone(),
+    )));
+    registry.register(Box::new(TodoUpdateTool::new(store, session_id, prompt_id)));
 }
 
 struct TodoWriteTool {
-    todo_list: Arc<Mutex<TodoList>>,
+    store: Arc<SessionPlanStore>,
+    session_id: Option<String>,
+    prompt_id: Option<String>,
 }
 
 impl TodoWriteTool {
-    fn new(todo_list: Arc<Mutex<TodoList>>) -> Self {
-        Self { todo_list }
+    fn new(
+        store: Arc<SessionPlanStore>,
+        session_id: Option<String>,
+        prompt_id: Option<String>,
+    ) -> Self {
+        Self {
+            store,
+            session_id,
+            prompt_id,
+        }
     }
 }
 
@@ -79,8 +101,11 @@ impl Tool for TodoWriteTool {
         "Create or update a todo plan for complex multi-step work only. \
          Skip this tool for simple 1–2 step tasks — just execute with other tools. \
          By default MERGES with existing progress (completed/in_progress items with the \
-         same description are preserved). Pass force=true only when you must fully replace \
-         the plan (wipes statuses). Prefer todo_update to advance steps; do not replan every turn."
+         same description are preserved). If the new items look like a different job, \
+         the current plan is parked and a new active plan is created. \
+         Pass force=true only when you must fully replace the active plan (wipes statuses). \
+         Prefer todo_update to advance steps; do not replan every turn. \
+         Mid-run steers stay on the same plan — continue, rewrite, or park; do not invent a new prompt."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -105,7 +130,7 @@ impl Tool for TodoWriteTool {
                 },
                 "force": {
                     "type": "boolean",
-                    "description": "If true, wipe and replace the entire plan. Default false (merge)."
+                    "description": "If true, wipe and replace the entire active plan. Default false (merge or park+create)."
                 }
             },
             "required": ["items"]
@@ -115,48 +140,34 @@ impl Tool for TodoWriteTool {
     async fn execute(&self, args: Value) -> Result<String> {
         let items = parse_todo_items(&args)?;
         let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
-
-        let mut list = self.todo_list.lock();
-        let had_progress = list.items.iter().any(|i| {
-            matches!(
-                i.status,
-                TodoStatus::Completed | TodoStatus::InProgress
+        self.store
+            .write_plan(
+                self.session_id.as_deref(),
+                items,
+                force,
+                self.prompt_id.as_deref(),
             )
-        });
-
-        if force {
-            list.replace_all(items);
-            let _ = list.ensure_active_step();
-            Ok(format!(
-                "[plan replaced force=true]\n{}",
-                list.to_context_string()
-            ))
-        } else {
-            if had_progress {
-                list.merge_replace(items);
-                Ok(format!(
-                    "[plan merged — prior progress preserved]\n{}",
-                    list.to_context_string()
-                ))
-            } else {
-                list.replace_all(items);
-                let _ = list.ensure_active_step();
-                Ok(format!(
-                    "[plan created]\n{}",
-                    list.to_context_string()
-                ))
-            }
-        }
+            .map_err(|e| anyhow::anyhow!("{}", e))
     }
 }
 
 struct TodoReadTool {
-    todo_list: Arc<Mutex<TodoList>>,
+    store: Arc<SessionPlanStore>,
+    session_id: Option<String>,
+    prompt_id: Option<String>,
 }
 
 impl TodoReadTool {
-    fn new(todo_list: Arc<Mutex<TodoList>>) -> Self {
-        Self { todo_list }
+    fn new(
+        store: Arc<SessionPlanStore>,
+        session_id: Option<String>,
+        prompt_id: Option<String>,
+    ) -> Self {
+        Self {
+            store,
+            session_id,
+            prompt_id,
+        }
     }
 }
 
@@ -167,7 +178,8 @@ impl Tool for TodoReadTool {
     }
 
     fn description(&self) -> &str {
-        "Read the current todo list with status of all items"
+        "Read the current active todo plan with status of all items. \
+         Also lists parked plans if any."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -175,18 +187,35 @@ impl Tool for TodoReadTool {
     }
 
     async fn execute(&self, _args: Value) -> Result<String> {
-        let list = self.todo_list.lock();
-        Ok(list.to_context_string())
+        let _ = self.prompt_id; // tools are bound to a prompt at registry build time
+        let mut out = self
+            .store
+            .with_active(self.session_id.as_deref(), |list| list.to_context_string());
+        if let Some(line) = self.store.parked_injection_line(self.session_id.as_deref()) {
+            out.push('\n');
+            out.push_str(&line);
+        }
+        Ok(out)
     }
 }
 
 struct TodoUpdateTool {
-    todo_list: Arc<Mutex<TodoList>>,
+    store: Arc<SessionPlanStore>,
+    session_id: Option<String>,
+    prompt_id: Option<String>,
 }
 
 impl TodoUpdateTool {
-    fn new(todo_list: Arc<Mutex<TodoList>>) -> Self {
-        Self { todo_list }
+    fn new(
+        store: Arc<SessionPlanStore>,
+        session_id: Option<String>,
+        prompt_id: Option<String>,
+    ) -> Self {
+        Self {
+            store,
+            session_id,
+            prompt_id,
+        }
     }
 }
 
@@ -197,7 +226,8 @@ impl Tool for TodoUpdateTool {
     }
 
     fn description(&self) -> &str {
-        "Update a todo item status. Args: id (string), status (pending/in_progress/completed/blocked). \
+        "Update a todo item status on the active plan. Args: id (string), \
+         status (pending/in_progress/completed/blocked). \
          Completing a step auto-promotes the next ready item to in_progress."
     }
 
@@ -217,6 +247,7 @@ impl Tool for TodoUpdateTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String> {
+        let _ = self.prompt_id;
         let id = args["id"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("missing 'id'"))?;
@@ -231,37 +262,9 @@ impl Tool for TodoUpdateTool {
             s => anyhow::bail!("invalid status: {}", s),
         };
 
-        let mut list = self.todo_list.lock();
-        if status == TodoStatus::Completed {
-            list.complete_and_advance(id)
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
-        } else {
-            list.update_status(id, status)
-                .map_err(|e| anyhow::anyhow!("{}", e))?;
-            if status == TodoStatus::InProgress {
-                // Demote other in_progress items so there is a single cursor.
-                let others: Vec<String> = list
-                    .items
-                    .iter()
-                    .filter(|i| i.id != id && i.status == TodoStatus::InProgress)
-                    .map(|i| i.id.clone())
-                    .collect();
-                for oid in others {
-                    let _ = list.update_status(&oid, TodoStatus::Pending);
-                }
-            }
-        }
-
-        let desc = list.get(id).map(|i| i.description.as_str()).unwrap_or("");
-        let full_list = list.to_context_string();
-
-        Ok(format!(
-            "Todo '{}': \"{}\" updated to {}\n\n{}",
-            id,
-            desc,
-            args["status"].as_str().unwrap_or(""),
-            full_list
-        ))
+        self.store
+            .update_item(self.session_id.as_deref(), id, status)
+            .map_err(|e| anyhow::anyhow!("{}", e))
     }
 }
 

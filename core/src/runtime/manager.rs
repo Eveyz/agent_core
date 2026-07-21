@@ -352,6 +352,7 @@ impl RunManager {
         let run = match Run::new(
             run_id.clone(),
             session_id.clone(),
+            prompt_id.clone(),
             self.brain.clone(),
             model_config,
             cmd_rx,
@@ -364,6 +365,7 @@ impl RunManager {
             usage_snapshot.clone(),
             initial_goal,
             initial_goal_completed,
+            self.session_manager.clone(),
         ) {
             Ok(run) => run,
             Err(e) => {

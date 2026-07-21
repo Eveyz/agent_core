@@ -36,6 +36,22 @@ export interface TodoItem {
   status: 'pending' | 'in_progress' | 'completed' | 'blocked';
 }
 
+export interface ParkedPlan {
+  id: string;
+  title: string;
+  completed: number;
+  total: number;
+  updated_at: string;
+  source_prompt_id?: string | null;
+}
+
+export interface PlansState {
+  items: TodoItem[];
+  parked: ParkedPlan[];
+  activePlanId: string | null;
+  activePlanTitle: string | null;
+}
+
 export interface ClarificationOption {
   id: string;
   label: string;
@@ -150,6 +166,9 @@ export interface ChatState {
   runId: Record<string, string | null>;
   runState: Record<string, RunState | null>;
   todo: Record<string, TodoItem[]>;
+  parkedPlans: Record<string, ParkedPlan[]>;
+  activePlanId: Record<string, string | null>;
+  activePlanTitle: Record<string, string | null>;
   steerQueue: Record<string, SteerMessage[]>;
   allPrompts: Record<string, FrontendPrompt[]>;
   visiblePromptsCount: Record<string, number>;
@@ -266,6 +285,9 @@ export interface RunEventPayload {
   child_id?: string;
   label?: string;
   items?: { id: string; description: string; status: string }[];
+  parked?: ParkedPlan[];
+  active_plan_id?: string | null;
+  active_plan_title?: string | null;
   hit_tokens?: number;
   miss_tokens?: number;
   hit_rate?: number;

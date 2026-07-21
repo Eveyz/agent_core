@@ -22,6 +22,7 @@ import {
   steerMessageCancelled,
   btwAsked,
   goalCleared,
+  plansHydrated,
 } from './features/chat/chatSlice';
 import { openSettings, fetchConfig } from './features/settings/settingsSlice';
 import {
@@ -277,6 +278,60 @@ function App() {
           await invoke('clear_session_goal', { sessionId });
         } catch (e) {
           console.error('Failed to clear session goal:', e);
+        }
+        return;
+      }
+
+      const isPlanClear =
+        trimmed === '/plan clear' ||
+        trimmed === '/plan cancel' ||
+        trimmed === '/plan stop';
+      if (isPlanClear) {
+        const sessionId = activeSessionId;
+        if (!sessionId) return;
+        try {
+          const dto = await invoke<{
+            items: { id: string; description: string; status: string }[];
+            parked: { id: string; title: string; completed: number; total: number; updated_at: string }[];
+            active_plan_id?: string | null;
+            active_plan_title?: string | null;
+          }>('clear_session_plans', { sessionId });
+          dispatch(
+            plansHydrated({
+              sessionId,
+              items: (dto.items ?? []) as import('./features/chat/types').TodoItem[],
+              parked: dto.parked ?? [],
+              activePlanId: dto.active_plan_id ?? null,
+              activePlanTitle: dto.active_plan_title ?? null,
+            }),
+          );
+        } catch (e) {
+          console.error('Failed to clear session plans:', e);
+        }
+        return;
+      }
+
+      if (trimmed === '/plan park' || trimmed === '/plan pause') {
+        const sessionId = activeSessionId;
+        if (!sessionId) return;
+        try {
+          const dto = await invoke<{
+            items: { id: string; description: string; status: string }[];
+            parked: { id: string; title: string; completed: number; total: number; updated_at: string }[];
+            active_plan_id?: string | null;
+            active_plan_title?: string | null;
+          }>('cancel_session_plan', { sessionId, planId: null });
+          dispatch(
+            plansHydrated({
+              sessionId,
+              items: (dto.items ?? []) as import('./features/chat/types').TodoItem[],
+              parked: dto.parked ?? [],
+              activePlanId: dto.active_plan_id ?? null,
+              activePlanTitle: dto.active_plan_title ?? null,
+            }),
+          );
+        } catch (e) {
+          console.error('Failed to park session plan:', e);
         }
         return;
       }

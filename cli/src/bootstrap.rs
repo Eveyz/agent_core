@@ -74,12 +74,12 @@ pub async fn bootstrap_runtime(opts: BootstrapOptions) -> anyhow::Result<CliStat
 
     {
         let brain = run_manager.brain();
-        let tl = todo_list.clone();
         let tb = task_board.clone();
         let mc = brain.current_model_config().ok();
         let pc = brain.config.permissions.clone();
+        // Todo tools are registered per-Run via Brain::build_tool_registry_for
+        // (SessionPlanStore). Only extra task tools are injected here.
         brain.register_tool_fn(Box::new(move |reg: &mut agent_core::ToolRegistry| {
-            tools::todo::register_todo_tools(reg, tl.clone());
             tasks::register_task_tools(reg, tb.clone(), mc.clone().unwrap_or_default(), pc.clone());
         }));
     }

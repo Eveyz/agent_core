@@ -98,6 +98,8 @@ pub enum RunError {
 pub struct Run {
     pub id: RunId,
     pub session_id: Option<String>,
+    /// Lifecycle prompt id for this Run (from `create_prompt`), if any.
+    pub prompt_id: Option<String>,
 
     /// The shared, reusable brain.
     brain: Arc<Brain>,
@@ -210,6 +212,7 @@ impl Run {
     pub(crate) fn new(
         id: RunId,
         session_id: Option<String>,
+        prompt_id: Option<String>,
         brain: Arc<Brain>,
         model_config: ModelConfig,
         cmd_rx: mpsc::Receiver<RunCommand>,
@@ -222,6 +225,7 @@ impl Run {
         usage_snapshot: Arc<RwLock<ContextUsageSnapshot>>,
         initial_goal: Option<String>,
         initial_goal_completed: bool,
+        session_manager: Option<Arc<crate::session::SessionManager>>,
     ) -> anyhow::Result<Self> {
         let client = brain.build_client()?;
         let permission_policy = brain.build_permission_policy();
@@ -245,7 +249,11 @@ impl Run {
             working_dir.as_deref().map(std::path::Path::new),
         )?;
 
-        let mut registry = brain.build_tool_registry_for(mode, session_id.as_deref());
+        let mut registry = brain.build_tool_registry_for(
+            mode,
+            session_id.as_deref(),
+            prompt_id.as_deref(),
+        );
         if let Some(ref manager) = skill_manager {
             registry.remove_all(&[
                 "skill_search",
@@ -279,13 +287,14 @@ impl Run {
                 &mut registry,
                 model_config.clone(),
                 available_tools,
-                None,
+                session_manager,
                 brain.permission_config().clone(),
                 Some(supervisor.clone()),
                 Some(cancel_token.clone()),
                 0,
                 skill_manager.clone(),
                 Some(approval_resolver.clone()),
+                Some(brain.todo_lists.clone()),
             );
         }
 
@@ -350,6 +359,7 @@ impl Run {
         Ok(Self {
             id,
             session_id,
+            prompt_id,
             brain,
             skill_manager,
             state: RunState::Created,
@@ -436,11 +446,53 @@ impl Run {
         *self.usage_snapshot.write() = self.context.usage_snapshot();
     }
 
-    /// Todo list for this Run's session (isolated from other sessions).
+    /// Todo / plan store for this Run's session.
+    pub(crate) fn session_plan_store(&self) -> Arc<crate::todo::SessionPlanStore> {
+        self.brain.todo_lists.clone()
+    }
+
+    /// Active plan items for this session (detached snapshot for read-only sync).
     pub(crate) fn session_todos(&self) -> Arc<parking_lot::Mutex<crate::todo::TodoList>> {
-        self.brain
+        Arc::new(parking_lot::Mutex::new(
+            self.brain
+                .todo_lists
+                .active_list(self.session_id.as_deref()),
+        ))
+    }
+
+    /// Emit TodoUpdated from the current plans snapshot.
+    pub(crate) fn emit_plans_updated(&mut self) {
+        let snap = self
+            .brain
             .todo_lists
-            .for_session(self.session_id.as_deref())
+            .snapshot(self.session_id.as_deref());
+        let items: Vec<crate::runtime::event::TodoItemPayload> = snap
+            .items
+            .iter()
+            .map(|item| crate::runtime::event::TodoItemPayload {
+                id: item.id.clone(),
+                description: item.description.clone(),
+                status: item.status.to_string(),
+            })
+            .collect();
+        let parked: Vec<crate::runtime::event::ParkedPlanPayload> = snap
+            .parked
+            .iter()
+            .map(|p| crate::runtime::event::ParkedPlanPayload {
+                id: p.id.clone(),
+                title: p.title.clone(),
+                completed: p.completed,
+                total: p.total,
+                updated_at: p.updated_at.clone(),
+                source_prompt_id: p.source_prompt_id.clone(),
+            })
+            .collect();
+        self.emit(crate::runtime::event::RunEvent::TodoUpdated {
+            items,
+            parked,
+            active_plan_id: snap.active_plan_id,
+            active_plan_title: snap.active_plan_title,
+        });
     }
 
     pub fn context_mut(&mut self) -> &mut Context {

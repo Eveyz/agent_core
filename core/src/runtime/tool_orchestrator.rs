@@ -73,7 +73,10 @@ impl<'a> ToolOrchestrator<'a> {
             "LATENCY: preflight begin"
         );
         let mut allowed: Vec<(usize, ToolCall, Value)> = Vec::new();
-        let mut results = vec![String::new(); calls.len()];
+        // `None` = not yet completed. Must not use empty String as the sentinel:
+        // successful tools (e.g. `mkdir`) often return "" and would be
+        // misclassified as aborted.
+        let mut results: Vec<Option<String>> = vec![None; calls.len()];
         let mut first_tool_started_logged = false;
 
         for (i, call) in calls.iter().enumerate() {
@@ -116,7 +119,7 @@ impl<'a> ToolOrchestrator<'a> {
 
             match decision {
                 PermissionDecision::Deny(reason) => {
-                    results[i] = format!("Permission denied: {}", reason);
+                    results[i] = Some(format!("Permission denied: {}", reason));
                     continue;
                 }
                 PermissionDecision::Ask(_reason, prompt) => {
@@ -182,10 +185,10 @@ impl<'a> ToolOrchestrator<'a> {
                             );
                             match &choice {
                                 ApprovalChoice::Deny | ApprovalChoice::DenyPersistent => {
-                                    results[i] = format!(
+                                    results[i] = Some(format!(
                                         "Permission denied by user: tool '{}' was not approved",
                                         call.function.name
-                                    );
+                                    ));
 
                                     // Add to blacklist if persistent deny
                                     if matches!(choice, ApprovalChoice::DenyPersistent) {
@@ -280,10 +283,12 @@ impl<'a> ToolOrchestrator<'a> {
                                 ));
                             }
                             if self.cancel_token.is_cancelled() {
-                                results[i] = "Aborted".to_string();
+                                results[i] = Some("Aborted".to_string());
                             } else {
-                                results[i] =
-                                    format!("Approval cancelled for tool '{}'", call.function.name);
+                                results[i] = Some(format!(
+                                    "Approval cancelled for tool '{}'",
+                                    call.function.name
+                                ));
                             }
                             continue;
                         }
@@ -310,7 +315,7 @@ impl<'a> ToolOrchestrator<'a> {
 
             match hook_result {
                 PreToolResult::Veto(reason) => {
-                    results[i] = format!("Hook vetoed: {}", reason);
+                    results[i] = Some(format!("Hook vetoed: {}", reason));
                     continue;
                 }
                 PreToolResult::Proceed(modified_args) => {
@@ -363,7 +368,7 @@ impl<'a> ToolOrchestrator<'a> {
         );
 
         if allowed.is_empty() {
-            return results;
+            return finalize_tool_results(results);
         }
 
         // ── Execution stage: DAG-scheduled. ────────────────────────────────
@@ -406,7 +411,7 @@ impl<'a> ToolOrchestrator<'a> {
         // Seed: launch every node with indegree 0.
         for (node_idx, node) in nodes.iter().enumerate() {
             if self.cancel_token.is_cancelled() {
-                results[node.idx] = "Aborted".to_string();
+                results[node.idx] = Some("Aborted".to_string());
                 indegree[node_idx] = usize::MAX; // mark so we never launch
             } else if indegree[node_idx] == 0 {
                 in_flight.push(self.run_node(node_idx, node, on_event));
@@ -425,7 +430,7 @@ impl<'a> ToolOrchestrator<'a> {
                     break;
                 }
             };
-            results[nodes[done_node_idx].idx] = output;
+            results[nodes[done_node_idx].idx] = Some(output);
 
             // Release dependents whose predecessors are all done.
             for &dep in &dependents[done_node_idx] {
@@ -439,15 +444,16 @@ impl<'a> ToolOrchestrator<'a> {
         }
 
         // Anything still unfinished (cancelled mid-flight) is aborted.
+        // Use `is_none()` — empty `Some("")` is a valid successful result.
         for node in nodes.iter() {
-            if results[node.idx].is_empty() {
-                results[node.idx] = "Aborted".to_string();
+            if results[node.idx].is_none() {
+                results[node.idx] = Some("Aborted".to_string());
             }
         }
 
         // Post-tool hooks
         for (i, call, args) in &allowed {
-            let output = results[*i].clone();
+            let output = results[*i].clone().unwrap_or_default();
             let is_error = crate::runtime::execution::tool_result_is_error(&output);
 
             if !is_error {
@@ -456,11 +462,11 @@ impl<'a> ToolOrchestrator<'a> {
                     args,
                     &output,
                 );
-                results[*i] = final_output;
+                results[*i] = Some(final_output);
             }
         }
 
-        results
+        finalize_tool_results(results)
     }
 
     /// Block on `ask_user`: emit InputRequested, await InputResolver.
@@ -690,6 +696,15 @@ impl<'a> ToolOrchestrator<'a> {
     }
 }
 
+/// Convert optional result slots to concrete strings. Remaining `None` slots
+/// (should not happen after the unfinished-abort pass) become `"Aborted"`.
+fn finalize_tool_results(results: Vec<Option<String>>) -> Vec<String> {
+    results
+        .into_iter()
+        .map(|r| r.unwrap_or_else(|| "Aborted".to_string()))
+        .collect()
+}
+
 /// Build a `ToolPermissionPattern` for an approval that is scoped to the exact
 /// invocation the user approved — the `command` (shell), `path` (file tools),
 /// and `host` (network) — rather than the bare tool name.
@@ -811,5 +826,113 @@ mod scope_tests {
             scoped_approval_key(Some("run-a"), "prompt-1"),
             scoped_approval_key(Some("run-b"), "prompt-1")
         );
+    }
+}
+
+#[cfg(test)]
+mod empty_success_tests {
+    use super::*;
+    use crate::hooks::HookRegistry;
+    use crate::permission::{PermissionMode, PermissionPolicy};
+    use crate::tools::Tool;
+    use crate::types::{FunctionCall, ToolCall, ToolExecutionMode};
+    use async_trait::async_trait;
+    use serde_json::{json, Value};
+
+    /// Tool that succeeds with an empty string — same shape as `mkdir` / `true`.
+    struct SilentOkTool;
+
+    #[async_trait]
+    impl Tool for SilentOkTool {
+        fn name(&self) -> &str {
+            "silent_ok"
+        }
+
+        fn description(&self) -> &str {
+            "returns empty success"
+        }
+
+        fn parameters_schema(&self) -> Value {
+            json!({"type": "object", "properties": {}})
+        }
+
+        async fn execute(&self, _args: Value) -> anyhow::Result<String> {
+            Ok(String::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_successful_tool_result_is_not_marked_aborted() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(SilentOkTool));
+
+        let mut policy = PermissionPolicy::with_builtin_defaults().with_mode(PermissionMode::Yolo);
+        let mut orchestrator = ToolOrchestrator {
+            registry: &registry,
+            permission_policy: &mut policy,
+            hook_registry: Arc::new(Mutex::new(HookRegistry::new())),
+            tool_execution_mode: ToolExecutionMode::Parallel,
+            cancel_token: CancellationToken::new(),
+            approval_resolver: None,
+            input_resolver: None,
+            session_id: None,
+            run_id: None,
+            working_dir: None,
+        };
+
+        let calls = vec![ToolCall {
+            id: "call-1".into(),
+            call_type: "function".into(),
+            function: FunctionCall {
+                name: "silent_ok".into(),
+                arguments: "{}".into(),
+            },
+        }];
+
+        let results = orchestrator.execute_tools(&calls, &|_, _| {}).await;
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0], "",
+            "empty success must stay empty, not become Aborted"
+        );
+        assert!(
+            !crate::runtime::execution::tool_result_is_error(&results[0]),
+            "empty success must not be treated as an error"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_unfinished_tool_is_still_aborted() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(SilentOkTool));
+
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let mut policy = PermissionPolicy::with_builtin_defaults().with_mode(PermissionMode::Yolo);
+        let mut orchestrator = ToolOrchestrator {
+            registry: &registry,
+            permission_policy: &mut policy,
+            hook_registry: Arc::new(Mutex::new(HookRegistry::new())),
+            tool_execution_mode: ToolExecutionMode::Parallel,
+            cancel_token: cancel,
+            approval_resolver: None,
+            input_resolver: None,
+            session_id: None,
+            run_id: None,
+            working_dir: None,
+        };
+
+        let calls = vec![ToolCall {
+            id: "call-1".into(),
+            call_type: "function".into(),
+            function: FunctionCall {
+                name: "silent_ok".into(),
+                arguments: "{}".into(),
+            },
+        }];
+
+        let results = orchestrator.execute_tools(&calls, &|_, _| {}).await;
+        assert_eq!(results, vec!["Aborted".to_string()]);
     }
 }

@@ -169,13 +169,13 @@ impl Run {
             self.goal = None;
             self.goal_completed = false;
             self.goal_continue_nudges = 0;
-            {
-                let todos = self.session_todos();
-                let mut list = todos.lock();
-                list.replace_all(Vec::new());
+            if let Some(ref sid) = self.session_id {
+                self.brain.todo_lists.clear_session(sid);
+            } else {
+                self.brain.todo_lists.clear_session("");
             }
             self.emit(RunEvent::GoalCleared);
-            self.emit(RunEvent::TodoUpdated { items: vec![] });
+            self.emit_plans_updated();
         }
 
         // /goal <text>: pin a new goal (do NOT auto-decompose).
@@ -185,13 +185,13 @@ impl Run {
             self.goal = Some(g.clone());
             self.goal_completed = false;
             self.goal_continue_nudges = 0;
-            {
-                let todos = self.session_todos();
-                let mut list = todos.lock();
-                list.replace_all(Vec::new());
+            if let Some(ref sid) = self.session_id {
+                self.brain.todo_lists.clear_session(sid);
+            } else {
+                self.brain.todo_lists.clear_session("");
             }
             self.emit(RunEvent::GoalSet { goal: g.clone() });
-            self.emit(RunEvent::TodoUpdated { items: vec![] });
+            self.emit_plans_updated();
         } else if !is_goal_clear {
             // Inherited session-level goal: re-emit so UI stays in sync on follow-ups.
             if let Some(g) = self.goal.clone() {
@@ -200,6 +200,105 @@ impl Run {
                 }
             }
         }
+
+        // New user prompt: park session-active plan if it belongs to another prompt.
+        if !is_goal_clear
+            && new_goal.is_none()
+            && !is_learn
+            && !crate::todo::is_plan_park_cmd(trimmed)
+            && !crate::todo::is_plan_clear_cmd(trimmed)
+            && !crate::todo::is_plan_resume_cmd(trimmed)
+            && !crate::todo::is_bare_continue(trimmed)
+            && !crate::todo::is_explicit_plan_resume(trimmed)
+            && !trimmed.is_empty()
+        {
+            if self
+                .brain
+                .todo_lists
+                .park_active_if_other_prompt(
+                    self.session_id.as_deref(),
+                    self.prompt_id.as_deref(),
+                )
+            {
+                self.emit_plans_updated();
+            }
+        }
+
+        // /plan park | /plan clear | /plan resume — explicit plan lifecycle.
+        let is_plan_park = crate::todo::is_plan_park_cmd(trimmed);
+        let is_plan_clear = crate::todo::is_plan_clear_cmd(trimmed);
+        let is_plan_resume = crate::todo::is_plan_resume_cmd(trimmed);
+        if is_plan_park {
+            let _ = self
+                .brain
+                .todo_lists
+                .park_active(self.session_id.as_deref());
+            self.emit_plans_updated();
+            self.execution.set_resume_hint(
+                "Active plan parked. Answer the user; do not advance parked steps.".to_string(),
+            );
+        } else if is_plan_clear {
+            if let Some(ref sid) = self.session_id {
+                self.brain.todo_lists.clear_session(sid);
+            } else {
+                self.brain.todo_lists.clear_session("");
+            }
+            self.emit_plans_updated();
+            self.execution.sync_from_todos(&crate::todo::TodoList::new());
+        } else if is_plan_resume || crate::todo::is_explicit_plan_resume(trimmed) {
+            let rest = trimmed
+                .strip_prefix("/plan resume")
+                .unwrap_or("")
+                .trim();
+            if is_plan_resume && !rest.is_empty() {
+                match self
+                    .brain
+                    .todo_lists
+                    .activate(self.session_id.as_deref(), rest)
+                {
+                    Ok(()) => {
+                        let list = self
+                            .brain
+                            .todo_lists
+                            .active_list(self.session_id.as_deref());
+                        self.execution.sync_from_todos(&list);
+                        self.execution.set_resume_hint(format!(
+                            "Resumed plan {rest}. Continue the NEXT step with tools."
+                        ));
+                        self.emit_plans_updated();
+                    }
+                    Err(e) => {
+                        self.execution.set_resume_hint(format!(
+                            "Could not resume plan: {e}. Call ask_user or /plan resume with a valid id."
+                        ));
+                    }
+                }
+            } else {
+                self.apply_continue_resolution();
+            }
+        } else if crate::todo::is_bare_continue(trimmed)
+            && self
+                .brain
+                .todo_lists
+                .has_resumable_work(self.session_id.as_deref())
+        {
+            // Ambiguous "continue" — ask whether to resume the plan.
+            self.apply_bare_continue_ask();
+        } else if crate::todo::looks_like_detour(trimmed) {
+            // Explicit side-channel (btw / quick question): park active so Final-block doesn't hijack.
+            let has_active_incomplete = self.brain.todo_lists.with_active(
+                self.session_id.as_deref(),
+                |list| list.has_incomplete(),
+            );
+            if has_active_incomplete {
+                let _ = self
+                    .brain
+                    .todo_lists
+                    .park_active(self.session_id.as_deref());
+                self.emit_plans_updated();
+            }
+        }
+        // Object-bearing continue ("继续算斐波那契") falls through as a normal turn.
 
         // Run the loop
         let result = self.run_loop().await;
@@ -587,8 +686,10 @@ impl Run {
     /// Whether a text-only Final should be rejected so the agent keeps working.
     /// Uses runtime ExecutionPhase (not only pinned goal).
     fn should_block_premature_final(&self) -> bool {
-        let todos = self.session_todos();
-        let list = todos.lock();
+        let list = self
+            .brain
+            .todo_lists
+            .active_list(self.session_id.as_deref());
         if self.execution.should_block_final(&list) {
             return true;
         }
@@ -602,5 +703,115 @@ impl Run {
                 .items
                 .iter()
                 .any(|i| i.status != crate::todo::TodoStatus::Completed)
+    }
+
+    fn apply_continue_resolution(&mut self) {
+        use crate::todo::ContinueResolution;
+        match self
+            .brain
+            .todo_lists
+            .resolve_continue(self.session_id.as_deref())
+        {
+            ContinueResolution::NothingParked => {
+                // Maybe already active — sync; else hint.
+                let list = self
+                    .brain
+                    .todo_lists
+                    .active_list(self.session_id.as_deref());
+                if list.has_incomplete() {
+                    self.execution.sync_from_todos(&list);
+                    if let Some(id) = self.execution.active_step_id.clone() {
+                        self.execution.set_resume_hint(format!(
+                            "Resume active plan step {id}. Do not todo_write unless the plan is wrong."
+                        ));
+                    }
+                } else {
+                    self.execution.set_resume_hint(
+                        "Nothing parked to resume. Ask what to work on, or todo_write a plan."
+                            .to_string(),
+                    );
+                }
+                self.emit_plans_updated();
+            }
+            ContinueResolution::Activated { title, .. } => {
+                let list = self
+                    .brain
+                    .todo_lists
+                    .active_list(self.session_id.as_deref());
+                self.execution.sync_from_todos(&list);
+                let step = self
+                    .execution
+                    .active_step_id
+                    .clone()
+                    .unwrap_or_else(|| "next".into());
+                self.execution.set_resume_hint(format!(
+                    "Resumed plan \"{title}\". Continue step {step} with tools; \
+                     do NOT todo_write unless the plan is wrong."
+                ));
+                self.emit_plans_updated();
+            }
+            ContinueResolution::Choose(parked) => {
+                let mut choices = String::from(
+                    "Multiple parked plans. Call ask_user with ONE question listing these options \
+                     (use plan ids as option ids). Default/latest is first:\n",
+                );
+                for (i, p) in parked.iter().enumerate() {
+                    choices.push_str(&format!(
+                        "  {}. id={} \"{}\" ({}/{})\n",
+                        i + 1,
+                        p.id,
+                        p.title,
+                        p.completed,
+                        p.total
+                    ));
+                }
+                choices.push_str(
+                    "After the user picks, the runtime will activate via /plan resume <id> \
+                     or you may tell them to click Resume in the UI. Do not invent todo ids.",
+                );
+                self.execution.set_resume_hint(choices);
+                self.emit_plans_updated();
+            }
+        }
+    }
+
+    /// Bare "continue" with resumable work — force ask_user to avoid hijacking.
+    fn apply_bare_continue_ask(&mut self) {
+        let latest = self
+            .brain
+            .todo_lists
+            .latest_parked(self.session_id.as_deref());
+        let active = self
+            .brain
+            .todo_lists
+            .active_list(self.session_id.as_deref());
+        let (label, progress) = if let Some(p) = latest {
+            (p.title, format!("{}/{}", p.completed, p.total))
+        } else if active.has_incomplete() {
+            let (done, total) = active.progress_counts();
+            let title = self
+                .brain
+                .todo_lists
+                .snapshot(self.session_id.as_deref())
+                .active_plan_title
+                .unwrap_or_else(|| "current plan".into());
+            (title, format!("{done}/{total}"))
+        } else {
+            self.execution.set_resume_hint(
+                "Nothing to resume. Ask what to work on, or todo_write a plan.".to_string(),
+            );
+            return;
+        };
+
+        self.execution.set_resume_hint(format!(
+            "The user said a bare \"continue\" which is ambiguous. Call ask_user with ONE question:\n\
+             \"Continue executing the plan '{label}' ({progress}), or do something else?\"\n\
+             Options:\n\
+             - id=resume_plan label=\"Continue plan: {label} ({progress})\"\n\
+             - id=not_plan label=\"Not the plan — follow my message as written\"\n\
+             If they pick resume_plan, tell them to say /plan resume (or click Resume). \
+             If not_plan, answer their message without advancing parked steps."
+        ));
+        self.emit_plans_updated();
     }
 }

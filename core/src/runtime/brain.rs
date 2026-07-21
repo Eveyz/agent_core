@@ -25,7 +25,7 @@ use crate::permission::{PermissionConfig, PermissionPolicy};
 use crate::prompt;
 use crate::reflector::Reflector;
 use crate::skills::SkillManager;
-use crate::todo::SessionTodoStore;
+use crate::todo::SessionPlanStore;
 use crate::tools::ToolRegistry;
 use crate::types::ToolExecutionMode;
 use std::collections::HashMap;
@@ -48,8 +48,8 @@ pub struct Brain {
     /// Workspace-scoped managers prevent same-named project skills from
     /// changing underneath Runs in another project.
     workspace_skill_managers: Arc<Mutex<HashMap<PathBuf, Arc<Mutex<SkillManager>>>>>,
-    /// Per-session todo lists (planning state shared across Runs of one session only).
-    pub todo_lists: Arc<SessionTodoStore>,
+    /// Per-session multi-plan store (active / parked plans shared across Runs).
+    pub todo_lists: Arc<SessionPlanStore>,
     /// Offline reflector (analyzes Run event logs after completion).
     pub reflector: Option<Reflector>,
     /// The currently active model name (e.g. "openai/gpt-4o").
@@ -91,13 +91,16 @@ impl Brain {
         let reflector = Self::build_reflector(&config);
 
         let current_model_name = config.default_model.clone();
-        let todo_lists = Arc::new(SessionTodoStore::new());
+        let storage = memory.as_ref().map(|m| m.lock().storage());
+        let todo_lists = Arc::new(SessionPlanStore::with_storage(storage));
 
         // Build a baseline tool registry for CLI display.
         let mut base_tool_registry = ToolRegistry::with_defaults();
         crate::tools::todo::register_todo_tools(
             &mut base_tool_registry,
-            todo_lists.for_session(None),
+            todo_lists.clone(),
+            None,
+            None,
         );
         crate::tools::ask_user::register_ask_user_tool(&mut base_tool_registry);
         if let Some(ref sm) = skill_manager {
@@ -438,14 +441,15 @@ impl Brain {
     /// - **Plan**: read + plan tools (no write)
     /// - **Build**: all tools
     pub fn build_tool_registry(&self, mode: AgentMode) -> ToolRegistry {
-        self.build_tool_registry_for(mode, None)
+        self.build_tool_registry_for(mode, None, None)
     }
 
-    /// Like [`Self::build_tool_registry`], but wires todo tools to the given session.
+    /// Like [`Self::build_tool_registry`], but wires todo tools to the given session/prompt.
     pub fn build_tool_registry_for(
         &self,
         mode: AgentMode,
         session_id: Option<&str>,
+        prompt_id: Option<&str>,
     ) -> ToolRegistry {
         let mut registry = ToolRegistry::with_defaults();
 
@@ -459,7 +463,9 @@ impl Brain {
 
         crate::tools::todo::register_todo_tools(
             &mut registry,
-            self.todo_lists.for_session(session_id),
+            self.todo_lists.clone(),
+            session_id.map(|s| s.to_string()),
+            prompt_id.map(|s| s.to_string()),
         );
         crate::tools::ask_user::register_ask_user_tool(&mut registry);
 
@@ -498,6 +504,7 @@ impl Brain {
                 0,
                 self.skill_manager.clone(),
                 None,
+                Some(self.todo_lists.clone()),
             );
         }
 

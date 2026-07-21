@@ -503,34 +503,81 @@ impl SessionManager {
         parent_run_id: Option<&str>,
         parent_call_id: Option<&str>,
     ) -> Result<String> {
-        // Prepend a user message identifying the subagent
-        let mut full_messages = vec![Message::user(&format!("Subagent task: {}", subagent_id))];
-        full_messages.extend_from_slice(messages);
-        let session_id = self.save_full(
-            None,
-            &full_messages,
-            "",
-            "subagent",
+        let (session_id, prompt_id) = self.pre_allocate_subagent_session(
+            subagent_id,
             parent_session_id,
-            "subagent",
-            None,
-            None,
+            parent_run_id,
+            parent_call_id,
+        )?;
+        self.finalize_subagent_session(&session_id, &prompt_id, subagent_id, messages)?;
+        Ok(session_id)
+    }
+
+    /// Create a child session + prompt before the subagent runs so todo tools
+    /// can bind to a durable `(session_id, prompt_id)` during execution.
+    pub fn pre_allocate_subagent_session(
+        &self,
+        subagent_id: &str,
+        parent_session_id: Option<&str>,
+        parent_run_id: Option<&str>,
+        parent_call_id: Option<&str>,
+    ) -> Result<(String, String)> {
+        let db = self.storage.conn();
+        let now = Utc::now().to_rfc3339();
+        let session_id = uuid::Uuid::new_v4().to_string();
+        let prompt_id = uuid::Uuid::new_v4().to_string();
+        let title = format!("Subagent: {subagent_id}");
+        let parent = parent_session_id.unwrap_or("");
+
+        db.execute(
+            "INSERT INTO sessions (id, title, start_time, message_count, prompt_count, cwd, model_used, parent_session_id, session_type, project_id, mode, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, 0, 1, '', 'subagent', ?4, 'subagent', '', 'build', ?3, ?3)",
+            rusqlite::params![session_id, title, now, parent],
+        )?;
+        db.execute(
+            "INSERT INTO prompts (id, session_id, turn_index, model, status, started_at, created_at) \
+             VALUES (?1, ?2, 0, 'subagent', 'running', ?3, ?3)",
+            rusqlite::params![prompt_id, session_id, now],
         )?;
         let child_run_id = uuid::Uuid::new_v4().to_string();
-        self.storage.conn().execute(
+        db.execute(
             "INSERT OR REPLACE INTO subagent_lineage \
              (session_id, parent_session_id, parent_run_id, parent_call_id, child_run_id, created_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             rusqlite::params![
                 session_id,
-                parent_session_id.unwrap_or(""),
+                parent,
                 parent_run_id.unwrap_or(""),
                 parent_call_id.unwrap_or(""),
                 child_run_id,
-                Utc::now().to_rfc3339(),
+                now,
             ],
         )?;
-        Ok(session_id)
+        Ok((session_id, prompt_id))
+    }
+
+    /// Persist subagent messages into a pre-allocated session/prompt.
+    pub fn finalize_subagent_session(
+        &self,
+        session_id: &str,
+        prompt_id: &str,
+        subagent_id: &str,
+        messages: &[Message],
+    ) -> Result<()> {
+        let mut full_messages = vec![Message::user(&format!("Subagent task: {}", subagent_id))];
+        full_messages.extend_from_slice(messages);
+        self.save_full(
+            Some(session_id),
+            &full_messages,
+            "",
+            "subagent",
+            None,
+            "subagent",
+            None,
+            Some(prompt_id),
+        )?;
+        let _ = self.finish_prompt(prompt_id, "completed", &serde_json::json!({}));
+        Ok(())
     }
 
     pub fn subagent_lineage(&self, session_id: &str) -> Result<Option<SubagentLineage>> {
@@ -2312,5 +2359,90 @@ mod tests {
         );
         assert!(!snapshot_file.exists());
         assert!(!chat_dir.exists());
+    }
+
+    #[test]
+    fn pre_allocate_subagent_session_then_finalize() {
+        let (mgr, _dir) = make_manager();
+        let parent = mgr
+            .save(None, &make_messages(), "/tmp", "gpt")
+            .unwrap();
+        let (child_sid, child_pid) = mgr
+            .pre_allocate_subagent_session(
+                "researcher",
+                Some(&parent),
+                Some("run-1"),
+                Some("call-1"),
+            )
+            .unwrap();
+
+        // Session + prompt exist before any messages are written.
+        let db = mgr.storage.conn();
+        let exists: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE id = ?1 AND session_type = 'subagent'",
+                rusqlite::params![child_sid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 1);
+        let prompt_status: String = db
+            .query_row(
+                "SELECT status FROM prompts WHERE id = ?1",
+                rusqlite::params![child_pid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(prompt_status, "running");
+        drop(db);
+
+        let store = crate::todo::SessionPlanStore::with_storage(Some(mgr.storage.clone()));
+        store
+            .write_plan(
+                Some(&child_sid),
+                vec!["Research step".into()],
+                false,
+                Some(&child_pid),
+            )
+            .unwrap();
+        assert_eq!(
+            store.active_source_prompt_id(Some(&child_sid)).as_deref(),
+            Some(child_pid.as_str())
+        );
+
+        mgr.finalize_subagent_session(
+            &child_sid,
+            &child_pid,
+            "researcher",
+            &[Message {
+                role: Role::Assistant,
+                content: Some("done".into()),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+                model: None,
+                metadata: None,
+                reasoning: None,
+            }],
+        )
+        .unwrap();
+
+        let db = mgr.storage.conn();
+        let status: String = db
+            .query_row(
+                "SELECT status FROM prompts WHERE id = ?1",
+                rusqlite::params![child_pid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "completed");
+        let msg_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM session_messages WHERE session_id = ?1",
+                rusqlite::params![child_sid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(msg_count >= 2);
     }
 }

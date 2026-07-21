@@ -6,6 +6,7 @@ import type {
   RunEventPayload,
   RunState,
   TodoItem,
+  ParkedPlan,
   ClarificationQuestion,
   ClarificationAnswers,
 } from './types';
@@ -52,7 +53,7 @@ function finalizeAllBlocks(blocks: AnyBlock[] | undefined): void {
 // ── Unified block operations (work on any block array) ──────────────
 
 /** Drop in-flight recovery banners once the model stream resumes (or hard-fails). */
-function clearRecoverableNotices(blocks: AnyBlock[]): void {
+export function clearRecoverableNotices(blocks: AnyBlock[]): void {
   for (let i = blocks.length - 1; i >= 0; i--) {
     const b = blocks[i];
     if (b.type !== 'notice') continue;
@@ -512,11 +513,14 @@ export function handleAgentEnd(state: ChatState, sessionId: string): void {
     (e) => !(e.type === 'user' && e.isSteer && e.steerStatus === 'pending')
   );
   for (const entry of state.entries[sessionId]) {
-    if (entry.type === 'turn' && !entry.endTime) {
+    if (entry.type !== 'turn') continue;
+    if (!entry.endTime) {
       entry.endTime = Date.now();
-      if (entry.blocks) clearRecoverableNotices(entry.blocks);
       stopDanglingSubagents(state.subagents[sessionId], entry);
     }
+    // Always clear retry banners on run end — abort may have already stamped
+    // endTime before run_cancelled arrives.
+    if (entry.blocks) clearRecoverableNotices(entry.blocks);
   }
 }
 
@@ -823,6 +827,9 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
   (state.subagents ??= {})[sessionId] ??= {};
   (state._thinkBuffers ??= {})[sessionId] ??= {};
   (state.todo ??= {})[sessionId] ??= [];
+  (state.parkedPlans ??= {})[sessionId] ??= [];
+  (state.activePlanId ??= {})[sessionId] ??= null;
+  (state.activePlanTitle ??= {})[sessionId] ??= null;
   (state.steerQueue ??= {})[sessionId] ??= [];
   (state.processing ??= {})[sessionId] ??= false;
   (state.runId ??= {})[sessionId] ??= null;
@@ -895,7 +902,7 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
     }
   } else if (ev.event === 'run_started') {
     state.runState[sessionId] = 'running';
-    state.todo[sessionId] = [];
+    // Do not clear durable plans — they survive across runs / restarts.
   } else if (ev.event === 'run_paused') {
     state.runState[sessionId] = 'paused';
   } else if (ev.event === 'run_resumed') {
@@ -1025,6 +1032,9 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
       break;
     case 'todo_updated':
       state.todo[sessionId] = (ev.items as TodoItem[]) ?? [];
+      state.parkedPlans[sessionId] = (ev.parked as ParkedPlan[]) ?? [];
+      state.activePlanId[sessionId] = ev.active_plan_id ?? null;
+      state.activePlanTitle[sessionId] = ev.active_plan_title ?? null;
       break;
     case 'goal_set':
       state.goal[sessionId] = ev.goal ?? null;
@@ -1037,6 +1047,9 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
       state.goal[sessionId] = null;
       state.goalCompleted[sessionId] = false;
       state.todo[sessionId] = [];
+      state.parkedPlans[sessionId] = [];
+      state.activePlanId[sessionId] = null;
+      state.activePlanTitle[sessionId] = null;
       break;
     case 'steer_queued': {
       const steerId = ev.steer_id ?? '';

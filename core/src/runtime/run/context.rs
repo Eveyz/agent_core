@@ -265,6 +265,15 @@ impl Run {
             }
 
             plan_str.push_str(&self.execution.to_injection(&list));
+            if let Some(line) = self
+                .brain
+                .todo_lists
+                .parked_injection_line(self.session_id.as_deref())
+            {
+                plan_str.push('\n');
+                plan_str.push_str(&line);
+                plan_str.push('\n');
+            }
             // Clear one-shot resume hint after it has been injected once.
             let _ = self.execution.take_resume_hint();
 

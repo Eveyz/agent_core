@@ -21,6 +21,8 @@ async function loadModules() {
     btwAsked: chat.btwAsked,
     steerMessageQueued: chat.steerMessageQueued,
     cacheSkills: chat.cacheSkills,
+    agentAborted: chat.agentAborted,
+    plansHydrated: chat.plansHydrated,
   };
 }
 
@@ -620,6 +622,39 @@ describe('runtime notice and error events', () => {
     expect(turn?.blocks?.some((b) => b.type === 'notice')).toBe(false);
   });
 
+  it('clears recoverable retry notice when the user aborts', async () => {
+    const { reducer, userMessageSent, runIdSet, agentEventsBatch, agentAborted } =
+      await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, userMessageSent({ text: 'hello', model: 'm1', sessionId: 's1' }));
+    state = reducer(state, runIdSet({ runId: 'run-1', sessionId: 's1' }));
+
+    state = reducer(
+      state,
+      agentEventsBatch([
+        { event: 'turn_started', run_id: 'run-1', turn_id: 'turn-1', index: 0 },
+        {
+          event: 'notice',
+          run_id: 'run-1',
+          turn_id: 'turn-1',
+          code: 'model_retry',
+          severity: 'warning',
+          recoverable: true,
+          message:
+            'Failed to connect to remote model (stream failed), retrying in 1s (attempt 1/5)',
+        },
+      ]),
+    );
+
+    state = reducer(state, agentAborted({ sessionId: 's1' }));
+
+    const turn = state.entries.s1.find((e) => e.type === 'turn');
+    expect(turn?.blocks?.some((b) => b.type === 'notice')).toBe(false);
+    expect(
+      turn?.blocks?.some((b) => b.type === 'error' && b.text.includes('Interrupted')),
+    ).toBe(true);
+  });
+
   it('clears processing on terminal Error events', async () => {
     const { reducer, userMessageSent, runIdSet, agentEventsBatch } = await loadModules();
     let state = reducer(undefined, { type: '@@INIT' });
@@ -724,5 +759,73 @@ describe('steer two-segment timeline', () => {
     expect(turns[0].endTime).toBeDefined();
     expect(turns[1].endTime).toBeUndefined();
     expect(turns[1].turnId).toBe('turn-3');
+  });
+});
+
+describe('durable multi-plan todos', () => {
+  it('keeps todos across userMessageSent', async () => {
+    const { reducer, userMessageSent, plansHydrated } = await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(
+      state,
+      plansHydrated({
+        sessionId: 's1',
+        items: [{ id: '1', description: 'Step A', status: 'in_progress' }],
+        parked: [{ id: 'p1', title: 'Old', completed: 1, total: 3, updated_at: '2026-01-01' }],
+        activePlanId: 'ap1',
+        activePlanTitle: 'Auth',
+      }),
+    );
+    state = reducer(state, userMessageSent({ text: 'keep going', model: 'm1', sessionId: 's1' }));
+    expect(state.todo.s1).toHaveLength(1);
+    expect(state.parkedPlans.s1).toHaveLength(1);
+    expect(state.activePlanTitle.s1).toBe('Auth');
+  });
+
+  it('applies todo_updated with parked stack', async () => {
+    const { reducer, userMessageSent, runIdSet, agentEventsBatch } = await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, userMessageSent({ text: 'hi', model: 'm1', sessionId: 's1' }));
+    state = reducer(state, runIdSet({ runId: 'run-1', sessionId: 's1' }));
+    state = reducer(
+      state,
+      agentEventsBatch([
+        {
+          event: 'todo_updated',
+          run_id: 'run-1',
+          items: [{ id: '1', description: 'Do thing', status: 'pending' }],
+          parked: [
+            { id: 'park-1', title: 'Earlier', completed: 0, total: 2, updated_at: 't' },
+          ],
+          active_plan_id: 'active-1',
+          active_plan_title: 'Now',
+        },
+      ]),
+    );
+    expect(state.todo.s1[0].description).toBe('Do thing');
+    expect(state.parkedPlans.s1[0].id).toBe('park-1');
+    expect(state.activePlanId.s1).toBe('active-1');
+    expect(state.activePlanTitle.s1).toBe('Now');
+  });
+
+  it('does not clear todos on run_started', async () => {
+    const { reducer, userMessageSent, runIdSet, agentEventsBatch, plansHydrated } =
+      await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(
+      state,
+      plansHydrated({
+        sessionId: 's1',
+        items: [{ id: '1', description: 'Keep', status: 'pending' }],
+        parked: [],
+      }),
+    );
+    state = reducer(state, userMessageSent({ text: 'hi', model: 'm1', sessionId: 's1' }));
+    state = reducer(state, runIdSet({ runId: 'run-1', sessionId: 's1' }));
+    state = reducer(
+      state,
+      agentEventsBatch([{ event: 'run_started', run_id: 'run-1' }]),
+    );
+    expect(state.todo.s1).toHaveLength(1);
   });
 });

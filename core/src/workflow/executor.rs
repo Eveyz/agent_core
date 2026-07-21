@@ -491,13 +491,14 @@ async fn execute_agent_node(
     re_wire_subagent_tools_with_skills(
         &mut registry,
         model_config.clone(),
-        None,
+        Some(Arc::new(crate::session::SessionManager::new(storage.clone()))),
         permission_config.clone(),
         Some(supervisor.clone()),
         Some(cancel_token.clone()),
         1,
         brain.skill_manager.clone(),
         crate::tools::subagent::ApprovalRouting::LegacyScoped,
+        Some(brain.todo_lists.clone()),
     );
 
     // Also ensure ShellTool (when present) is the supervised version so the
