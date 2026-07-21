@@ -46,6 +46,7 @@ export interface FrontendMessage {
   /** Prompt this message belongs to (from backend prompts table). */
   prompt_id?: string;
   metadata?: Record<string, any>;
+  images?: { path: string; mime_type: string; url?: string; sha256?: string }[];
 }
 
 export interface FrontendPrompt {

@@ -115,9 +115,10 @@ export function OverviewTab() {
             const ext = filename.split('.').pop()?.toLowerCase() || '';
             const isSysDoc = systemDocs.includes(filename);
             const isMedia = mediaExts.includes(ext);
-            const isUnderChatsDir = path.includes('.agverse/chats/') || path.includes('.agverse\\chats\\');
+            const isUnderSessionsDir =
+              path.includes('.agverse/sessions/') || path.includes('.agverse\\sessions\\');
             
-            if ((isSysDoc || isMedia || isUnderChatsDir) && !files.has(path)) {
+            if ((isSysDoc || isMedia || isUnderSessionsDir) && !files.has(path)) {
               files.set(path, filename);
             }
           }

@@ -17,6 +17,7 @@ export interface ModelCapabilities {
   effort_levels: string[];
   context_presets: number[];
   supports_fast: boolean;
+  supports_images: boolean;
 }
 
 export const DEFAULT_CONTEXT_TOKENS = 128_000;
@@ -42,6 +43,7 @@ function caps(
     effort_levels,
     context_presets,
     supports_fast,
+    supports_images: false,
   };
 }
 
@@ -358,9 +360,55 @@ function familyMatch(id: string): ModelCapabilities | null {
   return null;
 }
 
+function modelSupportsImages(id: string): boolean {
+  // OpenAI / Anthropic / Google
+  if (
+    id.startsWith('claude') ||
+    id.includes('gpt-4o') ||
+    id.includes('gpt-4.1') ||
+    id.includes('gpt-4-turbo') ||
+    id.includes('gpt-4-vision') ||
+    id.startsWith('o3') ||
+    id.startsWith('o4-') ||
+    id.includes('gemini')
+  ) {
+    return true;
+  }
+
+  // Explicit vision / VL / Omni markers
+  if (id.includes('vision') || id.includes('-vl') || id.includes('_vl') || id.includes('omni')) {
+    return true;
+  }
+
+  // Kimi / Moonshot vision models:
+  // kimi-k3, kimi-k2.5, kimi-k2.6, kimi-k2.7-code(+highspeed). Older kimi-k2 /
+  // kimi-k2-thinking / kimi-k2-instruct are text-only.
+  if (
+    id.startsWith('kimi-k3') ||
+    id.startsWith('kimi-k2.5') ||
+    id.startsWith('kimi-k2.6') ||
+    id.startsWith('kimi-k2.7') ||
+    (id.startsWith('moonshot') && id.includes('vision'))
+  ) {
+    return true;
+  }
+
+  // NVIDIA: only Omni / VL variants are multimodal. Base Nemotron 3 Nano /
+  // Super / Ultra are text-only per NIM docs.
+  if (id.includes('nemotron') && (id.includes('omni') || id.includes('vl'))) {
+    return true;
+  }
+
+  return false;
+}
+
 export function lookupCapabilities(modelId: string): ModelCapabilities {
   const id = normalizeModelId(modelId);
-  return exactMatch(id) ?? familyMatch(id) ?? conservativeDefault();
+  const found = exactMatch(id) ?? familyMatch(id) ?? conservativeDefault();
+  if (modelSupportsImages(id)) {
+    return { ...found, supports_images: true };
+  }
+  return found;
 }
 
 export function resolveContextTokens(modelId: string, configured: number): number {

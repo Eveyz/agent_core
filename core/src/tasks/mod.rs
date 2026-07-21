@@ -705,6 +705,9 @@ impl Tool for TaskExecuteTool {
             args.get("_session_id")
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned),
+            args.get("_prompt_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
             args.get("_parent_run_id")
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned),

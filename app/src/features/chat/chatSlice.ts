@@ -205,7 +205,26 @@ function rebuildEntries(state: ChatState, sessionId: string) {
 
   for (const prompt of visiblePrompts) {
     // Find user message text from prompt messages
-    const userMsg = prompt.messages.find((m) => m.role === 'user')?.content || '';
+    const userMsgObj = prompt.messages.find((m) => m.role === 'user');
+    const userMsg = userMsgObj?.content || '';
+    const metaImages = userMsgObj?.metadata?._images as
+      | { path?: string; mime_type?: string; url?: string; sha256?: string; previewUrl?: string }[]
+      | undefined;
+    const rawImages = metaImages ?? userMsgObj?.images?.map((img) => ({
+      path: img.path,
+      mime_type: img.mime_type,
+      url: (img as { url?: string }).url,
+      sha256: (img as { sha256?: string }).sha256,
+      previewUrl: undefined as string | undefined,
+    }));
+    const images = rawImages?.map((img, i) => ({
+      id: `${prompt.id}-img-${i}`,
+      previewUrl: img.previewUrl ?? '',
+      mimeType: img.mime_type ?? 'image/png',
+      path: img.path,
+      url: img.url,
+      sha256: img.sha256,
+    })).filter((img) => img.previewUrl || img.path || img.url);
 
     // A. Push the user entry
     newEntries.push({
@@ -214,6 +233,7 @@ function rebuildEntries(state: ChatState, sessionId: string) {
       promptId: prompt.id,
       text: userMsg,
       model: prompt.model,
+      images: images?.length ? images : undefined,
     });
 
     // B. Reconstruct the turn entry
@@ -375,7 +395,19 @@ export const chatSlice = createSlice({
       state.visiblePromptsCount[sid] += 2;
       rebuildEntries(state, sid);
     },
-    userMessageSent: (state, action: PayloadAction<{ text: string; model?: string; sessionId: string }>) => {
+    userMessageSent: (state, action: PayloadAction<{
+      text: string;
+      model?: string;
+      sessionId: string;
+      images?: {
+        id: string;
+        previewUrl: string;
+        mimeType: string;
+        path?: string;
+        url?: string;
+        sha256?: string;
+      }[];
+    }>) => {
       const sid = action.payload.sessionId;
       ensureSession(state, sid);
 
@@ -385,6 +417,7 @@ export const chatSlice = createSlice({
         promptId: Date.now().toString(),
         text: action.payload.text,
         model: action.payload.model,
+        images: action.payload.images,
       });
       const newPrompt: FrontendPrompt = {
         id: `user-prompt-${Date.now()}-${Math.random()}`,
@@ -400,6 +433,17 @@ export const chatSlice = createSlice({
           role: 'user',
           content: action.payload.text,
           model: action.payload.model,
+          metadata: action.payload.images?.length
+            ? {
+                _images: action.payload.images.map((img) => ({
+                  path: img.path ?? '',
+                  mime_type: img.mimeType,
+                  url: img.url,
+                  sha256: img.sha256,
+                  previewUrl: img.previewUrl,
+                })),
+              }
+            : undefined,
         }],
       };
       state.allPrompts[sid].push(newPrompt);
@@ -425,13 +469,43 @@ export const chatSlice = createSlice({
         startTime: Date.now(),
       });
     },
-    runIdSet: (state, action: PayloadAction<{ runId: string; sessionId: string; promptId?: string }>) => {
-      const { runId, sessionId: sid, promptId } = action.payload;
+    runIdSet: (state, action: PayloadAction<{
+      runId: string;
+      sessionId: string;
+      promptId?: string;
+      images?: {
+        id?: string;
+        previewUrl?: string;
+        mimeType: string;
+        path: string;
+        url?: string;
+        sha256?: string;
+      }[];
+    }>) => {
+      const { runId, sessionId: sid, promptId, images } = action.payload;
       ensureSession(state, sid);
 
       state.runId[sid] = runId;
       state.runIdToSessionId[runId] = sid;
       state.runState[sid] = 'running';
+
+      // Patch the latest optimistic user entry with persisted attachment refs
+      // so retry / resume within-session can reuse content-hash paths.
+      if (images && images.length > 0) {
+        for (let i = state.entries[sid].length - 1; i >= 0; i--) {
+          const entry = state.entries[sid][i];
+          if (entry.type !== 'user') continue;
+          entry.images = images.map((img, idx) => ({
+            id: img.id ?? entry.images?.[idx]?.id ?? `img-${idx}`,
+            previewUrl: img.previewUrl ?? entry.images?.[idx]?.previewUrl ?? '',
+            mimeType: img.mimeType,
+            path: img.path,
+            url: img.url,
+            sha256: img.sha256,
+          }));
+          break;
+        }
+      }
 
       // Bind entry/prompt identity ONLY from the backend prompts-table id.
       // Never use runId as promptId — they are different UUIDs.

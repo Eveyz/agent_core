@@ -5,7 +5,9 @@
 //! - Anthropic Messages: `thinking` blocks with `signature` (Phase 2)
 
 use crate::config::ApiMode;
-use crate::types::{Message, ReasoningState, Role, ToolDefinition};
+use crate::model_capabilities::lookup_capabilities;
+use crate::types::{ImageAttachment, Message, ReasoningState, Role, ToolDefinition};
+use base64::Engine;
 use serde_json::{json, Value};
 
 /// Build the JSON body for the resolved API mode.
@@ -79,10 +81,21 @@ fn build_chat_completions_body(
     temperature: Option<f64>,
     max_tokens: Option<u32>,
 ) -> Value {
-    // Message.reasoning is skip_serializing — content already has <think> tags.
+    let supports_images = lookup_capabilities(model_id).supports_images;
+    let api_messages = if supports_images && messages.iter().any(message_has_images) {
+        Value::Array(
+            messages
+                .iter()
+                .map(|msg| chat_completions_message_value(msg, true))
+                .collect(),
+        )
+    } else {
+        // Message.reasoning / images are skip_serializing — content already has <think> tags.
+        json!(messages)
+    };
     let mut body = json!({
         "model": model_id,
-        "messages": messages,
+        "messages": api_messages,
         "stream": stream,
     });
     if let Some(temp) = temperature {
@@ -98,6 +111,135 @@ fn build_chat_completions_body(
     body
 }
 
+fn message_has_images(msg: &Message) -> bool {
+    msg.images
+        .as_ref()
+        .is_some_and(|images| !images.is_empty())
+}
+
+fn chat_completions_message_value(msg: &Message, include_images: bool) -> Value {
+    let mut value = json!({
+        "role": msg.role.to_string(),
+    });
+    if let Some(ref tool_calls) = msg.tool_calls {
+        value["tool_calls"] = json!(tool_calls);
+    }
+    if let Some(ref tool_call_id) = msg.tool_call_id {
+        value["tool_call_id"] = json!(tool_call_id);
+    }
+    if let Some(ref name) = msg.name {
+        value["name"] = json!(name);
+    }
+
+    if include_images && msg.role == Role::User && message_has_images(msg) {
+        value["content"] = user_content_chat_completions(msg);
+    } else if let Some(content) = msg.content.as_deref() {
+        value["content"] = json!(content);
+    } else {
+        value["content"] = Value::Null;
+    }
+    value
+}
+
+fn user_content_chat_completions(msg: &Message) -> Value {
+    let mut parts: Vec<Value> = Vec::new();
+    let text = msg.content.as_deref().unwrap_or("");
+    if !text.is_empty() {
+        parts.push(json!({
+            "type": "text",
+            "text": text,
+        }));
+    }
+    if let Some(ref images) = msg.images {
+        for image in images {
+            if let Some(url) = image_data_url(image) {
+                parts.push(json!({
+                    "type": "image_url",
+                    "image_url": { "url": url },
+                }));
+            }
+        }
+    }
+    if parts.is_empty() {
+        json!("")
+    } else {
+        Value::Array(parts)
+    }
+}
+
+fn user_content_responses(msg: &Message, include_images: bool) -> Value {
+    if !include_images || !message_has_images(msg) {
+        return json!(msg.content.as_deref().unwrap_or(""));
+    }
+    let mut parts: Vec<Value> = Vec::new();
+    let text = msg.content.as_deref().unwrap_or("");
+    if !text.is_empty() {
+        parts.push(json!({
+            "type": "input_text",
+            "text": text,
+        }));
+    }
+    if let Some(ref images) = msg.images {
+        for image in images {
+            if let Some(url) = image_data_url(image) {
+                parts.push(json!({
+                    "type": "input_image",
+                    "image_url": url,
+                }));
+            }
+        }
+    }
+    if parts.is_empty() {
+        json!("")
+    } else {
+        Value::Array(parts)
+    }
+}
+
+fn user_content_anthropic(msg: &Message, include_images: bool) -> Value {
+    if !include_images || !message_has_images(msg) {
+        return json!(msg.content.as_deref().unwrap_or(""));
+    }
+    let mut parts: Vec<Value> = Vec::new();
+    let text = msg.content.as_deref().unwrap_or("");
+    if !text.is_empty() {
+        parts.push(json!({
+            "type": "text",
+            "text": text,
+        }));
+    }
+    if let Some(ref images) = msg.images {
+        for image in images {
+            if let Some((media_type, data)) = image_base64_parts(image) {
+                parts.push(json!({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": media_type,
+                        "data": data,
+                    }
+                }));
+            }
+        }
+    }
+    if parts.is_empty() {
+        json!("")
+    } else {
+        Value::Array(parts)
+    }
+}
+
+fn image_base64_parts(image: &ImageAttachment) -> Option<(String, String)> {
+    let bytes = std::fs::read(&image.path).ok()?;
+    let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Some((image.mime_type.clone(), data))
+}
+
+fn image_data_url(image: &ImageAttachment) -> Option<String> {
+    let (mime, data) = image_base64_parts(image)?;
+    Some(format!("data:{mime};base64,{data}"))
+}
+
 /// OpenAI Responses API: flatten history into `input` items, round-tripping
 /// encrypted reasoning blobs unchanged.
 fn build_responses_body(
@@ -110,6 +252,7 @@ fn build_responses_body(
     thinking_enabled: bool,
     reasoning_effort: Option<&str>,
 ) -> Value {
+    let include_images = lookup_capabilities(model_id).supports_images;
     let mut input: Vec<Value> = Vec::new();
     for msg in messages {
         match msg.role {
@@ -124,18 +267,11 @@ fn build_responses_body(
                 }
             }
             Role::User => {
-                if let Some(content) = msg.content.as_deref() {
-                    if content.contains("<context_injection>") {
-                        input.push(json!({
-                            "role": "user",
-                            "content": content,
-                        }));
-                    } else {
-                        input.push(json!({
-                            "role": "user",
-                            "content": content,
-                        }));
-                    }
+                if message_has_images(msg) || msg.content.as_ref().is_some_and(|c| !c.is_empty()) {
+                    input.push(json!({
+                        "role": "user",
+                        "content": user_content_responses(msg, include_images),
+                    }));
                 }
             }
             Role::Assistant => {
@@ -252,6 +388,7 @@ fn build_anthropic_messages_body(
     max_tokens: Option<u32>,
     thinking_enabled: bool,
 ) -> Value {
+    let include_images = lookup_capabilities(model_id).supports_images;
     let mut system_parts: Vec<String> = Vec::new();
     let mut api_messages: Vec<Value> = Vec::new();
 
@@ -265,10 +402,10 @@ fn build_anthropic_messages_body(
                 }
             }
             Role::User => {
-                if let Some(c) = msg.content.as_deref() {
+                if message_has_images(msg) || msg.content.as_ref().is_some_and(|c| !c.is_empty()) {
                     api_messages.push(json!({
                         "role": "user",
-                        "content": c,
+                        "content": user_content_anthropic(msg, include_images),
                     }));
                 }
             }

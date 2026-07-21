@@ -8,6 +8,7 @@ export interface FrontendMessage {
   name?: string;
   prompt_id?: string;
   metadata?: Record<string, any>;
+  images?: { path: string; mime_type: string; url?: string; sha256?: string }[];
 }
 
 export interface FrontendPrompt {
@@ -119,6 +120,15 @@ export interface ChatEntry {
   turnIndex?: number;
   promptId?: string;
   text?: string;
+  /** Optimistic / restored image thumbnails for user messages. */
+  images?: {
+    id: string;
+    previewUrl: string;
+    mimeType: string;
+    path?: string;
+    url?: string;
+    sha256?: string;
+  }[];
   /** Model that was active when this prompt was submitted. Per-prompt, not
    * the global currently-selected model. Falls back to the global model for
    * entries created before this field existed. */

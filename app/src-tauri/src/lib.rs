@@ -35,6 +35,16 @@ struct AppState {
 
 // ── Frontend message type for session save/load ──────────────────────
 
+#[derive(serde::Deserialize, serde::Serialize, Clone)]
+struct FrontendImageAttachment {
+    path: String,
+    mime_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
+}
+
 #[derive(serde::Deserialize, serde::Serialize)]
 struct FrontendMessage {
     role: String,
@@ -49,6 +59,21 @@ struct FrontendMessage {
     name: Option<String>,
     #[serde(default)]
     metadata: Option<serde_json::Value>,
+    #[serde(default)]
+    images: Option<Vec<FrontendImageAttachment>>,
+}
+
+/// New paste/upload: `data_base64`. Retry/resume reuse: `path` and/or `url`.
+#[derive(serde::Deserialize)]
+struct IncomingImagePayload {
+    #[serde(default)]
+    mime_type: Option<String>,
+    #[serde(default)]
+    data_base64: Option<String>,
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -67,6 +92,70 @@ struct SendMessageResult {
     run_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     prompt_id: Option<String>,
+    /// Persisted attachment refs (content-hash paths + agverse:// URLs).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    images: Vec<FrontendImageAttachment>,
+}
+
+fn to_frontend_image(img: &agent_core::ImageAttachment) -> FrontendImageAttachment {
+    FrontendImageAttachment {
+        path: img.path.clone(),
+        mime_type: img.mime_type.clone(),
+        sha256: img.sha256.clone(),
+        url: img.url.clone(),
+    }
+}
+
+fn save_incoming_images(
+    session_id: &str,
+    prompt_id: &str,
+    images: &[IncomingImagePayload],
+) -> Result<Vec<agent_core::ImageAttachment>, String> {
+    use base64::Engine;
+    if images.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut saved = Vec::with_capacity(images.len());
+    for image in images {
+        // Retry / resume path: reuse existing content-addressable file.
+        if let Some(reference) = image
+            .url
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .or_else(|| image.path.as_deref().filter(|s| !s.is_empty()))
+        {
+            let reused = agent_core::reuse_session_image(session_id, prompt_id, reference)
+                .map_err(|e| e.to_string())?;
+            saved.push(reused);
+            continue;
+        }
+
+        let Some(data_b64) = image.data_base64.as_deref().filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        let mime = image
+            .mime_type
+            .as_deref()
+            .filter(|m| m.starts_with("image/"))
+            .unwrap_or("image/png");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data_b64.trim())
+            .map_err(|e| format!("invalid image base64: {e}"))?;
+        let att = agent_core::save_session_image(session_id, prompt_id, &bytes, mime)
+            .map_err(|e| e.to_string())?;
+        saved.push(att);
+    }
+    Ok(saved)
+}
+
+fn attachment_under_agverse(path: &std::path::Path) -> bool {
+    let Ok(agverse) = agent_core::paths::get_agverse_dir().canonicalize() else {
+        return false;
+    };
+    let Ok(canonical) = path.canonicalize() else {
+        return false;
+    };
+    canonical.starts_with(agverse.join("sessions"))
 }
 
 // ── Run lifecycle commands ───────────────────────────────────────────
@@ -81,6 +170,8 @@ async fn send_message(
     message: String,
     session_id: Option<String>,
     model: Option<String>,
+    #[allow(non_snake_case)]
+    images: Option<Vec<IncomingImagePayload>>,
 ) -> Result<SendMessageResult, String> {
     // Load history + session-level pinned goal
     let mut history = vec![];
@@ -149,18 +240,70 @@ async fn send_message(
         }
     }
 
+    // Create prompt first so images / artifacts land under sessions/<sid>/<pid>/.
+    let early_prompt_id: Option<String> = if let Some(ref sid) = session_id {
+        let sm = state.session_manager.clone();
+        let sid_owned = sid.clone();
+        let model_name = {
+            let manager = state.run_manager.lock().await;
+            manager
+                .brain()
+                .current_model_config()
+                .map(|m| m.model_id.clone())
+                .unwrap_or_else(|_| "unknown".to_string())
+        };
+        match tokio::task::spawn_blocking(move || sm.create_prompt(&sid_owned, &model_name))
+            .await
+            .map_err(|e| format!("create_prompt task failed: {e}"))?
+        {
+            Ok((pid, _)) => Some(pid),
+            Err(e) => {
+                persist_failed_user_message(
+                    &state.session_manager,
+                    session_id.as_deref(),
+                    &history,
+                    &message,
+                    None,
+                )
+                .await;
+                return Err(e.to_string());
+            }
+        }
+    } else {
+        None
+    };
+
+    // Persist pasted/uploaded images under the prompt images dir.
+    let user_images = if let (Some(ref sid), Some(ref pid), Some(ref imgs)) =
+        (&session_id, &early_prompt_id, &images)
+    {
+        if !imgs.is_empty() {
+            save_incoming_images(sid, pid, imgs)?
+        } else {
+            Vec::new()
+        }
+    } else if images.as_ref().is_some_and(|i| !i.is_empty()) {
+        return Err("session_id is required when sending images".to_string());
+    } else {
+        Vec::new()
+    };
+    let persisted_images: Vec<FrontendImageAttachment> =
+        user_images.iter().map(to_frontend_image).collect();
+
     let manager = state.run_manager.lock().await;
 
     // Prompt lifecycle (create / finish / persist) lives in RunManager so CLI
     // and Tauri share one prompts-table source of truth.
     let created = match manager
-        .create_run_with_workdir(
+        .create_run_with_workdir_and_images(
             &message,
             session_id.clone(),
             working_dir,
             history.clone(),
             initial_goal,
             initial_goal_completed,
+            user_images,
+            early_prompt_id.clone(),
         )
         .await
     {
@@ -171,7 +314,7 @@ async fn send_message(
                 session_id.as_deref(),
                 &history,
                 &message,
-                None,
+                early_prompt_id.as_deref(),
             )
             .await;
             return Err(e.to_string());
@@ -262,6 +405,7 @@ async fn send_message(
     Ok(SendMessageResult {
         run_id,
         prompt_id,
+        images: persisted_images,
     })
 }
 
@@ -1022,10 +1166,10 @@ async fn create_session(state: State<'_, AppState>, project_id: String) -> Resul
         };
         let session_id = uuid::Uuid::new_v4().to_string();
         let cwd = if project_id == "__adhoc_chat__" {
-            let chat_dir = agent_core::paths::get_agverse_dir().join("chats").join(&session_id);
-            std::fs::create_dir_all(&chat_dir)
-                .map_err(|e| format!("Failed to create chat directory: {e}"))?;
-            chat_dir.to_string_lossy().to_string()
+            let session_cwd = agent_core::paths::session_dir(&session_id);
+            std::fs::create_dir_all(&session_cwd)
+                .map_err(|e| format!("Failed to create session directory: {e}"))?;
+            session_cwd.to_string_lossy().to_string()
         } else {
             project.path.clone()
         };
@@ -1095,6 +1239,13 @@ async fn resume_session(state: State<'_, AppState>, session_id: String) -> Resul
     })
     .await
     .map_err(|e| format!("resume_session task failed: {e}"))??;
+
+    let mut session = session;
+    embed_images_for_frontend(&mut session.messages);
+    for prompt in &mut session.prompts {
+        embed_images_for_frontend(&mut prompt.messages);
+    }
+
     let messages: Vec<FrontendMessage> = session
         .messages
         .iter()
@@ -1106,6 +1257,12 @@ async fn resume_session(state: State<'_, AppState>, session_id: String) -> Resul
             tool_call_id: m.tool_call_id.clone(),
             name: m.name.clone(),
             metadata: m.metadata.clone(),
+            images: m.metadata.as_ref().and_then(|meta| {
+                meta.get("_images")
+                    .and_then(|v| serde_json::from_value::<Vec<FrontendImageAttachment>>(v.clone()).ok())
+            }).or_else(|| {
+                m.images.as_ref().map(|imgs| imgs.iter().map(to_frontend_image).collect())
+            }),
         })
         .collect();
     Ok(FrontendSession {
@@ -1359,6 +1516,58 @@ async fn read_file(path: String) -> Result<String, String> {
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Read a session attachment as a `data:` URL for UI thumbnails / lightbox.
+/// Accepts an absolute path or an `agverse://sessions/.../images/...` URL.
+#[tauri::command]
+async fn read_attachment_data_url(path: String) -> Result<String, String> {
+    use base64::Engine;
+    tokio::task::spawn_blocking(move || {
+        let resolved = agent_core::resolve_attachment_ref(&path).map_err(|e| e.to_string())?;
+        if !attachment_under_agverse(&resolved) {
+            return Err("attachment path not allowed".to_string());
+        }
+        let bytes =
+            std::fs::read(&resolved).map_err(|e| format!("failed to read attachment: {e}"))?;
+        let mime = match resolved.extension().and_then(|e| e.to_str()).unwrap_or("png") {
+            "jpg" | "jpeg" => "image/jpeg",
+            "webp" => "image/webp",
+            "gif" => "image/gif",
+            "bmp" => "image/bmp",
+            _ => "image/png",
+        };
+        let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
+        Ok(format!("data:{mime};base64,{b64}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Embed `Message.images` into metadata so frontend Prompt JSON still carries them
+/// (`images` is skip_serializing for provider bodies).
+fn embed_images_for_frontend(messages: &mut [agent_core::Message]) {
+    for msg in messages {
+        let Some(images) = msg.images.take() else {
+            continue;
+        };
+        if images.is_empty() {
+            continue;
+        }
+        let mut obj = match msg.metadata.take() {
+            Some(serde_json::Value::Object(map)) => map,
+            Some(other) => {
+                let mut map = serde_json::Map::new();
+                map.insert("_value".into(), other);
+                map
+            }
+            None => serde_json::Map::new(),
+        };
+        if let Ok(v) = serde_json::to_value(&images) {
+            obj.insert("_images".into(), v);
+        }
+        msg.metadata = Some(serde_json::Value::Object(obj));
+    }
 }
 
 // ── Skills cache ───────────────────────────────────────────────────────
@@ -2466,7 +2675,7 @@ pub fn run() {
             delete_project, rename_project, open_in_explorer,
             list_git_branches, switch_git_branch, get_project_sessions,
             get_agverse_md, clear_agverse_pending_notes, promote_agverse_pending_notes,
-            maintain_agverse_md, get_reflection_status, read_file, get_skills, invalidate_skills_cache,
+            maintain_agverse_md, get_reflection_status, read_file, read_attachment_data_url, get_skills, invalidate_skills_cache,
             list_cronjobs, create_cronjob, update_cronjob, delete_cronjob, toggle_cronjob,
             list_available_tools,
             create_agent, list_agents, get_agent, update_agent, delete_agent,

@@ -22,7 +22,7 @@ use crate::AppState;
 
 /// Resolve the preview root directory and workspace id from a run's working directory.
 ///
-/// Chat sessions use `~/.agverse/chats/<session_id>/` as cwd with workspace id
+/// Chat sessions use `~/.agverse/sessions/<session_id>/` as cwd with workspace id
 /// `__adhoc_chat__`. Registered projects match by canonical path.
 pub(crate) fn resolve_preview_workspace(
     working_dir: &str,
@@ -50,16 +50,16 @@ pub(crate) fn resolve_preview_workspace(
         }
     }
 
-    let chats_dir = agent_core::paths::get_agverse_dir().join("chats");
-    let chats_root = chats_dir.canonicalize().unwrap_or(chats_dir);
-    if canonical.starts_with(&chats_root) {
+    let sessions_dir = agent_core::paths::get_agverse_dir().join("sessions");
+    let sessions_root = sessions_dir.canonicalize().unwrap_or(sessions_dir);
+    if canonical.starts_with(&sessions_root) {
         return Ok(("__adhoc_chat__".to_string(), canonical));
     }
 
     if let Some(sid) = session_id {
-        let session_chat = chats_root.join(sid);
-        let _ = std::fs::create_dir_all(&session_chat);
-        if let Ok(session_canonical) = session_chat.canonicalize() {
+        let session_cwd = agent_core::paths::session_dir(sid);
+        let _ = std::fs::create_dir_all(&session_cwd);
+        if let Ok(session_canonical) = session_cwd.canonicalize() {
             if session_canonical == canonical {
                 return Ok(("__adhoc_chat__".to_string(), canonical));
             }
@@ -77,9 +77,9 @@ fn resolve_workspace_path(
 ) -> Result<PathBuf, String> {
     if workspace_id == "__adhoc_chat__" {
         if let Some(sid) = session_id {
-            let chat_dir = agent_core::paths::get_agverse_dir().join("chats").join(sid);
-            let _ = std::fs::create_dir_all(&chat_dir);
-            return Ok(chat_dir);
+            let session_cwd = agent_core::paths::session_dir(sid);
+            let _ = std::fs::create_dir_all(&session_cwd);
+            return Ok(session_cwd);
         }
     }
 

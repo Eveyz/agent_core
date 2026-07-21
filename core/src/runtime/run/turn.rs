@@ -358,6 +358,7 @@ impl Run {
                 approval_resolver: Some(approval_resolver),
                 input_resolver: Some(input_resolver),
                 session_id: self.session_id.clone(),
+                prompt_id: self.prompt_id.clone(),
                 run_id: Some(self.id.clone()),
                 working_dir: self.working_dir.clone(),
             };

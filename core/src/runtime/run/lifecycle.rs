@@ -60,7 +60,11 @@ impl Run {
                 .clone()
                 .unwrap_or_else(|| user_input.to_string())
         };
-        self.append_conversation(Message::user_with_model(&display_input, &self.client.model.model_id));
+        let user_images = std::mem::take(&mut self.pending_user_images);
+        self.append_conversation(
+            Message::user_with_model(&display_input, &self.client.model.model_id)
+                .with_images(user_images),
+        );
         self.refresh_context_snapshot();
         self.save_session_snapshot();
 

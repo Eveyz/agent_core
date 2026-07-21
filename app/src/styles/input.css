@@ -91,6 +91,13 @@
   box-shadow: 0 0 0 3px var(--accent-subtle);
 }
 
+.chat-input-editor {
+  position: relative;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+}
+
 .chat-input {
   width: 100%;
   background: transparent;
@@ -112,7 +119,7 @@
   color: var(--text-muted);
 }
 
-/* Highlight overlay behind textarea */
+/* Highlight overlay behind textarea — scoped to .chat-input-editor */
 .highlight-overlay {
   position: absolute;
   top: 0;
@@ -591,4 +598,137 @@
 /* Steer-mode input border (orange tint when processing) */
 .chat-input-wrapper.steer-active {
   border-color: rgba(255, 165, 0, 0.5) !important;
+}
+
+/* Image attachments in composer */
+.input-image-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 14px 0;
+  flex-shrink: 0;
+}
+
+.input-image-thumb-wrap {
+  position: relative;
+  width: 56px;
+  height: 56px;
+}
+
+.input-image-thumb {
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  border: 1px solid var(--overlay-0_08);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--overlay-0_03);
+  cursor: zoom-in;
+}
+
+.input-image-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.input-image-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 1px solid var(--border-default);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+  box-shadow: 0 1px 4px var(--shadow-md);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.input-image-thumb-wrap:hover .input-image-remove,
+.input-image-remove:focus-visible {
+  opacity: 1;
+}
+
+.input-image-warning {
+  padding: 4px 14px 0;
+  font-size: 11px;
+  color: var(--amber-500, #e8941a);
+}
+
+/* Image preview modal (portal to body) */
+.image-lightbox-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: var(--shadow-xl, rgba(0, 0, 0, 0.45));
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  animation: image-lightbox-fade-in 0.15s ease;
+}
+
+@keyframes image-lightbox-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.image-lightbox-modal {
+  position: relative;
+  background: var(--bg-surface, var(--bg-main));
+  border: 1px solid var(--border-default, var(--border-color));
+  border-radius: var(--radius-lg, 12px);
+  box-shadow: 0 24px 80px var(--shadow-xl, rgba(0, 0, 0, 0.35));
+  padding: 12px;
+  max-width: min(720px, 86vw);
+  max-height: min(640px, 78vh);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: image-lightbox-slide-up 0.2s ease;
+}
+
+@keyframes image-lightbox-slide-up {
+  from { opacity: 0; transform: translateY(12px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.image-lightbox-img {
+  display: block;
+  max-width: 100%;
+  max-height: calc(min(640px, 78vh) - 24px);
+  width: auto;
+  height: auto;
+  border-radius: var(--radius-md, 8px);
+  object-fit: contain;
+}
+
+.image-lightbox-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 1px solid var(--border-default, var(--border-color));
+  background: var(--bg-secondary, var(--bg-surface));
+  color: var(--text-primary, var(--text-main));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.image-lightbox-close:hover {
+  background: var(--bg-hover);
 }

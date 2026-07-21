@@ -52,7 +52,7 @@ impl Tool for GrepTool {
             .with_context(|| format!("invalid regex pattern: {pattern}"))?;
 
         let mut results: Vec<String> = Vec::new();
-        let search_root = crate::paths::resolve_tool_path(path, None, working_dir);
+        let search_root = crate::paths::resolve_tool_path(path, None, None, working_dir);
         search_path(
             &search_root,
             &regex,

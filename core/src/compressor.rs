@@ -544,6 +544,7 @@ mod tests {
             model: None,
             metadata: None,
         reasoning: None,
+        images: None,
         }
     }
 
@@ -557,6 +558,7 @@ mod tests {
             model: None,
             metadata: None,
         reasoning: None,
+        images: None,
         }
     }
 

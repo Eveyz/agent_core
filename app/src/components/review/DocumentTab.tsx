@@ -16,21 +16,21 @@ export function DocumentTab({ projectPath, relativePaths, title, placeholderMess
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!projectPath) {
-      setLoading(false);
-      setContent(null);
-      return;
-    }
-
     let isMounted = true;
     setLoading(true);
 
     const tryReadPaths = async () => {
       for (let i = 0; i < relativePaths.length; i++) {
         if (!isMounted) return;
-        const fullPath = relativePaths[i].startsWith('~/') || relativePaths[i].startsWith('/')
-          ? relativePaths[i]
-          : `${projectPath}/${relativePaths[i]}`;
+        const candidate = relativePaths[i];
+        const isAbsolute =
+          candidate.startsWith('~/') ||
+          candidate.startsWith('/') ||
+          /^[A-Za-z]:[\\/]/.test(candidate);
+        if (!isAbsolute && !projectPath) {
+          continue;
+        }
+        const fullPath = isAbsolute ? candidate : `${projectPath}/${candidate}`;
         try {
           const fileContent = await invoke<string>('read_file', { path: fullPath });
           if (isMounted) {

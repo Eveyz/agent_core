@@ -351,6 +351,7 @@ mod tests {
             model: None,
             metadata: None,
         reasoning: None,
+        images: None,
         }
     }
 
@@ -371,6 +372,7 @@ mod tests {
             model: None,
             metadata: None,
             reasoning: None,
+            images: None,
         }
     }
 
@@ -493,6 +495,7 @@ mod tests {
             model: None,
             metadata: None,
         reasoning: None,
+        images: None,
         };
         assert!(!truncate_tool_result(&mut msg));
         assert_eq!(msg.content.unwrap(), big);
@@ -510,6 +513,7 @@ mod tests {
             model: None,
             metadata: None,
         reasoning: None,
+        images: None,
         };
         let normal_msg = make_tool_msg(&big); // name: "test_tool" → Incidental → truncated
         let mut msgs = vec![skill_msg, normal_msg];
@@ -532,6 +536,7 @@ mod tests {
             model: None,
             metadata: None,
         reasoning: None,
+        images: None,
         };
         assert!(truncate_tool_result(&mut msg));
         let c = msg.content.unwrap();
@@ -594,6 +599,7 @@ mod tests {
             model: None,
             metadata: None,
             reasoning: None,
+            images: None,
         };
         let n = sanitize(&mut vec![msg]);
         assert_eq!(n, 1);

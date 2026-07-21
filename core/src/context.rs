@@ -1607,6 +1607,7 @@ mod tests {
             model: None,
             metadata: None,
             reasoning: None,
+            images: None,
         });
 
         let msgs = engine.messages();
@@ -1731,6 +1732,7 @@ mod tests {
             model: None,
             metadata: None,
             reasoning: None,
+            images: None,
         });
 
         // Use compressor directly to test snipCompact
@@ -1833,6 +1835,7 @@ mod tests {
             model: None,
             metadata: None,
             reasoning: None,
+            images: None,
         };
         engine.add(tool_msg);
 

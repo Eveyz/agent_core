@@ -195,6 +195,8 @@ pub struct Subagent {
     /// The agent definition id this subagent was built from (for memory keying).
     memory_identity: Option<AgentMemoryIdentity>,
     pub session_id: Option<String>,
+    /// Prompt id for artifact redirects (inherited from parent Run when present).
+    pub prompt_id: Option<String>,
     pub parent_run_id: Option<String>,
     /// Optional cancel token — propagated from the parent Run so canceling the
     /// parent also stops the subagent. When `None`, a new token is created.
@@ -254,6 +256,7 @@ impl Subagent {
             memory_store: None,
             memory_identity: None,
             session_id: None,
+            prompt_id: None,
             parent_run_id: None,
             cancel_token: None,
             supervisor: None,
@@ -284,9 +287,11 @@ impl Subagent {
     pub fn with_runtime_scope(
         mut self,
         session_id: Option<String>,
+        prompt_id: Option<String>,
         parent_run_id: Option<String>,
     ) -> Self {
         self.session_id = session_id.clone();
+        self.prompt_id = prompt_id;
         self.parent_run_id = parent_run_id.clone();
         if let Some(recorder) = &self.transcript {
             recorder.lock().set_scope(session_id, parent_run_id);
@@ -602,6 +607,7 @@ impl Subagent {
                     approval_resolver: self.approval_resolver.clone(),
                     input_resolver: None, // ask_user only on main Run (v1)
                     session_id: self.session_id.clone(),
+                    prompt_id: self.prompt_id.clone(),
                     run_id: self.parent_run_id.clone().or_else(|| Some(self.id.clone())),
                     working_dir: self
                         .config

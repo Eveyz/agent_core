@@ -214,7 +214,6 @@ function ProviderForm({
             value={form.provider_key}
             onChange={(e) => updateField('provider_key', e.target.value)}
             placeholder="e.g. openai, deepseek"
-            disabled={!!editKey}
           />
           {errors.provider_key && <span className="field-error">{errors.provider_key}</span>}
         </div>

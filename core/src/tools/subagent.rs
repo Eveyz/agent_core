@@ -577,6 +577,10 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
             .get("_session_id")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned);
+        let parent_prompt_id = args
+            .get("_prompt_id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
         let parent_working_dir = args
             .get("_working_dir")
             .and_then(Value::as_str)
@@ -603,6 +607,7 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
             let skill_manager = self.skill_manager.clone();
             let approval_resolver = self.approval_resolver.clone();
             let parent_session_id = parent_session_id.clone();
+            let parent_prompt_id = parent_prompt_id.clone();
             let parent_working_dir = parent_working_dir.clone();
             let parent_run_id = parent_run_id.clone();
             let parent_call_id = parent_call_id.clone();
@@ -622,6 +627,11 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                     args.as_object_mut()
                         .expect("subagent args are an object")
                         .insert("_session_id".to_string(), Value::String(session_id.clone()));
+                }
+                if let Some(ref prompt_id) = parent_prompt_id {
+                    args.as_object_mut()
+                        .expect("subagent args are an object")
+                        .insert("_prompt_id".to_string(), Value::String(prompt_id.clone()));
                 }
                 if let Some(ref working_dir) = parent_working_dir {
                     args.as_object_mut()
@@ -1129,6 +1139,7 @@ Do NOT attempt to bypass a missing capability through another tool.";
     let ws_root = workspace_root.to_string_lossy().to_string();
 
     let parent_session_id = args.get("_session_id").and_then(|v| v.as_str());
+    let parent_prompt_id = args.get("_prompt_id").and_then(|v| v.as_str());
     let parent_run_id = args.get("_parent_run_id").and_then(Value::as_str);
     let parent_call_id = args.get("_parent_call_id").and_then(Value::as_str);
 
@@ -1263,6 +1274,7 @@ Do NOT attempt to bypass a missing capability through another tool.";
     );
     subagent = subagent.with_runtime_scope(
         parent_session_id.map(ToOwned::to_owned),
+        parent_prompt_id.map(ToOwned::to_owned),
         parent_run_id.map(ToOwned::to_owned),
     );
     if let Some(sv) = supervisor {

@@ -11,7 +11,7 @@ interface LazyEntryProps {
    * bottom) without waiting for the IntersectionObserver, so streaming
    * output mounts instantly. */
   forceVisible: boolean;
-  onSend?: (msg: string) => void;
+  onSend?: (msg: string | { text: string }) => void;
 }
 
 // Height used for off-screen placeholders so the scrollbar and the

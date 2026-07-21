@@ -549,7 +549,7 @@ async fn execute_agent_node(
         memory,
         Some(def.memory_identity()),
     )
-    .with_runtime_scope(Some(session_id.to_string()), Some(run_id.to_string()))
+    .with_runtime_scope(Some(session_id.to_string()), None, Some(run_id.to_string()))
     .with_supervisor(supervisor.clone())
     .with_cancel_token(cancel_token);
 

@@ -192,7 +192,7 @@ export const AgentTurnUI = memo(function AgentTurnUI({
   onSend,
 }: {
   entry: ChatEntry;
-  onSend?: (msg: string) => void;
+  onSend?: (msg: string | { text: string }) => void;
 }) {
   const { t } = useTranslation();
   const agentTrace = useSelector((state: RootState) => state.settings.agentTrace);

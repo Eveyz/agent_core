@@ -5,6 +5,7 @@ import DOMPurify from 'dompurify';
 import { RootState } from '../../store';
 import SendIcon from 'lucide-react/dist/esm/icons/send.mjs';
 import PlusIcon from 'lucide-react/dist/esm/icons/plus.mjs';
+import XIcon from 'lucide-react/dist/esm/icons/x.mjs';
 import TerminalSquareIcon from 'lucide-react/dist/esm/icons/terminal-square.mjs';
 import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
 import ChevronUpIcon from 'lucide-react/dist/esm/icons/chevron-up.mjs';
@@ -26,6 +27,14 @@ import Trash2Icon from 'lucide-react/dist/esm/icons/trash-2.mjs';
 import HelpCircleIcon from 'lucide-react/dist/esm/icons/help-circle.mjs';
 import TodoPanel from './TodoPanel';
 import GoalBanner from './GoalBanner';
+import { ImageLightbox } from './ImageLightbox';
+import {
+  fileToPendingImage,
+  revokePendingImages,
+  type PendingImage,
+  type SendPayload,
+} from './imageAttachments';
+import { lookupCapabilities } from '../../utils/modelCapabilities';
 
 import { 
   SiJavascript, SiTypescript, SiReact, SiPython, SiGo, SiCss, SiHtml5, SiRust 
@@ -54,7 +63,7 @@ export const ChatInput = memo(function ChatInput({
   pendingSteerCount = 0,
 }: {
   isProcessing: boolean;
-  onSend: (msg: string) => void;
+  onSend: (payload: SendPayload) => void;
   onAbort: () => void;
   currentModel: string;
   onSteer?: (message: string) => void;
@@ -65,16 +74,20 @@ export const ChatInput = memo(function ChatInput({
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const overlayRef = useRef<HTMLPreElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const isComposingRef = useRef(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [skillSelectorOpen, setSkillSelectorOpen] = useState(false);
   const [showSteerQueue, setShowSteerQueue] = useState(false);
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
+  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
 
   const activeProjectId = useSelector((state: RootState) => state.project.activeProjectId);
   const activeSessionId = useSelector((state: RootState) => state.project.activeSessionId);
   const projects = useSelector((state: RootState) => state.project.projects);
   const activeProject = projects.find((p) => p.id === activeProjectId);
   const steerQueue = useSelector((state: RootState) => state.chat.steerQueue[state.project.activeSessionId ?? '']);
+  const supportsImages = lookupCapabilities(currentModel).supports_images;
 
   const { input, setInput, clearDraft } = useSessionDraft(activeSessionId);
 
@@ -112,7 +125,7 @@ export const ChatInput = memo(function ChatInput({
 
   const handleSend = useCallback(() => {
     const trimmed = input.trim();
-    if (!trimmed) return;
+    if (!trimmed && pendingImages.length === 0) return;
 
     // /btw and /learn bypass the isProcessing gate (side-channel, parallel with the main run)
     if (trimmed === '/btw' || trimmed.startsWith('/btw ')) {
@@ -121,12 +134,61 @@ export const ChatInput = memo(function ChatInput({
       return;
     }
 
-
     if (isProcessing) return;
+    const images = pendingImages;
+    setPendingImages([]);
     clearDraft();
-    onSend(trimmed);
+    onSend({ text: trimmed, images: images.length ? images : undefined });
     closeAutocomplete();
-  }, [input, isProcessing, onSend, onBtwQuery, closeAutocomplete, clearDraft]);
+  }, [input, pendingImages, isProcessing, onSend, onBtwQuery, closeAutocomplete, clearDraft]);
+
+  const addImageFiles = useCallback(async (files: ArrayLike<Blob | File>) => {
+    const next: PendingImage[] = [];
+    for (const file of Array.from(files)) {
+      try {
+        next.push(await fileToPendingImage(file));
+      } catch {
+        // ignore non-image items
+      }
+    }
+    if (next.length === 0) return;
+    setPendingImages((prev) => [...prev, ...next]);
+  }, []);
+
+  const handlePaste = useCallback(async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const imageFiles: Blob[] = [];
+    for (const item of Array.from(items)) {
+      if (item.type.startsWith('image/')) {
+        const blob = item.getAsFile();
+        if (blob) imageFiles.push(blob);
+      }
+    }
+    if (imageFiles.length === 0) return;
+    e.preventDefault();
+    await addImageFiles(imageFiles);
+  }, [addImageFiles]);
+
+  const handleFilePick = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files?.length) await addImageFiles(files);
+    e.target.value = '';
+  }, [addImageFiles]);
+
+  const removePendingImage = useCallback((id: string) => {
+    setPendingImages((prev) => {
+      const target = prev.find((img) => img.id === id);
+      if (target) revokePendingImages([target]);
+      return prev.filter((img) => img.id !== id);
+    });
+  }, []);
+
+  useEffect(() => {
+    return () => revokePendingImages(pendingImages);
+    // Only revoke on unmount — pendingImages identity changes often.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleAbort = useCallback(() => {
     onAbort();
@@ -235,8 +297,9 @@ export const ChatInput = memo(function ChatInput({
 
   return (
     <div className="input-area">
-      <TodoPanel />
+      <TodoPanel onSend={onSend} isProcessing={isProcessing} />
       <GoalBanner />
+      <ImageLightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} />
       <div className={`input-container${isProcessing ? ' steer-active' : ''}`} style={{ position: 'relative' }}>
         {showAutocomplete && autocompleteItems.length > 0 && (
           <div className="autocomplete-dropdown" ref={dropdownRef}>
@@ -278,32 +341,79 @@ export const ChatInput = memo(function ChatInput({
             ))}
           </div>
         )}
-        <pre
-          ref={overlayRef}
-          className="highlight-overlay"
-          aria-hidden="true"
-          dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(highlightedHTML + '<br />') }}
-        />
-        <textarea
-          ref={textareaRef}
-          className="chat-input"
-          value={input}
-          onChange={onChange}
-          onKeyDown={handleKeyDown}
-          onCompositionStart={onCompositionStart}
-          onCompositionEnd={onCompositionEnd}
-          onScroll={handleScroll}
-          autoFocus={!disabled}
-          placeholder={disabled ? (disabledMessage || 'Chat is disabled') : isProcessing ? 'Type to steer the agent... (⏎ to inject mid-run)' : 'Ask the agent...  Type @ for files, / for commands'}
-          rows={1}
-          disabled={disabled}
+        {pendingImages.length > 0 && (
+          <div className="input-image-strip">
+            {pendingImages.map((img) => (
+              <div key={img.id} className="input-image-thumb-wrap">
+                <button
+                  type="button"
+                  className="input-image-thumb"
+                  onClick={() => setLightboxSrc(img.previewUrl)}
+                  aria-label="View image"
+                >
+                  <img src={img.previewUrl} alt="" />
+                </button>
+                <button
+                  type="button"
+                  className="input-image-remove"
+                  onClick={() => removePendingImage(img.id)}
+                  aria-label="Remove image"
+                >
+                  <XIcon size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {pendingImages.length > 0 && !supportsImages && (
+          <div className="input-image-warning">
+            Current model does not support images — they will not be sent to the model.
+          </div>
+        )}
+        <div className="chat-input-editor">
+          <pre
+            ref={overlayRef}
+            className="highlight-overlay"
+            aria-hidden="true"
+            dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(highlightedHTML + '<br />') }}
+          />
+          <textarea
+            ref={textareaRef}
+            className="chat-input"
+            value={input}
+            onChange={onChange}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+            onCompositionStart={onCompositionStart}
+            onCompositionEnd={onCompositionEnd}
+            onScroll={handleScroll}
+            autoFocus={!disabled}
+            placeholder={disabled ? (disabledMessage || 'Chat is disabled') : isProcessing ? 'Type to steer the agent... (⏎ to inject mid-run)' : 'Ask the agent...  Type @ for files, / for commands'}
+            rows={1}
+            disabled={disabled}
+          />
+        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          hidden
+          onChange={handleFilePick}
         />
         {!disabled && (
           <div className="input-actions">
           <div className="input-actions-left">
             <ModeSelector />
             <ModelSelector currentModel={currentModel} />
-            <button className="icon-btn"><PlusIcon size={16} /></button>
+            <button
+              type="button"
+              className="icon-btn"
+              title="Attach image"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <PlusIcon size={16} />
+            </button>
             <SkillSelector 
               onSelect={handleSkillSelect} 
               externalOpen={skillSelectorOpen}
@@ -350,7 +460,7 @@ export const ChatInput = memo(function ChatInput({
               <button
                 className="send-btn"
                 onClick={handleSend}
-                disabled={!input.trim()}
+                disabled={!input.trim() && pendingImages.length === 0}
               >
                 <SendIcon size={14} />
               </button>

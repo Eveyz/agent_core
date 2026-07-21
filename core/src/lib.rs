@@ -1,5 +1,6 @@
 pub mod agent_registry;
 pub mod workflow;
+pub mod attachments;
 pub mod background;
 pub mod client;
 pub mod compressor;
@@ -54,13 +55,16 @@ pub use model_capabilities::{
 pub use tokio_util::sync::CancellationToken;
 pub use tools::{Tool, ToolRegistry, ToolUpdateFn, build_tool_by_name};
 pub use types::{
-    AgentEvent, AgentState, EventReceiver, EventSender, FunctionCall, FunctionSchema, Message,
-    MessageDelta, ReasoningState, Role, StreamEvent, ToolCall, ToolDefinition, ToolExecutionMode,
-    ToolResultRecord,
+    AgentEvent, AgentState, EventReceiver, EventSender, FunctionCall, FunctionSchema,
+    ImageAttachment, Message, MessageDelta, ReasoningState, Role, StreamEvent, ToolCall,
+    ToolDefinition, ToolExecutionMode, ToolResultRecord,
 };
 
 // New harness modules
-pub use background::{BackgroundPool, Notification};
+pub use attachments::{
+    attachment_url, resolve_attachment_ref, reuse_session_image, save_session_image,
+    MAX_ATTACHMENT_BYTES,
+};
 pub use compressor::{CompressionResult, Compressor, SummarizeRequest, TurnSummary};
 pub use cron::{CronJob, CronJobRun, CronjobStore};
 pub use eval::{

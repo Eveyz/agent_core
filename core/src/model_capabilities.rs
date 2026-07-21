@@ -39,6 +39,9 @@ pub struct ModelCapabilities {
     /// Context window presets offered in the model menu.
     pub context_presets: Vec<usize>,
     pub supports_fast: bool,
+    /// Whether the model accepts image inputs (vision / multimodal).
+    #[serde(default)]
+    pub supports_images: bool,
 }
 
 impl ModelCapabilities {
@@ -57,6 +60,7 @@ impl ModelCapabilities {
             effort_levels: effort_levels.iter().map(|s| (*s).to_string()).collect(),
             context_presets: context_presets.to_vec(),
             supports_fast,
+            supports_images: false,
         }
     }
 
@@ -77,13 +81,58 @@ impl ModelCapabilities {
 pub fn lookup_capabilities(model_id: &str) -> ModelCapabilities {
     let id = normalize_model_id(model_id);
 
-    if let Some(caps) = exact_match(&id) {
-        return caps;
+    let mut caps = if let Some(caps) = exact_match(&id) {
+        caps
+    } else if let Some(caps) = family_match(&id) {
+        caps
+    } else {
+        ModelCapabilities::conservative_default()
+    };
+    if model_supports_images(&id) {
+        caps.supports_images = true;
     }
-    if let Some(caps) = family_match(&id) {
-        return caps;
+    caps
+}
+
+/// Vision / multimodal models that accept image inputs.
+fn model_supports_images(id: &str) -> bool {
+    // OpenAI / Anthropic / Google
+    if id.starts_with("claude")
+        || id.contains("gpt-4o")
+        || id.contains("gpt-4.1")
+        || id.contains("gpt-4-turbo")
+        || id.contains("gpt-4-vision")
+        || id.starts_with("o3")
+        || id.starts_with("o4-")
+        || id.contains("gemini")
+    {
+        return true;
     }
-    ModelCapabilities::conservative_default()
+
+    // Explicit vision / VL / Omni markers
+    if id.contains("vision") || id.contains("-vl") || id.contains("_vl") || id.contains("omni") {
+        return true;
+    }
+
+    // Kimi / Moonshot vision models (platform.kimi.ai/docs/guide/use-kimi-vision-model):
+    // kimi-k3, kimi-k2.5, kimi-k2.6, kimi-k2.7-code(+highspeed). Older kimi-k2 /
+    // kimi-k2-thinking / kimi-k2-instruct are text-only.
+    if id.starts_with("kimi-k3")
+        || id.starts_with("kimi-k2.5")
+        || id.starts_with("kimi-k2.6")
+        || id.starts_with("kimi-k2.7")
+        || (id.starts_with("moonshot") && id.contains("vision"))
+    {
+        return true;
+    }
+
+    // NVIDIA: only Omni / VL variants are multimodal. Base Nemotron 3 Nano /
+    // Super / Ultra are text-only per NIM docs.
+    if id.contains("nemotron") && (id.contains("omni") || id.contains("vl")) {
+        return true;
+    }
+
+    false
 }
 
 fn normalize_model_id(model_id: &str) -> String {
@@ -886,6 +935,37 @@ mod tests {
         assert_eq!(caps.context_tokens, 200_000);
         assert!(caps.supports_thinking);
         assert!(!caps.effort_levels.is_empty());
+    }
+
+    #[test]
+    fn claude_supports_images() {
+        assert!(lookup_capabilities("claude-opus-4-5").supports_images);
+        assert!(lookup_capabilities("gpt-4o").supports_images);
+        assert!(lookup_capabilities("gemini-2.5-flash").supports_images);
+        assert!(!lookup_capabilities("deepseek-chat").supports_images);
+        assert!(!lookup_capabilities("my-custom-model-xyz").supports_images);
+    }
+
+    #[test]
+    fn kimi_and_nemotron_vision_flags() {
+        // Kimi vision family
+        assert!(lookup_capabilities("kimi-k3").supports_images);
+        assert!(lookup_capabilities("kimi-k2.5").supports_images);
+        assert!(lookup_capabilities("kimi-k2.6").supports_images);
+        assert!(lookup_capabilities("kimi-k2.7-code").supports_images);
+        assert!(lookup_capabilities("kimi-k2.7-code-highspeed").supports_images);
+        assert!(lookup_capabilities("moonshot-v1-128k-vision-preview").supports_images);
+        // Older Kimi text models
+        assert!(!lookup_capabilities("kimi-k2").supports_images);
+        assert!(!lookup_capabilities("kimi-k2-instruct").supports_images);
+        assert!(!lookup_capabilities("kimi-k2-thinking").supports_images);
+
+        // Nemotron Omni / VL are multimodal; base Nemotron 3 is text-only
+        assert!(lookup_capabilities("nemotron-3-nano-omni-30b-a3b").supports_images);
+        assert!(lookup_capabilities("nvidia/nemotron-3-nano-omni-30b-a3b-reasoning").supports_images);
+        assert!(!lookup_capabilities("nemotron-3-ultra-550b-a55b").supports_images);
+        assert!(!lookup_capabilities("nvidia/nemotron-3-super-120b-a12b").supports_images);
+        assert!(!lookup_capabilities("nemotron-3-nano-30b-a3b").supports_images);
     }
 
     #[test]

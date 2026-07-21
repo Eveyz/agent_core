@@ -301,10 +301,40 @@ impl RunManager {
         initial_goal: Option<String>,
         initial_goal_completed: bool,
     ) -> Result<CreateRunResult> {
+        self.create_run_with_workdir_and_images(
+            user_input,
+            session_id,
+            working_dir,
+            history,
+            initial_goal,
+            initial_goal_completed,
+            Vec::new(),
+            None,
+        )
+        .await
+    }
+
+    /// Create a Run with optional user image attachments for multimodal models.
+    ///
+    /// When `existing_prompt_id` is set, that prompt row is reused (caller already
+    /// created it — e.g. to persist images under the prompt folder first).
+    pub async fn create_run_with_workdir_and_images(
+        &self,
+        user_input: &str,
+        session_id: Option<String>,
+        working_dir: Option<String>,
+        history: Vec<crate::types::Message>,
+        initial_goal: Option<String>,
+        initial_goal_completed: bool,
+        user_images: Vec<crate::types::ImageAttachment>,
+        existing_prompt_id: Option<String>,
+    ) -> Result<CreateRunResult> {
         let run_id = uuid::Uuid::new_v4().to_string();
 
         // Canonical prompt row — sole source of truth for session rewind.
-        let prompt_id: Option<String> = if let (Some(sid), Some(sm)) =
+        let prompt_id: Option<String> = if let Some(pid) = existing_prompt_id {
+            Some(pid)
+        } else if let (Some(sid), Some(sm)) =
             (session_id.as_ref(), self.session_manager.as_ref())
         {
             let sm = sm.clone();
@@ -349,7 +379,7 @@ impl RunManager {
         let usage_snapshot = Arc::new(RwLock::new(ContextUsageSnapshot::empty(max_ctx)));
 
         // Create the Run
-        let run = match Run::new(
+        let mut run = match Run::new(
             run_id.clone(),
             session_id.clone(),
             prompt_id.clone(),
@@ -385,6 +415,9 @@ impl RunManager {
                 return Err(e);
             }
         };
+        if !user_images.is_empty() {
+            run.set_pending_user_images(user_images);
+        }
         // Clone the approval resolver before spawning so we can store
         // it in the RunHandle for direct (non-command-channel) resolution.
         let approval_resolver = run.approval_resolver().clone();

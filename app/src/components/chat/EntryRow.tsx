@@ -11,7 +11,7 @@ interface EntryRowProps {
   defaultModel: string;
   handleRetry: (id: string, text?: string) => void;
   isProcessing: boolean;
-  onSend?: (msg: string) => void;
+  onSend?: (msg: string | { text: string }) => void;
 }
 
 export const EntryRow = memo(function EntryRow({

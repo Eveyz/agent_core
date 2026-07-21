@@ -31,6 +31,7 @@ pub struct ToolOrchestrator<'a> {
     /// Per-Run clarification resolver for `ask_user`.
     pub input_resolver: Option<InputResolver>,
     pub session_id: Option<String>,
+    pub prompt_id: Option<String>,
     pub run_id: Option<String>,
     pub working_dir: Option<String>,
 }
@@ -605,6 +606,14 @@ impl<'a> ToolOrchestrator<'a> {
                 );
             }
         }
+        if let Some(ref pid) = self.prompt_id {
+            if let Some(obj) = modified_args.as_object_mut() {
+                obj.insert(
+                    "_prompt_id".to_string(),
+                    serde_json::Value::String(pid.clone()),
+                );
+            }
+        }
         if let Some(ref run_id) = self.run_id {
             if let Some(obj) = modified_args.as_object_mut() {
                 obj.insert("_parent_run_id".to_string(), Value::String(run_id.clone()));
@@ -876,6 +885,7 @@ mod empty_success_tests {
             approval_resolver: None,
             input_resolver: None,
             session_id: None,
+            prompt_id: None,
             run_id: None,
             working_dir: None,
         };
@@ -919,6 +929,7 @@ mod empty_success_tests {
             approval_resolver: None,
             input_resolver: None,
             session_id: None,
+            prompt_id: None,
             run_id: None,
             working_dir: None,
         };

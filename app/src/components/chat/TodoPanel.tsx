@@ -5,6 +5,7 @@ import { RootState } from '../../store';
 import { useAppDispatch } from '../../hooks/useAppDispatch';
 import { plansHydrated } from '../../features/chat/chatSlice';
 import type { ParkedPlan, TodoItem } from '../../features/chat/types';
+import type { SendPayload } from './imageAttachments';
 import CheckCircleIcon from 'lucide-react/dist/esm/icons/check-circle.mjs';
 import CircleIcon from 'lucide-react/dist/esm/icons/circle.mjs';
 import LoaderIcon from 'lucide-react/dist/esm/icons/loader.mjs';
@@ -49,7 +50,13 @@ function applyPlansDto(
   );
 }
 
-function TodoPanel() {
+function TodoPanel({
+  onSend,
+  isProcessing = false,
+}: {
+  onSend: (payload: SendPayload | string) => void;
+  isProcessing?: boolean;
+}) {
   const { t } = useTranslation();
   const dispatch = useAppDispatch();
   const sessionId = useSelector((state: RootState) => state.project.activeSessionId ?? '');
@@ -61,19 +68,11 @@ function TodoPanel() {
   const [collapsed, setCollapsed] = useState(true);
 
   const resumePlan = useCallback(
-    async (planId?: string) => {
-      if (!sessionId) return;
-      try {
-        const dto = await invoke<PlansDto>('resume_session_plan', {
-          sessionId,
-          planId: planId ?? null,
-        });
-        applyPlansDto(dispatch, sessionId, dto);
-      } catch (e) {
-        console.error('resume_session_plan failed', e);
-      }
+    (planId: string) => {
+      if (!sessionId || isProcessing) return;
+      onSend(`/plan resume ${planId}`);
     },
-    [dispatch, sessionId],
+    [sessionId, isProcessing, onSend],
   );
 
   const cancelPlan = useCallback(
@@ -143,37 +142,37 @@ function TodoPanel() {
       )}
 
       {showParked && (
-        <div className="todo-parked" style={{ marginTop: showActive ? 8 : 0 }}>
-          <div className="todo-header" style={{ marginBottom: 4 }}>
+        <div className={`todo-parked${showActive ? ' todo-parked-below-active' : ''}`}>
+          <div className="todo-header todo-parked-header">
             <span className="todo-title">Parked</span>
             <span className="todo-progress-text">{parked.length}</span>
           </div>
           <ul className="todo-list">
             {parked.map((p) => (
-              <li
-                key={p.id}
-                className="todo-item"
-                style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}
-              >
-                <span className="todo-desc" style={{ flex: 1 }}>
-                  {p.title} ({p.completed}/{p.total})
+              <li key={p.id} className="todo-item todo-parked-row">
+                <span className="todo-desc todo-parked-title">
+                  {p.title}
+                  <span className="todo-parked-progress">
+                    {p.completed}/{p.total}
+                  </span>
                 </span>
-                <button
-                  type="button"
-                  className="btn-allow"
-                  style={{ fontSize: 11, padding: '2px 8px' }}
-                  onClick={() => resumePlan(p.id)}
-                >
-                  Resume
-                </button>
-                <button
-                  type="button"
-                  className="btn-deny"
-                  style={{ fontSize: 11, padding: '2px 8px' }}
-                  onClick={() => cancelPlan(p.id)}
-                >
-                  Cancel
-                </button>
+                <div className="todo-parked-actions">
+                  <button
+                    type="button"
+                    className="todo-parked-btn todo-parked-btn-resume"
+                    disabled={isProcessing}
+                    onClick={() => resumePlan(p.id)}
+                  >
+                    Resume
+                  </button>
+                  <button
+                    type="button"
+                    className="todo-parked-btn todo-parked-btn-cancel"
+                    onClick={() => cancelPlan(p.id)}
+                  >
+                    Cancel
+                  </button>
+                </div>
               </li>
             ))}
           </ul>

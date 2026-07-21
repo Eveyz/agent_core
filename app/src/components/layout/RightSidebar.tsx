@@ -39,11 +39,19 @@ export function RightSidebar({ sidebarRef, isExpanded, onToggle }: RightSidebarP
     for (const entry of entries) {
       if (entry.type !== 'turn' || !entry.blocks) continue;
       for (const block of entry.blocks) {
-        if (block.type === 'tool' && !block.is_error && block.result && block.name === 'write_to_file') {
-          const args = block.args as any;
-          const path = args?.TargetFile || args?.file_path;
+        if (
+          block.type === 'tool' &&
+          !block.is_error &&
+          block.result &&
+          (block.name === 'write_to_file' || block.name === 'write_file')
+        ) {
+          const args = block.args as Record<string, unknown> | undefined;
+          const path =
+            (args?.TargetFile as string | undefined) ||
+            (args?.file_path as string | undefined) ||
+            (args?.path as string | undefined);
           if (path) {
-            files.add(path.toLowerCase());
+            files.add(path);
           }
         }
       }
@@ -52,11 +60,35 @@ export function RightSidebar({ sidebarRef, isExpanded, onToggle }: RightSidebarP
   }, [entries]);
 
   const hasPlan = useMemo(() => {
-    return Array.from(artifacts).some(path => path.includes('plan.md') || path.includes('implementation_plan.md'));
+    return Array.from(artifacts).some((path) => {
+      const lower = path.toLowerCase();
+      return lower.includes('plan.md') || lower.includes('implementation_plan.md');
+    });
   }, [artifacts]);
 
   const hasWalkthrough = useMemo(() => {
-    return Array.from(artifacts).some(path => path.includes('walkthrough.md'));
+    return Array.from(artifacts).some((path) => path.toLowerCase().includes('walkthrough.md'));
+  }, [artifacts]);
+
+  const planPaths = useMemo(() => {
+    const fromSession = Array.from(artifacts).filter((path) => {
+      const lower = path.toLowerCase();
+      return lower.endsWith('plan.md') || lower.endsWith('implementation_plan.md');
+    });
+    return [...fromSession, 'docs/active_plans/PLAN.md', 'PLAN.md'];
+  }, [artifacts]);
+
+  const walkthroughPaths = useMemo(() => {
+    const fromSession = Array.from(artifacts).filter((path) =>
+      path.toLowerCase().endsWith('walkthrough.md')
+    );
+    return [
+      ...fromSession,
+      'docs/active_plans/walkthrough.md',
+      'docs/walkthrough.md',
+      'walkthrough.md',
+      'docs/archive/walkthrough.md',
+    ];
   }, [artifacts]);
 
   useEffect(() => {
@@ -91,8 +123,6 @@ export function RightSidebar({ sidebarRef, isExpanded, onToggle }: RightSidebarP
     window.addEventListener('open-right-sidebar', handleOpen);
     return () => window.removeEventListener('open-right-sidebar', handleOpen);
   }, []);
-
-  const activeSessionId = useSelector((state: RootState) => state.project.activeSessionId);
 
   return (
     <aside 
@@ -158,13 +188,7 @@ export function RightSidebar({ sidebarRef, isExpanded, onToggle }: RightSidebarP
         {activeTab === 'plan' && (
           <DocumentTab
             projectPath={activeProject?.path}
-            relativePaths={[
-              `~/.agverse/chats/${activeSessionId}/implementation_plan.md`,
-              `~/.agverse/chats/${activeSessionId}/plan.md`,
-              `~/.agverse/chats/${activeSessionId}/PLAN.md`,
-              'docs/active_plans/PLAN.md',
-              'PLAN.md'
-            ]}
+            relativePaths={planPaths}
             title="Implementation Plan"
             placeholderMessage="Create a PLAN.md file inside your project's docs/active_plans/ directory to display your implementation plan here."
           />
@@ -172,13 +196,7 @@ export function RightSidebar({ sidebarRef, isExpanded, onToggle }: RightSidebarP
         {activeTab === 'walkthrough' && (
           <DocumentTab
             projectPath={activeProject?.path}
-            relativePaths={[
-              `~/.agverse/chats/${activeSessionId}/walkthrough.md`,
-              'docs/active_plans/walkthrough.md',
-              'docs/walkthrough.md',
-              'walkthrough.md',
-              'docs/archive/walkthrough.md'
-            ]}
+            relativePaths={walkthroughPaths}
             title="Walkthrough"
             placeholderMessage="Create a walkthrough.md file inside your project's docs/active_plans/ or docs/ directory to display your completion walkthrough here."
           />

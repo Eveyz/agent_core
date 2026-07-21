@@ -129,12 +129,13 @@
   --overlay-0_6:   rgba(255, 255, 255, 0.6);
 
   /* ── Fonts ──
-     Keep the original Geist + system CJK stack. 'CJK Punctuation' only
-     covers full-width / CJK punctuation ranges so ，。！？「」 don't
-     inherit Latin em-box widths from Geist / SF Pro. */
+     UI keeps Geist + a narrow CJK-punctuation override so ，。！？「」
+     don't inherit Latin em-box widths.
+     Chat prose additionally remaps ASCII () , . : ; ! ? to the same
+     Chinese face — models often emit half-width punct in Chinese, and
+     Geist's glyphs read as thin "boxes" / jam into neighbors. */
   --font-sans: 'CJK Punctuation', 'Geist Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  /* Chat prose: same family stack as UI (Geist + CJK fallbacks). */
-  --font-prose: var(--font-sans);
+  --font-prose: 'CJK Prose Punctuation', 'Geist Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
   --font-mono: 'Geist Mono', 'SF Mono', 'Menlo', 'Consolas', monospace;
 
   /* ── Radius ── */
@@ -319,8 +320,8 @@
 
 /* ── CJK punctuation override ─────────────────────────────────────
    Latin UI fonts often ship half-width / wrong-metric glyphs for
-   full-width Chinese punctuation. This face only covers those ranges
-   and resolves to local system Chinese fonts. */
+   full-width Chinese punctuation. These faces only cover punctuation
+   ranges and resolve to local system Chinese fonts. */
 @font-face {
   font-family: 'CJK Punctuation';
   font-style: normal;
@@ -328,6 +329,7 @@
   font-display: swap;
   src:
     local('PingFang SC'),
+    local('PingFangSC-Regular'),
     local('Hiragino Sans GB'),
     local('Heiti SC'),
     local('Microsoft YaHei UI'),
@@ -341,6 +343,36 @@
     U+2010-2027, /* General punctuation (quotes, dashes, ellipsis) */
     U+00B7,      /* · middle dot */
     U+30FB;      /* ・ */
+}
+
+/* Chat prose: also take over ASCII punct that models mix into Chinese. */
+@font-face {
+  font-family: 'CJK Prose Punctuation';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src:
+    local('PingFang SC'),
+    local('PingFangSC-Regular'),
+    local('Hiragino Sans GB'),
+    local('Heiti SC'),
+    local('Microsoft YaHei UI'),
+    local('Microsoft YaHei'),
+    local('Noto Sans SC'),
+    local('Noto Sans CJK SC'),
+    local('Source Han Sans SC');
+  unicode-range:
+    U+3000-303F,
+    U+FF00-FFEF,
+    U+2010-2027,
+    U+00B7,
+    U+30FB,
+    U+0021,      /* ! */
+    U+0028-0029, /* ( ) */
+    U+002C,      /* , */
+    U+002E,      /* . */
+    U+003A-003B, /* : ; */
+    U+003F;      /* ? */
 }
 
 /* ── Global Reset ───────────────────────────────────────────────── */

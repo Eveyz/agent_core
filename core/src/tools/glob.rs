@@ -46,7 +46,8 @@ impl Tool for GlobTool {
 
         // glob::glob is synchronous and blocking — run it on a blocking thread.
         let results = tokio::task::spawn_blocking(move || -> Result<Vec<String>> {
-            let base_path = crate::paths::resolve_tool_path(&base_path, None, working_dir.as_deref());
+            let base_path =
+                crate::paths::resolve_tool_path(&base_path, None, None, working_dir.as_deref());
             let base = Path::new(&base_path);
 
             let full_pattern_str = if Path::new(&pattern).is_absolute() {

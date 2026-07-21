@@ -43,8 +43,10 @@ impl Tool for WriteFileTool {
             .context("missing required parameter 'content'")?;
 
         let session_id = args.get("_session_id").and_then(|v| v.as_str());
+        let prompt_id = args.get("_prompt_id").and_then(|v| v.as_str());
         let working_dir = args.get("_working_dir").and_then(|v| v.as_str());
-        let resolved_path = crate::paths::resolve_tool_path(path, session_id, working_dir);
+        let resolved_path =
+            crate::paths::resolve_tool_path(path, session_id, prompt_id, working_dir);
         let resolved_path_str = resolved_path.to_string_lossy().to_string();
 
         if let Some(parent) = resolved_path.parent() {

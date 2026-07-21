@@ -115,6 +115,30 @@ pub struct Message {
     /// persistence embeds it under metadata `_reasoning` instead.
     #[serde(default, skip_serializing)]
     pub reasoning: Option<ReasoningState>,
+    /// User-attached images for multimodal models. Not serialized into provider
+    /// JSON directly — provider builders emit API-specific image parts. Session
+    /// persistence embeds refs under metadata `_images`.
+    #[serde(default, skip_serializing)]
+    pub images: Option<Vec<ImageAttachment>>,
+}
+
+/// A persisted image attachment referenced by path on disk.
+///
+/// Files are stored content-addressably under
+/// `~/.agverse/sessions/<session_id>/<prompt_id>/images/<sha256>.<ext>` and linked from
+/// session message metadata via `url` (`agverse://sessions/.../images/...`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ImageAttachment {
+    /// Absolute filesystem path to the image bytes.
+    pub path: String,
+    pub mime_type: String,
+    /// Full SHA-256 hex digest of the file contents (content-addressable id).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    /// Stable prompt-scoped URI for DB / UI resume, e.g.
+    /// `agverse://sessions/{session_id}/{prompt_id}/images/{sha256}.png`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -401,6 +425,7 @@ impl Message {
             model: None,
             metadata: None,
             reasoning: None,
+            images: None,
         }
     }
 
@@ -414,6 +439,7 @@ impl Message {
             model: None,
             metadata: None,
             reasoning: None,
+            images: None,
         }
     }
 
@@ -427,6 +453,7 @@ impl Message {
             model: Some(model.to_string()),
             metadata: None,
             reasoning: None,
+            images: None,
         }
     }
 
@@ -440,6 +467,7 @@ impl Message {
             model: None,
             metadata: None,
             reasoning: None,
+            images: None,
         }
     }
 
@@ -453,6 +481,7 @@ impl Message {
             model: None,
             metadata: None,
             reasoning: None,
+            images: None,
         }
     }
 
@@ -466,12 +495,20 @@ impl Message {
             model: None,
             metadata: None,
             reasoning: None,
+            images: None,
         }
     }
 
     pub fn with_reasoning(mut self, reasoning: ReasoningState) -> Self {
         if !reasoning.is_empty() {
             self.reasoning = Some(reasoning);
+        }
+        self
+    }
+
+    pub fn with_images(mut self, images: Vec<ImageAttachment>) -> Self {
+        if !images.is_empty() {
+            self.images = Some(images);
         }
         self
     }

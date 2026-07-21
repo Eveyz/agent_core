@@ -205,6 +205,10 @@ pub struct Run {
     /// here; `maybe_compact` only mutates `context.messages`. This is what
     /// gets persisted to SQLite / crash snapshots so UI resume stays full.
     full_transcript: Vec<Message>,
+
+    /// Images attached to the opening user turn (paste / file picker).
+    /// Consumed when the Run starts and the user message is appended.
+    pending_user_images: Vec<crate::types::ImageAttachment>,
 }
 
 impl Run {
@@ -343,11 +347,8 @@ impl Run {
         let last_prefix_fingerprint = context.stable_prefix_fingerprint();
 
         // Per-session context snapshot for mid-turn persistence.
-        let session_snapshot_path = session_id.as_ref().map(|sid| {
-            crate::paths::get_agverse_dir()
-                .join("sessions")
-                .join(format!("{}.messages.json", sid))
-        });
+        let session_snapshot_path =
+            session_id.as_ref().map(|sid| crate::paths::session_messages_snapshot_path(sid));
 
         crate::runtime::approval::register_run_resolver(&id, approval_resolver.clone());
 
@@ -396,6 +397,7 @@ impl Run {
             context_snapshot,
             usage_snapshot,
             full_transcript,
+            pending_user_images: Vec::new(),
             goal: initial_goal,
             goal_completed: initial_goal_completed,
             goal_continue_nudges: 0,
@@ -411,6 +413,11 @@ impl Run {
 
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    /// Attach images for the opening user turn (must be called before Start).
+    pub fn set_pending_user_images(&mut self, images: Vec<crate::types::ImageAttachment>) {
+        self.pending_user_images = images;
     }
 
     pub fn cancel_token(&self) -> CancellationToken {

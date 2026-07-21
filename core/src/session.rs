@@ -9,12 +9,13 @@
 //! Memory  = "what I know"     (extracted facts, searchable, cross-session)
 //! ```
 
-use crate::types::{Message, ReasoningState};
+use crate::types::{ImageAttachment, Message, ReasoningState};
 use anyhow::Result;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 const REASONING_METADATA_KEY: &str = "_reasoning";
+const IMAGES_METADATA_KEY: &str = "_images";
 
 /// Embed structured reasoning into the session `metadata` JSON blob so it
 /// survives SQLite round-trips without a schema migration.
@@ -45,6 +46,34 @@ fn merge_reasoning_into_metadata(
     }
 }
 
+/// Embed image attachment refs into metadata for SQLite persistence.
+fn merge_images_into_metadata(
+    metadata: Option<&serde_json::Value>,
+    images: Option<&Vec<ImageAttachment>>,
+) -> Option<serde_json::Value> {
+    match (metadata, images) {
+        (None, None) => None,
+        (Some(meta), None) => Some(meta.clone()),
+        (None, Some(imgs)) if imgs.is_empty() => None,
+        (None, Some(imgs)) => Some(serde_json::json!({ IMAGES_METADATA_KEY: imgs })),
+        (Some(meta), Some(imgs)) if imgs.is_empty() => Some(meta.clone()),
+        (Some(meta), Some(imgs)) => {
+            let mut obj = match meta {
+                serde_json::Value::Object(map) => map.clone(),
+                other => {
+                    let mut map = serde_json::Map::new();
+                    map.insert("_value".into(), other.clone());
+                    map
+                }
+            };
+            if let Ok(v) = serde_json::to_value(imgs) {
+                obj.insert(IMAGES_METADATA_KEY.into(), v);
+            }
+            Some(serde_json::Value::Object(obj))
+        }
+    }
+}
+
 /// Pull `_reasoning` out of metadata on load; returns (cleaned_metadata, reasoning).
 fn split_reasoning_from_metadata(
     metadata: Option<serde_json::Value>,
@@ -67,6 +96,46 @@ fn split_reasoning_from_metadata(
     (metadata, reasoning)
 }
 
+/// Pull `_images` out of metadata on load; returns (cleaned_metadata, images).
+fn split_images_from_metadata(
+    metadata: Option<serde_json::Value>,
+) -> (Option<serde_json::Value>, Option<Vec<ImageAttachment>>) {
+    let Some(mut meta) = metadata else {
+        return (None, None);
+    };
+    let images = meta
+        .as_object_mut()
+        .and_then(|obj| obj.remove(IMAGES_METADATA_KEY))
+        .and_then(|v| serde_json::from_value::<Vec<ImageAttachment>>(v).ok())
+        .filter(|imgs| !imgs.is_empty());
+    let metadata = match &meta {
+        serde_json::Value::Object(map) if map.is_empty() => None,
+        serde_json::Value::Object(map) if map.len() == 1 && map.contains_key("_value") => {
+            map.get("_value").cloned()
+        }
+        other => Some(other.clone()),
+    };
+    (metadata, images)
+}
+
+fn merge_ephemeral_into_metadata(message: &Message) -> Option<serde_json::Value> {
+    let with_reasoning =
+        merge_reasoning_into_metadata(message.metadata.as_ref(), message.reasoning.as_ref());
+    merge_images_into_metadata(with_reasoning.as_ref(), message.images.as_ref())
+}
+
+fn split_ephemeral_from_metadata(
+    metadata: Option<serde_json::Value>,
+) -> (
+    Option<serde_json::Value>,
+    Option<ReasoningState>,
+    Option<Vec<ImageAttachment>>,
+) {
+    let (metadata, reasoning) = split_reasoning_from_metadata(metadata);
+    let (metadata, images) = split_images_from_metadata(metadata);
+    (metadata, reasoning, images)
+}
+
 /// Prepare messages for the crash-safe JSON snapshot. `Message::reasoning` is
 /// omitted from normal provider serialization, so use the SQLite metadata
 /// encoding here to preserve opaque blobs and signatures.
@@ -75,11 +144,9 @@ pub(crate) fn messages_for_snapshot(messages: &[Message]) -> Vec<Message> {
         .iter()
         .cloned()
         .map(|mut message| {
-            message.metadata = merge_reasoning_into_metadata(
-                message.metadata.as_ref(),
-                message.reasoning.as_ref(),
-            );
+            message.metadata = merge_ephemeral_into_metadata(&message);
             message.reasoning = None;
+            message.images = None;
             message
         })
         .collect()
@@ -274,9 +341,7 @@ impl SessionManager {
     }
 
     fn snapshot_path(session_id: &str) -> std::path::PathBuf {
-        crate::paths::get_agverse_dir()
-            .join("sessions")
-            .join(format!("{session_id}.messages.json"))
+        crate::paths::session_messages_snapshot_path(session_id)
     }
 
     /// Atomically promote the runtime's raw transcript snapshot into SQLite.
@@ -764,10 +829,7 @@ impl SessionManager {
                 let tool_call_id = msg.tool_call_id.as_deref().unwrap_or("");
                 let name = msg.name.as_deref().unwrap_or("");
                 let model = msg.model.as_deref().unwrap_or("");
-                let metadata = serde_json::to_string(&merge_reasoning_into_metadata(
-                    msg.metadata.as_ref(),
-                    msg.reasoning.as_ref(),
-                ))
+                let metadata = serde_json::to_string(&merge_ephemeral_into_metadata(msg))
                 .unwrap_or_else(|_| "{}".to_string());
 
                 tx.execute(
@@ -922,7 +984,7 @@ impl SessionManager {
                         .ok()
                         .filter(|value| !value.is_null());
 
-                let (metadata, reasoning) = split_reasoning_from_metadata(metadata);
+                let (metadata, reasoning, images) = split_ephemeral_from_metadata(metadata);
 
                 Ok((
                     idx,
@@ -943,6 +1005,7 @@ impl SessionManager {
                         model: if model.is_empty() { None } else { Some(model) },
                         metadata,
                         reasoning,
+                        images,
                     },
                     prompt_id,
                 ))
@@ -1275,23 +1338,10 @@ impl SessionManager {
         agverse_edit.finish();
 
         // 3. Clean up associated files from the filesystem (best-effort)
-        let agverse_dir = crate::paths::get_agverse_dir();
-
-        // Delete mid-turn session snapshot file
-        let snapshot_file = agverse_dir
-            .join("sessions")
-            .join(format!("{}.messages.json", session_id));
-        if snapshot_file.exists() {
-            if let Err(e) = std::fs::remove_file(&snapshot_file) {
-                tracing::warn!(path = %snapshot_file.display(), error = %e, "Failed to delete session snapshot file");
-            }
-        }
-
-        // Delete chat folder (containing plans, walkthroughs, tasks, and local media)
-        let chat_dir = agverse_dir.join("chats").join(session_id);
-        if chat_dir.exists() {
-            if let Err(e) = std::fs::remove_dir_all(&chat_dir) {
-                tracing::warn!(path = %chat_dir.display(), error = %e, "Failed to delete session chat directory");
+        let session_dir = crate::paths::session_dir(session_id);
+        if session_dir.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&session_dir) {
+                tracing::warn!(path = %session_dir.display(), error = %e, "Failed to delete session directory");
             }
         }
 
@@ -1449,6 +1499,7 @@ mod tests {
                 model: None,
                 metadata: None,
                 reasoning: None,
+                images: None,
             },
             Message {
                 role: Role::Assistant,
@@ -1459,6 +1510,7 @@ mod tests {
                 model: None,
                 metadata: None,
                 reasoning: None,
+                images: None,
             },
             Message {
                 role: Role::Assistant,
@@ -1476,6 +1528,7 @@ mod tests {
                 model: None,
                 metadata: None,
                 reasoning: None,
+                images: None,
             },
             Message {
                 role: Role::Tool,
@@ -1486,6 +1539,7 @@ mod tests {
                 model: None,
                 metadata: None,
                 reasoning: None,
+                images: None,
             },
         ]
     }
@@ -2232,16 +2286,14 @@ mod tests {
         ).unwrap();
 
         // 3. Create dummy files on filesystem
-        let agverse_dir = crate::paths::get_agverse_dir();
-
-        let session_dir = agverse_dir.join("sessions");
-        std::fs::create_dir_all(&session_dir).unwrap();
-        let snapshot_file = session_dir.join(format!("{}.messages.json", parent_id));
+        let session_fs = crate::paths::session_dir(&parent_id);
+        std::fs::create_dir_all(&session_fs).unwrap();
+        let snapshot_file = crate::paths::session_messages_snapshot_path(&parent_id);
         std::fs::write(&snapshot_file, "[]").unwrap();
 
-        let chat_dir = agverse_dir.join("chats").join(&parent_id);
-        std::fs::create_dir_all(&chat_dir).unwrap();
-        let plan_file = chat_dir.join("plan.md");
+        let prompt_fs = crate::paths::prompt_dir(&parent_id, "prompt-test");
+        std::fs::create_dir_all(&prompt_fs).unwrap();
+        let plan_file = prompt_fs.join("plan.md");
         std::fs::write(&plan_file, "plan content").unwrap();
 
         // Drop db lock before calling mgr methods (parking_lot::Mutex is NOT reentrant)
@@ -2298,7 +2350,7 @@ mod tests {
             1
         );
         assert!(snapshot_file.exists());
-        assert!(chat_dir.exists());
+        assert!(session_fs.exists());
 
         // Drop db lock before calling mgr.delete (parking_lot::Mutex is NOT reentrant)
         drop(db);
@@ -2358,7 +2410,7 @@ mod tests {
             0
         );
         assert!(!snapshot_file.exists());
-        assert!(!chat_dir.exists());
+        assert!(!session_fs.exists());
     }
 
     #[test]
@@ -2423,6 +2475,7 @@ mod tests {
                 model: None,
                 metadata: None,
                 reasoning: None,
+                images: None,
             }],
         )
         .unwrap();

@@ -126,11 +126,9 @@ mod tests {
         let storage = temp_storage();
         let pm = agent_core::ProjectManager::new(storage);
         let session_id = "test-session-123";
-        let chat_dir = agent_core::paths::get_agverse_dir()
-            .join("chats")
-            .join(session_id);
-        std::fs::create_dir_all(&chat_dir).unwrap();
-        let canonical = chat_dir.canonicalize().unwrap();
+        let session_cwd = agent_core::paths::session_dir(session_id);
+        std::fs::create_dir_all(&session_cwd).unwrap();
+        let canonical = session_cwd.canonicalize().unwrap();
 
         let (workspace_id, root) =
             super::super::resolve_preview_workspace(

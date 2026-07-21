@@ -15,7 +15,7 @@ interface ChatAreaProps {
   isAtBottom: boolean;
   scrollToBottom: (behavior?: ScrollBehavior) => void;
   handleRetry: (id: string, text?: string) => void;
-  onSend?: (msg: string) => void;
+  onSend: (msg: string | { text: string }) => void;
 }
 
 /** loadMorePrompts adds 2 prompts → typically 4 entries (user + turn each). */

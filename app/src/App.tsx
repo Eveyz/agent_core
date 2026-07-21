@@ -45,6 +45,7 @@ import { useVisibilityResync } from './hooks/useVisibilityResync';
 import { Sidebar } from './components/layout/Sidebar';
 import { CosmicBackground } from './components/layout/CosmicBackground';
 import { EmptyState } from './components/chat/EmptyState';
+import type { SendPayload } from './components/chat/imageAttachments';
 import { ChatInput } from './components/chat/ChatInput';
 import ApprovalBlockUI from './components/chat/ApprovalBlockUI';
 import ClarificationOverlay from './components/chat/ClarificationOverlay';
@@ -261,7 +262,9 @@ function App() {
   }, [dispatch]);
 
   const handleSend = useCallback(
-    async (msg: string) => {
+    async (payload: SendPayload | string) => {
+      const msg = typeof payload === 'string' ? payload : payload.text;
+      const pendingImages = typeof payload === 'string' ? undefined : payload.images;
       const trimmed = msg.trim();
       const isGoalClear =
         trimmed === '/goal clear' ||
@@ -336,6 +339,8 @@ function App() {
         return;
       }
 
+      if (!trimmed && !(pendingImages && pendingImages.length > 0)) return;
+
       let sessionId = activeSessionId;
       let isNewSession = false;
       if (!sessionId) {
@@ -361,24 +366,58 @@ function App() {
         dispatch(setActiveSession(sessionId));
       }
 
-      dispatch(userMessageSent({ text: msg, model: defaultModel, sessionId }));
+      const optimisticImages = pendingImages?.map((img) => ({
+        id: img.id,
+        previewUrl: img.previewUrl,
+        mimeType: img.mimeType,
+      }));
+
+      dispatch(userMessageSent({
+        text: msg,
+        model: defaultModel,
+        sessionId,
+        images: optimisticImages,
+      }));
       scrollToBottom('auto');
 
       const shouldRename = isNewSession || sessionTitle === 'New Session' || sessionTitle === '';
       if (shouldRename && sessionId && activeProjectId) {
-        const preview = msg.trim().slice(0, 30) + (msg.trim().length > 30 ? '...' : '');
-        dispatch(renameSession({ sessionId, projectId: activeProjectId, newTitle: preview }));
+        const previewSource = trimmed || (pendingImages?.length ? 'Image' : '');
+        const preview = previewSource.slice(0, 30) + (previewSource.length > 30 ? '...' : '');
+        if (preview) {
+          dispatch(renameSession({ sessionId, projectId: activeProjectId, newTitle: preview }));
+        }
       }
 
       try {
-        const result = await invoke<{ run_id: string; prompt_id?: string | null }>(
+        const result = await invoke<{
+          run_id: string;
+          prompt_id?: string | null;
+          images?: { path: string; mime_type: string; url?: string; sha256?: string }[];
+        }>(
           'send_message',
-          { message: msg, sessionId, model: defaultModel },
+          {
+            message: msg,
+            sessionId,
+            model: defaultModel,
+            images: pendingImages?.map((img) => ({
+              mime_type: img.mimeType,
+              data_base64: img.dataBase64,
+            })),
+          },
         );
         dispatch(runIdSet({
           runId: result.run_id,
           sessionId,
           promptId: result.prompt_id ?? undefined,
+          images: result.images?.map((img, idx) => ({
+            id: optimisticImages?.[idx]?.id,
+            previewUrl: optimisticImages?.[idx]?.previewUrl,
+            mimeType: img.mime_type,
+            path: img.path,
+            url: img.url,
+            sha256: img.sha256,
+          })),
         }));
       } catch (e) {
         console.error('Invoke error:', e);
@@ -394,7 +433,8 @@ function App() {
       const entry = entries.find((e) => e.id === entryId);
       if (!entry) return;
       const msg = editedText ?? entry.text ?? '';
-      if (!msg.trim() || !activeSessionId) return;
+      const entryImages = entry.images ?? [];
+      if ((!msg.trim() && entryImages.length === 0) || !activeSessionId) return;
 
       if (store.getState().project.activeSessionId !== activeSessionId) {
         dispatch(setActiveSession(activeSessionId));
@@ -404,18 +444,55 @@ function App() {
       // That way switching models in the picker and hitting retry actually switches.
       const model = defaultModel;
       // Append-only: keep prior turns and send the same (or edited) text as a new prompt.
-      dispatch(userMessageSent({ text: msg, model, sessionId: activeSessionId }));
+      // Reuse persisted attachment refs (path / agverse:// url) so images are included.
+      const optimisticImages = entryImages.map((img) => ({
+        id: img.id,
+        previewUrl: img.previewUrl,
+        mimeType: img.mimeType,
+        path: img.path,
+        url: img.url,
+        sha256: img.sha256,
+      }));
+      dispatch(userMessageSent({
+        text: msg,
+        model,
+        sessionId: activeSessionId,
+        images: optimisticImages.length ? optimisticImages : undefined,
+      }));
       scrollToBottom('auto');
 
       try {
-        const result = await invoke<{ run_id: string; prompt_id?: string | null }>(
+        const result = await invoke<{
+          run_id: string;
+          prompt_id?: string | null;
+          images?: { path: string; mime_type: string; url?: string; sha256?: string }[];
+        }>(
           'send_message',
-          { message: msg, sessionId: activeSessionId, model },
+          {
+            message: msg,
+            sessionId: activeSessionId,
+            model,
+            images: entryImages.length
+              ? entryImages.map((img) => ({
+                  mime_type: img.mimeType,
+                  path: img.path,
+                  url: img.url,
+                }))
+              : undefined,
+          },
         );
         dispatch(runIdSet({
           runId: result.run_id,
           sessionId: activeSessionId,
           promptId: result.prompt_id ?? undefined,
+          images: result.images?.map((img, idx) => ({
+            id: optimisticImages[idx]?.id,
+            previewUrl: optimisticImages[idx]?.previewUrl,
+            mimeType: img.mime_type,
+            path: img.path,
+            url: img.url,
+            sha256: img.sha256,
+          })),
         }));
       } catch (e) {
         console.error('Retry invoke error:', e);
