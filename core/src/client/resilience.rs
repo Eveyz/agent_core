@@ -47,7 +47,7 @@ impl CircuitBreaker {
         })
     }
 
-    pub fn acquire_permit(&self) -> Result<(), &'static str> {
+    pub fn acquire_permit(&self) -> Result<(), String> {
         let mut state = self.state.lock();
 
         match state.state {
@@ -58,8 +58,19 @@ impl CircuitBreaker {
                         state.state = CircuitState::HalfOpen;
                         return Ok(());
                     }
+                    let remaining = self
+                        .config
+                        .reset_timeout
+                        .saturating_sub(last_fail.elapsed());
+                    let secs = remaining.as_secs().max(1);
+                    return Err(format!(
+                        "The AI provider is temporarily unavailable after repeated failures. Try again in about {secs}s."
+                    ));
                 }
-                Err("Circuit breaker is OPEN. Requests are blocked.")
+                Err(
+                    "The AI provider is temporarily unavailable after repeated failures. Try again in a minute."
+                        .to_string(),
+                )
             }
             CircuitState::HalfOpen => {
                 // Only allow one request through in HalfOpen state.

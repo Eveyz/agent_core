@@ -1,8 +1,11 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useSelector } from 'react-redux';
+import { useTranslation } from 'react-i18next';
 import MoreVerticalIcon from 'lucide-react/dist/esm/icons/more-vertical.mjs';
+import FileSearchIcon from 'lucide-react/dist/esm/icons/file-search.mjs';
 import SearchIcon from 'lucide-react/dist/esm/icons/search.mjs';
-import ListIcon from 'lucide-react/dist/esm/icons/list.mjs';
+import FoldVerticalIcon from 'lucide-react/dist/esm/icons/fold-vertical.mjs';
+import UnfoldVerticalIcon from 'lucide-react/dist/esm/icons/unfold-vertical.mjs';
 import ChevronRightIcon from 'lucide-react/dist/esm/icons/chevron-right.mjs';
 import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
 import { invoke } from '@tauri-apps/api/core';
@@ -266,8 +269,15 @@ function FileDiffViewer({ diffRows, fileContent, onFetchContent }: FileDiffViewe
 }
 
 export function ReviewTab() {
+  const { t } = useTranslation();
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set());
   const [fileContents, setFileContents] = useState<Record<string, string>>({});
+  const [jumpOpen, setJumpOpen] = useState(false);
+  const [jumpQuery, setJumpQuery] = useState('');
+  const jumpWrapRef = useRef<HTMLDivElement>(null);
+  const jumpInputRef = useRef<HTMLInputElement>(null);
+  const fileContentsRef = useRef(fileContents);
+  fileContentsRef.current = fileContents;
 
   const activeProjectId = useSelector((state: RootState) => state.project.activeProjectId);
   const projects = useSelector((state: RootState) => state.project.projects);
@@ -298,35 +308,56 @@ export function ReviewTab() {
     });
   };
 
-  const fileContentsRef = useRef(fileContents);
-  fileContentsRef.current = fileContents;
+  const expandFileAndScroll = useCallback((filePath: string) => {
+    setExpandedFiles(prev => {
+      const next = new Set(prev);
+      next.add(filePath);
+      return next;
+    });
+    if (!fileContentsRef.current[filePath]) {
+      fetchFileContent(filePath);
+    }
+    setTimeout(() => {
+      const element = document.getElementById(`review-file-${filePath}`);
+      if (element) {
+        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 150);
+  }, []);
 
   useEffect(() => {
     const handleOpen = (e: Event) => {
       const customEvent = e as CustomEvent;
       if (customEvent.detail?.filePath) {
-        const filePath = customEvent.detail.filePath;
-        setExpandedFiles(prev => {
-          const next = new Set(prev);
-          next.add(filePath);
-          return next;
-        });
-        if (!fileContentsRef.current[filePath]) {
-          fetchFileContent(filePath);
-        }
-        const timer = setTimeout(() => {
-          const id = `review-file-${filePath}`;
-          const element = document.getElementById(id);
-          if (element) {
-            element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          }
-        }, 150);
-        return () => clearTimeout(timer);
+        expandFileAndScroll(customEvent.detail.filePath);
       }
     };
     window.addEventListener('open-right-sidebar', handleOpen);
     return () => window.removeEventListener('open-right-sidebar', handleOpen);
-  }, []);
+  }, [expandFileAndScroll]);
+
+  useEffect(() => {
+    if (!jumpOpen) return;
+    jumpInputRef.current?.focus();
+    const onMouseDown = (e: MouseEvent) => {
+      if (jumpWrapRef.current && !jumpWrapRef.current.contains(e.target as Node)) {
+        setJumpOpen(false);
+        setJumpQuery('');
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setJumpOpen(false);
+        setJumpQuery('');
+      }
+    };
+    document.addEventListener('mousedown', onMouseDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [jumpOpen]);
 
   // Extract modified files from the current session's chat entries
   const modifiedFiles = useMemo(() => {
@@ -403,6 +434,37 @@ export function ReviewTab() {
     });
   }, [entries]);
 
+  const filteredJumpFiles = useMemo(() => {
+    const q = jumpQuery.trim().toLowerCase();
+    if (!q) return modifiedFiles;
+    return modifiedFiles.filter(
+      (f) => f.name.toLowerCase().includes(q) || f.path.toLowerCase().includes(q),
+    );
+  }, [modifiedFiles, jumpQuery]);
+
+  const allExpanded =
+    modifiedFiles.length > 0 && modifiedFiles.every((f) => expandedFiles.has(f.path));
+
+  const expandAllFiles = () => {
+    const paths = modifiedFiles.map((f) => f.path);
+    setExpandedFiles(new Set(paths));
+    for (const path of paths) {
+      if (!fileContentsRef.current[path]) {
+        fetchFileContent(path);
+      }
+    }
+  };
+
+  const collapseAllFiles = () => {
+    setExpandedFiles(new Set());
+  };
+
+  const handleJumpSelect = (path: string) => {
+    setJumpOpen(false);
+    setJumpQuery('');
+    expandFileAndScroll(path);
+  };
+
   const getPathHint = (path: string) => {
     if (!activeProject?.path) return '';
     const normalizedPath = path.replace(/\\/g, '/');
@@ -424,17 +486,82 @@ export function ReviewTab() {
   return (
     <div className="review-tab-container">
       <div className="review-header">
-        <span className="review-title">Review</span>
-        <div className="review-actions">
-          <button className="icon-btn"><MoreVerticalIcon size={14} /></button>
-          <button className="icon-btn"><SearchIcon size={14} /></button>
-          <button className="icon-btn"><ListIcon size={14} /></button>
+        <span className="review-title">{t('chat.review.title')}</span>
+        <div className="review-actions" ref={jumpWrapRef}>
+          <button type="button" className="icon-btn">
+            <MoreVerticalIcon size={14} />
+          </button>
+          <button
+            type="button"
+            className={`icon-btn ${jumpOpen ? 'active' : ''}`}
+            title={t('chat.review.jumpToFile')}
+            aria-label={t('chat.review.jumpToFile')}
+            aria-expanded={jumpOpen}
+            disabled={modifiedFiles.length === 0}
+            onClick={() => {
+              setJumpOpen((open) => {
+                if (open) setJumpQuery('');
+                return !open;
+              });
+            }}
+          >
+            <FileSearchIcon size={14} />
+          </button>
+          <button
+            type="button"
+            className="icon-btn"
+            title={allExpanded ? t('chat.review.collapseAll') : t('chat.review.expandAll')}
+            aria-label={allExpanded ? t('chat.review.collapseAll') : t('chat.review.expandAll')}
+            disabled={modifiedFiles.length === 0}
+            onClick={() => (allExpanded ? collapseAllFiles() : expandAllFiles())}
+          >
+            {allExpanded ? <FoldVerticalIcon size={14} /> : <UnfoldVerticalIcon size={14} />}
+          </button>
+
+          {jumpOpen && (
+            <div className="review-jump-popover" role="listbox">
+              <div className="review-jump-search">
+                <SearchIcon size={14} />
+                <input
+                  ref={jumpInputRef}
+                  className="review-jump-search-input"
+                  value={jumpQuery}
+                  onChange={(e) => setJumpQuery(e.target.value)}
+                  placeholder={t('chat.review.jumpToFile')}
+                  aria-label={t('chat.review.jumpToFile')}
+                />
+              </div>
+              <div className="review-jump-list">
+                {filteredJumpFiles.length === 0 ? (
+                  <div className="review-jump-empty">{t('chat.review.noMatchingFiles')}</div>
+                ) : (
+                  filteredJumpFiles.map((file) => {
+                    const pathHint = getPathHint(file.path);
+                    return (
+                      <button
+                        key={file.path}
+                        type="button"
+                        className="review-jump-item"
+                        role="option"
+                        onClick={() => handleJumpSelect(file.path)}
+                      >
+                        <span className="review-jump-item-name">{file.name}</span>
+                        {pathHint && (
+                          <span className="review-jump-item-path">{pathHint}</span>
+                        )}
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </div>
       
       <div className="review-body" style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
         {modifiedFiles.length === 0 ? (
-          <div className="empty-message">No changes to review</div>
+          <div className="empty-message">{t('chat.review.noChanges')}</div>
         ) : (
           <div className="review-files-list" style={{ display: 'flex', flexDirection: 'column' }}>
             {modifiedFiles.map((file) => {

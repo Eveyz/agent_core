@@ -18,6 +18,7 @@ import { isSubagentTool, groupBlocksIntoItems, basename, parseEditSummary, parse
 import { getFileIcon } from '../layout/FileTree';
 import { useTranslation } from 'react-i18next';
 import { isActiveRecoveryNotice, translateRecoveryMessage } from './recoveryNotice';
+import { translateErrorMessage } from './errorNotice';
 
 interface FileChangeItem {
   path: string;
@@ -452,7 +453,12 @@ export const AgentTurnUI = memo(function AgentTurnUI({
                   return (
                     <div className="error-block-style">
                       <AlertTriangleIcon size={16} style={{ flexShrink: 0 }} />
-                      <span style={{ lineHeight: '1.4' }}>{text}</span>
+                      <span style={{ lineHeight: '1.4' }}>
+                        {translateErrorMessage(
+                          text,
+                          t as (key: string, opts?: Record<string, unknown>) => string,
+                        )}
+                      </span>
                     </div>
                   );
                 }

@@ -86,6 +86,18 @@
       "retryingIn": "Retrying in {{time}}",
       "unreachable": "Unable to reach the remote model. Retrying…"
     },
+    "errors": {
+      "providerUnavailable": "The AI provider is temporarily unavailable after repeated failures. Try again in about {{seconds}}s.",
+      "providerUnavailableGeneric": "The AI provider is temporarily unavailable after repeated failures. Try again in a minute."
+    },
+    "review": {
+      "title": "Review",
+      "noChanges": "No changes to review",
+      "jumpToFile": "Jump to file",
+      "expandAll": "Expand all",
+      "collapseAll": "Collapse all",
+      "noMatchingFiles": "No matching files"
+    },
     "subagent": {
       "spawning": "Spawning {{count}} agent...",
       "spawning_plural": "Spawning {{count}} agents...",

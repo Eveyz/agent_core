@@ -302,7 +302,8 @@ impl OpenAIClient {
         let mut current_client = self;
 
         loop {
-            // Circuit breaker check
+            // Circuit breaker check — pause requests after repeated provider failures
+            // so we don't hammer a dead endpoint. Fall back to the next model if set.
             if let Err(msg) = current_client.circuit_breaker.acquire_permit() {
                 if let Some(ref fallback) = current_client.fallback_client {
                     tracing::warn!(
@@ -314,7 +315,7 @@ impl OpenAIClient {
                     current_client = fallback.as_ref();
                     continue;
                 }
-                bail!("Circuit breaker open: {}", msg);
+                bail!("{}", msg);
             }
 
             let url = providers::endpoint_for(
