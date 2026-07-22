@@ -6,6 +6,9 @@ import { PERMISSION_MODES, MEMORY_MODES, type AgentDef } from "../../features/ag
 import XIcon from "lucide-react/dist/esm/icons/x.mjs";
 import ChevronDownIcon from "lucide-react/dist/esm/icons/chevron-down.mjs";
 import WandIcon from "lucide-react/dist/esm/icons/wand-2.mjs";
+import SearchIcon from "lucide-react/dist/esm/icons/search.mjs";
+import ServerIcon from "lucide-react/dist/esm/icons/server.mjs";
+import CheckIcon from "lucide-react/dist/esm/icons/check.mjs";
 
 interface SkillInfo {
   name: string;
@@ -29,6 +32,7 @@ export function NewAgentModal({
   const [skillsList, setSkillsList] = useState<{ id: string; name: string }[]>([]);
   const [toolsList, setToolsList] = useState<string[]>([]);
   const [skillSearch, setSkillSearch] = useState("");
+  const [modelSearch, setModelSearch] = useState("");
   const [toolSearch, setToolSearch] = useState("");
   const [showSkillDropdown, setShowSkillDropdown] = useState(false);
   const [showToolDropdown, setShowToolDropdown] = useState(false);
@@ -46,6 +50,12 @@ export function NewAgentModal({
   const [maxContextTokens, setMaxContextTokens] = useState(32000);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const displayModelName = model
+    ? model.includes('/')
+      ? model.slice(model.indexOf('/') + 1)
+      : model
+    : 'Default Model';
 
   const isEditing = !!editingAgent;
 
@@ -194,9 +204,9 @@ export function NewAgentModal({
               <label style={{ display: "block", marginBottom: "4px" }}>System Prompt</label>
               <div className="input-container" style={{ position: "relative", marginTop: "4px" }}>
                 {selectedSkills.length > 0 && (
-                  <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", padding: "12px 12px 0 12px" }}>
+                  <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", padding: "10px 14px", borderBottom: "1px solid var(--overlay-0_06)" }}>
                     {selectedSkills.map(s => (
-                      <div key={s} style={{ display: "flex", alignItems: "center", gap: "4px", background: "var(--accent-subtle)", color: "var(--accent)", padding: "4px 8px", borderRadius: "6px", fontSize: "12px", userSelect: "none" }}>
+                      <div key={s} style={{ display: "flex", alignItems: "center", gap: "4px", background: "var(--accent-subtle)", color: "var(--accent)", padding: "3px 8px", borderRadius: "6px", fontSize: "12px", userSelect: "none" }}>
                         <span style={{ fontWeight: 500 }}>{s}</span>
                         <XIcon size={14} style={{ cursor: "pointer", opacity: 0.7 }} onClick={() => setSelectedSkills(selectedSkills.filter(sk => sk !== s))} />
                       </div>
@@ -209,18 +219,19 @@ export function NewAgentModal({
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
                   placeholder="Instructions for the agent..."
-                  style={{ color: "var(--text-main)", minHeight: "100px", resize: "vertical" }}
+                  style={{ color: "var(--text-main)", minHeight: "100px", resize: "none" }}
                 />
 
                 <div className="input-actions">
                   <div className="input-actions-left">
                     <div className="model-selector-wrapper">
                       <button
+                        type="button"
                         className="model-selector"
                         onClick={() => setShowModelDropdown(!showModelDropdown)}
                       >
                         <span className="model-selector-text">
-                          <span className="model-selector-name">{model ? (model.includes('/') ? model.split('/')[1] : model) : 'Default Model'}</span>
+                          <span className="model-selector-name">{displayModelName}</span>
                         </span>
                         <ChevronDownIcon size={12} className={`model-selector-chevron ${showModelDropdown ? 'open' : ''}`} />
                       </button>
@@ -228,33 +239,59 @@ export function NewAgentModal({
                       {showModelDropdown && (
                         <>
                           <div style={{ position: "fixed", inset: 0, zIndex: 100 }} onClick={() => setShowModelDropdown(false)}></div>
-                          <div className="model-dropdown" style={{ zIndex: 101, bottom: "100%", top: "auto", marginBottom: "8px", maxHeight: "240px", overflowY: "auto", padding: "4px" }}>
-                            <div
-                              onClick={() => { setModel(""); setShowModelDropdown(false); }}
-                              className={`model-dropdown-item ${!model ? 'selected' : ''}`}
-                            >
-                              <span className="model-dropdown-item-key">Default Model</span>
-                            </div>
-                            {config?.providers && Object.entries(config.providers).map(([providerKey, provider]: [string, any]) => (
-                              <div key={providerKey} className="model-dropdown-group">
-                                <div className="model-dropdown-group-header">
-                                  <span>{provider.name || providerKey}</span>
-                                </div>
-                                {Object.entries(provider.models).map(([modelKey]) => {
-                                  const key = `${providerKey}/${modelKey}`;
-                                  const isSelected = model === key;
+                          <div className="model-dropdown-shell" style={{ zIndex: 101 }}>
+                            <div className="model-dropdown">
+                              <div className="model-dropdown-search">
+                                <SearchIcon size={14} />
+                                <input
+                                  type="text"
+                                  className="model-dropdown-search-input"
+                                  placeholder="Search models..."
+                                  value={modelSearch}
+                                  onChange={(e) => setModelSearch(e.target.value)}
+                                  autoFocus
+                                />
+                              </div>
+                              <div className="model-dropdown-list">
+                                <button
+                                  type="button"
+                                  onClick={() => { setModel(""); setShowModelDropdown(false); setModelSearch(""); }}
+                                  className={`model-dropdown-item ${!model ? 'selected' : ''}`}
+                                >
+                                  <span className="model-dropdown-item-key">Default Model</span>
+                                  {!model && <CheckIcon size={14} className="model-dropdown-item-check" />}
+                                </button>
+                                {config?.providers && Object.entries(config.providers).map(([providerKey, provider]: [string, any]) => {
+                                  const matchedModels = Object.entries(provider.models).filter(([mKey]) =>
+                                    mKey.toLowerCase().includes(modelSearch.toLowerCase()) || providerKey.toLowerCase().includes(modelSearch.toLowerCase())
+                                  );
+                                  if (matchedModels.length === 0) return null;
                                   return (
-                                    <button
-                                      key={key}
-                                      className={`model-dropdown-item ${isSelected ? 'selected' : ''}`}
-                                      onClick={() => { setModel(key); setShowModelDropdown(false); }}
-                                    >
-                                      <span className="model-dropdown-item-key">{modelKey}</span>
-                                    </button>
+                                    <div key={providerKey} className="model-dropdown-group">
+                                      <div className="model-dropdown-group-header">
+                                        <ServerIcon size={12} />
+                                        <span>{provider.name || providerKey}</span>
+                                      </div>
+                                      {matchedModels.map(([modelKey]) => {
+                                        const key = `${providerKey}/${modelKey}`;
+                                        const isSelected = model === key;
+                                        return (
+                                          <button
+                                            key={key}
+                                            type="button"
+                                            className={`model-dropdown-item ${isSelected ? 'selected' : ''}`}
+                                            onClick={() => { setModel(key); setShowModelDropdown(false); setModelSearch(""); }}
+                                          >
+                                            <span className="model-dropdown-item-key">{modelKey}</span>
+                                            {isSelected && <CheckIcon size={14} className="model-dropdown-item-check" />}
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
                                   );
                                 })}
                               </div>
-                            ))}
+                            </div>
                           </div>
                         </>
                       )}
@@ -262,6 +299,7 @@ export function NewAgentModal({
 
                     <div className="skill-selector-wrapper">
                       <button
+                        type="button"
                         className="icon-btn"
                         onClick={() => setShowSkillDropdown(!showSkillDropdown)}
                         title="Attach skills"
@@ -272,49 +310,54 @@ export function NewAgentModal({
                       {showSkillDropdown && (
                         <>
                           <div style={{ position: "fixed", inset: 0, zIndex: 100 }} onClick={() => setShowSkillDropdown(false)}></div>
-                          <div className="model-dropdown" style={{ bottom: "100%", top: "auto", left: 0, marginBottom: "8px", width: "320px", zIndex: 101, overflow: "hidden", padding: 0 }}>
-                            <div className="model-dropdown-search">
-                              <input
-                                type="text"
-                                className="model-dropdown-search-input"
-                                placeholder="Search skills..."
-                                value={skillSearch}
-                                onChange={(e) => setSkillSearch(e.target.value)}
-                              />
-                            </div>
-                            <div className="model-dropdown-list" style={{ maxHeight: "200px" }}>
-                              {skillsList.filter(s => s.name.toLowerCase().includes(skillSearch.toLowerCase())).map((s) => {
-                                const isSelected = selectedSkills.includes(s.id);
-                                return (
-                                  <button
-                                    key={s.id}
-                                    className={`model-dropdown-item ${isSelected ? 'selected' : ''}`}
-                                    title={s.name}
-                                    onClick={() => {
-                                      if (isSelected) {
-                                        setSelectedSkills(selectedSkills.filter(id => id !== s.id));
-                                      } else {
-                                        setSelectedSkills([...selectedSkills, s.id]);
-                                      }
-                                    }}
-                                    style={{ display: "flex", gap: "8px", alignItems: "center" }}
-                                  >
-                                    <div style={{
-                                      width: "14px", height: "14px", borderRadius: "3px",
-                                      border: `1px solid ${isSelected ? "var(--accent)" : "var(--border-color)"}`,
-                                      background: isSelected ? "var(--accent)" : "transparent",
-                                      display: "flex", alignItems: "center", justifyContent: "center",
-                                      flexShrink: 0
-                                    }}>
-                                      {isSelected && <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>}
-                                    </div>
-                                    <span className="model-dropdown-item-key" style={{ color: isSelected ? "var(--accent)" : "var(--text-main)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "left", flex: 1 }}>{s.name}</span>
-                                  </button>
-                                );
-                              })}
-                              {skillsList.filter(s => s.name.toLowerCase().includes(skillSearch.toLowerCase())).length === 0 && (
-                                <div className="model-dropdown-empty">No skills found</div>
-                              )}
+                          <div className="model-dropdown-shell" style={{ zIndex: 101 }}>
+                            <div className="model-dropdown" style={{ width: "320px", overflow: "hidden", padding: 0 }}>
+                              <div className="model-dropdown-search">
+                                <SearchIcon size={14} />
+                                <input
+                                  type="text"
+                                  className="model-dropdown-search-input"
+                                  placeholder="Search skills..."
+                                  value={skillSearch}
+                                  onChange={(e) => setSkillSearch(e.target.value)}
+                                  autoFocus
+                                />
+                              </div>
+                              <div className="model-dropdown-list" style={{ maxHeight: "200px" }}>
+                                {skillsList.filter(s => s.name.toLowerCase().includes(skillSearch.toLowerCase())).map((s) => {
+                                  const isSelected = selectedSkills.includes(s.id);
+                                  return (
+                                    <button
+                                      key={s.id}
+                                      type="button"
+                                      className={`model-dropdown-item ${isSelected ? 'selected' : ''}`}
+                                      title={s.name}
+                                      onClick={() => {
+                                        if (isSelected) {
+                                          setSelectedSkills(selectedSkills.filter(id => id !== s.id));
+                                        } else {
+                                          setSelectedSkills([...selectedSkills, s.id]);
+                                        }
+                                      }}
+                                      style={{ display: "flex", gap: "8px", alignItems: "center" }}
+                                    >
+                                      <div style={{
+                                        width: "14px", height: "14px", borderRadius: "3px",
+                                        border: `1px solid ${isSelected ? "var(--accent)" : "var(--border-color)"}`,
+                                        background: isSelected ? "var(--accent)" : "transparent",
+                                        display: "flex", alignItems: "center", justifyContent: "center",
+                                        flexShrink: 0
+                                      }}>
+                                        {isSelected && <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>}
+                                      </div>
+                                      <span className="model-dropdown-item-key" style={{ color: isSelected ? "var(--accent)" : "var(--text-main)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "left", flex: 1 }}>{s.name}</span>
+                                    </button>
+                                  );
+                                })}
+                                {skillsList.filter(s => s.name.toLowerCase().includes(skillSearch.toLowerCase())).length === 0 && (
+                                  <div className="model-dropdown-empty">No skills found</div>
+                                )}
+                              </div>
                             </div>
                           </div>
                         </>

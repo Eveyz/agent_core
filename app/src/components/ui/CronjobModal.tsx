@@ -3,14 +3,17 @@ import { invoke } from "@tauri-apps/api/core";
 import { useSelector } from "react-redux";
 import { RootState } from "../../store";
 import XIcon from "lucide-react/dist/esm/icons/x.mjs";
+import ChevronDownIcon from "lucide-react/dist/esm/icons/chevron-down.mjs";
+import WandIcon from "lucide-react/dist/esm/icons/wand-2.mjs";
+import SearchIcon from "lucide-react/dist/esm/icons/search.mjs";
+import ServerIcon from "lucide-react/dist/esm/icons/server.mjs";
+import CheckIcon from "lucide-react/dist/esm/icons/check.mjs";
 
 interface SkillInfo {
   name: string;
   description: string;
   version?: string;
 }
-import ChevronDownIcon from "lucide-react/dist/esm/icons/chevron-down.mjs";
-import WandIcon from "lucide-react/dist/esm/icons/wand-2.mjs";
 
 interface CronJob {
   id: string;
@@ -37,6 +40,7 @@ export function CronjobModal({
   const [isCreating, setIsCreating] = useState(false);
   const [skillsList, setSkillsList] = useState<{ id: string; name: string }[]>([]);
   const [skillSearch, setSkillSearch] = useState("");
+  const [modelSearch, setModelSearch] = useState("");
   const [showSkillDropdown, setShowSkillDropdown] = useState(false);
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const config = useSelector((state: RootState) => state.settings.config);
@@ -50,7 +54,9 @@ export function CronjobModal({
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const [permissionLevel, setPermissionLevel] = useState("read-only");
   const [maxConcurrency, setMaxConcurrency] = useState<number | "">("");
-  const [model, setModel] = useState("");
+  const [model, setModel] = useState(config?.default_model || "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const loadJobs = useCallback(async () => {
     try {
@@ -78,6 +84,12 @@ export function CronjobModal({
   }, [isOpen, loadJobs, loadSkills]);
 
   const handleCreate = async () => {
+    if (!name.trim() || !prompt.trim()) {
+      setError("Name and prompt are required");
+      return;
+    }
+    setSaving(true);
+    setError(null);
     try {
       await invoke("create_cronjob", {
         name,
@@ -93,9 +105,12 @@ export function CronjobModal({
       setIsCreating(false);
       setName("");
       setPrompt("");
+      setSelectedSkills([]);
       loadJobs();
     } catch (e) {
-      console.error(`Error creating job: ${e}`);
+      setError(String(e));
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -171,6 +186,7 @@ export function CronjobModal({
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+              {error && <div style={{ color: "var(--danger)", fontSize: "13px" }}>{error}</div>}
               <div>
                 <label style={{ display: "block", marginBottom: "4px" }}>Name</label>
                 <input
@@ -268,13 +284,14 @@ export function CronjobModal({
                     value={prompt}
                     onChange={(e) => setPrompt(e.target.value)}
                     placeholder="Task instructions..."
-                    style={{ minHeight: "100px", resize: "vertical" }}
+                    style={{ minHeight: "100px", resize: "none" }}
                   />
 
                   <div className="input-actions">
                      <div className="input-actions-left">
                         <div className="model-selector-wrapper">
                           <button 
+                            type="button"
                             className="model-selector" 
                             onClick={() => setShowModelDropdown(!showModelDropdown)}
                           >
@@ -287,33 +304,59 @@ export function CronjobModal({
                           {showModelDropdown && (
                             <>
                               <div style={{ position: "fixed", inset: 0, zIndex: 100 }} onClick={() => setShowModelDropdown(false)}></div>
-                              <div className="model-dropdown" style={{ zIndex: 101, bottom: "100%", top: "auto", marginBottom: "8px", maxHeight: "240px", overflowY: "auto", padding: "4px" }}>
-                                <div 
-                                  onClick={() => { setModel(""); setShowModelDropdown(false); }}
-                                  className={`model-dropdown-item ${!model ? 'selected' : ''}`}
-                                >
-                                  <span className="model-dropdown-item-key">Default Model</span>
-                                </div>
-                                {config?.providers && Object.entries(config.providers).map(([providerKey, provider]: [string, any]) => (
-                                  <div key={providerKey} className="model-dropdown-group">
-                                    <div className="model-dropdown-group-header">
-                                      <span>{provider.name || providerKey}</span>
-                                    </div>
-                                    {Object.entries(provider.models).map(([modelKey]) => {
-                                      const key = `${providerKey}/${modelKey}`;
-                                      const isSelected = model === key;
+                              <div className="model-dropdown-shell" style={{ zIndex: 101 }}>
+                                <div className="model-dropdown">
+                                  <div className="model-dropdown-search">
+                                    <SearchIcon size={14} />
+                                    <input 
+                                      type="text" 
+                                      className="model-dropdown-search-input" 
+                                      placeholder="Search models..." 
+                                      value={modelSearch}
+                                      onChange={(e) => setModelSearch(e.target.value)}
+                                      autoFocus
+                                    />
+                                  </div>
+                                  <div className="model-dropdown-list">
+                                    <button 
+                                      type="button"
+                                      onClick={() => { setModel(""); setShowModelDropdown(false); setModelSearch(""); }}
+                                      className={`model-dropdown-item ${!model ? 'selected' : ''}`}
+                                    >
+                                      <span className="model-dropdown-item-key">Default Model</span>
+                                      {!model && <CheckIcon size={14} className="model-dropdown-item-check" />}
+                                    </button>
+                                    {config?.providers && Object.entries(config.providers).map(([providerKey, provider]: [string, any]) => {
+                                      const matchedModels = Object.entries(provider.models).filter(([mKey]) =>
+                                        mKey.toLowerCase().includes(modelSearch.toLowerCase()) || providerKey.toLowerCase().includes(modelSearch.toLowerCase())
+                                      );
+                                      if (matchedModels.length === 0) return null;
                                       return (
-                                        <button 
-                                          key={key}
-                                          className={`model-dropdown-item ${isSelected ? 'selected' : ''}`}
-                                          onClick={() => { setModel(key); setShowModelDropdown(false); }}
-                                        >
-                                          <span className="model-dropdown-item-key">{modelKey}</span>
-                                        </button>
+                                        <div key={providerKey} className="model-dropdown-group">
+                                          <div className="model-dropdown-group-header">
+                                            <ServerIcon size={12} />
+                                            <span>{provider.name || providerKey}</span>
+                                          </div>
+                                          {matchedModels.map(([modelKey]) => {
+                                            const key = `${providerKey}/${modelKey}`;
+                                            const isSelected = model === key;
+                                            return (
+                                              <button 
+                                                key={key}
+                                                type="button"
+                                                className={`model-dropdown-item ${isSelected ? 'selected' : ''}`}
+                                                onClick={() => { setModel(key); setShowModelDropdown(false); setModelSearch(""); }}
+                                              >
+                                                <span className="model-dropdown-item-key">{modelKey}</span>
+                                                {isSelected && <CheckIcon size={14} className="model-dropdown-item-check" />}
+                                              </button>
+                                            );
+                                          })}
+                                        </div>
                                       );
                                     })}
                                   </div>
-                                ))}
+                                </div>
                               </div>
                             </>
                           )}
@@ -321,6 +364,7 @@ export function CronjobModal({
 
                         <div className="skill-selector-wrapper">
                           <button 
+                            type="button"
                             className="icon-btn" 
                             onClick={() => setShowSkillDropdown(!showSkillDropdown)}
                           >
@@ -330,49 +374,54 @@ export function CronjobModal({
                           {showSkillDropdown && (
                             <>
                               <div style={{ position: "fixed", inset: 0, zIndex: 100 }} onClick={() => setShowSkillDropdown(false)}></div>
-                              <div className="model-dropdown" style={{ bottom: "100%", top: "auto", left: 0, marginBottom: "8px", width: "320px", zIndex: 101, overflow: "hidden", padding: 0 }}>
-                                <div className="model-dropdown-search">
-                                  <input 
-                                    type="text" 
-                                    className="model-dropdown-search-input" 
-                                    placeholder="Search skills..." 
-                                    value={skillSearch}
-                                    onChange={(e) => setSkillSearch(e.target.value)}
-                                  />
-                                </div>
-                                <div className="model-dropdown-list" style={{ maxHeight: "200px" }}>
-                                  {skillsList.filter(s => s.name.toLowerCase().includes(skillSearch.toLowerCase())).map((s) => {
-                                    const isSelected = selectedSkills.includes(s.id);
-                                    return (
-                                      <button 
-                                        key={s.id} 
-                                        className={`model-dropdown-item ${isSelected ? 'selected' : ''}`}
-                                        title={s.name}
-                                        onClick={() => {
-                                          if (isSelected) {
-                                            setSelectedSkills(selectedSkills.filter(id => id !== s.id));
-                                          } else {
-                                            setSelectedSkills([...selectedSkills, s.id]);
-                                          }
-                                        }}
-                                        style={{ display: "flex", gap: "8px", alignItems: "center" }}
-                                      >
-                                        <div style={{ 
-                                          width: "14px", height: "14px", borderRadius: "3px", 
-                                          border: `1px solid ${isSelected ? "var(--accent)" : "var(--border-color)"}`, 
-                                          background: isSelected ? "var(--accent)" : "transparent",
-                                          display: "flex", alignItems: "center", justifyContent: "center",
-                                          flexShrink: 0
-                                        }}>
-                                          {isSelected && <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>}
-                                        </div>
-                                        <span className="model-dropdown-item-key" style={{ color: isSelected ? "var(--accent)" : "var(--text-main)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "left", flex: 1 }}>{s.name}</span>
-                                      </button>
-                                    );
-                                  })}
-                                  {skillsList.filter(s => s.name.toLowerCase().includes(skillSearch.toLowerCase())).length === 0 && (
-                                    <div className="model-dropdown-empty">No skills found</div>
-                                  )}
+                              <div className="model-dropdown-shell" style={{ zIndex: 101 }}>
+                                <div className="model-dropdown" style={{ width: "320px", overflow: "hidden", padding: 0 }}>
+                                  <div className="model-dropdown-search">
+                                    <SearchIcon size={14} />
+                                    <input 
+                                      type="text" 
+                                      className="model-dropdown-search-input" 
+                                      placeholder="Search skills..." 
+                                      value={skillSearch}
+                                      onChange={(e) => setSkillSearch(e.target.value)}
+                                      autoFocus
+                                    />
+                                  </div>
+                                  <div className="model-dropdown-list" style={{ maxHeight: "200px" }}>
+                                    {skillsList.filter(s => s.name.toLowerCase().includes(skillSearch.toLowerCase())).map((s) => {
+                                      const isSelected = selectedSkills.includes(s.id);
+                                      return (
+                                        <button 
+                                          key={s.id} 
+                                          type="button"
+                                          className={`model-dropdown-item ${isSelected ? 'selected' : ''}`}
+                                          title={s.name}
+                                          onClick={() => {
+                                            if (isSelected) {
+                                              setSelectedSkills(selectedSkills.filter(id => id !== s.id));
+                                            } else {
+                                              setSelectedSkills([...selectedSkills, s.id]);
+                                            }
+                                          }}
+                                          style={{ display: "flex", gap: "8px", alignItems: "center" }}
+                                        >
+                                          <div style={{ 
+                                            width: "14px", height: "14px", borderRadius: "3px", 
+                                            border: `1px solid ${isSelected ? "var(--accent)" : "var(--border-color)"}`, 
+                                            background: isSelected ? "var(--accent)" : "transparent",
+                                            display: "flex", alignItems: "center", justifyContent: "center",
+                                            flexShrink: 0
+                                          }}>
+                                            {isSelected && <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>}
+                                          </div>
+                                          <span className="model-dropdown-item-key" style={{ color: isSelected ? "var(--accent)" : "var(--text-main)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", textAlign: "left", flex: 1 }}>{s.name}</span>
+                                        </button>
+                                      );
+                                    })}
+                                    {skillsList.filter(s => s.name.toLowerCase().includes(skillSearch.toLowerCase())).length === 0 && (
+                                      <div className="model-dropdown-empty">No skills found</div>
+                                    )}
+                                  </div>
                                 </div>
                               </div>
                             </>
@@ -384,8 +433,8 @@ export function CronjobModal({
               </div>
 
               <div style={{ display: "flex", gap: "8px", marginTop: "16px" }}>
-                <button className="btn-primary" onClick={handleCreate} disabled={!name || !prompt}>
-                  Save Task
+                <button className="btn-primary" onClick={handleCreate} disabled={saving || !name || !prompt}>
+                  {saving ? "Saving..." : "Save Task"}
                 </button>
                 <button className="btn-secondary" onClick={() => setIsCreating(false)}>
                   Cancel

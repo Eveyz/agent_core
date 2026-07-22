@@ -21,8 +21,16 @@ export function translateRecoveryMessage(
   t: (key: string, opts?: Record<string, unknown>) => string,
   code?: string,
 ): string {
-  // Connection retries: one calm line for every nested retry layer.
+  // Connection retries: calm line, with attempt/delay when the backend includes them.
   if (isRemoteConnectionRetry(text, code)) {
+    const detail = text.match(REMOTE_RETRY_RE);
+    if (detail) {
+      return t('chat.recovery.unreachableRetry', {
+        seconds: detail[2],
+        attempt: detail[3],
+        total: detail[4],
+      });
+    }
     return t('chat.recovery.unreachable');
   }
 

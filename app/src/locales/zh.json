@@ -84,7 +84,8 @@
       "switchingModelGeneric": "正在切换至备用模型…",
       "retrying": "正在重试模型调用…",
       "retryingIn": "将在 {{time}} 后重试",
-      "unreachable": "无法连接远端模型，正在重试…"
+      "unreachable": "无法连接远端模型，正在重试…",
+      "unreachableRetry": "无法连接远端模型，将在 {{seconds}} 秒后重试（{{attempt}}/{{total}}）…"
     },
     "errors": {
       "providerUnavailable": "AI 服务因连续失败暂时不可用，请约 {{seconds}} 秒后再试。",

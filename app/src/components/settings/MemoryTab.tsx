@@ -566,7 +566,7 @@ function ReflectionModelSelector({
         </button>
 
         {open && (
-          <div className="model-dropdown" style={{ bottom: 'auto', top: 'calc(100% + 6px)', width: '100%' }}>
+          <div className="model-dropdown" style={{ position: 'absolute', bottom: 'auto', top: 'calc(100% + 6px)', width: '100%', zIndex: 101 }}>
             <div className="model-dropdown-search">
               <SearchIcon size={14} />
               <input

@@ -290,7 +290,7 @@ describe('chat reducer session routing', () => {
     const userTexts = state.entries.s1.filter((e) => e.type === 'user').map((e) => e.text);
     expect(userTexts).toEqual(['one', 'two', 'edited one']);
     expect(state.allPrompts.s1).toHaveLength(3);
-    expect(state.allPrompts.s1.at(-1)?.messages[0].content).toBe('edited one');
+    expect(state.allPrompts.s1[state.allPrompts.s1.length - 1]?.messages[0].content).toBe('edited one');
   });
 
   it('runIdSet binds prompt identity from backend promptId, never from runId', async () => {
@@ -309,7 +309,7 @@ describe('chat reducer session routing', () => {
     expect(user?.id).toBe('user-prompt-uuid');
     expect(turn?.promptId).toBe('prompt-uuid');
     expect(turn?.id).toBe('turn-prompt-uuid');
-    expect(state.allPrompts.s1.at(-1)?.id).toBe('prompt-uuid');
+    expect(state.allPrompts.s1[state.allPrompts.s1.length - 1]?.id).toBe('prompt-uuid');
     expect(user?.promptId).not.toBe(state.runId.s1);
   });
 

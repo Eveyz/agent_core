@@ -297,7 +297,7 @@ export const ChatInput = memo(function ChatInput({
 
   return (
     <div className="input-area">
-      <TodoPanel onSend={onSend} isProcessing={isProcessing} />
+      <TodoPanel onSend={(payload) => typeof payload === 'string' ? onSend({ text: payload }) : onSend(payload)} isProcessing={isProcessing} />
       <GoalBanner />
       <ImageLightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} />
       <div className={`input-container${isProcessing ? ' steer-active' : ''}`} style={{ position: 'relative' }}>

@@ -23,21 +23,24 @@ function tFor(lang: 'en' | 'zh') {
 }
 
 describe('translateRecoveryMessage i18n', () => {
-  it('maps connection retry codes to unreachable in both languages', () => {
+  it('maps connection retries with attempt and delay', () => {
     const englishBackend =
       'Failed to connect to remote model (rate limit), retrying in 2s (attempt 2/3)';
 
     expect(translateRecoveryMessage(englishBackend, tFor('en'), 'model_retry')).toBe(
-      'Unable to reach the remote model. Retrying…',
+      'Unable to reach the remote model. Retrying 2/3 in 2s…',
     );
     expect(translateRecoveryMessage(englishBackend, tFor('zh'), 'model_stream_retry')).toBe(
-      '无法连接远端模型，正在重试…',
+      '无法连接远端模型，将在 2 秒后重试（2/3）…',
     );
   });
 
-  it('does not require English text when code is present', () => {
+  it('falls back to generic unreachable when attempt details are missing', () => {
     expect(translateRecoveryMessage('anything', tFor('zh'), 'model_retry')).toBe(
       '无法连接远端模型，正在重试…',
+    );
+    expect(translateRecoveryMessage('Failed to connect to remote model', tFor('en'))).toBe(
+      'Unable to reach the remote model. Retrying…',
     );
   });
 
