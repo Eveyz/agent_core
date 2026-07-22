@@ -6,7 +6,7 @@ import {
   setActiveSession,
 } from '../features/project/projectSlice';
 import { plansHydrated } from '../features/chat/chatSlice';
-import type { ParkedPlan, TodoItem } from '../features/chat/types';
+import type { ParkedPlan, PlanDetail, TodoItem } from '../features/chat/types';
 
 interface UseSessionLoaderProps {
   projectsLoaded: boolean;
@@ -46,6 +46,7 @@ export function useSessionLoader({
         const dto = await invoke<{
           items: TodoItem[];
           parked: ParkedPlan[];
+          plans?: PlanDetail[];
           active_plan_id?: string | null;
           active_plan_title?: string | null;
         }>('get_session_plans', { sessionId: requestedSessionId });
@@ -55,6 +56,7 @@ export function useSessionLoader({
             sessionId: requestedSessionId,
             items: dto.items ?? [],
             parked: dto.parked ?? [],
+            plans: dto.plans ?? [],
             activePlanId: dto.active_plan_id ?? null,
             activePlanTitle: dto.active_plan_title ?? null,
           }),

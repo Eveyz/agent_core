@@ -424,6 +424,18 @@ pub struct ParkedPlanSummary {
     pub source_prompt_id: Option<String>,
 }
 
+/// Full plan row for Overview / history UI (active, parked, finished, cancelled).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanDetail {
+    pub id: String,
+    pub title: String,
+    pub status: String,
+    #[serde(default)]
+    pub source_prompt_id: Option<String>,
+    pub updated_at: String,
+    pub items: Vec<TodoItem>,
+}
+
 /// Snapshot of active + parked plans for events / UI hydrate.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PlansSnapshot {
@@ -431,6 +443,9 @@ pub struct PlansSnapshot {
     pub active_plan_title: Option<String>,
     pub items: Vec<TodoItem>,
     pub parked: Vec<ParkedPlanSummary>,
+    /// All plans with items (for Overview prompt grouping).
+    #[serde(default)]
+    pub plans: Vec<PlanDetail>,
 }
 
 /// Result of resolving a continue/resume intent.
@@ -1096,6 +1111,26 @@ fn parked_summaries(state: &SessionPlanState) -> Vec<ParkedPlanSummary> {
     parked
 }
 
+fn plan_details(state: &SessionPlanState) -> Vec<PlanDetail> {
+    let mut plans: Vec<PlanDetail> = state
+        .plans
+        .iter()
+        // Skip empty cancelled shells that never received items.
+        .filter(|p| !(p.status == PlanStatus::Cancelled && p.items.items.is_empty()))
+        .map(|p| PlanDetail {
+            id: p.id.clone(),
+            title: p.title.clone(),
+            status: p.status.to_string(),
+            source_prompt_id: p.source_prompt_id.clone(),
+            updated_at: p.updated_at.to_rfc3339(),
+            items: p.items.items.clone(),
+        })
+        .collect();
+    // Newest first so Overview groups feel recent-first within a prompt.
+    plans.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    plans
+}
+
 fn snapshot_of(state: &SessionPlanState) -> PlansSnapshot {
     let active = state.plans.iter().find(|p| p.status == PlanStatus::Active);
     PlansSnapshot {
@@ -1103,6 +1138,7 @@ fn snapshot_of(state: &SessionPlanState) -> PlansSnapshot {
         active_plan_title: active.map(|p| p.title.clone()),
         items: active.map(|p| p.items.items.clone()).unwrap_or_default(),
         parked: parked_summaries(state),
+        plans: plan_details(state),
     }
 }
 

@@ -796,6 +796,7 @@ struct PlansSnapshotDto {
     active_plan_title: Option<String>,
     items: Vec<TodoItemDto>,
     parked: Vec<ParkedPlanDto>,
+    plans: Vec<PlanDetailDto>,
 }
 
 #[derive(serde::Serialize)]
@@ -812,6 +813,27 @@ struct ParkedPlanDto {
     completed: usize,
     total: usize,
     updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_prompt_id: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct PlanDetailDto {
+    id: String,
+    title: String,
+    status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_prompt_id: Option<String>,
+    updated_at: String,
+    items: Vec<TodoItemDto>,
+}
+
+fn todo_item_dto(i: &agent_core::TodoItem) -> TodoItemDto {
+    TodoItemDto {
+        id: i.id.clone(),
+        description: i.description.clone(),
+        status: i.status.to_string(),
+    }
 }
 
 fn plans_snapshot_dto(store: &agent_core::SessionPlanStore, session_id: &str) -> PlansSnapshotDto {
@@ -819,15 +841,7 @@ fn plans_snapshot_dto(store: &agent_core::SessionPlanStore, session_id: &str) ->
     PlansSnapshotDto {
         active_plan_id: snap.active_plan_id,
         active_plan_title: snap.active_plan_title,
-        items: snap
-            .items
-            .iter()
-            .map(|i| TodoItemDto {
-                id: i.id.clone(),
-                description: i.description.clone(),
-                status: i.status.to_string(),
-            })
-            .collect(),
+        items: snap.items.iter().map(todo_item_dto).collect(),
         parked: snap
             .parked
             .iter()
@@ -837,6 +851,19 @@ fn plans_snapshot_dto(store: &agent_core::SessionPlanStore, session_id: &str) ->
                 completed: p.completed,
                 total: p.total,
                 updated_at: p.updated_at.clone(),
+                source_prompt_id: p.source_prompt_id.clone(),
+            })
+            .collect(),
+        plans: snap
+            .plans
+            .iter()
+            .map(|p| PlanDetailDto {
+                id: p.id.clone(),
+                title: p.title.clone(),
+                status: p.status.clone(),
+                source_prompt_id: p.source_prompt_id.clone(),
+                updated_at: p.updated_at.clone(),
+                items: p.items.iter().map(todo_item_dto).collect(),
             })
             .collect(),
     }

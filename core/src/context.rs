@@ -916,6 +916,32 @@ impl ContextEngine {
         )
     }
 
+    /// Apply summary delta merged with a file ledger (PLAN-0016).
+    pub fn apply_summary_with_ledger(
+        &mut self,
+        split_idx: usize,
+        summary: &crate::compressor::TurnSummary,
+        ledger: &crate::runtime::FileLedger,
+    ) -> String {
+        crate::compressor::Compressor::apply_summary_with_ledger(
+            &mut self.messages,
+            split_idx,
+            summary,
+            Some(ledger),
+        )
+    }
+
+    /// Merge file ledger into the leading RollingSummary without dropping turns.
+    pub fn upsert_ledger_into_rolling_summary(
+        &mut self,
+        ledger: &crate::runtime::FileLedger,
+    ) -> String {
+        crate::compressor::Compressor::upsert_ledger_into_rolling_summary(
+            &mut self.messages,
+            ledger,
+        )
+    }
+
     /// Snip compact — truncate large tool results.
     /// Then auto compact — drop oldest messages if over threshold.
     /// (Legacy method, prefer `trim_to_fit()` which uses the full pipeline.)
@@ -1016,6 +1042,9 @@ impl ContextEngine {
     /// instruction and silently destroy semantic continuity.
     ///
     /// Returns the number of messages removed from the front.
+    ///
+    /// A leading `[RollingSummary]` / legacy `[Compressed turns…]` message is
+    /// preserved (PLAN-0016) so file/decision memory survives the drop.
     pub fn chunked_drop(&mut self, keep_recent: usize) -> usize {
         let original_len = self.messages.len();
         if original_len <= keep_recent {
@@ -1023,34 +1052,63 @@ impl ContextEngine {
         }
         let max_split_idx = original_len - keep_recent;
 
+        let preserve_summary = self
+            .messages
+            .first()
+            .and_then(|m| m.content.as_deref())
+            .is_some_and(|c| {
+                c.starts_with(crate::compressor::ROLLING_SUMMARY_PREFIX)
+                    || c.starts_with("[Compressed turns")
+            });
+        let start = if preserve_summary { 1 } else { 0 };
+        if max_split_idx <= start {
+            return 0;
+        }
+
         // Preferred: cut at the last User message at or before max_split_idx
         // so entire conversation turns remain intact.
-        let drop_count = (1..=max_split_idx)
+        let drop_end = (start..=max_split_idx)
             .rev()
             .find(|&i| self.messages[i].role == crate::types::Role::User);
 
-        let Some(drop_count) = drop_count else {
+        let Some(drop_end) = drop_end else {
             return 0;
         };
 
-        if drop_count > 0 {
-            self.messages.drain(..drop_count);
+        if drop_end > start {
+            self.messages.drain(start..drop_end);
+        } else {
+            return 0;
         }
+
+        let mut removed = drop_end - start;
 
         // Defensive: never let the kept region begin with a dangling Tool
         // message (guards against upstream compaction/summary producing a
-        // structure where a tool result lost its owning assistant).
-        let mut removed_extra = 0;
-        while self
+        // structure where a tool result lost its owning assistant). Skip a
+        // leading RollingSummary when checking.
+        let tool_check_idx = if self
             .messages
             .first()
+            .and_then(|m| m.content.as_deref())
+            .is_some_and(|c| {
+                c.starts_with(crate::compressor::ROLLING_SUMMARY_PREFIX)
+                    || c.starts_with("[Compressed turns")
+            }) {
+            1
+        } else {
+            0
+        };
+        while self
+            .messages
+            .get(tool_check_idx)
             .map_or(false, |m| m.role == crate::types::Role::Tool)
         {
-            self.messages.remove(0);
-            removed_extra += 1;
+            self.messages.remove(tool_check_idx);
+            removed += 1;
         }
 
-        drop_count + removed_extra
+        removed
     }
 
     pub fn should_auto_compact(&self) -> bool {
@@ -1722,7 +1780,7 @@ mod tests {
     #[test]
     fn test_snip_compact_truncates_large_tool_results() {
         let mut engine = ContextEngine::new("test", 128000);
-        let big_result = "x".repeat(20_000); // over the 16K incidental budget
+        let big_result = "x".repeat(crate::hygiene::policy::INCIDENTAL_MAX_CHARS + 1024); // over incidental budget
         engine.add(Message {
             role: Role::Tool,
             content: Some(big_result.clone()),

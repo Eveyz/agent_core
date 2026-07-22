@@ -580,6 +580,10 @@ impl SessionManager {
 
     /// Create a child session + prompt before the subagent runs so todo tools
     /// can bind to a durable `(session_id, prompt_id)` during execution.
+    ///
+    /// Inherits the parent session's `project_id` (and cwd when present) so the
+    /// child stays under the same project — never an empty project_id that the
+    /// adhoc-chat migration would later scoop up.
     pub fn pre_allocate_subagent_session(
         &self,
         subagent_id: &str,
@@ -594,10 +598,21 @@ impl SessionManager {
         let title = format!("Subagent: {subagent_id}");
         let parent = parent_session_id.unwrap_or("");
 
+        let (project_id, cwd) = if parent.is_empty() {
+            (String::new(), String::new())
+        } else {
+            db.query_row(
+                "SELECT COALESCE(project_id, ''), COALESCE(cwd, '') FROM sessions WHERE id = ?1",
+                rusqlite::params![parent],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .unwrap_or_else(|_| (String::new(), String::new()))
+        };
+
         db.execute(
             "INSERT INTO sessions (id, title, start_time, message_count, prompt_count, cwd, model_used, parent_session_id, session_type, project_id, mode, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, 0, 1, '', 'subagent', ?4, 'subagent', '', 'build', ?3, ?3)",
-            rusqlite::params![session_id, title, now, parent],
+             VALUES (?1, ?2, ?3, 0, 1, ?4, 'subagent', ?5, 'subagent', ?6, 'build', ?3, ?3)",
+            rusqlite::params![session_id, title, now, cwd, parent, project_id],
         )?;
         db.execute(
             "INSERT INTO prompts (id, session_id, turn_index, model, status, started_at, created_at) \
@@ -872,12 +887,19 @@ impl SessionManager {
 
     /// List all sessions, newest first.
     /// `include_archived`: if false, skips archived sessions.
+    /// Always excludes `session_type='subagent'` child transcripts.
     pub fn list(&self, include_archived: bool) -> Result<Vec<SessionMeta>> {
         let db = self.storage.conn();
         let sql = if include_archived {
-            format!("{META_SELECT} ORDER BY updated_at DESC LIMIT 100")
+            format!(
+                "{META_SELECT} WHERE COALESCE(session_type, 'main') != 'subagent' \
+                 ORDER BY updated_at DESC LIMIT 100"
+            )
         } else {
-            format!("{META_SELECT} WHERE archived = 0 ORDER BY updated_at DESC LIMIT 100")
+            format!(
+                "{META_SELECT} WHERE archived = 0 AND COALESCE(session_type, 'main') != 'subagent' \
+                 ORDER BY updated_at DESC LIMIT 100"
+            )
         };
 
         let mut stmt = db.prepare(&sql)?;
@@ -891,11 +913,14 @@ impl SessionManager {
     }
 
     /// Search sessions by title or summary keyword.
+    /// Excludes child `session_type='subagent'` rows.
     pub fn search(&self, keyword: &str, limit: usize) -> Result<Vec<SessionMeta>> {
         let db = self.storage.conn();
         let pattern = format!("%{}%", keyword);
         let sql = format!(
-            "{META_SELECT} WHERE (title LIKE ?1 OR summary LIKE ?1) ORDER BY updated_at DESC LIMIT ?2"
+            "{META_SELECT} WHERE (title LIKE ?1 OR summary LIKE ?1) \
+             AND COALESCE(session_type, 'main') != 'subagent' \
+             ORDER BY updated_at DESC LIMIT ?2"
         );
         let mut stmt = db.prepare(&sql)?;
 
@@ -2419,6 +2444,14 @@ mod tests {
         let parent = mgr
             .save(None, &make_messages(), "/tmp", "gpt")
             .unwrap();
+        {
+            let db = mgr.storage.conn();
+            db.execute(
+                "UPDATE sessions SET project_id = ?1 WHERE id = ?2",
+                rusqlite::params!["proj-weather", &parent],
+            )
+            .unwrap();
+        }
         let (child_sid, child_pid) = mgr
             .pre_allocate_subagent_session(
                 "researcher",
@@ -2438,6 +2471,22 @@ mod tests {
             )
             .unwrap();
         assert_eq!(exists, 1);
+        let child_project: String = db
+            .query_row(
+                "SELECT project_id FROM sessions WHERE id = ?1",
+                rusqlite::params![child_sid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(child_project, "proj-weather");
+        let child_cwd: String = db
+            .query_row(
+                "SELECT cwd FROM sessions WHERE id = ?1",
+                rusqlite::params![child_sid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(child_cwd, "/tmp");
         let prompt_status: String = db
             .query_row(
                 "SELECT status FROM prompts WHERE id = ?1",

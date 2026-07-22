@@ -208,6 +208,8 @@ pub enum RunEvent {
         #[serde(default)]
         parked: Vec<ParkedPlanPayload>,
         #[serde(default)]
+        plans: Vec<PlanDetailPayload>,
+        #[serde(default)]
         active_plan_id: Option<String>,
         #[serde(default)]
         active_plan_title: Option<String>,
@@ -274,6 +276,18 @@ pub struct ParkedPlanPayload {
     pub updated_at: String,
     #[serde(default)]
     pub source_prompt_id: Option<String>,
+}
+
+/// Full plan (with items) for Overview prompt-grouped todos.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanDetailPayload {
+    pub id: String,
+    pub title: String,
+    pub status: String,
+    #[serde(default)]
+    pub source_prompt_id: Option<String>,
+    pub updated_at: String,
+    pub items: Vec<TodoItemPayload>,
 }
 
 /// Cumulative cache hit/miss statistics aggregated across all turns of a Run.

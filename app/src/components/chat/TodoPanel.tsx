@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { RootState } from '../../store';
 import { useAppDispatch } from '../../hooks/useAppDispatch';
 import { plansHydrated } from '../../features/chat/chatSlice';
-import type { ParkedPlan, TodoItem } from '../../features/chat/types';
+import type { ParkedPlan, PlanDetail, TodoItem } from '../../features/chat/types';
 import type { SendPayload } from './imageAttachments';
 import CheckCircleIcon from 'lucide-react/dist/esm/icons/check-circle.mjs';
 import CircleIcon from 'lucide-react/dist/esm/icons/circle.mjs';
@@ -30,6 +30,7 @@ function statusIcon(status: string) {
 type PlansDto = {
   items: TodoItem[];
   parked: ParkedPlan[];
+  plans?: PlanDetail[];
   active_plan_id?: string | null;
   active_plan_title?: string | null;
 };
@@ -44,6 +45,7 @@ function applyPlansDto(
       sessionId,
       items: dto.items ?? [],
       parked: dto.parked ?? [],
+      plans: dto.plans ?? [],
       activePlanId: dto.active_plan_id ?? null,
       activePlanTitle: dto.active_plan_title ?? null,
     }),

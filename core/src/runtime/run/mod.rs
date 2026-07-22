@@ -166,6 +166,9 @@ pub struct Run {
     /// Orthogonal to [`RunState`] (run lifetime).
     execution: ExecutionState,
 
+    /// Deterministic file touch ledger for RollingSummary (PLAN-0016).
+    file_ledger: crate::runtime::FileLedger,
+
     /// Last stable prefix fingerprint — used to detect drift across turns.
     last_prefix_fingerprint: String,
 
@@ -402,6 +405,7 @@ impl Run {
             goal_completed: initial_goal_completed,
             goal_continue_nudges: 0,
             execution: ExecutionState::new(),
+            file_ledger: crate::runtime::FileLedger::new(),
         })
     }
 
@@ -494,9 +498,30 @@ impl Run {
                 source_prompt_id: p.source_prompt_id.clone(),
             })
             .collect();
+        let plans: Vec<crate::runtime::event::PlanDetailPayload> = snap
+            .plans
+            .iter()
+            .map(|p| crate::runtime::event::PlanDetailPayload {
+                id: p.id.clone(),
+                title: p.title.clone(),
+                status: p.status.clone(),
+                source_prompt_id: p.source_prompt_id.clone(),
+                updated_at: p.updated_at.clone(),
+                items: p
+                    .items
+                    .iter()
+                    .map(|item| crate::runtime::event::TodoItemPayload {
+                        id: item.id.clone(),
+                        description: item.description.clone(),
+                        status: item.status.to_string(),
+                    })
+                    .collect(),
+            })
+            .collect();
         self.emit(crate::runtime::event::RunEvent::TodoUpdated {
             items,
             parked,
+            plans,
             active_plan_id: snap.active_plan_id,
             active_plan_title: snap.active_plan_title,
         });

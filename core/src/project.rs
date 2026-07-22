@@ -258,10 +258,14 @@ impl ProjectManager {
     // ── Sessions under project ──────────────────────────────────────
 
     /// List sessions belonging to a project.
+    /// Excludes child `session_type='subagent'` rows — those are spawn transcripts,
+    /// not user-facing chats.
     pub fn list_sessions(&self, project_id: &str) -> Result<Vec<crate::session::SessionMeta>> {
         let db = self.storage.conn();
         let sql = format!(
-            "{} WHERE project_id = ?1 AND archived = 0 ORDER BY updated_at DESC LIMIT 100",
+            "{} WHERE project_id = ?1 AND archived = 0 \
+             AND COALESCE(session_type, 'main') != 'subagent' \
+             ORDER BY updated_at DESC LIMIT 100",
             crate::session::META_SELECT
         );
         let mut stmt = db.prepare(&sql)?;
@@ -386,5 +390,34 @@ mod tests {
         let sessions = proj_mgr.list_sessions(&p.id).unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].title, "hello");
+    }
+
+    fn test_list_sessions_excludes_subagent_children() {
+        let (proj_mgr, _dir) = make_manager();
+        let p = proj_mgr.create("/tmp/proj-sa").unwrap();
+        let session_mgr = crate::session::SessionManager::new(proj_mgr.storage.clone());
+
+        let main_id = session_mgr
+            .save(None, &[crate::types::Message::user("main")], "/tmp", "gpt")
+            .unwrap();
+        {
+            let db = proj_mgr.storage.conn();
+            db.execute(
+                "UPDATE sessions SET project_id = ?1 WHERE id = ?2",
+                rusqlite::params![&p.id, &main_id],
+            )
+            .unwrap();
+        }
+        let (child_id, _) = session_mgr
+            .pre_allocate_subagent_session("sz-weather", Some(&main_id), None, None)
+            .unwrap();
+
+        let child_project = session_mgr.get_project_id(&child_id).unwrap().unwrap();
+        assert_eq!(child_project, p.id);
+
+        let sessions = proj_mgr.list_sessions(&p.id).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, main_id);
+        assert!(!sessions.iter().any(|s| s.session_type == "subagent"));
     }
 }

@@ -787,10 +787,42 @@ impl Subagent {
             };
 
         tokio::pin!(stream);
-        while let Some(event) = stream.next().await {
-            if self.cancel_token.as_ref().is_some_and(|t| t.is_cancelled()) {
-                anyhow::bail!("subagent cancelled");
-            }
+        loop {
+            let flush_delay = tokens.pending_flush_delay();
+            let next = tokio::select! {
+                _ = async {
+                    match &self.cancel_token {
+                        Some(t) => t.cancelled().await,
+                        None => std::future::pending().await,
+                    }
+                }, if self.cancel_token.is_some() => {
+                    anyhow::bail!("subagent cancelled");
+                }
+                _ = tokio::time::sleep(flush_delay.unwrap_or(std::time::Duration::ZERO)),
+                    if flush_delay.is_some() => {
+                    if let Some((text, thinking)) = tokens.flush() {
+                        if let Some(tx) = event_sender {
+                            if !text.is_empty() {
+                                let _ = tx.send(AgentEvent::SubagentMessageUpdate {
+                                    subagent_id: self.id.clone(),
+                                    message_id: message_id.clone(),
+                                    delta: MessageDelta::Text(text),
+                                });
+                            }
+                            if !thinking.is_empty() {
+                                let _ = tx.send(AgentEvent::SubagentMessageUpdate {
+                                    subagent_id: self.id.clone(),
+                                    message_id: message_id.clone(),
+                                    delta: MessageDelta::Thinking(thinking),
+                                });
+                            }
+                        }
+                    }
+                    continue;
+                }
+                item = stream.next() => item,
+            };
+            let Some(event) = next else { break };
             let event = event?;
             match event {
                 StreamEvent::TextDelta(delta) => {

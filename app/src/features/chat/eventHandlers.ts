@@ -7,6 +7,7 @@ import type {
   RunState,
   TodoItem,
   ParkedPlan,
+  PlanDetail,
   ClarificationQuestion,
   ClarificationAnswers,
 } from './types';
@@ -828,6 +829,7 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
   (state._thinkBuffers ??= {})[sessionId] ??= {};
   (state.todo ??= {})[sessionId] ??= [];
   (state.parkedPlans ??= {})[sessionId] ??= [];
+  (state.plans ??= {})[sessionId] ??= [];
   (state.activePlanId ??= {})[sessionId] ??= null;
   (state.activePlanTitle ??= {})[sessionId] ??= null;
   (state.steerQueue ??= {})[sessionId] ??= [];
@@ -1033,6 +1035,7 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
     case 'todo_updated':
       state.todo[sessionId] = (ev.items as TodoItem[]) ?? [];
       state.parkedPlans[sessionId] = (ev.parked as ParkedPlan[]) ?? [];
+      state.plans[sessionId] = (ev.plans as PlanDetail[]) ?? [];
       state.activePlanId[sessionId] = ev.active_plan_id ?? null;
       state.activePlanTitle[sessionId] = ev.active_plan_title ?? null;
       break;
@@ -1048,6 +1051,7 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
       state.goalCompleted[sessionId] = false;
       state.todo[sessionId] = [];
       state.parkedPlans[sessionId] = [];
+      state.plans[sessionId] = [];
       state.activePlanId[sessionId] = null;
       state.activePlanTitle[sessionId] = null;
       break;

@@ -5,9 +5,10 @@ import { resumeSession, deleteSession } from '../project/projectSlice';
 
 import type {
   TurnBlock, SubagentEntry, ChatState, RunState, ChatEntry, FrontendPrompt,
-  TodoItem, ParkedPlan,
+  TodoItem, ParkedPlan, PlanDetail,
 } from './types';
 import { processSingleEvent, stopDanglingSubagents, clearRecoverableNotices } from './eventHandlers';
+import { hydrateSubagentsFromBlocks } from './hydrateSubagents';
 
 // ── Re-export public chat types and selectors ──────────────────────
 export {
@@ -36,6 +37,7 @@ function ensureSession(state: ChatState, sessionId: string) {
   if (state.runState[sessionId] === undefined) state.runState[sessionId] = null;
   if (state.todo[sessionId] === undefined) state.todo[sessionId] = [];
   if (state.parkedPlans[sessionId] === undefined) state.parkedPlans[sessionId] = [];
+  if (state.plans[sessionId] === undefined) state.plans[sessionId] = [];
   if (state.activePlanId[sessionId] === undefined) state.activePlanId[sessionId] = null;
   if (state.activePlanTitle[sessionId] === undefined) state.activePlanTitle[sessionId] = null;
   if (state.steerQueue[sessionId] === undefined) state.steerQueue[sessionId] = [];
@@ -91,6 +93,7 @@ const initialState: ChatState = {
   runState: {},
   todo: {},
   parkedPlans: {},
+  plans: {},
   activePlanId: {},
   activePlanTitle: {},
   steerQueue: {},
@@ -331,9 +334,11 @@ function rebuildEntries(state: ChatState, sessionId: string) {
       }
     }
 
-    const subagentIds = blocks
-      .filter((b) => b.type === 'subagent_ref')
-      .map((b) => (b as Extract<TurnBlock, { type: 'subagent_ref' }>).subagent_id);
+    // Resume path: transcript has spawn tool calls but no UI subagent_ref /
+    // SubagentEntry projection. Reconstruct both from tool args + results.
+    const hydrated = hydrateSubagentsFromBlocks(blocks, state.subagents[sessionId]);
+    blocks = hydrated.blocks;
+    const subagentIds = hydrated.subagentIds;
 
     const pStatus = promptStatusByTurn.get(turnIdx);
     newEntries.push({
@@ -622,6 +627,7 @@ export const chatSlice = createSlice({
       state.goalCompleted[sid] = false;
       state.todo[sid] = [];
       state.parkedPlans[sid] = [];
+      state.plans[sid] = [];
       state.activePlanId[sid] = null;
       state.activePlanTitle[sid] = null;
       markDirty(state, sid);
@@ -637,6 +643,7 @@ export const chatSlice = createSlice({
       state._resumedFromBackend[sid] = false;
       state.todo[sid] = [];
       state.parkedPlans[sid] = [];
+      state.plans[sid] = [];
       state.activePlanId[sid] = null;
       state.activePlanTitle[sid] = null;
       state.steerQueue[sid] = [];
@@ -654,14 +661,16 @@ export const chatSlice = createSlice({
         sessionId: string;
         items: TodoItem[];
         parked: ParkedPlan[];
+        plans?: PlanDetail[];
         activePlanId?: string | null;
         activePlanTitle?: string | null;
       }>,
     ) => {
-      const { sessionId: sid, items, parked, activePlanId, activePlanTitle } = action.payload;
+      const { sessionId: sid, items, parked, plans, activePlanId, activePlanTitle } = action.payload;
       ensureSession(state, sid);
       state.todo[sid] = items ?? [];
       state.parkedPlans[sid] = parked ?? [];
+      state.plans[sid] = plans ?? [];
       state.activePlanId[sid] = activePlanId ?? null;
       state.activePlanTitle[sid] = activePlanTitle ?? null;
     },
@@ -706,7 +715,9 @@ export const chatSlice = createSlice({
     viewSubagent: (state, action: PayloadAction<{ sessionId: string; id: string; name: string }>) => {
       const sid = action.payload.sessionId;
       ensureSession(state, sid);
-      state.viewingSubagentPath[sid].push({ id: action.payload.id, name: action.payload.name });
+      // Replace path with a single segment so sibling subagents (Overview / chat cards)
+      // switch views instead of stacking into a fake nested breadcrumb.
+      state.viewingSubagentPath[sid] = [{ id: action.payload.id, name: action.payload.name }];
     },
     popSubagentView: (state, action: PayloadAction<{ sessionId: string }>) => {
       const sid = action.payload.sessionId;
@@ -860,6 +871,7 @@ export const chatSlice = createSlice({
       delete state.runState[sessionId];
       delete state.todo[sessionId];
       delete state.parkedPlans[sessionId];
+      delete state.plans[sessionId];
       delete state.activePlanId[sessionId];
       delete state.activePlanTitle[sessionId];
       delete state.steerQueue[sessionId];

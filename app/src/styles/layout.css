@@ -968,6 +968,336 @@
   color: var(--text-dim);
 }
 
+/* ── Overview Subagents ──────────────────────────────────────────── */
+.overview-prompt-group {
+  padding: 4px 0 8px;
+}
+
+.overview-prompt-group + .overview-prompt-group {
+  border-top: 1px solid var(--overlay-0_04);
+  margin-top: 2px;
+  padding-top: 8px;
+}
+
+.overview-prompt-label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 16px 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+  min-width: 0;
+}
+
+.overview-prompt-index {
+  flex-shrink: 0;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+.overview-prompt-preview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overview-subagent-row {
+  display: flex;
+  flex-direction: column;
+}
+
+.overview-subagent-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 16px;
+  cursor: pointer;
+  user-select: none;
+  min-width: 0;
+}
+
+.overview-subagent-header:hover {
+  background: var(--overlay-0_04);
+}
+
+.overview-subagent-row.is-expanded .overview-subagent-header {
+  background: var(--overlay-0_04);
+}
+
+.overview-subagent-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+}
+
+.overview-subagent-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.overview-subagent-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.overview-subagent-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.overview-subagent-status {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-dim);
+}
+
+.overview-subagent-preview {
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.overview-subagent-chevron {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--text-dim);
+  opacity: 0.7;
+  margin-top: 2px;
+}
+
+.overview-subagent-expand {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 16px 10px 42px;
+}
+
+.overview-subagent-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.overview-subagent-meta-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.overview-subagent-meta-value {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-main);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.overview-subagent-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.overview-subagent-tool-chip {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-dim);
+  background: var(--overlay-0_08);
+  padding: 1px 6px;
+  border-radius: var(--radius-md);
+}
+
+.overview-subagent-final {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-main);
+  word-break: break-word;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.overview-subagent-final p {
+  margin: 0 0 0.5em;
+}
+
+.overview-subagent-final p:last-child {
+  margin-bottom: 0;
+}
+
+.overview-subagent-final ul,
+.overview-subagent-final ol {
+  margin: 0.35em 0;
+  padding-left: 1.25em;
+}
+
+.overview-subagent-final li {
+  margin: 0.15em 0;
+}
+
+.overview-subagent-final h1,
+.overview-subagent-final h2,
+.overview-subagent-final h3,
+.overview-subagent-final h4 {
+  font-size: 12px;
+  font-weight: 600;
+  margin: 0.5em 0 0.25em;
+}
+
+.overview-subagent-final code {
+  font-size: 10px;
+}
+
+.overview-subagent-final pre {
+  margin: 0.4em 0;
+  padding: 6px 8px;
+  font-size: 10px;
+  overflow-x: auto;
+  border-radius: var(--radius-md);
+  background: var(--overlay-0_06);
+}
+
+.overview-subagent-final pre code {
+  font-size: inherit;
+}
+
+.overview-subagent-view-btn {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.overview-subagent-view-btn:hover {
+  opacity: 0.85;
+}
+
+/* ── Overview Todos ──────────────────────────────────────────────── */
+.overview-todo-plan {
+  display: flex;
+  flex-direction: column;
+}
+
+.overview-todo-plan-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  cursor: pointer;
+  user-select: none;
+  min-width: 0;
+}
+
+.overview-todo-plan-header:hover {
+  background: var(--overlay-0_04);
+}
+
+.overview-todo-plan.is-expanded .overview-todo-plan-header {
+  background: var(--overlay-0_04);
+}
+
+.overview-todo-plan-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: var(--radius-md);
+  background: var(--overlay-0_08);
+  color: var(--text-dim);
+  text-transform: capitalize;
+}
+
+.overview-todo-plan-badge.status-active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.overview-todo-plan-badge.status-finished {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+}
+
+.overview-todo-plan-badge.status-cancelled {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+}
+
+.overview-todo-plan-badge.status-parked {
+  color: var(--warning, var(--text-muted));
+  background: var(--overlay-0_08);
+}
+
+.overview-todo-plan-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.overview-todo-plan-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.overview-todo-plan-progress {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.overview-todo-plan-items {
+  padding: 2px 0 8px;
+}
+
+.overview-todo-item-done {
+  text-decoration: line-through;
+  color: var(--text-dim);
+}
+
+.overview-todo-item-active {
+  color: var(--text-main);
+  font-weight: 500;
+}
+
+.overview-todo-item-blocked {
+  color: var(--danger);
+}
+
 /* ── Dragging Utility ────────────────────────────────────────────── */
 body.is-resizing,
 body.is-resizing * {

@@ -387,6 +387,80 @@ describe('chat reducer session routing', () => {
     expect(tools[0].type === 'tool' && tools[0].result).toBe('A');
     expect(tools[1].type === 'tool' && tools[1].result).toBe('B');
   });
+
+  it('hydrates Overview subagents from spawn tool args after resume', async () => {
+    const { reducer } = await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, {
+      type: 'project/resumeSession/fulfilled',
+      payload: {
+        meta: { id: 's1' },
+        messages: [],
+        prompts: [{
+          id: 'p1', session_id: 's1', turn_index: 0, model: 'm', status: 'completed',
+          token_usage: {}, started_at: null, ended_at: null, created_at: '',
+          messages: [
+            { role: 'user', content: 'check weather' },
+            {
+              role: 'assistant',
+              content: '',
+              tool_calls: [{
+                id: 'call-sa',
+                type: 'function',
+                function: {
+                  name: 'subagents',
+                  arguments: JSON.stringify({
+                    tasks: [
+                      { id: 'weather-shanghai', task: 'SH' },
+                      { id: 'weather-shenzhen', task: 'SZ' },
+                    ],
+                  }),
+                },
+              }],
+            },
+            {
+              role: 'tool',
+              content: `=== Sub-agent Batch Results (2 tasks) ===
+
+[1] weather-shanghai — success
+[subagent-handoff/v1]
+runtime_id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+status: succeeded
+context_sufficient: true
+iterations: 1
+tools: 1
+
+Shanghai ok
+
+[2] weather-shenzhen — success
+[subagent-handoff/v1]
+runtime_id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+status: succeeded
+context_sufficient: true
+iterations: 1
+tools: 1
+
+Shenzhen ok
+
+=== End batch results ===`,
+              tool_call_id: 'call-sa',
+              name: 'subagents',
+            },
+            { role: 'assistant', content: 'done' },
+          ],
+        }],
+      },
+      meta: { arg: 's1' },
+    });
+
+    const turn = state.entries.s1.find((entry) => entry.type === 'turn');
+    expect(turn?.blocks?.some((b) => b.type === 'tool' && b.name === 'subagents')).toBe(true);
+    expect(turn?.blocks?.filter((b) => b.type === 'subagent_ref')).toHaveLength(2);
+    expect(Object.keys(state.subagents.s1)).toHaveLength(2);
+    expect(state.subagents.s1['aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa']?.role_name).toBe(
+      'weather-shanghai',
+    );
+  });
 });
 
 describe('runtime notice and error events', () => {
@@ -797,6 +871,15 @@ describe('durable multi-plan todos', () => {
           parked: [
             { id: 'park-1', title: 'Earlier', completed: 0, total: 2, updated_at: 't' },
           ],
+          plans: [
+            {
+              id: 'active-1',
+              title: 'Now',
+              status: 'active',
+              updated_at: 't',
+              items: [{ id: '1', description: 'Do thing', status: 'pending' }],
+            },
+          ],
           active_plan_id: 'active-1',
           active_plan_title: 'Now',
         },
@@ -804,6 +887,8 @@ describe('durable multi-plan todos', () => {
     );
     expect(state.todo.s1[0].description).toBe('Do thing');
     expect(state.parkedPlans.s1[0].id).toBe('park-1');
+    expect(state.plans.s1).toHaveLength(1);
+    expect(state.plans.s1[0].title).toBe('Now');
     expect(state.activePlanId.s1).toBe('active-1');
     expect(state.activePlanTitle.s1).toBe('Now');
   });
