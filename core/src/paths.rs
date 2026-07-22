@@ -45,6 +45,48 @@ pub fn session_dir(session_id: &str) -> PathBuf {
     get_agverse_dir().join("sessions").join(session_id)
 }
 
+/// Oversized tool-output spills for a session: `…/sessions/<id>/tool_spills/`.
+pub fn session_tool_spills_dir(session_id: &str) -> PathBuf {
+    session_dir(session_id).join("tool_spills")
+}
+
+/// Global fallback spills when no session id: `~/.agverse/tool_spills/`.
+pub fn global_tool_spills_dir() -> PathBuf {
+    get_agverse_dir().join("tool_spills")
+}
+
+/// Absolute path for a single spilled tool result (`<call_id>.txt`).
+pub fn tool_spill_path(session_id: Option<&str>, call_id: &str) -> PathBuf {
+    let safe: String = call_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let name = if safe.is_empty() {
+        format!("{}.txt", uuid_like())
+    } else {
+        format!("{safe}.txt")
+    };
+    match session_id {
+        Some(sid) => session_tool_spills_dir(sid).join(name),
+        None => global_tool_spills_dir().join(name),
+    }
+}
+
+fn uuid_like() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{nanos:x}")
+}
+
 /// Mid-run crash snapshot: `~/.agverse/sessions/<session_id>/messages.json`.
 pub fn session_messages_snapshot_path(session_id: &str) -> PathBuf {
     session_dir(session_id).join("messages.json")
@@ -124,6 +166,19 @@ mod tests {
         assert_eq!(
             session_messages_snapshot_path(sid),
             session.join("messages.json")
+        );
+    }
+
+    #[test]
+    fn tool_spill_path_layout() {
+        let p = tool_spill_path(Some("sess-a"), "call/1:xyz");
+        assert!(
+            p.ends_with("sessions/sess-a/tool_spills/call_1_xyz.txt")
+                || p.ends_with("sessions\\sess-a\\tool_spills\\call_1_xyz.txt")
+        );
+        let global = tool_spill_path(None, "abc");
+        assert!(
+            global.ends_with("tool_spills/abc.txt") || global.ends_with("tool_spills\\abc.txt")
         );
     }
 

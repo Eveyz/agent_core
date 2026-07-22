@@ -306,7 +306,7 @@ impl Run {
 
         // Segment 2: PRINCIPLES
         let perm_mode = format!("{:?}", permission_policy.mode());
-        let principles = brain.principles_text(&perm_mode);
+        let principles = brain.principles_text_for(mode, &perm_mode);
         context.set_principles(&principles);
 
         // Segment 3: ENVIRONMENT — use working_dir if set, else process CWD

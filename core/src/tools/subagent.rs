@@ -730,7 +730,7 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
 
 /// Max chars per single tool result in the summary (before truncation).
 /// Kept per-result only; total summary is capped downstream by the hygiene
-/// layer's Incidental 16K-char budget, so we don't need a separate global cap.
+/// layer's incidental dual budget (50KB / 2000 lines), so we don't need a separate global cap.
 const TOOL_SUMMARY_PER_RESULT_MAX: usize = 2000;
 
 /// Build a compact summary of what tools the subagent called and what they found.

@@ -36,6 +36,7 @@ pub mod command;
 pub mod event;
 pub mod event_log;
 pub mod execution;
+pub mod file_ledger;
 pub mod guard;
 pub mod input;
 pub mod manager;
@@ -48,6 +49,7 @@ pub mod tool_scheduler;
 
 pub use approval::ApprovalResolver;
 pub use brain::Brain;
+pub use file_ledger::FileLedger;
 pub use command::{RunCommand, SteerEntry, STEER_MID_RUN_PREFIX};
 pub use event::{CacheMetrics, ChildId, Envelope, RunEvent, RunId};
 pub use event_log::EventLog;

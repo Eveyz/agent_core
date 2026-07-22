@@ -1,7 +1,7 @@
 //! History Hygiene Layer — cleans messages before they're sent to the model API.
 //!
 //! Operations performed on the request-boundary copy only (persistent history untouched):
-//! 1. Truncate oversized tool results (keep head + tail + signal lines)
+//! 1. Truncate oversized tool results (tail-heavy + signal lines for incidental)
 //! 2. Summarize long tool arguments (content-bearing tools like write_file/edit exempt)
 //! 3. Strip `<think>` blocks from assistant turns before the last user message
 //! 4. Truncate remaining `<think>` blocks in the active tool loop (4KB)
@@ -15,6 +15,9 @@
 //! view never diverge. See PLAN-0008.
 
 pub mod policy;
+pub mod spill;
+
+pub use spill::prepare_tool_result_for_storage;
 
 use crate::types::{Message, Role};
 
@@ -380,9 +383,9 @@ mod tests {
         make_assistant_with_named_args("shell", args)
     }
 
-    // Incidental output large enough to exceed the 16K char budget.
+    // Incidental output large enough to exceed the dual line/byte budget.
     fn big_incidental() -> String {
-        (0..2000)
+        (0..policy::INCIDENTAL_MAX_LINES + 500)
             .map(|i| format!("line number {i}"))
             .collect::<Vec<_>>()
             .join("\n")
@@ -408,7 +411,9 @@ mod tests {
 
     #[test]
     fn preserves_error_signals() {
-        let mut lines: Vec<String> = (0..2000).map(|i| format!("line {}", i)).collect();
+        let mut lines: Vec<String> = (0..policy::INCIDENTAL_MAX_LINES + 500)
+            .map(|i| format!("line {i}"))
+            .collect();
         lines.push("Error: something went wrong".to_string());
         lines.push("exit code: 1".to_string());
         let big = lines.join("\n");

@@ -2,13 +2,15 @@
 //! tool-call arguments.
 //!
 //! Consumed by BOTH truncation layers so the model never sees a request view
-//! that diverges from the persisted-history view (PLAN-0008):
+//! that diverges from the persisted-history view (PLAN-0008 / PLAN-0016):
 //! - `hygiene::truncate_tool_result` / `truncate_tool_args` — L2, every turn,
 //!   request-boundary copy
 //! - `compressor::snip_compact` — L3, persistent history, on overload
+//! - spill-at-ingest — oversized incidental results written to disk before
+//!   `append_conversation`, so resume does not re-inflate huge shell logs
 //!
 //! Tools fall into three semantic kinds for **results**. Only `Incidental`
-//! output gets the head/tail/signal split; `ActivelyRead` output (the model
+//! output gets the tail-heavy + signal split; `ActivelyRead` output (the model
 //! asked for it, and L1 already bounded the read) skips that split and gets
 //! only a higher char cap; `Instruction` output is never touched.
 //!
@@ -24,7 +26,8 @@ pub enum TruncationKind {
     /// Content the model explicitly requested — skip head/tail; char-cap only
     /// (e.g. `read_file`). L1 (the tool itself) already bounded the read.
     ActivelyRead,
-    /// Incidental / potentially noisy output — head + tail + signal lines.
+    /// Incidental / potentially noisy output — tail-heavy + signal lines
+    /// (errors usually appear at the end of shell/test logs).
     Incidental,
 }
 
@@ -38,19 +41,18 @@ const ACTIVE_READ_TOOLS: &[&str] = &["read_file", "subagent", "subagents"];
 /// these args makes the model lose what it just wrote — never touch them.
 const CONTENT_BEARING_ARG_TOOLS: &[&str] = &["write_file", "edit"];
 
-// ── Budgets (PLAN-0008, updated 2026-07) ────────────────────────────
+// ── Budgets (PLAN-0008 → PLAN-0016, Pi-aligned dual limit) ───────────
 //
-// With subagent messages now persisted to disk files (~/.agverse/subagents/)
-// and only a summary going into the parent context, the caps below serve as
-// a safety net rather than a primary constraint.  Still kept conservative
-// enough that a single tool result never dominates the model's context window.
+// Incidental output (shell logs, etc.): truncate when either the line cap or
+// the byte cap is hit — whichever comes first (Pi-style). Spill recovers the
+// full body. Tail-heavy retention keeps exit codes / stack traces visible.
 
-/// Char budget for incidental tool results before head/tail truncation kicks in
-/// (≈4K tokens, ~3% of a 128K context). Old value was 4000 — too small for any
-/// real source file, which is what produced the "content was truncated" reports.
-pub const INCIDENTAL_MAX_CHARS: usize = 16_000;
-pub const INCIDENTAL_HEAD_LINES: usize = 40;
-pub const INCIDENTAL_TAIL_LINES: usize = 20;
+/// Byte budget for incidental tool results (50KB, aligned with Pi).
+pub const INCIDENTAL_MAX_CHARS: usize = 50 * 1024;
+/// Line budget for incidental tool results (aligned with Pi).
+pub const INCIDENTAL_MAX_LINES: usize = 2000;
+/// Thin head kept so the model sees how the command started.
+pub const INCIDENTAL_HEAD_LINES: usize = 5;
 /// Char cap for actively-read tool results — higher than incidental because the
 /// model asked for this content and it must stay contiguous (no head/tail split).
 pub const ACTIVE_READ_MAX_CHARS: usize = 128_000;
@@ -83,12 +85,32 @@ pub fn classify(name: Option<&str>) -> TruncationKind {
     }
 }
 
+/// Whether incidental content exceeds the Pi-style dual budget (lines OR bytes).
+pub fn incidental_over_budget(content: &str) -> bool {
+    content.len() > INCIDENTAL_MAX_CHARS || content.lines().count() > INCIDENTAL_MAX_LINES
+}
+
+/// Whether this tool result should be spilled + truncated at conversation ingest.
+pub fn should_spill_at_ingest(name: Option<&str>, content: &str) -> bool {
+    classify(name) == TruncationKind::Incidental && incidental_over_budget(content)
+}
+
 /// Truncate a tool result's content per its semantic kind.
 ///
 /// Returns `Some(new_content)` if the content was truncated, or `None` if it is
 /// left untouched (small enough, or instruction-class). This is the single
 /// function both L2 and L3 call, guaranteeing identical behaviour.
 pub fn truncate_content(name: Option<&str>, content: &str) -> Option<String> {
+    truncate_content_with_spill(name, content, None)
+}
+
+/// Like [`truncate_content`], but when `spill_path` is set the truncation
+/// marker tells the model to `read_file` that path for the full output.
+pub fn truncate_content_with_spill(
+    name: Option<&str>,
+    content: &str,
+    spill_path: Option<&str>,
+) -> Option<String> {
     match classify(name) {
         TruncationKind::Instruction => None,
         TruncationKind::ActivelyRead => {
@@ -104,10 +126,10 @@ pub fn truncate_content(name: Option<&str>, content: &str) -> Option<String> {
             Some(truncate_char_cap(content, cap))
         }
         TruncationKind::Incidental => {
-            if content.len() <= INCIDENTAL_MAX_CHARS {
+            if !incidental_over_budget(content) {
                 return None;
             }
-            Some(truncate_head_tail(content))
+            Some(truncate_tail_heavy(content, spill_path))
         }
     }
 }
@@ -124,26 +146,69 @@ fn truncate_char_cap(content: &str, cap: usize) -> String {
     )
 }
 
-/// Head + tail + signal-line truncation for incidental output.
-fn truncate_head_tail(content: &str) -> String {
+/// Tail-heavy truncation under the dual line/byte budget (PLAN-0016 / Pi).
+///
+/// Keeps a thin head, then as much of the **end** as fits in the remaining
+/// line and byte budget. Signal lines from the dropped middle are preserved.
+fn truncate_tail_heavy(content: &str, spill_path: Option<&str>) -> String {
     let lines: Vec<&str> = content.lines().collect();
-    if lines.len() <= INCIDENTAL_HEAD_LINES + INCIDENTAL_TAIL_LINES {
-        // Few lines but over the char budget: just char-cap so the marker shows.
-        return truncate_char_cap(content, INCIDENTAL_MAX_CHARS);
+    let line_count = lines.len();
+    let char_count = content.len();
+
+    // Few lines but over the byte budget: keep a contiguous tail of bytes.
+    if line_count <= INCIDENTAL_HEAD_LINES + 1 {
+        let start = {
+            let approx = content.len().saturating_sub(INCIDENTAL_MAX_CHARS);
+            floor_char_boundary(content, approx)
+        };
+        let body = if start == 0 {
+            let end = floor_char_boundary(content, INCIDENTAL_MAX_CHARS);
+            &content[..end]
+        } else {
+            &content[start..]
+        };
+        return format_incidental_truncated(line_count, char_count, "", body, &[], spill_path);
     }
 
     let head: Vec<&str> = lines.iter().take(INCIDENTAL_HEAD_LINES).copied().collect();
-    let tail: Vec<&str> = lines
-        .iter()
-        .rev()
-        .take(INCIDENTAL_TAIL_LINES)
-        .copied()
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
+    let head_text = head.join("\n");
+    // Reserve room for head + separators inside the char budget.
+    let overhead = head_text.len() + 64; // "\n...\n" + marker slack
+    let char_budget_for_tail = INCIDENTAL_MAX_CHARS.saturating_sub(overhead);
+    let line_budget_for_tail = INCIDENTAL_MAX_LINES.saturating_sub(INCIDENTAL_HEAD_LINES);
 
-    let signals: Vec<&str> = lines
+    // Grow the tail from the end until we hit line or byte budget.
+    let mut tail: Vec<&str> = Vec::new();
+    let mut tail_chars = 0usize;
+    for line in lines.iter().rev() {
+        if tail.len() >= line_budget_for_tail {
+            break;
+        }
+        let add = line.len() + if tail.is_empty() { 0 } else { 1 }; // newline
+        if tail_chars + add > char_budget_for_tail && !tail.is_empty() {
+            break;
+        }
+        if tail_chars + add > char_budget_for_tail && tail.is_empty() {
+            // Single enormous last line: keep a UTF-8-safe suffix.
+            let start = {
+                let approx = line.len().saturating_sub(char_budget_for_tail);
+                floor_char_boundary(line, approx)
+            };
+            tail.push(&line[start..]);
+            break;
+        }
+        tail.push(line);
+        tail_chars += add;
+    }
+    tail.reverse();
+
+    let tail_start_idx = line_count.saturating_sub(tail.len());
+    let middle = if tail_start_idx > INCIDENTAL_HEAD_LINES {
+        &lines[INCIDENTAL_HEAD_LINES..tail_start_idx]
+    } else {
+        &[][..]
+    };
+    let signals: Vec<&str> = middle
         .iter()
         .filter(|l| {
             let lower = l.to_lowercase();
@@ -153,15 +218,55 @@ fn truncate_head_tail(content: &str) -> String {
         .copied()
         .collect();
 
-    format!(
-        "[truncated: {} lines / {} chars → {} char budget]\n{}\n...\n{}\n--- signals ---\n{}",
-        lines.len(),
-        content.len(),
-        INCIDENTAL_MAX_CHARS,
-        head.join("\n"),
-        tail.join("\n"),
-        signals.join("\n")
+    // If the "tail" already includes the head region, skip duplicating head.
+    let head_for_fmt = if tail_start_idx <= INCIDENTAL_HEAD_LINES {
+        ""
+    } else {
+        &head_text
+    };
+
+    format_incidental_truncated(
+        line_count,
+        char_count,
+        head_for_fmt,
+        &tail.join("\n"),
+        &signals,
+        spill_path,
     )
+}
+
+fn format_incidental_truncated(
+    line_count: usize,
+    char_count: usize,
+    head: &str,
+    tail: &str,
+    signals: &[&str],
+    spill_path: Option<&str>,
+) -> String {
+    let mut out = format!(
+        "[truncated: {line_count} lines / {char_count} chars → ≤{INCIDENTAL_MAX_LINES} lines or ≤{INCIDENTAL_MAX_CHARS} bytes; tail-heavy]\n"
+    );
+    if !head.is_empty() {
+        out.push_str(head);
+        out.push_str("\n...\n");
+    } else if incidental_over_budget_counts(line_count, char_count) {
+        out.push_str("...\n");
+    }
+    out.push_str(tail);
+    if !signals.is_empty() {
+        out.push_str("\n--- signals ---\n");
+        out.push_str(&signals.join("\n"));
+    }
+    if let Some(path) = spill_path {
+        out.push_str(&format!(
+            "\n[Full output spilled to '{path}'. Use read_file on that path if you need earlier lines.]"
+        ));
+    }
+    out
+}
+
+fn incidental_over_budget_counts(line_count: usize, char_count: usize) -> bool {
+    char_count > INCIDENTAL_MAX_CHARS || line_count > INCIDENTAL_MAX_LINES
 }
 
 // ── Tool-call argument truncation ───────────────────────────────────
@@ -239,8 +344,16 @@ mod tests {
     use super::*;
 
     fn big_incidental() -> String {
-        // > INCIDENTAL_MAX_CHARS and many lines so head/tail path is exercised.
-        (0..2000).map(|i| format!("line number {i}")).collect::<Vec<_>>().join("\n")
+        // Over the line budget (and typically under 50KB for short lines).
+        (0..INCIDENTAL_MAX_LINES + 500)
+            .map(|i| format!("line number {i}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn huge_incidental_bytes() -> String {
+        // Over the byte budget with few lines.
+        format!("start\n{}\nend", "x".repeat(INCIDENTAL_MAX_CHARS + 1024))
     }
 
     #[test]
@@ -280,25 +393,68 @@ mod tests {
     }
 
     #[test]
-    fn incidental_head_tail_when_large() {
+    fn incidental_tail_heavy_when_over_line_budget() {
         let big = big_incidental();
-        assert!(big.len() > INCIDENTAL_MAX_CHARS);
-        let out = truncate_content(Some("exec"), &big).unwrap();
+        assert!(big.lines().count() > INCIDENTAL_MAX_LINES);
+        let out = truncate_content(Some("shell"), &big).unwrap();
         assert!(out.contains("truncated"));
+        assert!(out.contains("tail-heavy"));
         assert!(out.contains("..."));
-        assert!(out.contains("--- signals ---"));
+        // Last lines preserved.
+        assert!(out.contains(&format!("line number {}", INCIDENTAL_MAX_LINES + 499)));
+        // Early body dropped (beyond thin head) — use a non-prefix-ambiguous probe.
+        assert!(!out.contains("\nline number 50\n"));
+        // Thin head kept.
+        assert!(out.contains("line number 0"));
         assert!(out.len() < big.len());
     }
 
     #[test]
-    fn incidental_preserves_signal_lines() {
-        let mut lines: Vec<String> = (0..2000).map(|i| format!("line {}", i)).collect();
-        lines.push("Error: boom".to_string());
-        lines.push("exit code: 1".to_string());
+    fn incidental_tail_heavy_when_over_byte_budget() {
+        let big = huge_incidental_bytes();
+        assert!(big.len() > INCIDENTAL_MAX_CHARS);
+        let out = truncate_content(Some("shell"), &big).unwrap();
+        assert!(out.contains("truncated"));
+        assert!(out.contains("end"));
+        assert!(out.len() < big.len());
+    }
+
+    #[test]
+    fn incidental_preserves_signal_lines_from_middle() {
+        let mut lines: Vec<String> = (0..INCIDENTAL_MAX_LINES + 500)
+            .map(|i| format!("line {i}"))
+            .collect();
+        // Place signals in the dropped middle (after head, before tail window).
+        lines[100] = "Error: boom".to_string();
+        lines[101] = "exit code: 1".to_string();
         let big = lines.join("\n");
-        let out = truncate_content(Some("exec"), &big).unwrap();
+        let out = truncate_content(Some("shell"), &big).unwrap();
         assert!(out.contains("Error: boom"));
         assert!(out.contains("exit code: 1"));
+        assert!(out.contains("--- signals ---"));
+    }
+
+    #[test]
+    fn incidental_spill_path_in_marker() {
+        let big = big_incidental();
+        let out =
+            truncate_content_with_spill(Some("shell"), &big, Some("/tmp/spill.txt")).unwrap();
+        assert!(out.contains("/tmp/spill.txt"));
+        assert!(out.contains("read_file"));
+    }
+
+    #[test]
+    fn should_spill_only_for_oversized_incidental() {
+        assert!(!should_spill_at_ingest(Some("shell"), "short"));
+        assert!(!should_spill_at_ingest(
+            Some("read_file"),
+            &"x".repeat(20_000)
+        ));
+        assert!(should_spill_at_ingest(
+            Some("shell"),
+            &"x".repeat(INCIDENTAL_MAX_CHARS + 1)
+        ));
+        assert!(should_spill_at_ingest(Some("shell"), &big_incidental()));
     }
 
     #[test]

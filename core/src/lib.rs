@@ -50,7 +50,7 @@ pub use memory::{
 pub use mode::AgentMode;
 pub use model_capabilities::{
     format_context_label, lookup_capabilities, resolve_context_tokens, resolve_max_output_tokens,
-    ModelCapabilities, DEFAULT_CONTEXT_TOKENS,
+    resolve_supports_images, ModelCapabilities, DEFAULT_CONTEXT_TOKENS,
 };
 pub use tokio_util::sync::CancellationToken;
 pub use tools::{Tool, ToolRegistry, ToolUpdateFn, build_tool_by_name};
@@ -65,7 +65,10 @@ pub use attachments::{
     attachment_url, resolve_attachment_ref, reuse_session_image, save_session_image,
     MAX_ATTACHMENT_BYTES,
 };
-pub use compressor::{CompressionResult, Compressor, SummarizeRequest, TurnSummary};
+pub use compressor::{
+    CompressionResult, Compressor, RollingSummary, SummarizeRequest, SummaryFiles, TurnSummary,
+    merge_summary,
+};
 pub use cron::{CronJob, CronJobRun, CronjobStore};
 pub use eval::{
     collect_ledger, load_trace_jsonl, matrix_from_summaries, render_report_md, resolve_suite_dir,
@@ -102,7 +105,7 @@ pub use tasks::{TaskBoard, TaskRecord, TaskStatus};
 pub use teams::{AgentTeam, MessageBus, TeamMessage, TeamMessageType};
 pub use todo::{
     is_bare_continue, is_continue_cue, is_explicit_plan_resume, is_object_bearing_continue,
-    ContinueResolution, ParkedPlanSummary, Plan, PlanStatus, PlansSnapshot, SessionPlanStore,
+    ContinueResolution, ParkedPlanSummary, Plan, PlanDetail, PlanStatus, PlansSnapshot, SessionPlanStore,
     SessionTodoStore, TodoItem, TodoList, TodoStatus,
 };
 pub use trace::TraceCollector;

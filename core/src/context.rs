@@ -1468,7 +1468,7 @@ mod tests {
         let mut engine = ContextEngine::new(crate::prompt::DEFAULT_IDENTITY, 128_000);
         let principles = format!(
             "{}\n\n{}",
-            crate::prompt::DEFAULT_PRINCIPLES,
+            crate::prompt::default_principles_build(),
             crate::prompt::MEMORY_PROTOCOL
         );
         engine.set_principles(&principles);

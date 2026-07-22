@@ -1,4 +1,4 @@
-//! Context compaction — chunked drop and LLM-based summarization.
+//! Context compaction — chunked drop and LLM-based summarization (PLAN-0016).
 
 use crate::types::Message;
 
@@ -30,15 +30,12 @@ impl Run {
     ///
     /// Two-tier approach optimized for DeepSeek prefix caching:
     ///
+    /// 0. **Ledger merge**: fold deterministic file touches into RollingSummary
+    ///    before dropping turns (PLAN-0016).
     /// 1. **Chunked drop (preferred)**: When token usage exceeds 80% of the
     ///    context window, batch-drop the oldest 50% of conversation turns.
-    ///    This causes a single-turn cache miss but leaves a stable prefix
-    ///    for the next 10+ turns — maximizing long-term cache hits with
-    ///    zero LLM overhead.
-    ///
-    /// 2. **LLM summarize (fallback)**: If chunked_drop wasn't sufficient
-    ///    (e.g., a single tool result is dominating), fall back to the
-    ///    LLM-based summary compact with `micro_compact()` as last resort.
+    /// 2. **LLM summarize (fallback)**: Incremental delta merge into
+    ///    RollingSummary; `micro_compact()` as last resort.
     ///
     /// Compaction mutates only the in-memory model window (`context.messages`).
     /// The full transcript used for UI / SQLite persistence is never touched.
@@ -57,11 +54,23 @@ impl Run {
             None => return, // under threshold — nothing to do
         };
 
+        // PLAN-0016: persist file ledger into RollingSummary before dropping turns.
+        if !self.file_ledger.is_empty() {
+            self.context
+                .upsert_ledger_into_rolling_summary(&self.file_ledger);
+        }
+
         // Tier 1: Chunked drop — zero-cost, cache-friendly bulk removal.
         if self.context.chunked_drop(keep) > 0 {
             // Dropped turns are gone; strip thinking from what remains so old
             // CoT does not linger across the compaction boundary.
             self.context.strip_thinking_after_compact();
+            // chunked_drop may have removed the leading RollingSummary — restore
+            // file ledger into a fresh summary so touched paths survive the drop.
+            if !self.file_ledger.is_empty() {
+                self.context
+                    .upsert_ledger_into_rolling_summary(&self.file_ledger);
+            }
             let tokens_after = self.context.current_token_count();
             tracing::info!(
                 compact = "chunked_drop",
@@ -115,15 +124,7 @@ impl Run {
         let (result_text, _) = match self.client.chat_completion(&messages, &[]).await {
             Ok(r) => r,
             Err(_) => {
-                // LLM call failed — fallback to micro_compact
-                self.context.micro_compact(context_len.max(4) / 3);
-                self.emit_context_compacted(
-                    "micro_compact",
-                    current,
-                    self.context.current_token_count(),
-                );
-                debug_assert_eq!(self.full_transcript.len(), full_len_before);
-                self.refresh_usage_snapshot_only();
+                self.fallback_micro_compact(context_len, current, full_len_before);
                 return;
             }
         };
@@ -138,21 +139,13 @@ impl Run {
                 s
             }
             Err(_) => {
-                // JSON parse failed — fallback to micro_compact
-                self.context.micro_compact(context_len.max(4) / 3);
-                self.emit_context_compacted(
-                    "micro_compact",
-                    current,
-                    self.context.current_token_count(),
-                );
-                debug_assert_eq!(self.full_transcript.len(), full_len_before);
-                self.refresh_usage_snapshot_only();
+                self.fallback_micro_compact(context_len, current, full_len_before);
                 return;
             }
         };
 
         self.context
-            .apply_summary(request.split_index, &summary, num_turns);
+            .apply_summary_with_ledger(request.split_index, &summary, &self.file_ledger);
         self.emit_context_compacted(
             "llm_summary",
             current,
@@ -173,19 +166,18 @@ impl Run {
     pub(super) async fn force_compact(&mut self, target_ratio: f64) {
         let full_len_before = self.full_transcript.len();
         let tokens_before = self.context.current_token_count();
+
+        if !self.file_ledger.is_empty() {
+            self.context
+                .upsert_ledger_into_rolling_summary(&self.file_ledger);
+        }
+
         let remove_fraction = (1.0 - target_ratio).clamp(0.1, 0.6);
         let num_turns = (self.context.len().max(4) as f64 * remove_fraction) as usize;
         let request = match self.context.prepare_summary(num_turns) {
             Some(r) => r,
             None => {
-                self.context.micro_compact(self.context.len().max(4) / 3);
-                self.emit_context_compacted(
-                    "micro_compact",
-                    tokens_before,
-                    self.context.current_token_count(),
-                );
-                debug_assert_eq!(self.full_transcript.len(), full_len_before);
-                self.refresh_usage_snapshot_only();
+                self.fallback_micro_compact(self.context.len(), tokens_before, full_len_before);
                 return;
             }
         };
@@ -194,14 +186,7 @@ impl Run {
         let (result_text, _) = match self.client.chat_completion(&messages, &[]).await {
             Ok(r) => r,
             Err(_) => {
-                self.context.micro_compact(self.context.len().max(4) / 3);
-                self.emit_context_compacted(
-                    "micro_compact",
-                    tokens_before,
-                    self.context.current_token_count(),
-                );
-                debug_assert_eq!(self.full_transcript.len(), full_len_before);
-                self.refresh_usage_snapshot_only();
+                self.fallback_micro_compact(self.context.len(), tokens_before, full_len_before);
                 return;
             }
         };
@@ -209,22 +194,35 @@ impl Run {
         let summary: crate::compressor::TurnSummary = match serde_json::from_str(&result_text) {
             Ok(s) => s,
             Err(_) => {
-                self.context.micro_compact(self.context.len().max(4) / 3);
-                self.emit_context_compacted(
-                    "micro_compact",
-                    tokens_before,
-                    self.context.current_token_count(),
-                );
-                debug_assert_eq!(self.full_transcript.len(), full_len_before);
-                self.refresh_usage_snapshot_only();
+                self.fallback_micro_compact(self.context.len(), tokens_before, full_len_before);
                 return;
             }
         };
 
         self.context
-            .apply_summary(request.split_index, &summary, num_turns);
+            .apply_summary_with_ledger(request.split_index, &summary, &self.file_ledger);
         self.emit_context_compacted(
             "llm_summary",
+            tokens_before,
+            self.context.current_token_count(),
+        );
+        debug_assert_eq!(self.full_transcript.len(), full_len_before);
+        self.refresh_usage_snapshot_only();
+    }
+
+    fn fallback_micro_compact(
+        &mut self,
+        context_len: usize,
+        tokens_before: usize,
+        full_len_before: usize,
+    ) {
+        self.context.micro_compact(context_len.max(4) / 3);
+        if !self.file_ledger.is_empty() {
+            self.context
+                .upsert_ledger_into_rolling_summary(&self.file_ledger);
+        }
+        self.emit_context_compacted(
+            "micro_compact",
             tokens_before,
             self.context.current_token_count(),
         );
@@ -249,7 +247,7 @@ impl Run {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compressor::TurnSummary;
+    use crate::compressor::{SummaryFiles, TurnSummary, ROLLING_SUMMARY_PREFIX};
     use crate::context::ContextEngine;
     use crate::types::Role;
 
@@ -344,10 +342,9 @@ mod tests {
 
         let summary = TurnSummary {
             decisions: vec!["keep going".into()],
-            files_modified: vec![],
-            errors_encountered: vec![],
-            unresolved: vec![],
-            key_facts: vec!["fact".into()],
+            files: SummaryFiles::default(),
+            facts: vec!["fact".into()],
+            ..Default::default()
         };
         let split = engine.len().saturating_sub(2).max(1);
         // Summarize whatever is still in the model window front.
@@ -355,15 +352,12 @@ mod tests {
             let num_turns = 1;
             engine.apply_summary(1.min(split), &summary, num_turns);
             assert!(
-                engine
-                    .raw_messages()
-                    .iter()
-                    .any(|m| {
-                        m.role == Role::Assistant
-                            && m.content
-                                .as_deref()
-                                .is_some_and(|c| c.contains("[Compressed turns"))
-                    }),
+                engine.raw_messages().iter().any(|m| {
+                    m.role == Role::Assistant
+                        && m.content
+                            .as_deref()
+                            .is_some_and(|c| c.contains(ROLLING_SUMMARY_PREFIX))
+                }),
                 "summary lives only in the model window"
             );
         }
@@ -378,7 +372,7 @@ mod tests {
             !full.iter().any(|m| {
                 m.content
                     .as_deref()
-                    .is_some_and(|c| c.contains("[Compressed turns"))
+                    .is_some_and(|c| c.contains(ROLLING_SUMMARY_PREFIX))
             }),
             "summary must never appear in the full transcript"
         );

@@ -422,6 +422,11 @@ impl Run {
                 self.execution.record_artifact(fact);
             }
 
+            if !is_error && !aborted {
+                self.file_ledger
+                    .observe_tool(&call.function.name, &call.function.arguments);
+            }
+
             self.emit(RunEvent::ToolEnded {
                 subagent_id: None,
                 call_id: call.id.clone(),
@@ -430,9 +435,21 @@ impl Run {
                 is_error: is_error || aborted,
             });
 
+            // PLAN-0016: spill oversized incidental output, store truncated + path
+            // so resume does not re-inflate multi-MB shell logs into the model window.
+            // Live UI already received the full body via ToolEnded above.
+            let spill_path = crate::paths::tool_spill_path(
+                self.session_id.as_deref(),
+                &call.id,
+            );
+            let stored = crate::hygiene::prepare_tool_result_for_storage(
+                Some(call.function.name.as_str()),
+                result,
+                &spill_path,
+            );
             self.append_conversation(Message::tool(
                 call.id.clone(),
-                result.clone(),
+                stored,
                 Some(call.function.name.clone()),
             ));
         }
@@ -764,8 +781,30 @@ impl Run {
         const STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
         tokio::pin!(stream);
         loop {
+            let flush_delay = tokens.pending_flush_delay();
             let event = tokio::select! {
                 _ = self.cancel.cancelled() => anyhow::bail!("aborted"),
+                // Interval flush even when the upstream SSE pauses mid-burst.
+                _ = tokio::time::sleep(flush_delay.unwrap_or(std::time::Duration::ZERO)),
+                    if flush_delay.is_some() => {
+                    if let Some((text, thinking)) = tokens.flush() {
+                        if !text.is_empty() {
+                            let _ = event_tx.send(self.wrap(RunEvent::ModelStreaming {
+                                subagent_id: None,
+                                message_id: message_id.clone(),
+                                delta: MessageDelta::Text(text),
+                            }));
+                        }
+                        if !thinking.is_empty() {
+                            let _ = event_tx.send(self.wrap(RunEvent::ModelStreaming {
+                                subagent_id: None,
+                                message_id: message_id.clone(),
+                                delta: MessageDelta::Thinking(thinking),
+                            }));
+                        }
+                    }
+                    continue;
+                }
                 result = tokio::time::timeout(STREAM_IDLE_TIMEOUT, stream.next()) => {
                     match result {
                         Ok(Some(event)) => event,

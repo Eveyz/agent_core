@@ -57,88 +57,160 @@ impl CompressionResult {
     }
 }
 
-// ── Stage 4: Structured summary for LLM ─────────────────────────────
+// ── Stage 4: Rolling structured summary (PLAN-0016) ─────────────────
 
-/// Structured summary generated from old conversation turns.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TurnSummary {
-    pub decisions: Vec<String>,
-    pub files_modified: Vec<String>,
-    pub errors_encountered: Vec<String>,
-    pub unresolved: Vec<String>,
-    pub key_facts: Vec<String>,
+/// Stable prefix for the single RollingSummary assistant message in the model window.
+pub const ROLLING_SUMMARY_PREFIX: &str = "[RollingSummary]";
+
+const MAX_DECISIONS: usize = 12;
+const MAX_FACTS: usize = 8;
+const MAX_NOTES: usize = 6;
+const MAX_ERRORS: usize = 8;
+const MAX_FILES_PER_BUCKET: usize = 40;
+
+/// File paths in a rolling summary (deterministic merge + ledger).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SummaryFiles {
+    #[serde(default)]
+    pub read: Vec<String>,
+    #[serde(default)]
+    pub wrote: Vec<String>,
+    #[serde(default)]
+    pub deleted: Vec<String>,
 }
 
+/// Structured rolling summary — decisions / facts / errors / files.
+/// Does **not** duplicate Goal/Progress (live todo + EXECUTION STATE owns that).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TurnSummary {
+    #[serde(default)]
+    pub goal: Option<String>,
+    #[serde(default)]
+    pub decisions: Vec<String>,
+    #[serde(default)]
+    pub files: SummaryFiles,
+    #[serde(default)]
+    pub errors_open: Vec<String>,
+    #[serde(default)]
+    pub facts: Vec<String>,
+    #[serde(default)]
+    pub notes: Vec<String>,
+}
+
+/// Alias used in docs / call sites that speak in PLAN-0016 terms.
+pub type RollingSummary = TurnSummary;
+
 impl TurnSummary {
-    /// Build a context string from the summary.
+    /// Build a context string from the summary (capped lists).
     pub fn to_context_string(&self) -> String {
         let mut parts = Vec::new();
 
+        if let Some(goal) = self.goal.as_ref().map(|g| g.trim()).filter(|g| !g.is_empty()) {
+            parts.push(format!("Goal: {goal}"));
+        }
+
         if !self.decisions.is_empty() {
             parts.push(format!(
-                "Decisions made:\n{}",
-                self.decisions
-                    .iter()
-                    .map(|d| format!("  • {}", d))
-                    .collect::<Vec<_>>()
-                    .join("\n")
+                "Decisions:\n{}",
+                bullet_list(&self.decisions, MAX_DECISIONS)
             ));
         }
 
-        if !self.files_modified.is_empty() {
+        let mut file_lines = Vec::new();
+        if !self.files.wrote.is_empty() {
+            file_lines.push(format!(
+                "  wrote: {}",
+                self.files.wrote.iter().take(MAX_FILES_PER_BUCKET).cloned().collect::<Vec<_>>().join(", ")
+            ));
+        }
+        if !self.files.read.is_empty() {
+            file_lines.push(format!(
+                "  read: {}",
+                self.files.read.iter().take(MAX_FILES_PER_BUCKET).cloned().collect::<Vec<_>>().join(", ")
+            ));
+        }
+        if !self.files.deleted.is_empty() {
+            file_lines.push(format!(
+                "  deleted: {}",
+                self.files
+                    .deleted
+                    .iter()
+                    .take(MAX_FILES_PER_BUCKET)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if !file_lines.is_empty() {
+            parts.push(format!("Files:\n{}", file_lines.join("\n")));
+        }
+
+        if !self.errors_open.is_empty() {
             parts.push(format!(
-                "Files modified: {}",
-                self.files_modified.join(", ")
+                "Open errors:\n{}",
+                bullet_list(&self.errors_open, MAX_ERRORS)
             ));
         }
 
-        if !self.errors_encountered.is_empty() {
-            parts.push(format!(
-                "Errors encountered:\n{}",
-                self.errors_encountered
-                    .iter()
-                    .map(|e| format!("  • {}", e))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            ));
+        if !self.facts.is_empty() {
+            parts.push(format!("Key facts:\n{}", bullet_list(&self.facts, MAX_FACTS)));
         }
 
-        if !self.unresolved.is_empty() {
-            parts.push(format!(
-                "Still unresolved:\n{}",
-                self.unresolved
-                    .iter()
-                    .map(|u| format!("  • {}", u))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            ));
-        }
-
-        if !self.key_facts.is_empty() {
-            parts.push(format!(
-                "Key facts:\n{}",
-                self.key_facts
-                    .iter()
-                    .map(|f| format!("  • {}", f))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            ));
+        if !self.notes.is_empty() {
+            parts.push(format!("Notes:\n{}", bullet_list(&self.notes, MAX_NOTES)));
         }
 
         parts.join("\n")
     }
 
-    /// Generate a prompt asking an LLM to summarize old turns.
+    /// Render as the model-window RollingSummary message body.
+    pub fn to_message_content(&self) -> String {
+        format!("{ROLLING_SUMMARY_PREFIX}\n{}", self.to_context_string())
+    }
+
+    /// Parse a RollingSummary (or legacy `[Compressed turns…]`) assistant message.
+    pub fn parse_from_message(content: &str) -> Option<Self> {
+        let trimmed = content.trim();
+        if let Some(rest) = trimmed.strip_prefix(ROLLING_SUMMARY_PREFIX) {
+            return Some(parse_context_string(rest.trim()));
+        }
+        if trimmed.starts_with("[Compressed turns") {
+            // Best-effort: treat remaining body as free text notes.
+            let body = trimmed
+                .lines()
+                .skip(1)
+                .collect::<Vec<_>>()
+                .join("\n");
+            if body.trim().is_empty() {
+                return Some(Self::default());
+            }
+            return Some(Self {
+                notes: vec![truncate_str(body.trim(), 500)],
+                ..Self::default()
+            });
+        }
+        None
+    }
+
+    /// Generate a prompt asking an LLM for a **delta** summary of old turns.
+    /// File paths are filled deterministically from the ledger — do not invent them.
     pub fn prompt_for_llm(turns_text: &str) -> String {
         format!(
-            r#"Summarize the following conversation turns into a structured JSON object. Be concise and extract only what matters:
+            r#"Summarize the following conversation turns into a structured JSON delta.
+Be concise. Extract only what matters for continuing the work.
+
+Rules:
+- Do NOT invent Done/In Progress / todo checklists (progress lives elsewhere).
+- Do NOT invent file paths (leave files empty or omit; the runtime merges a file ledger).
+- Prefer short bullets. Cap each list at a handful of items.
 
 {{
-  "decisions": ["list of decisions made"],
-  "files_modified": ["files that were read or written"],
-  "errors_encountered": ["errors or problems hit"],
-  "unresolved": ["open questions or unfinished tasks"],
-  "key_facts": ["important facts or discoveries"]
+  "goal": "optional one-liner if the user goal is clear, else null",
+  "decisions": ["non-obvious choices that cannot be inferred from files alone"],
+  "files": {{ "read": [], "wrote": [], "deleted": [] }},
+  "errors_open": ["still-open errors or problems"],
+  "facts": ["important discoveries"],
+  "notes": ["rare: user constraints, env quirks"]
 }}
 
 Conversation:
@@ -147,6 +219,125 @@ Conversation:
 Return ONLY valid JSON, no other text."#
         )
     }
+}
+
+fn bullet_list(items: &[String], cap: usize) -> String {
+    items
+        .iter()
+        .take(cap)
+        .map(|d| format!("  • {d}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn truncate_str(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let end = crate::util::floor_char_boundary(s, max);
+    format!("{}…", &s[..end])
+}
+
+/// Very light parse of `to_context_string` output (for re-reading our own messages).
+fn parse_context_string(body: &str) -> TurnSummary {
+    // Prefer structured re-parse only for goal line; keep body as notes if dense.
+    // Callers normally keep the in-memory summary; this is a recovery path.
+    let mut summary = TurnSummary::default();
+    for line in body.lines() {
+        if let Some(g) = line.strip_prefix("Goal: ") {
+            summary.goal = Some(g.trim().to_string());
+        }
+    }
+    if summary.goal.is_none() && !body.trim().is_empty() {
+        summary.notes.push(truncate_str(body.trim(), 800));
+    }
+    summary
+}
+
+/// Merge prior rolling summary + LLM delta + deterministic file ledger.
+///
+/// File lists are owned by the ledger/merge logic — delta file fields are
+/// unioned but ledger wins for wrote-over-read dominance.
+pub fn merge_summary(
+    old: &TurnSummary,
+    delta: &TurnSummary,
+    ledger: Option<&crate::runtime::FileLedger>,
+) -> TurnSummary {
+    use crate::runtime::file_ledger::merge_path_lists;
+
+    let goal = delta
+        .goal
+        .as_ref()
+        .map(|g| g.trim())
+        .filter(|g| !g.is_empty())
+        .map(|g| g.to_string())
+        .or_else(|| old.goal.clone());
+
+    let decisions = merge_unique_capped(&old.decisions, &delta.decisions, MAX_DECISIONS);
+    let facts = merge_unique_capped(&old.facts, &delta.facts, MAX_FACTS);
+    let notes = merge_unique_capped(&old.notes, &delta.notes, MAX_NOTES);
+    let errors_open = merge_unique_capped(&old.errors_open, &delta.errors_open, MAX_ERRORS);
+
+    let mut read = merge_path_lists(&old.files.read, &delta.files.read, MAX_FILES_PER_BUCKET);
+    let mut wrote = merge_path_lists(&old.files.wrote, &delta.files.wrote, MAX_FILES_PER_BUCKET);
+    let mut deleted =
+        merge_path_lists(&old.files.deleted, &delta.files.deleted, MAX_FILES_PER_BUCKET);
+
+    if let Some(led) = ledger {
+        read = merge_path_lists(&read, &led.read, MAX_FILES_PER_BUCKET);
+        wrote = merge_path_lists(&wrote, &led.wrote, MAX_FILES_PER_BUCKET);
+        deleted = merge_path_lists(&deleted, &led.deleted, MAX_FILES_PER_BUCKET);
+    }
+
+    // wrote dominates read; deleted removes from both.
+    for d in &deleted {
+        read.retain(|r| r != d);
+        wrote.retain(|w| w != d);
+    }
+    for w in &wrote {
+        read.retain(|r| r != w);
+    }
+
+    TurnSummary {
+        goal,
+        decisions,
+        files: SummaryFiles {
+            read,
+            wrote,
+            deleted,
+        },
+        errors_open,
+        facts,
+        notes,
+    }
+}
+
+fn merge_unique_capped(a: &[String], b: &[String], cap: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for item in a.iter().chain(b.iter()) {
+        let t = item.trim();
+        if t.is_empty() {
+            continue;
+        }
+        if out.iter().any(|x: &String| x.eq_ignore_ascii_case(t)) {
+            continue;
+        }
+        out.push(t.to_string());
+    }
+    while out.len() > cap {
+        out.remove(0);
+    }
+    out
+}
+
+/// Find an existing RollingSummary message at the front of the model window.
+pub fn find_rolling_summary(messages: &[Message]) -> Option<TurnSummary> {
+    messages.first().and_then(|m| {
+        if m.role != crate::types::Role::Assistant {
+            return None;
+        }
+        m.content.as_deref().and_then(TurnSummary::parse_from_message)
+    })
 }
 
 // ── Compression pipeline ─────────────────────────────────────────────
@@ -410,27 +601,71 @@ impl Compressor {
         })
     }
 
-    /// Apply a summary returned by the LLM, replacing old messages.
+    /// Apply a summary delta returned by the LLM, merging into any existing
+    /// RollingSummary at the front of the window (PLAN-0016).
     /// Historical thinking is stripped without touching the retained active turn.
     pub fn apply_summary(
         messages: &mut Vec<Message>,
         split_idx: usize,
         summary: &TurnSummary,
-        num_turns: usize,
+        _num_turns: usize,
     ) -> String {
-        let summary_text = format!(
-            "[Compressed turns 1-{}]\n{}",
-            num_turns,
-            summary.to_context_string()
-        );
+        Self::apply_summary_with_ledger(messages, split_idx, summary, None)
+    }
 
-        // Conversation summaries may quote user/tool content, so keep them at
-        // assistant privilege instead of elevating them to System.
+    /// Like [`apply_summary`], merging an optional file ledger into the files block.
+    pub fn apply_summary_with_ledger(
+        messages: &mut Vec<Message>,
+        split_idx: usize,
+        delta: &TurnSummary,
+        ledger: Option<&crate::runtime::FileLedger>,
+    ) -> String {
+        let prior = messages
+            .first()
+            .and_then(|m| m.content.as_deref())
+            .and_then(TurnSummary::parse_from_message)
+            .unwrap_or_default();
+
+        let merged = merge_summary(&prior, delta, ledger);
+        let summary_text = merged.to_message_content();
+
         messages.drain(..split_idx);
+        if messages
+            .first()
+            .and_then(|m| m.content.as_deref())
+            .is_some_and(|c| {
+                c.starts_with(ROLLING_SUMMARY_PREFIX) || c.starts_with("[Compressed turns")
+            })
+        {
+            messages.remove(0);
+        }
         messages.insert(0, Message::assistant(&summary_text));
         crate::hygiene::strip_historical_thinking(messages);
 
         summary_text
+    }
+
+    /// Ensure a RollingSummary exists at the front and merge `ledger` into it
+    /// without dropping conversation turns (used before chunked_drop).
+    pub fn upsert_ledger_into_rolling_summary(
+        messages: &mut Vec<Message>,
+        ledger: &crate::runtime::FileLedger,
+    ) -> String {
+        let prior = find_rolling_summary(messages).unwrap_or_default();
+        let merged = merge_summary(&prior, &TurnSummary::default(), Some(ledger));
+        let text = merged.to_message_content();
+        if messages
+            .first()
+            .and_then(|m| m.content.as_deref())
+            .is_some_and(|c| {
+                c.starts_with(ROLLING_SUMMARY_PREFIX) || c.starts_with("[Compressed turns")
+            })
+        {
+            messages[0] = Message::assistant(&text);
+        } else {
+            messages.insert(0, Message::assistant(&text));
+        }
+        text
     }
 
     // ── Stage 1-3 pipeline ──────────────────────────────────────────
@@ -565,12 +800,13 @@ mod tests {
     #[test]
     fn test_snip_compact_truncates_long_results() {
         let comp = Compressor::new();
-        // Incidental tool (exec) over the 16K char budget → truncated.
-        let mut msgs = vec![make_tool_result("c1", "exec", &"x".repeat(20_000))];
+        // Incidental tool (exec) over the dual budget → truncated.
+        let oversized = "x".repeat(crate::hygiene::policy::INCIDENTAL_MAX_CHARS + 1024);
+        let mut msgs = vec![make_tool_result("c1", "exec", &oversized)];
         let modified = comp.snip_compact(&mut msgs);
         assert_eq!(modified, 1);
         let content = msgs[0].content.as_ref().unwrap();
-        assert!(content.len() < 20_000);
+        assert!(content.len() < oversized.len());
         assert!(content.contains("truncated"));
     }
 
@@ -718,10 +954,12 @@ mod tests {
 
         let summary = TurnSummary {
             decisions: vec!["decided to refactor".to_string()],
-            files_modified: vec!["src/main.rs".to_string()],
-            errors_encountered: vec![],
-            unresolved: vec![],
-            key_facts: vec!["codebase uses async".to_string()],
+            files: SummaryFiles {
+                wrote: vec!["src/main.rs".to_string()],
+                ..Default::default()
+            },
+            facts: vec!["codebase uses async".to_string()],
+            ..Default::default()
         };
 
         let text = Compressor::apply_summary(&mut msgs, 2, &summary, 1);
@@ -741,7 +979,7 @@ mod tests {
                 .unwrap()
                 .contains("decided to refactor")
         );
-        assert!(text.contains("Compressed turns"));
+        assert!(text.contains(ROLLING_SUMMARY_PREFIX));
     }
 
     #[test]
@@ -752,8 +990,12 @@ mod tests {
             Message::user("old task"),
             Message::assistant("working"),
             make_tool_call_msg("c1", "read_file", "{}"),
-            // Incidental tool over the 16K char budget so snipCompact engages.
-            make_tool_result("c1", "exec", &"x".repeat(20_000)),
+            // Incidental tool over the dual budget so snipCompact engages.
+            make_tool_result(
+                "c1",
+                "exec",
+                &"x".repeat(crate::hygiene::policy::INCIDENTAL_MAX_CHARS + 1024),
+            ),
             Message::user("recent task"),
             Message::assistant("done"),
         ];
@@ -779,10 +1021,14 @@ mod tests {
     fn test_turn_summary_to_context_string() {
         let summary = TurnSummary {
             decisions: vec!["use async/await".to_string()],
-            files_modified: vec!["main.rs".to_string(), "lib.rs".to_string()],
-            errors_encountered: vec!["tokio runtime panic".to_string()],
-            unresolved: vec!["need to test edge case".to_string()],
-            key_facts: vec!["Rust 2024 edition".to_string()],
+            files: SummaryFiles {
+                wrote: vec!["main.rs".to_string(), "lib.rs".to_string()],
+                ..Default::default()
+            },
+            errors_open: vec!["tokio runtime panic".to_string()],
+            facts: vec!["Rust 2024 edition".to_string()],
+            notes: vec!["need to test edge case".to_string()],
+            ..Default::default()
         };
 
         let s = summary.to_context_string();
@@ -799,5 +1045,56 @@ mod tests {
         assert!(prompt.contains("decisions"));
         assert!(prompt.contains("hello"));
         assert!(prompt.contains("JSON"));
+        assert!(prompt.contains("Do NOT invent Done/In Progress"));
+    }
+
+    #[test]
+    fn test_merge_summary_caps_and_wrote_over_read() {
+        let old = TurnSummary {
+            decisions: vec!["a".into()],
+            files: SummaryFiles {
+                read: vec!["a.rs".into()],
+                ..Default::default()
+            },
+            facts: (0..10).map(|i| format!("f{i}")).collect(),
+            ..Default::default()
+        };
+        let delta = TurnSummary {
+            decisions: vec!["b".into()],
+            files: SummaryFiles {
+                wrote: vec!["a.rs".into()],
+                ..Default::default()
+            },
+            facts: vec!["new".into()],
+            ..Default::default()
+        };
+        let mut ledger = crate::runtime::FileLedger::new();
+        ledger.record_read("b.rs");
+        ledger.record_wrote("c.rs");
+
+        let merged = merge_summary(&old, &delta, Some(&ledger));
+        assert!(merged.decisions.contains(&"a".into()));
+        assert!(merged.decisions.contains(&"b".into()));
+        assert!(!merged.files.read.iter().any(|p| p == "a.rs"));
+        assert!(merged.files.wrote.iter().any(|p| p == "a.rs"));
+        assert!(merged.files.wrote.iter().any(|p| p == "c.rs"));
+        assert!(merged.files.read.iter().any(|p| p == "b.rs"));
+        assert!(merged.facts.len() <= MAX_FACTS);
+    }
+
+    #[test]
+    fn test_merge_summary_bounded_across_three_merges() {
+        let mut s = TurnSummary::default();
+        for i in 0..3 {
+            let delta = TurnSummary {
+                decisions: vec![format!("d{i}")],
+                facts: (0..5).map(|j| format!("f{i}-{j}")).collect(),
+                ..Default::default()
+            };
+            s = merge_summary(&s, &delta, None);
+        }
+        assert!(s.decisions.len() <= MAX_DECISIONS);
+        assert!(s.facts.len() <= MAX_FACTS);
+        assert!(s.decisions.contains(&"d2".into()));
     }
 }
