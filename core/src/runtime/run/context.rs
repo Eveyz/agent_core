@@ -264,7 +264,7 @@ impl Run {
                 }
             }
 
-            plan_str.push_str(&self.execution.to_injection(&list));
+            plan_str.push_str(&self.execution.to_injection(&list, self.mode));
             if let Some(line) = self
                 .brain
                 .todo_lists

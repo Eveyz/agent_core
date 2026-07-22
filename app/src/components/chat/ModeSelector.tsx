@@ -25,7 +25,7 @@ const MODES: ModeOption[] = [
     mode: 'plan',
     label: 'Plan',
     icon: ClipboardListIcon,
-    description: 'Research & plan',
+    description: 'Research & plan.md',
   },
   {
     mode: 'build',

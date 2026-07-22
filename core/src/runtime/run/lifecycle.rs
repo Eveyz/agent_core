@@ -690,6 +690,10 @@ impl Run {
     /// Whether a text-only Final should be rejected so the agent keeps working.
     /// Uses runtime ExecutionPhase (not only pinned goal).
     fn should_block_premature_final(&self) -> bool {
+        // Ask/Plan are review/Q&A modes — never force-continue on leftover todos.
+        if !matches!(self.mode, crate::mode::AgentMode::Build) {
+            return false;
+        }
         let list = self
             .brain
             .todo_lists
@@ -710,7 +714,27 @@ impl Run {
     }
 
     fn apply_continue_resolution(&mut self) {
+        use crate::mode::AgentMode;
         use crate::todo::ContinueResolution;
+
+        // Ask/Plan must not be nudged toward todo tools.
+        if matches!(self.mode, AgentMode::Ask | AgentMode::Plan) {
+            let hint = match self.mode {
+                AgentMode::Ask => {
+                    "Continue answering with read-only tools if needed, then respond in text. \
+                     File writes and checklist tools are unavailable in Ask mode."
+                }
+                AgentMode::Plan => {
+                    "Continue research, then write or update `plan.md` via write_file for user review. \
+                     Do not implement source changes in Plan mode."
+                }
+                AgentMode::Build => unreachable!(),
+            };
+            self.execution.set_resume_hint(hint.to_string());
+            self.emit_plans_updated();
+            return;
+        }
+
         match self
             .brain
             .todo_lists
@@ -781,6 +805,12 @@ impl Run {
 
     /// Bare "continue" with resumable work — force ask_user to avoid hijacking.
     fn apply_bare_continue_ask(&mut self) {
+        use crate::mode::AgentMode;
+        if matches!(self.mode, AgentMode::Ask | AgentMode::Plan) {
+            self.apply_continue_resolution();
+            return;
+        }
+
         let latest = self
             .brain
             .todo_lists

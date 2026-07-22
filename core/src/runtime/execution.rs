@@ -199,7 +199,9 @@ impl ExecutionState {
     }
 
     /// Build the Segment 7 dashboard text (phase + next + artifacts + rules).
-    pub fn to_injection(&self, list: &TodoList) -> String {
+    pub fn to_injection(&self, list: &TodoList, mode: crate::mode::AgentMode) -> String {
+        use crate::mode::AgentMode;
+
         let mut out = String::new();
         out.push_str(&format!(
             "== EXECUTION STATE (runtime) ==\n\
@@ -230,17 +232,33 @@ impl ExecutionState {
             } else {
                 out.push_str(&format!("NEXT: step {id}\n"));
             }
-        } else if total == 0 {
-            out.push_str(
-                "NEXT: act with tools now. Use todo_write only if the task is clearly multi-step \
-                 (or ask_user if unclear)\n",
-            );
-        } else if list
-            .items
-            .iter()
-            .all(|i| i.status == TodoStatus::Completed)
-        {
-            out.push_str("NEXT: verify results, then finish\n");
+        } else {
+            match mode {
+                AgentMode::Ask => {
+                    out.push_str(
+                        "NEXT: answer with available read-only tools if needed, then respond in text\n",
+                    );
+                }
+                AgentMode::Plan => {
+                    out.push_str(
+                        "NEXT: research, then write_file `plan.md` for user review (no implementation)\n",
+                    );
+                }
+                AgentMode::Build => {
+                    if total == 0 {
+                        out.push_str(
+                            "NEXT: act with tools now. Use todo_write only if the task is clearly multi-step \
+                             (or ask_user if unclear)\n",
+                        );
+                    } else if list
+                        .items
+                        .iter()
+                        .all(|i| i.status == TodoStatus::Completed)
+                    {
+                        out.push_str("NEXT: verify results, then finish\n");
+                    }
+                }
+            }
         }
 
         if let Some(ready) = list.ready_items().first() {
@@ -260,35 +278,50 @@ impl ExecutionState {
         }
 
         out.push_str("Rules:\n");
-        match self.phase {
-            ExecutionPhase::Clarify => {
+        match mode {
+            AgentMode::Ask => {
                 out.push_str(
-                    "  - Call ask_user. Do not todo_write a full plan or mutate files yet.\n",
+                    "  - Read-only Q&A. Do not invent tools. Do not attempt writes, shell, or todos.\n\
+                      - Answer thoroughly, then stop. If the user wants changes, suggest Plan or Build.\n",
                 );
             }
-            ExecutionPhase::Plan => {
+            AgentMode::Plan => {
                 out.push_str(
-                    "  - Default: execute immediately with tools. Skip todo_write for simple \
-                     1–2 step work (single-file edit, lookup, short command).\n\
-                      - Only call todo_write when the task needs an ordered multi-step plan \
-                     (3+ lasting steps, multi-file coordination, migration/feature, or /goal).\n",
+                    "  - Research with read-only tools; deliver `plan.md` via write_file.\n\
+                      - Do not edit application source or run shell. Do not use todo tools.\n\
+                      - After writing the plan artifact, summarize briefly and stop for review.\n",
                 );
             }
-            ExecutionPhase::Execute => {
-                out.push_str(
-                    "  - Work the NEXT step with tools. Use todo_update to advance.\n\
-                      - Do NOT call todo_write to replan unless the plan is wrong (pass force=true).\n\
-                      - Do NOT end with prose-only while steps remain.\n",
-                );
-            }
-            ExecutionPhase::Verify => {
-                out.push_str(
-                    "  - Verify outcomes (tests/read). If ok, finish; if not, fix and todo_update.\n",
-                );
-            }
-            ExecutionPhase::Done => {
-                out.push_str("  - Task complete. Summarize briefly.\n");
-            }
+            AgentMode::Build => match self.phase {
+                ExecutionPhase::Clarify => {
+                    out.push_str(
+                        "  - Call ask_user. Do not todo_write a full plan or mutate files yet.\n",
+                    );
+                }
+                ExecutionPhase::Plan => {
+                    out.push_str(
+                        "  - Default: execute immediately with tools. Skip todo_write for simple \
+                         1–2 step work (single-file edit, lookup, short command).\n\
+                          - Only call todo_write when the task needs an ordered multi-step plan \
+                         (3+ lasting steps, multi-file coordination, migration/feature, or /goal).\n",
+                    );
+                }
+                ExecutionPhase::Execute => {
+                    out.push_str(
+                        "  - Work the NEXT step with tools. Use todo_update to advance.\n\
+                          - Do NOT call todo_write to replan unless the plan is wrong (pass force=true).\n\
+                          - Do NOT end with prose-only while steps remain.\n",
+                    );
+                }
+                ExecutionPhase::Verify => {
+                    out.push_str(
+                        "  - Verify outcomes (tests/read). If ok, finish; if not, fix and todo_update.\n",
+                    );
+                }
+                ExecutionPhase::Done => {
+                    out.push_str("  - Task complete. Summarize briefly.\n");
+                }
+            },
         }
 
         if let Some(ref hint) = self.resume_hint {
@@ -417,7 +450,7 @@ mod tests {
         st.plan_version = 1;
         st.sync_from_todos(&list);
         st.record_artifact("write_file: src/main.rs");
-        let text = st.to_injection(&list);
+        let text = st.to_injection(&list, crate::mode::AgentMode::Build);
         assert!(text.contains("phase: execute"));
         assert!(text.contains("NEXT:"));
         assert!(text.contains("Artifacts"));
@@ -429,7 +462,7 @@ mod tests {
         let list = TodoList::new();
         let mut st = ExecutionState::new();
         st.set_resume_hint("Continue step 2 with tools");
-        let text = st.to_injection(&list);
+        let text = st.to_injection(&list, crate::mode::AgentMode::Build);
         assert!(text.contains("NEXT ACTION OVERRIDE:"));
         assert!(!text.contains("RESUME:"));
         assert!(text.contains("no preamble or status acknowledgement"));
@@ -441,7 +474,7 @@ mod tests {
         let list = TodoList::new();
         let st = ExecutionState::new();
         assert_eq!(st.phase, ExecutionPhase::Plan);
-        let text = st.to_injection(&list);
+        let text = st.to_injection(&list, crate::mode::AgentMode::Build);
         assert!(text.contains("act with tools now"));
         assert!(text.contains("Skip todo_write for simple"));
         assert!(
@@ -453,6 +486,26 @@ mod tests {
             "empty list must not urge planning"
         );
         assert!(text.contains("No todo items."));
+    }
+
+    #[test]
+    fn ask_injection_does_not_mention_todo_write() {
+        let list = TodoList::new();
+        let st = ExecutionState::new();
+        let text = st.to_injection(&list, crate::mode::AgentMode::Ask);
+        assert!(!text.contains("todo_write"));
+        assert!(!text.contains("todo_update"));
+        assert!(text.contains("Read-only Q&A"));
+    }
+
+    #[test]
+    fn plan_injection_directs_plan_md() {
+        let list = TodoList::new();
+        let st = ExecutionState::new();
+        let text = st.to_injection(&list, crate::mode::AgentMode::Plan);
+        assert!(text.contains("plan.md"));
+        assert!(!text.contains("Use todo_write"));
+        assert!(text.contains("write_file"));
     }
 
     #[test]

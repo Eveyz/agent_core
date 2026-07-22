@@ -25,7 +25,7 @@ impl Tool for AskUserTool {
         "Ask the human to clarify ambiguous requirements via multiple-choice questions \
          BEFORE planning or executing. Use when goals, scope, success criteria, or \
          choices are unclear (especially under /goal). Blocks until the human answers. \
-         Do not call todo_write or mutating tools in the same turn — clarify first, \
+         Do not call mutating tools in the same turn — clarify first, \
          then act on the next turn with the answers."
     }
 

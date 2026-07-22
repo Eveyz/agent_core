@@ -322,7 +322,15 @@ impl ToolRegistry {
     /// Used to filter tools based on [`AgentMode`](crate::mode::AgentMode).
     pub fn remove_all(&mut self, names: &[&str]) {
         for name in names {
-            self.tools.remove(*name);
+            if let Some(tool) = self.tools.remove(*name) {
+                let api = tool.api_name();
+                self.api_name_to_internal.remove(&api);
+                continue;
+            }
+            // Also accept an API-sanitized name.
+            if let Some(internal) = self.api_name_to_internal.remove(*name) {
+                self.tools.remove(&internal);
+            }
         }
     }
 }
@@ -391,5 +399,26 @@ fn canonicalize_json_object(value: &serde_json::Value) -> serde_json::Value {
             serde_json::Value::Array(arr.iter().map(canonicalize_json_object).collect())
         }
         _ => value.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remove_all_clears_has_and_definitions() {
+        let mut registry = ToolRegistry::with_defaults();
+        assert!(registry.has("write_file"));
+        registry.remove_all(&["write_file", "shell"]);
+        assert!(!registry.has("write_file"));
+        assert!(!registry.has("shell"));
+        let names: Vec<_> = registry
+            .tool_definitions()
+            .into_iter()
+            .map(|d| d.function.name)
+            .collect();
+        assert!(!names.iter().any(|n| n == "write_file"));
+        assert!(!names.iter().any(|n| n == "shell"));
     }
 }

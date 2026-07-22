@@ -437,8 +437,8 @@ impl Brain {
     /// with mode-based tool removal and subagent tool registration applied.
     ///
     /// Tools are removed based on [`AgentMode`]:
-    /// - **Ask**: read-only tools only (no write, no plans, no subagents)
-    /// - **Plan**: read + plan tools (no write)
+    /// - **Ask**: read-only tools only (no write, no todos)
+    /// - **Plan**: read + `write_file` for plan artifacts (no shell/edit/todos)
     /// - **Build**: all tools
     pub fn build_tool_registry(&self, mode: AgentMode) -> ToolRegistry {
         self.build_tool_registry_for(mode, None, None)
@@ -539,14 +539,45 @@ impl Brain {
         prompt::DEFAULT_IDENTITY.to_string()
     }
 
-    /// The principles text for the system prompt.
+    /// The principles text for the system prompt (uses Brain's current mode).
     pub fn principles_text(&self, permission_mode: &str) -> String {
+        self.principles_text_for(self.mode(), permission_mode)
+    }
+
+    /// Mode-aware principles: shared core + mode override + mode protocols.
+    ///
+    /// Ask omits Build planning / file-ops recipes so the model never learns
+    /// tool names that were stripped from the registry.
+    pub fn principles_text_for(
+        &self,
+        mode: crate::mode::AgentMode,
+        permission_mode: &str,
+    ) -> String {
+        use crate::mode::AgentMode;
+
         let mut text = format!(
             "{}\n\nPermission Mode: {} — tools may require user approval before execution.\n\n{}",
-            prompt::DEFAULT_PRINCIPLES,
+            prompt::DEFAULT_PRINCIPLES_CORE,
             permission_mode,
-            self.mode().system_prompt_override(),
+            mode.system_prompt_override(),
         );
+
+        match mode {
+            AgentMode::Ask => {}
+            AgentMode::Plan => {
+                text.push_str("\n\n");
+                text.push_str(prompt::FILE_OPS_PLAN);
+                text.push_str("\n\n");
+                text.push_str(prompt::PLAN_MODE_PROTOCOL);
+            }
+            AgentMode::Build => {
+                text.push_str("\n\n");
+                text.push_str(prompt::FILE_OPS_BUILD);
+                text.push_str("\n\n");
+                text.push_str(prompt::BUILD_PLANNING_PROTOCOL);
+            }
+        }
+
         if self.memory_mode() != crate::config::MemoryMode::Stateless {
             text.push_str("\n\n");
             text.push_str(prompt::MEMORY_PROTOCOL);
@@ -701,5 +732,53 @@ default = { model_id = "mock" }
         brain.reload_all_skill_managers().unwrap();
         assert!(first_manager.lock().find_by_name("new-skill").is_some());
         assert!(second_manager.lock().find_by_name("new-skill").is_none());
+    }
+
+    #[test]
+    fn ask_principles_do_not_leak_todo_write() {
+        let brain = Brain::from_config(test_config()).unwrap();
+        let text = brain.principles_text_for(AgentMode::Ask, "Default");
+        assert!(!text.contains("todo_write"));
+        assert!(!text.contains("todo_update"));
+        assert!(!text.contains("## Planning Protocol"));
+        assert!(!text.contains("Use `write_file` ONLY when"));
+        assert!(text.contains("MODE: Ask"));
+    }
+
+    #[test]
+    fn plan_principles_direct_plan_md() {
+        let brain = Brain::from_config(test_config()).unwrap();
+        let text = brain.principles_text_for(AgentMode::Plan, "Default");
+        assert!(text.contains("plan.md"));
+        assert!(text.contains("## Plan Protocol"));
+        assert!(!text.contains("## Planning Protocol"));
+        assert!(!text.contains("FIRST call todo_write"));
+    }
+
+    #[test]
+    fn ask_registry_omits_todo_and_write_tools() {
+        let brain = Brain::from_config(test_config()).unwrap();
+        let registry = brain.build_tool_registry(AgentMode::Ask);
+        for name in ["todo_write", "todo_read", "todo_update", "write_file", "edit", "shell"] {
+            assert!(
+                !registry.has(name),
+                "Ask registry must not expose {name}"
+            );
+        }
+        assert!(registry.has("read_file"));
+    }
+
+    #[test]
+    fn plan_registry_keeps_write_file_omits_todos() {
+        let brain = Brain::from_config(test_config()).unwrap();
+        let registry = brain.build_tool_registry(AgentMode::Plan);
+        assert!(registry.has("write_file"));
+        assert!(registry.has("read_file"));
+        for name in ["todo_write", "todo_read", "edit", "shell"] {
+            assert!(
+                !registry.has(name),
+                "Plan registry must not expose {name}"
+            );
+        }
     }
 }
