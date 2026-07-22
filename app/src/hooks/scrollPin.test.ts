@@ -60,14 +60,14 @@ describe('decideStickAfterScroll', () => {
 
   it('does not re-stick inside the soft zone after the user left (escape vs stream pin)', () => {
     // Wheel-up cleared stick; user is still within BOTTOM_THRESHOLD — must not
-    // snap stick back on, or the next rAF pin re-captures them.
+    // snap stick back on, or the next rAF pin re-captures them. Button can hide.
     const distance = Math.floor((STICK_REJOIN_PX + BOTTOM_THRESHOLD_PX) / 2);
     expect(distance).toBeGreaterThan(STICK_REJOIN_PX);
     expect(distance).toBeLessThanOrEqual(BOTTOM_THRESHOLD_PX);
 
     expect(decideStickAfterScroll(max - distance, height, view, false, true)).toEqual({
       stickToBottom: false,
-      isAtBottom: false,
+      isAtBottom: true,
     });
   });
 

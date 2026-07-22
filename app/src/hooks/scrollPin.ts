@@ -1,5 +1,5 @@
 /** Soft zone: hide the jump button / treat as "near bottom" for UI. */
-export const BOTTOM_THRESHOLD_PX = 48;
+export const BOTTOM_THRESHOLD_PX = 300;
 
 /**
  * Must get this close to the bottom before stick re-enables after the user
@@ -57,10 +57,11 @@ export function decideStickAfterScroll(
     return { stickToBottom: true, isAtBottom: true };
   }
 
-  // Soft near zone: never force stick back on. Preserve an intentional leave
-  // so streaming pins cannot re-capture the user mid-gesture.
+  // Soft near zone: hide the jump button, but never force stick back on.
+  // Preserve an intentional leave so streaming pins cannot re-capture the
+  // user mid-gesture (only STICK_REJOIN_PX rejoins stick).
   if (distance <= BOTTOM_THRESHOLD_PX) {
-    return { stickToBottom, isAtBottom: stickToBottom };
+    return { stickToBottom, isAtBottom: true };
   }
 
   // Far from bottom. While streaming, only wheel/touch may clear stick —
