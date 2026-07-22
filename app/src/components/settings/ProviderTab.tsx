@@ -5,6 +5,7 @@ import { RootState } from '../../store';
 import { upsertProvider, deleteProvider, setDefaultModel, updateProvider } from '../../features/settings/settingsSlice';
 import type { ProviderModelEntry } from '../../features/settings/settingsSlice';
 import { useConfirmDialog } from '../ui/DialogManager';
+import { resolveSupportsImages } from '../../utils/modelCapabilities';
 import ServerIcon from 'lucide-react/dist/esm/icons/server.mjs';
 import PlusIcon from 'lucide-react/dist/esm/icons/plus.mjs';
 import PencilIcon from 'lucide-react/dist/esm/icons/pencil.mjs';
@@ -24,6 +25,7 @@ interface ModelRow {
   max_context_tokens?: number;
   reasoning_effort?: string;
   thinking_enabled?: boolean;
+  supports_images?: boolean;
 }
 
 interface ProviderFormData {
@@ -50,6 +52,7 @@ function modelRowToEntry(row: ModelRow): ProviderModelEntry {
     max_tokens: row.max_tokens || undefined,
     reasoning_effort: row.reasoning_effort || undefined,
     thinking_enabled: row.thinking_enabled || false,
+    supports_images: row.supports_images,
   };
 }
 
@@ -81,6 +84,7 @@ function ProviderForm({
           max_tokens: m.max_tokens,
           reasoning_effort: m.reasoning_effort,
           thinking_enabled: m.thinking_enabled,
+          supports_images: resolveSupportsImages(m.model_id, m.supports_images),
         })),
       });
     } else {
@@ -102,7 +106,19 @@ function ProviderForm({
   const updateModelRow = (index: number, patch: Partial<ModelRow>) => {
     setForm((prev) => ({
       ...prev,
-      models: prev.models.map((row, i) => (i === index ? { ...row, ...patch } : row)),
+      models: prev.models.map((row, i) => {
+        if (i !== index) return row;
+        const next = { ...row, ...patch };
+        // When model_id changes and vision wasn't explicitly set in this edit,
+        // refresh the checkbox from the curated registry default.
+        if (
+          patch.model_id !== undefined &&
+          patch.supports_images === undefined
+        ) {
+          next.supports_images = resolveSupportsImages(patch.model_id);
+        }
+        return next;
+      }),
     }));
     if (errors[`model_${index}`]) {
       setErrors((prev) => {
@@ -257,6 +273,7 @@ function ProviderForm({
             <span title="Max Output Tokens">Output Tkns</span>
             <span title="Reasoning Effort">Reasoning</span>
             <span title="Thinking Enabled">Thinking</span>
+            <span title="Vision / image inputs">Vision</span>
             <span style={{ width: '32px' }} />
           </div>
           {form.models.map((row, index) => (
@@ -304,6 +321,14 @@ function ProviderForm({
                   type="checkbox"
                   checked={row.thinking_enabled || false}
                   onChange={(e) => updateModelRow(index, { thinking_enabled: e.target.checked })}
+                />
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'center' }}>
+                <input
+                  type="checkbox"
+                  title="Accept image / vision inputs"
+                  checked={row.supports_images || false}
+                  onChange={(e) => updateModelRow(index, { supports_images: e.target.checked })}
                 />
               </div>
               <button
@@ -479,9 +504,9 @@ export default function ProviderTab() {
                         {model.reasoning_effort && <span className="model-tag" title="Reasoning Effort">Reason: {model.reasoning_effort}</span>}
                         {model.thinking_enabled && <span className="model-tag" title="Thinking Enabled">Thinking</span>}
                       </div>
-                      {`${providerKey}/${modelKey}` === defaultModel && (
-                        <StarIcon size={14} className="provider-model-star" />
-                      )}
+                      <span className="provider-model-star" aria-hidden={`${providerKey}/${modelKey}` !== defaultModel}>
+                        {`${providerKey}/${modelKey}` === defaultModel ? <StarIcon size={14} /> : null}
+                      </span>
                     </div>
                   );
                 })}

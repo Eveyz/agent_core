@@ -411,6 +411,15 @@ export function lookupCapabilities(modelId: string): ModelCapabilities {
   return found;
 }
 
+/** Resolve vision support: config override wins; else curated registry (unknown → false). */
+export function resolveSupportsImages(
+  modelId: string,
+  overrideFlag?: boolean | null
+): boolean {
+  if (typeof overrideFlag === 'boolean') return overrideFlag;
+  return modelSupportsImages(normalizeModelId(modelId));
+}
+
 export function resolveContextTokens(modelId: string, configured: number): number {
   if (configured !== DEFAULT_CONTEXT_TOKENS) return configured;
   return lookupCapabilities(modelId).context_tokens;

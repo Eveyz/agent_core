@@ -18,6 +18,7 @@ import {
   lookupCapabilities,
   formatContextLabel,
   effectiveContextTokens,
+  resolveSupportsImages,
   type ModelCapabilities,
 } from '../../utils/modelCapabilities';
 
@@ -44,7 +45,11 @@ function buildItems(config: AppConfig): Map<string, ModelItem[]> {
   Object.entries(config.providers).forEach(([providerKey, provider]) => {
     const items: ModelItem[] = [];
     Object.entries(provider.models).forEach(([modelKey, entry]) => {
-      const caps = lookupCapabilities(entry.model_id);
+      const baseCaps = lookupCapabilities(entry.model_id);
+      const caps = {
+        ...baseCaps,
+        supports_images: resolveSupportsImages(entry.model_id, entry.supports_images),
+      };
       const contextTokens = effectiveContextTokens(
         entry.model_id,
         entry.max_context_tokens,

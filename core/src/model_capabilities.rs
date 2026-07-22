@@ -94,6 +94,15 @@ pub fn lookup_capabilities(model_id: &str) -> ModelCapabilities {
     caps
 }
 
+/// Resolve vision support: explicit config override wins; otherwise the
+/// curated registry (`model_supports_images`). Unmatched ids → `false`.
+pub fn resolve_supports_images(model_id: &str, override_flag: Option<bool>) -> bool {
+    if let Some(flag) = override_flag {
+        return flag;
+    }
+    model_supports_images(&normalize_model_id(model_id))
+}
+
 /// Vision / multimodal models that accept image inputs.
 fn model_supports_images(id: &str) -> bool {
     // OpenAI / Anthropic / Google
@@ -966,6 +975,18 @@ mod tests {
         assert!(!lookup_capabilities("nemotron-3-ultra-550b-a55b").supports_images);
         assert!(!lookup_capabilities("nvidia/nemotron-3-super-120b-a12b").supports_images);
         assert!(!lookup_capabilities("nemotron-3-nano-30b-a3b").supports_images);
+    }
+
+    #[test]
+    fn resolve_supports_images_override_and_default() {
+        // Unknown models default to false
+        assert!(!resolve_supports_images("doubao-seed-2.0-pro", None));
+        assert!(!resolve_supports_images("doubao-seed-2.0-code", None));
+        // Explicit override wins
+        assert!(resolve_supports_images("doubao-seed-2.0-pro", Some(true)));
+        assert!(!resolve_supports_images("gpt-4o", Some(false)));
+        // Registry match when unset
+        assert!(resolve_supports_images("gpt-4o", None));
     }
 
     #[test]

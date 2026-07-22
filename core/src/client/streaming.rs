@@ -423,13 +423,22 @@ fn extract_json_string_after_key(s: &str, key: &str) -> Option<String> {
 
 // ── Token accumulator (IPC debouncer) ───────────────────────────────
 
+/// Default flush cadence ≈ one display frame (60fps). Keeps UI updates smooth
+/// while still coalescing per-token IPC fan-out.
+const DEFAULT_MAX_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
+/// Cap burst size so a fast model cannot dump a whole paragraph in one frame.
+const DEFAULT_MAX_CHARS: usize = 64;
+
 /// Time-and-size based accumulator that batches streaming text/thinking
-/// deltas before emitting them, reducing IPC traffic by ~90%.
+/// deltas before emitting them, cutting IPC fan-out vs per-token emits.
 ///
 /// A flush is triggered when:
-/// 1. `max_interval` has elapsed since the last flush (default 50ms ~ 20fps), or
-/// 2. `max_chars` of pending text has accumulated (default 256), or
+/// 1. `max_interval` has elapsed since the last flush (default 16ms ~ 60fps), or
+/// 2. `max_chars` of pending text has accumulated (default 64), or
 /// 3. `force_flush()` is called (e.g. on `StreamEvent::Done`).
+///
+/// Callers should also select on [`Self::pending_flush_delay`] so pending text
+/// is emitted on the interval even when the upstream SSE pauses mid-burst.
 ///
 /// Pending text and thinking are tracked separately so they don't get mixed.
 pub struct TokenAccumulator {
@@ -442,7 +451,7 @@ pub struct TokenAccumulator {
 
 impl TokenAccumulator {
     pub fn new() -> Self {
-        Self::with_params(std::time::Duration::from_millis(50), 256)
+        Self::with_params(DEFAULT_MAX_INTERVAL, DEFAULT_MAX_CHARS)
     }
 
     pub fn with_params(max_interval: std::time::Duration, max_chars: usize) -> Self {
@@ -461,6 +470,23 @@ impl TokenAccumulator {
 
     pub fn push_thinking(&mut self, delta: &str) {
         self.thinking.push_str(delta);
+    }
+
+    pub fn has_pending(&self) -> bool {
+        !self.text.is_empty() || !self.thinking.is_empty()
+    }
+
+    /// Remaining time until the interval flush is due, if anything is pending.
+    /// `Some(0)` means flush immediately (interval already elapsed).
+    pub fn pending_flush_delay(&self) -> Option<std::time::Duration> {
+        if !self.has_pending() {
+            return None;
+        }
+        Some(
+            self.max_interval
+                .checked_sub(self.last_flush.elapsed())
+                .unwrap_or(std::time::Duration::ZERO),
+        )
     }
 
     pub fn should_flush(&self) -> bool {
@@ -568,6 +594,22 @@ mod accumulator_tests {
         let mut acc = TokenAccumulator::with_params(std::time::Duration::from_secs(60), 1000);
         acc.push_text("short");
         assert!(!acc.should_flush());
+    }
+
+    #[test]
+    fn pending_flush_delay_none_when_empty() {
+        let acc = TokenAccumulator::new();
+        assert!(acc.pending_flush_delay().is_none());
+        assert!(!acc.has_pending());
+    }
+
+    #[test]
+    fn pending_flush_delay_tracks_interval() {
+        let mut acc = TokenAccumulator::with_params(std::time::Duration::from_millis(30), 1000);
+        acc.push_text("x");
+        let delay = acc.pending_flush_delay().unwrap();
+        assert!(delay <= std::time::Duration::from_millis(30));
+        assert!(acc.has_pending());
     }
 }
 

@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, memo } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo, memo } from 'react';
 import { useSelector } from 'react-redux';
 import { useTranslation } from 'react-i18next';
 import DOMPurify from 'dompurify';
@@ -34,7 +34,7 @@ import {
   type PendingImage,
   type SendPayload,
 } from './imageAttachments';
-import { lookupCapabilities } from '../../utils/modelCapabilities';
+import { resolveSupportsImages } from '../../utils/modelCapabilities';
 
 import { 
   SiJavascript, SiTypescript, SiReact, SiPython, SiGo, SiCss, SiHtml5, SiRust 
@@ -87,7 +87,18 @@ export const ChatInput = memo(function ChatInput({
   const projects = useSelector((state: RootState) => state.project.projects);
   const activeProject = projects.find((p) => p.id === activeProjectId);
   const steerQueue = useSelector((state: RootState) => state.chat.steerQueue[state.project.activeSessionId ?? '']);
-  const supportsImages = lookupCapabilities(currentModel).supports_images;
+  const config = useSelector((state: RootState) => state.settings.config);
+  const supportsImages = useMemo(() => {
+    const slash = currentModel.indexOf('/');
+    if (slash >= 0 && config) {
+      const provider = config.providers[currentModel.slice(0, slash)];
+      const entry = provider?.models[currentModel.slice(slash + 1)];
+      if (entry) {
+        return resolveSupportsImages(entry.model_id, entry.supports_images);
+      }
+    }
+    return resolveSupportsImages(currentModel);
+  }, [currentModel, config]);
 
   const { input, setInput, clearDraft } = useSessionDraft(activeSessionId);
 

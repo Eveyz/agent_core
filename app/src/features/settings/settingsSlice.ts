@@ -9,6 +9,8 @@ export interface ProviderModelEntry {
   max_context_tokens?: number;
   reasoning_effort?: string;
   thinking_enabled?: boolean;
+  /** Override vision support. Undefined → curated registry (unknown → false). */
+  supports_images?: boolean;
 }
 
 export interface ProviderConfig {
@@ -125,6 +127,8 @@ function normalizeProviderModel(raw: Record<string, unknown>): ProviderModelEntr
     max_context_tokens: (raw.max_context_tokens as number) ?? undefined,
     reasoning_effort: (raw.reasoning_effort as string) ?? undefined,
     thinking_enabled: (raw.thinking_enabled as boolean) ?? false,
+    supports_images:
+      typeof raw.supports_images === 'boolean' ? raw.supports_images : undefined,
   };
 }
 
@@ -241,6 +245,7 @@ export type ModelSettingPatch = {
   reasoning_effort?: string | null;
   max_context_tokens?: number;
   max_tokens?: number;
+  supports_images?: boolean;
 };
 
 /** Patch a provider model entry and persist to config (chat menu / settings). */
@@ -280,6 +285,9 @@ export const updateModelSettings = createAsyncThunk(
         ? { max_context_tokens: patch.max_context_tokens }
         : {}),
       ...(patch.max_tokens !== undefined ? { max_tokens: patch.max_tokens } : {}),
+      ...(patch.supports_images !== undefined
+        ? { supports_images: patch.supports_images }
+        : {}),
     };
 
     const newConfig: AppConfig = {

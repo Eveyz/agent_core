@@ -5,7 +5,6 @@
 //! - Anthropic Messages: `thinking` blocks with `signature` (Phase 2)
 
 use crate::config::ApiMode;
-use crate::model_capabilities::lookup_capabilities;
 use crate::types::{ImageAttachment, Message, ReasoningState, Role, ToolDefinition};
 use base64::Engine;
 use serde_json::{json, Value};
@@ -21,10 +20,19 @@ pub fn build_provider_body(
     max_tokens: Option<u32>,
     thinking_enabled: bool,
     reasoning_effort: Option<&str>,
+    supports_images: bool,
 ) -> Value {
     match api_mode {
         ApiMode::ChatCompletions => {
-            build_chat_completions_body(model_id, messages, tools, stream, temperature, max_tokens)
+            build_chat_completions_body(
+                model_id,
+                messages,
+                tools,
+                stream,
+                temperature,
+                max_tokens,
+                supports_images,
+            )
         }
         ApiMode::Responses => build_responses_body(
             model_id,
@@ -35,6 +43,7 @@ pub fn build_provider_body(
             max_tokens,
             thinking_enabled,
             reasoning_effort,
+            supports_images,
         ),
         ApiMode::AnthropicMessages => build_anthropic_messages_body(
             model_id,
@@ -44,6 +53,7 @@ pub fn build_provider_body(
             temperature,
             max_tokens,
             thinking_enabled,
+            supports_images,
         ),
     }
 }
@@ -80,8 +90,8 @@ fn build_chat_completions_body(
     stream: bool,
     temperature: Option<f64>,
     max_tokens: Option<u32>,
+    supports_images: bool,
 ) -> Value {
-    let supports_images = lookup_capabilities(model_id).supports_images;
     let api_messages = if supports_images && messages.iter().any(message_has_images) {
         Value::Array(
             messages
@@ -251,8 +261,9 @@ fn build_responses_body(
     max_tokens: Option<u32>,
     thinking_enabled: bool,
     reasoning_effort: Option<&str>,
+    supports_images: bool,
 ) -> Value {
-    let include_images = lookup_capabilities(model_id).supports_images;
+    let include_images = supports_images;
     let mut input: Vec<Value> = Vec::new();
     for msg in messages {
         match msg.role {
@@ -387,8 +398,9 @@ fn build_anthropic_messages_body(
     temperature: Option<f64>,
     max_tokens: Option<u32>,
     thinking_enabled: bool,
+    supports_images: bool,
 ) -> Value {
-    let include_images = lookup_capabilities(model_id).supports_images;
+    let include_images = supports_images;
     let mut system_parts: Vec<String> = Vec::new();
     let mut api_messages: Vec<Value> = Vec::new();
 
@@ -562,6 +574,7 @@ mod tests {
             Some(1024),
             true,
             Some("high"),
+            true,
         );
         let input = body["input"].as_array().unwrap();
         let reasoning_item = input
@@ -603,6 +616,7 @@ mod tests {
             Some(1_024),
             true,
             Some("high"),
+            false,
         );
 
         let serialized = serde_json::to_string(&body["input"]).unwrap();
@@ -619,7 +633,16 @@ mod tests {
             ..Default::default()
         });
         let msgs = vec![Message::system("sys"), Message::user("q"), assistant];
-        let body = build_anthropic_messages_body("claude-sonnet-4", &msgs, &[], false, None, Some(2048), true);
+        let body = build_anthropic_messages_body(
+            "claude-sonnet-4",
+            &msgs,
+            &[],
+            false,
+            None,
+            Some(2048),
+            true,
+            true,
+        );
         assert_eq!(body["system"].as_str(), Some("sys"));
         let content = body["messages"][1]["content"].as_array().unwrap();
         assert_eq!(content[0]["type"], "thinking");
@@ -642,7 +665,7 @@ mod tests {
     fn chat_completions_omits_reasoning_field() {
         let mut msg = Message::assistant("<think>r</think>\nhi");
         msg.reasoning = Some(ReasoningState::from_text("r"));
-        let body = build_chat_completions_body("deepseek-chat", &[msg], &[], true, None, None);
+        let body = build_chat_completions_body("deepseek-chat", &[msg], &[], true, None, None, false);
         let ser = serde_json::to_string(&body["messages"][0]).unwrap();
         assert!(!ser.contains("encrypted_content"));
         assert!(ser.contains("<think>"));
@@ -664,6 +687,7 @@ mod tests {
             true,
             None,
             Some(1_024),
+            false,
         );
         let serialized = serde_json::to_string(&body["messages"]).unwrap();
         assert!(serialized.contains("<think>partial reasoning sentinel</think>"));

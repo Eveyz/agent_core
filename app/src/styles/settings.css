@@ -973,7 +973,7 @@ select.settings-input option {
 
 .models-table-header {
   display: grid;
-  grid-template-columns: 1fr 1fr 0.8fr 0.8fr 0.8fr 60px 32px;
+  grid-template-columns: 1fr 1fr 0.7fr 0.7fr 0.7fr 52px 52px 32px;
   gap: 8px;
   padding: 0 4px;
   font-size: 11px;
@@ -983,7 +983,7 @@ select.settings-input option {
 
 .models-table-row {
   display: grid;
-  grid-template-columns: 1fr 1fr 0.8fr 0.8fr 0.8fr 60px 32px;
+  grid-template-columns: 1fr 1fr 0.7fr 0.7fr 0.7fr 52px 52px 32px;
   gap: 8px;
   align-items: center;
   position: relative;
@@ -1054,9 +1054,10 @@ select.settings-input option {
 }
 
 .provider-model-item {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 14px;
   align-items: center;
-  gap: 10px;
+  column-gap: 10px;
   font-size: 12px;
   padding: 4px 8px;
   border-radius: var(--radius-xs);
@@ -1066,12 +1067,15 @@ select.settings-input option {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
 }
 
 .provider-model-item-tags {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 6px;
+  min-width: 0;
 }
 
 .model-tag {
@@ -1095,7 +1099,10 @@ select.settings-input option {
 .provider-model-key {
   font-weight: 500;
   color: var(--text-main);
-  min-width: 100px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .provider-model-id {
@@ -1105,8 +1112,13 @@ select.settings-input option {
 }
 
 .provider-model-star {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
   color: var(--accent);
-  margin-left: auto;
 }
 
 .model-count {

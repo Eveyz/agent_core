@@ -116,12 +116,22 @@ export function ContextUsagePopover() {
     void fetchUsage();
   }, [fetchUsage]);
 
+  // Track prior processing so we can force a final refresh when a run ends
+  // (interval alone can miss the post-completion snapshot by up to ~4s, and
+  // relying only on runId→null is easy to miss if that signal is delayed).
+  const wasProcessingRef = useRef(false);
   useEffect(() => {
-    if (!isProcessing) return;
-    const id = setInterval(() => {
+    if (isProcessing) {
+      wasProcessingRef.current = true;
+      const id = setInterval(() => {
+        void fetchUsage();
+      }, 4000);
+      return () => clearInterval(id);
+    }
+    if (wasProcessingRef.current) {
+      wasProcessingRef.current = false;
       void fetchUsage();
-    }, 4000);
-    return () => clearInterval(id);
+    }
   }, [isProcessing, fetchUsage]);
 
   useEffect(() => {

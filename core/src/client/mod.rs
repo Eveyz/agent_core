@@ -120,6 +120,7 @@ impl OpenAIClient {
             max_tokens,
             self.model.thinking_enabled,
             self.model.reasoning_effort.as_deref(),
+            self.model.supports_images(),
         );
 
         // NVIDIA's API gateway wraps DeepSeek models behind a chat_template_kwargs

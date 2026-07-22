@@ -49,6 +49,10 @@ pub struct ProviderModelEntry {
     pub reasoning_effort: Option<String>,
     #[serde(default)]
     pub thinking_enabled: bool,
+    /// Override vision / multimodal support.
+    /// `None` → use curated registry match (unknown models default to false).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_images: Option<bool>,
     /// Override API wire format. When unset, inferred from base_url / model_id.
     #[serde(default)]
     pub api_mode: Option<ApiMode>,
@@ -100,6 +104,10 @@ pub struct ModelConfig {
     pub reasoning_effort: Option<String>,
     #[serde(default)]
     pub thinking_enabled: bool,
+    /// Override vision / multimodal support.
+    /// `None` → use curated registry match (unknown models default to false).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_images: Option<bool>,
     /// Wire-format mode. `None` → inferred from base_url / model_id at use time.
     #[serde(default)]
     pub api_mode: Option<ApiMode>,
@@ -138,12 +146,23 @@ impl Default for ModelConfig {
             fallback_model: None,
             reasoning_effort: None,
             thinking_enabled: false,
+            supports_images: None,
             api_mode: None,
         }
     }
 }
 
 impl ModelConfig {
+    /// Whether this model accepts image inputs.
+    /// Uses the config override when set; otherwise the curated registry
+    /// (unknown / unmatched model ids default to `false`).
+    pub fn supports_images(&self) -> bool {
+        crate::model_capabilities::resolve_supports_images(
+            &self.model_id,
+            self.supports_images,
+        )
+    }
+
     /// Resolved API mode (explicit config or inferred).
     pub fn resolved_api_mode(&self) -> ApiMode {
         self.api_mode
@@ -413,6 +432,7 @@ impl Config {
                 max_context_tokens: None,
                 reasoning_effort: None,
                 thinking_enabled: false,
+                supports_images: None,
                 api_mode: None,
             },
         );
@@ -450,6 +470,7 @@ impl Config {
             fallback_model: None,
             reasoning_effort: None,
             thinking_enabled: false,
+            supports_images: None,
             api_mode: None,
         };
         model_config.auto_detect_max_context_tokens();
@@ -519,6 +540,7 @@ impl Config {
                     fallback_model: None,
                     reasoning_effort: entry.reasoning_effort.clone(),
                     thinking_enabled: entry.thinking_enabled,
+                    supports_images: entry.supports_images,
                     api_mode: entry.api_mode,
                 };
                 model_config.auto_detect_max_context_tokens();
@@ -570,6 +592,7 @@ impl Config {
                     max_context_tokens: Some(model.max_context_tokens),
                     reasoning_effort: model.reasoning_effort.clone(),
                     thinking_enabled: model.thinking_enabled,
+                    supports_images: model.supports_images,
                     api_mode: model.api_mode,
                 },
             );
@@ -619,6 +642,7 @@ impl Config {
                 max_context_tokens: Some(model.max_context_tokens),
                 reasoning_effort: model.reasoning_effort.clone(),
                 thinking_enabled: model.thinking_enabled,
+                supports_images: model.supports_images,
                 api_mode: model.api_mode,
             },
         );
@@ -677,6 +701,7 @@ pub fn default_scaffold_config() -> Config {
             max_context_tokens: None,
             reasoning_effort: None,
             thinking_enabled: false,
+            supports_images: None,
             api_mode: None,
         },
     );
