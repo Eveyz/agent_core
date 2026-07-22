@@ -14,6 +14,7 @@ pub struct OneshotArgs {
     pub permission: Option<String>,
     pub workdir: Option<String>,
     pub config: Option<String>,
+    pub dry_run: bool,
 }
 
 /// Run a single instruction and return a process exit code.
@@ -29,13 +30,19 @@ pub async fn run_oneshot(args: OneshotArgs) -> anyhow::Result<ExitCode> {
         permission: Some(permission),
         tool_mode: ToolExecutionMode::Parallel,
         enable_hooks: false,
+        dry_run: args.dry_run,
     })
     .await?;
 
     eprintln!(
-        "One-shot: model={} permission={}",
+        "One-shot: model={} permission={}{}",
         state.run_manager.brain().current_model_name(),
-        permission
+        permission,
+        if args.dry_run {
+            " dry_run=true (tools vetoed)"
+        } else {
+            ""
+        }
     );
 
     let workdir = args.workdir.clone();

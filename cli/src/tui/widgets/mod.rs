@@ -1,6 +1,10 @@
+pub mod approval;
 pub mod blocks;
 pub mod diff;
 pub mod dropdown;
+pub mod help;
 pub mod input_bar;
 pub mod modal;
+pub mod pager;
+pub mod session_list;
 pub mod status;

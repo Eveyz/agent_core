@@ -139,7 +139,7 @@ pub fn response_block_lines(text: &str, width: usize, pad: &str) -> Vec<Line<'st
     }
 }
 
-const TOOL_TITLE_HEIGHT: usize = 3;
+const TOOL_TITLE_HEIGHT: usize = 1;
 
 /// Build the args summary string for the tool title.
 fn tool_args_summary(args: &str) -> String {
@@ -147,11 +147,8 @@ fn tool_args_summary(args: &str) -> String {
         return String::new();
     }
     let first = args.lines().next().unwrap_or("").trim();
-    let stripped = first
-        .strip_prefix("{")
-        .unwrap_or(first)
-        .strip_suffix("}")
-        .unwrap_or(first);
+    let stripped = first.strip_prefix("{").unwrap_or(first);
+    let stripped = stripped.strip_suffix("}").unwrap_or(stripped);
     format!("  {}", stripped.trim())
 }
 
@@ -380,6 +377,7 @@ pub fn entry_to_blocks(entry: &Entry, blocks: &mut Vec<CachedBlock>, width: usiz
                 kind: crate::tui::state::BlockKind::System(text.clone()),
                 wrapped_height: height,
                 subagent_id: None,
+                block_id: None,
                 lines,
             });
         }
@@ -390,6 +388,7 @@ pub fn entry_to_blocks(entry: &Entry, blocks: &mut Vec<CachedBlock>, width: usiz
                 kind: crate::tui::state::BlockKind::User(text.clone()),
                 wrapped_height: height,
                 subagent_id: None,
+                block_id: None,
                 lines,
             });
         }
@@ -417,13 +416,29 @@ pub fn turn_block_to_blocks(
     let inner_width = width.saturating_sub(pad.width());
 
     match block {
-        TurnBlock::Thought(text) => {
-            let lines = thought_block_lines(text, width, &pad);
+        TurnBlock::Thought { text, expanded, id } => {
+            let show = if *expanded {
+                text.as_str()
+            } else {
+                // collapsed one-liner
+                text
+            };
+            let lines = if *expanded {
+                thought_block_lines(text, width, &pad)
+            } else {
+                let preview: String = text.chars().take(80).collect();
+                vec![ratatui::text::Line::from(format!("{pad}💭 Thought (collapsed): {preview}…  [t]"))]
+            };
             let height = compute_block_height(&lines, width as u16);
             blocks.push(CachedBlock {
-                kind: crate::tui::state::BlockKind::Thought(text.clone()),
+                kind: crate::tui::state::BlockKind::Thought {
+                    id: *id,
+                    text: text.clone(),
+                    expanded: *expanded,
+                },
                 wrapped_height: height,
                 subagent_id: None,
+                block_id: Some(*id),
                 lines,
             });
         }
@@ -434,22 +449,34 @@ pub fn turn_block_to_blocks(
                 kind: crate::tui::state::BlockKind::Response(text.clone()),
                 wrapped_height: height,
                 subagent_id: None,
+                block_id: None,
                 lines,
             });
         }
         TurnBlock::Tool {
-            name, args, result, ..
+            id, name, args, result, expanded,
         } => {
-            let lines = tool_block_lines(name, args, result, inner_width, &pad);
+            let lines = if *expanded {
+                tool_block_lines(name, args, result, inner_width, &pad)
+            } else {
+                // collapsed: keep title-only content stub (title rendered by ToolBlock)
+                tool_block_lines(name, args, &None, inner_width, &pad)
+                    .into_iter()
+                    .take(3)
+                    .collect()
+            };
             let content_height = compute_block_height(&lines, width as u16);
             blocks.push(CachedBlock {
                 kind: crate::tui::state::BlockKind::Tool {
+                    id: *id,
                     name: name.clone(),
                     args: args.clone(),
                     result: result.clone(),
+                    expanded: *expanded,
                 },
                 wrapped_height: content_height + TOOL_TITLE_HEIGHT,
                 subagent_id: None,
+                block_id: Some(*id),
                 lines,
             });
         }
@@ -460,6 +487,7 @@ pub fn turn_block_to_blocks(
                 kind: crate::tui::state::BlockKind::Subagent(sa.clone()),
                 wrapped_height: height,
                 subagent_id: Some(sa.id.clone()),
+                block_id: None,
                 lines,
             });
         }
@@ -470,6 +498,7 @@ pub fn turn_block_to_blocks(
                 kind: crate::tui::state::BlockKind::Error(e.clone()),
                 wrapped_height: height,
                 subagent_id: None,
+                block_id: None,
                 lines,
             });
         }
@@ -480,6 +509,7 @@ pub fn turn_block_to_blocks(
                 kind: crate::tui::state::BlockKind::Notice(msg.clone()),
                 wrapped_height: height,
                 subagent_id: None,
+                block_id: None,
                 lines,
             });
         }
@@ -521,6 +551,7 @@ pub fn subagent_detail_blocks(
         kind: crate::tui::state::BlockKind::System(String::new()),
         wrapped_height: header_height,
         subagent_id: None,
+                block_id: None,
         lines: header_lines,
     });
 
@@ -574,6 +605,7 @@ pub fn subagent_detail_blocks(
             kind: crate::tui::state::BlockKind::Notice(String::new()),
             wrapped_height: status_height,
             subagent_id: None,
+                block_id: None,
             lines: status_lines,
         });
     } else {
@@ -586,6 +618,7 @@ pub fn subagent_detail_blocks(
             kind: crate::tui::state::BlockKind::Error(String::new()),
             wrapped_height: err_height,
             subagent_id: None,
+                block_id: None,
             lines: err_lines,
         });
     }
@@ -594,6 +627,26 @@ pub fn subagent_detail_blocks(
 }
 
 // ── Widgets ─────────────────────────────────────────────────────────
+
+pub struct SeparatorBlock<'a> {
+    label: &'a str,
+}
+
+impl<'a> SeparatorBlock<'a> {
+    pub fn new(label: &'a str) -> Self {
+        Self { label }
+    }
+}
+
+impl<'a> Widget for SeparatorBlock<'a> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let line = Line::from(Span::styled(
+            format!("── {} ──", self.label),
+            Style::default().fg(Color::DarkGray),
+        ));
+        Paragraph::new(line).render(area, buf);
+    }
+}
 
 pub struct SystemBlock<'a> {
     lines: &'a [Line<'static>],
@@ -657,19 +710,26 @@ impl<'a> Widget for UserBlock<'a> {
 pub struct ThoughtBlock<'a> {
     lines: &'a [Line<'static>],
     skip: u16,
+    expanded: bool,
+    focused: bool,
 }
 
 impl<'a> ThoughtBlock<'a> {
-    pub fn new(lines: &'a [Line<'static>], skip: usize) -> Self {
+    pub fn new(lines: &'a [Line<'static>], skip: usize, expanded: bool, focused: bool) -> Self {
         Self {
             lines,
             skip: skip as u16,
+            expanded,
+            focused,
         }
     }
 }
 
 impl<'a> Widget for ThoughtBlock<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        if self.focused {
+            buf.set_style(area, Style::default().bg(Color::Rgb(30, 34, 50)));
+        }
         Paragraph::new(Text::from(self.lines.to_vec()))
             .wrap(Wrap { trim: false })
             .scroll((self.skip, 0))
@@ -717,6 +777,8 @@ impl<'a> ToolBlock<'a> {
         result: &'a Option<ToolResult>,
         frame_count: u64,
         skip: usize,
+        _expanded: bool,
+        _focused: bool,
     ) -> Self {
         Self {
             lines,
@@ -778,9 +840,7 @@ impl<'a> Widget for ToolBlock<'a> {
         // Content background
         buf.set_style(content_area, Style::default().bg(CODE_BG));
 
-        // Render dynamic title independently (3 lines with vertical padding)
         let title_lines = vec![
-            Line::raw(""),
             Line::from(vec![
                 Span::raw("  "),
                 Span::styled(
@@ -795,7 +855,6 @@ impl<'a> Widget for ToolBlock<'a> {
                 Span::raw("  "),
                 Span::styled(truncated_args, Style::default().fg(Color::Rgb(75, 82, 99))),
             ]),
-            Line::raw(""),
         ];
         Paragraph::new(Text::from(title_lines))
             .wrap(Wrap { trim: false })

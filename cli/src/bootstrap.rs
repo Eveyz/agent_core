@@ -2,7 +2,7 @@
 
 use crate::state::CliState;
 use agent_core::{
-    load_or_init_default, tasks, tools, Brain, McpClientManager, PermissionMode, RunManager,
+    load_or_init_default, tasks, Brain, McpClientManager, PermissionMode, RunManager,
     SessionManager, TaskBoard, TodoList, ToolExecutionMode,
 };
 use parking_lot::Mutex;
@@ -20,6 +20,8 @@ pub struct BootstrapOptions {
     pub tool_mode: ToolExecutionMode,
     /// Register the logging hook.
     pub enable_hooks: bool,
+    /// Register DryRunHook — LLM runs, tools are vetoed.
+    pub dry_run: bool,
 }
 
 impl Default for BootstrapOptions {
@@ -30,6 +32,7 @@ impl Default for BootstrapOptions {
             permission: None,
             tool_mode: ToolExecutionMode::Parallel,
             enable_hooks: false,
+            dry_run: false,
         }
     }
 }
@@ -51,9 +54,14 @@ pub async fn bootstrap_runtime(opts: BootstrapOptions) -> anyhow::Result<CliStat
         brain.switch_model(model)?;
     }
 
-    if opts.enable_hooks {
+    if opts.dry_run || opts.enable_hooks {
         let mut hooks = brain.hook_registry.lock();
-        hooks.register(Box::new(agent_core::hooks::LoggingHook));
+        if opts.dry_run {
+            hooks.register(Box::new(crate::dry_run::DryRunHook));
+        }
+        if opts.enable_hooks {
+            hooks.register(Box::new(agent_core::hooks::LoggingHook));
+        }
     }
 
     let skill_manager = brain
@@ -141,6 +149,16 @@ pub fn parse_permission_mode(s: &str) -> anyhow::Result<PermissionMode> {
         "yolo" => Ok(PermissionMode::Yolo),
         other => anyhow::bail!(
             "invalid permission mode '{other}'. Use: paranoid|standard|developer|permissive|yolo"
+        ),
+    }
+}
+
+pub fn parse_tool_mode(s: &str) -> anyhow::Result<ToolExecutionMode> {
+    match s.to_lowercase().as_str() {
+        "parallel" | "par" => Ok(ToolExecutionMode::Parallel),
+        "sequential" | "seq" => Ok(ToolExecutionMode::Sequential),
+        other => anyhow::bail!(
+            "invalid tool mode '{other}'. Use: parallel|sequential"
         ),
     }
 }

@@ -1,18 +1,24 @@
 #![allow(deprecated)]
 mod bootstrap;
-mod cli_completer;
+mod commands;
+mod completion;
+mod config_cmd;
+mod dry_run;
 mod oneshot;
 mod state;
+mod tui;
 
 use agent_core::{
     ApprovalChoice, Message, MessageDelta, PermissionMode, Role, RunCommand, RunEvent,
-    SkillManager, SkillManifest, TaskBoard, TaskStatus, TodoItem, TodoList, TodoStatus,
     ToolExecutionMode,
 };
-use bootstrap::{bootstrap_runtime, parse_permission_mode, resolve_config_path, BootstrapOptions};
+use bootstrap::{
+    bootstrap_runtime, parse_permission_mode, parse_tool_mode, resolve_config_path, BootstrapOptions,
+};
 use oneshot::{run_oneshot, OneshotArgs};
 use state::CliState;
 
+use anyhow::Context;
 use argh::FromArgs;
 use rustyline::completion::Completer;
 use rustyline::error::ReadlineError;
@@ -20,82 +26,18 @@ use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
 use rustyline::validate::Validator;
 use rustyline::{CompletionType, Config, EditMode, Editor, Helper};
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::process::ExitCode;
-use parking_lot::Mutex;
-use std::sync::Arc;
+
+/// Hard cap for piped stdin to avoid OOM on accidental huge redirects.
+const STDIN_MAX_BYTES: usize = 1024 * 1024;
 
 // ── Tab completion ────────────────────────────────────────────────
 
-/// All slash-commands recognized by the CLI. Used for tab-completion and /help.
-const ALL_COMMANDS: &[&str] = &[
-    // General
-    "/help",
-    "/status",
-    "/quit",
-    "/exit",
-    // Model & Context
-    "/models",
-    "/model",
-    "/temp",
-    "/max-tokens",
-    "/tokens",
-    "/context",
-    "/clear",
-    "/new",
-    "/rewind",
-    // Agent Control
-    "/abort",
-    "/state",
-    "/tool-mode",
-    "/steer",
-    "/follow-up",
-    "/clear-queues",
-    // Memory
-    "/memory",
-    "/memory search",
-    "/memory stats",
-    "/memory pending clear",
-    "/memory pending promote",
-    "/memory maintain",
-    // Permission & Hooks
-    "/permission",
-    "/perm",
-    "/perm test",
-    "/perm mode",
-    "/hooks",
-    // MCP
-    "/mcp",
-    // Planning
-    "/todo",
-    "/todo add",
-    "/todo start",
-    "/todo done",
-    "/todo clear",
-    // Task Board
-    "/tasks",
-    "/tasks add",
-    "/tasks start",
-    "/tasks done",
-    "/tasks clear",
-    // Sessions
-    "/sessions",
-    "/session",
-    "/session save",
-    "/session resume",
-    "/session delete",
-    "/session rename",
-    "/session archive",
-    "/session search",
-    // Skills
-    "/skills",
-    "/skill",
-    "/skill active",
-    "/skill deactivate",
-    "/skill reload",
-];
+/// Slash completion uses `commands::ALL_COMMANDS` (single source of truth).
 
 struct CommandCompleter;
+
 
 impl Highlighter for CommandCompleter {}
 impl Hinter for CommandCompleter {
@@ -119,9 +61,10 @@ impl Completer for CommandCompleter {
             return Ok((0, vec![]));
         }
 
-        let mut matches: Vec<String> = ALL_COMMANDS
+        let mut matches: Vec<String> = commands::ALL_COMMANDS
             .iter()
-            .filter(|cmd| cmd.starts_with(prefix) && **cmd != prefix)
+            .map(|(cmd, _)| *cmd)
+            .filter(|cmd| cmd.starts_with(prefix) && *cmd != prefix)
             .map(|s| s.to_string())
             .collect();
         matches.sort();
@@ -199,14 +142,144 @@ struct Args {
     #[argh(option)]
     config: Option<String>,
 
+    /// enable logging hooks in REPL (default: off unless --interactive-setup)
+    #[argh(switch)]
+    hooks: bool,
+
+    /// tool execution mode for REPL: parallel|sequential (default: parallel)
+    #[argh(option)]
+    tool_mode: Option<String>,
+
+    /// ask permission/hooks/tool-mode interactively at REPL startup
+    #[argh(switch)]
+    interactive_setup: bool,
+
+    /// oneshot: call LLM but veto all tool side effects
+    #[argh(switch)]
+    dry_run: bool,
+
+    /// print version information and exit
+    #[argh(switch, short = 'V')]
+    version: bool,
+
     #[argh(subcommand)]
     nested: Option<SubCommand>,
+}
+
+/// Read piped stdin with a byte cap. Returns `None` when content is empty/whitespace-only.
+fn read_piped_stdin() -> anyhow::Result<Option<String>> {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 8192];
+    let mut stdin = io::stdin().lock();
+    loop {
+        let n = stdin
+            .read(&mut chunk)
+            .context("failed to read stdin")?;
+        if n == 0 {
+            break;
+        }
+        if buf.len().saturating_add(n) > STDIN_MAX_BYTES {
+            anyhow::bail!("stdin exceeds {STDIN_MAX_BYTES} byte limit");
+        }
+        buf.extend_from_slice(&chunk[..n]);
+    }
+    if buf.is_empty() {
+        return Ok(None);
+    }
+    let content = String::from_utf8(buf).context("stdin is not valid UTF-8")?;
+    if content.trim().is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(content))
+    }
+}
+
+/// Merge `-p` with optional piped stdin. `None` means enter REPL.
+fn resolve_instruction(flag: Option<String>) -> anyhow::Result<Option<String>> {
+    let stdin_is_tty = io::stdin().is_terminal();
+    let piped = if stdin_is_tty {
+        None
+    } else {
+        read_piped_stdin()?
+    };
+    merge_instruction(flag, piped, stdin_is_tty)
+}
+
+/// Pure merge used by [`resolve_instruction`] (and tests).
+fn merge_instruction(
+    flag: Option<String>,
+    piped: Option<String>,
+    stdin_is_tty: bool,
+) -> anyhow::Result<Option<String>> {
+    match (flag, piped, stdin_is_tty) {
+        (Some(prompt), Some(stdin), _) => {
+            let mut instruction = prompt;
+            if !instruction.is_empty() {
+                instruction.push_str("\n\n");
+            }
+            instruction.push_str(&stdin);
+            Ok(Some(instruction))
+        }
+        (Some(prompt), None, _) => Ok(Some(prompt)),
+        (None, Some(stdin), _) => Ok(Some(stdin)),
+        (None, None, false) => anyhow::bail!(
+            "stdin is not a terminal and no instruction provided; pass -p or pipe content"
+        ),
+        (None, None, true) => Ok(None),
+    }
 }
 
 #[derive(FromArgs, Debug)]
 #[argh(subcommand)]
 enum SubCommand {
     Eval(EvalCommand),
+    Config(ConfigCommand),
+    Completion(CompletionCommand),
+}
+
+#[derive(FromArgs, Debug)]
+#[argh(subcommand, name = "config")]
+/// Show or validate configuration
+struct ConfigCommand {
+    #[argh(subcommand)]
+    nested: ConfigSubCommand,
+}
+
+#[derive(FromArgs, Debug)]
+#[argh(subcommand)]
+enum ConfigSubCommand {
+    Show(ConfigShowCommand),
+    Validate(ConfigValidateCommand),
+}
+
+#[derive(FromArgs, Debug)]
+#[argh(subcommand, name = "show")]
+/// Print effective config with secrets redacted
+struct ConfigShowCommand {
+    /// path to config.toml (default: ~/.agverse/config.toml)
+    #[argh(option)]
+    config: Option<String>,
+}
+
+#[derive(FromArgs, Debug)]
+#[argh(subcommand, name = "validate")]
+/// Validate config TOML locally; use --probe to check provider connectivity
+struct ConfigValidateCommand {
+    /// path to config.toml (default: ~/.agverse/config.toml)
+    #[argh(option)]
+    config: Option<String>,
+    /// probe default provider with a tiny request (network)
+    #[argh(switch)]
+    probe: bool,
+}
+
+#[derive(FromArgs, Debug)]
+#[argh(subcommand, name = "completion")]
+/// Generate shell completion scripts
+struct CompletionCommand {
+    /// shell: bash | zsh | fish
+    #[argh(positional)]
+    shell: String,
 }
 
 #[derive(FromArgs, Debug)]
@@ -277,9 +350,36 @@ struct EvalRunCommand {
 }
 
 
-async fn run_tui_mode() -> anyhow::Result<()> {
-    eprintln!("TUI mode not yet ported to CliState. Use CLI mode instead.");
-    std::process::exit(1);
+async fn run_tui_mode(args: &Args) -> anyhow::Result<()> {
+    let permission = match args.permission.as_deref() {
+        Some(s) => Some(parse_permission_mode(s)?),
+        None => Some(agent_core::PermissionMode::Developer),
+    };
+    let tool_mode = match args.tool_mode.as_deref() {
+        Some(s) => parse_tool_mode(s)?,
+        None => agent_core::ToolExecutionMode::Parallel,
+    };
+    let state = bootstrap_runtime(BootstrapOptions {
+        config_path: resolve_config_path(args.config.as_deref()),
+        model: args.model.clone(),
+        permission,
+        tool_mode,
+        enable_hooks: args.hooks,
+        dry_run: args.dry_run,
+    })
+    .await?;
+    let state = std::sync::Arc::new(tokio::sync::Mutex::new(state));
+    tui::run_tui(state).await
+}
+
+fn print_version() {
+    let version = env!("CARGO_PKG_VERSION");
+    let commit = option_env!("GIT_COMMIT_HASH").unwrap_or("unknown");
+    let date = option_env!("GIT_COMMIT_DATE").unwrap_or("unknown");
+    let profile = option_env!("BUILD_PROFILE").unwrap_or("unknown");
+    println!("ageverse {version}");
+    println!("commit: {commit} ({date})");
+    println!("build: {profile}");
 }
 
 async fn run_eval_command(cmd: EvalCommand) -> anyhow::Result<()> {
@@ -473,58 +573,110 @@ async fn run_main() -> anyhow::Result<ExitCode> {
 
     let args: Args = argh::from_env();
 
-    if let Some(SubCommand::Eval(eval)) = args.nested {
-        run_eval_command(eval).await?;
+    if args.version {
+        print_version();
         return Ok(ExitCode::SUCCESS);
+    }
+
+    match args.nested {
+        Some(SubCommand::Eval(eval)) => {
+            run_eval_command(eval).await?;
+            return Ok(ExitCode::SUCCESS);
+        }
+        Some(SubCommand::Config(cmd)) => {
+            return match cmd.nested {
+                ConfigSubCommand::Show(show) => {
+                    config_cmd::run_config_show(config_cmd::ConfigShowArgs {
+                        config: show.config,
+                    })
+                    .await
+                }
+                ConfigSubCommand::Validate(validate) => {
+                    config_cmd::run_config_validate(config_cmd::ConfigValidateArgs {
+                        config: validate.config,
+                        probe: validate.probe,
+                    })
+                    .await
+                }
+            };
+        }
+        Some(SubCommand::Completion(cmd)) => {
+            let script = completion::generate(&cmd.shell)?;
+            print!("{script}");
+            return Ok(ExitCode::SUCCESS);
+        }
+        None => {}
     }
 
     if args.tui {
-        run_tui_mode().await?;
+        run_tui_mode(&args).await?;
         return Ok(ExitCode::SUCCESS);
     }
 
-    // ── One-shot mode (Harbor / CI) ─────────────────────────────────
-    if let Some(instruction) = args.instruction {
+    // ── One-shot mode (-p and/or piped stdin) ───────────────────────
+    if let Some(instruction) = resolve_instruction(args.instruction)? {
         return run_oneshot(OneshotArgs {
             instruction,
             model: args.model,
             permission: args.permission,
             workdir: args.workdir,
             config: args.config,
+            dry_run: args.dry_run,
         })
         .await;
+    }
+
+    if args.dry_run {
+        anyhow::bail!("--dry-run requires oneshot mode (-p or piped stdin)");
     }
 
     // ── Interactive REPL ────────────────────────────────────────────
     let use_styles = std::io::stdout().is_terminal();
     println!("=== Ageverse CLI ===\n");
 
-    print!("Enable permission system? (Y/n): ");
-    io::stdout().flush()?;
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    let enable_permission = input.trim().to_lowercase() != "n";
+    let (permission, enable_hooks, tool_mode, enable_permission) =
+        if args.interactive_setup {
+            print!("Enable permission system? (Y/n): ");
+            io::stdout().flush()?;
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            let enable_permission = input.trim().to_lowercase() != "n";
 
-    print!("Enable hook system? (Y/n): ");
-    io::stdout().flush()?;
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    let enable_hooks = input.trim().to_lowercase() != "n";
+            print!("Enable hook system? (Y/n): ");
+            io::stdout().flush()?;
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            let enable_hooks = input.trim().to_lowercase() != "n";
 
-    print!("Tool execution mode (parallel/sequential) [parallel]: ");
-    io::stdout().flush()?;
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    let tool_mode = match input.trim().to_lowercase().as_str() {
-        "sequential" | "seq" => ToolExecutionMode::Sequential,
-        _ => ToolExecutionMode::Parallel,
-    };
+            print!("Tool execution mode (parallel/sequential) [parallel]: ");
+            io::stdout().flush()?;
+            let mut input = String::new();
+            io::stdin().read_line(&mut input)?;
+            let tool_mode = match input.trim().to_lowercase().as_str() {
+                "sequential" | "seq" => ToolExecutionMode::Sequential,
+                _ => ToolExecutionMode::Parallel,
+            };
 
-    let permission = if enable_permission {
-        None
-    } else {
-        Some(PermissionMode::Yolo)
-    };
+            let permission = if enable_permission {
+                None
+            } else {
+                Some(PermissionMode::Yolo)
+            };
+            (permission, enable_hooks, tool_mode, enable_permission)
+        } else {
+            let permission = match args.permission.as_deref() {
+                Some(s) => Some(parse_permission_mode(s)?),
+                None => None,
+            };
+            let tool_mode = match args.tool_mode.as_deref() {
+                Some(s) => parse_tool_mode(s)?,
+                None => ToolExecutionMode::Parallel,
+            };
+            // Permission "enabled" when we did not force Yolo via --permission yolo
+            // (config mode still applies when permission is None).
+            let enable_permission = !matches!(permission, Some(PermissionMode::Yolo));
+            (permission, args.hooks, tool_mode, enable_permission)
+        };
 
     let mut state = bootstrap_runtime(BootstrapOptions {
         config_path: resolve_config_path(args.config.as_deref()),
@@ -532,12 +684,10 @@ async fn run_main() -> anyhow::Result<ExitCode> {
         permission,
         tool_mode,
         enable_hooks,
+        dry_run: false,
     })
     .await?;
 
-    let todo_list = state.todo_list.clone();
-    let task_board = state.task_board.clone();
-    let skill_manager = state.skill_manager.clone();
     let mcp_mgr = state.mcp_mgr.clone();
     let session_mgr = state.session_mgr.clone();
 
@@ -571,7 +721,8 @@ async fn run_main() -> anyhow::Result<ExitCode> {
         .build();
     let mut rl = Editor::with_config(config).expect("Failed to create line editor");
     rl.set_helper(Some(CommandCompleter));
-    let _ = rl.load_history(&agent_core::paths::get_cli_history_dir());
+    let history_path = agent_core::paths::get_cli_history_dir();
+    let _ = rl.load_history(&history_path);
 
     loop {
         let input = match rl.readline("> ") {
@@ -597,791 +748,56 @@ async fn run_main() -> anyhow::Result<ExitCode> {
             continue;
         }
 
-        match input.as_str() {
-            "/quit" | "/exit" => {
-                let all_messages = state.context_history.clone();
-                let messages: Vec<Message> = all_messages
-                    .into_iter()
-                    .filter(|m| m.role != Role::System)
-                    .collect();
-                if !messages.is_empty() {
-                    let cwd = std::env::current_dir()
-                        .ok()
-                        .and_then(|p| p.to_str().map(|s| s.to_string()))
-                        .unwrap_or_default();
-                    let model = state.brain.current_model_name().to_string();
-                    let mgr = &*session_mgr;
-                    let current_id = state.session_id.clone();
-                    if let Ok(id) = mgr.save(current_id.as_deref(), &messages, &cwd, &model) {
-                        println!("Session auto-saved: {}", &id[..8]);
-                    }
-                }
-
-                {
-                    let mut mgr = mcp_mgr.lock().await;
-                    if let Err(e) = mgr.shutdown_all().await {
-                        eprintln!("MCP shutdown warning: {e}");
-                    }
-                }
-
-                if let Err(e) = rl.save_history(&agent_core::paths::get_cli_history_dir()) {
-                    eprintln!("History save warning: {e}");
-                }
-
-                println!("Bye!");
+        if input.starts_with('/') {
+            let outcome = commands::dispatch_async(
+                &mut state,
+                &input,
+                enable_permission,
+                enable_hooks,
+            )
+            .await;
+            if apply_repl_outcome(&state, outcome, enable_permission, enable_hooks) {
                 break;
             }
-            "/help" => {
-                print_help();
-            }
-            "/models" => {
-                let current = state.brain.current_model_name();
-                println!("  * {current} (current)");
-            }
-            "/clear" => {
-                state.context_history.clear();
-                state.session_id = None;
-                println!("Context cleared. New session started.");
-            }
-            "/new" => {
-                state.context_history.clear();
-                state.session_id = None;
-                println!("Fresh session started. Previous context cleared.");
-            }
-            cmd if cmd.starts_with("/rewind") => {
-                let rest = cmd.strip_prefix("/rewind").unwrap_or("").trim();
-                if rest.is_empty() {
-                    let msgs = state.context_history.clone();
-                    let user_indices: Vec<(usize, &str)> = msgs
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, m)| m.role == Role::User)
-                        .map(|(i, m)| (i, m.content.as_deref().unwrap_or("")))
-                        .collect();
-                    if user_indices.is_empty() {
-                        println!("No conversation history to rewind.");
-                    } else {
-                        println!("=== Rewind points (user messages) ===");
-                        for (idx, content) in &user_indices {
-                            let preview = truncate(content, 60);
-                            println!("  [{idx}] {preview}");
-                        }
-                        println!("\nUse /rewind <index> to go back to that point.");
-                    }
-                } else {
-                    match rest.parse::<usize>() {
-                        Ok(idx) => {
-                            let total = state.context_history.len();
-                            state.context_history.truncate(idx);
-                            let removed = total.saturating_sub(state.context_history.len());
-                            if removed > 0 {
-                                println!(
-                                    "Rewound: kept first {idx} messages, removed {removed} (was {total} total)."
-                                );
-                            } else {
-                                println!(
-                                    "No messages removed (index {idx} >= {total} total messages)."
-                                );
-                            }
-                        }
-                        Err(_) => eprintln!(
-                            "Invalid index '{}'. Use /rewind to see available points.",
-                            rest
-                        ),
-                    }
-                }
-            }
-            "/tokens" => {
-                println!("Current tokens: {}", state.context_history.len() as u32 * 4);
-            }
-            "/permission" | "/perm" => {
-                println!("=== Permission Policy ===");
-                println!(
-                    "Permission system: {}",
-                    if enable_permission {
-                        "active"
-                    } else {
-                        "disabled"
-                    }
-                );
-                println!("Rules are checked before each tool execution.");
-                println!("Use /perm test <tool> <input> to check a specific call.");
-            }
-            "/hooks" => {
-                println!("=== Hook Registry ===");
-                println!(
-                    "Hook system: {}",
-                    if enable_hooks { "active" } else { "disabled" }
-                );
-                println!("Hooks fire on: PreToolUse, PostToolUse, SessionStart, SessionEnd");
-            }
-            "/mcp" => {
-                let mgr = mcp_mgr.lock().await;
-                let servers = mgr.connected_servers();
-                if servers.is_empty() {
-                    println!(
-                        "No MCP servers connected. Configure in [mcp.servers] in config.toml."
-                    );
-                } else {
-                    println!("=== MCP Servers ({}) ===", servers.len());
-                    for s in &servers {
-                        println!("  • {} ({})", s, "connected");
-                    }
-                    let tools = mgr.all_tools();
-                    if tools.is_empty() {
-                        println!("\nNo tools discovered.");
-                    } else {
-                        println!("\n=== MCP Tools ({}) ===", tools.len());
-                        for t in &tools {
-                            println!("  • mcp__{}__{} — {}", t.server, t.name, t.description);
-                        }
-                    }
-                }
-            }
-            "/todo" => {
-                let list = todo_list.lock();
-                if list.items.is_empty() {
-                    println!("Todo list is empty. Use /todo add <id> <description>");
-                } else {
-                    println!("{}", list.to_context_string());
-                }
-            }
-            "/tasks" => {
-                let board = task_board.lock();
-                println!("{}", board.summary());
-            }
-            "/skills" => {
-                let mgr = skill_manager.lock();
-                let skills = mgr.list_with_sources();
-                if skills.is_empty() {
-                    println!("No skills found. Searched:");
-                    for dir in mgr.search_dirs() {
-                        println!("  {}", dir.display());
-                    }
-                } else {
-                    println!("=== Available Skills ===");
+            continue;
+        }
+        run_agent(&mut state, &input, use_styles).await;
+    }
 
-                    let mut by_source: std::collections::BTreeMap<String, Vec<&SkillManifest>> =
-                        std::collections::BTreeMap::new();
-                    for (skill, source) in &skills {
-                        by_source
-                            .entry(source.to_string_lossy().to_string())
-                            .or_default()
-                            .push(skill);
-                    }
-
-                    for (source, group) in &by_source {
-                        println!("\n{}", source);
-                        for skill in group {
-                            let desc: String = skill.description.chars().take(80).collect();
-                            let truncated = if skill.description.chars().count() > 80 {
-                                format!("{}...", desc)
-                            } else {
-                                desc
-                            };
-                            let desc_one_line = truncated.replace('\n', " ");
-                            println!("  {}  {}", skill.name, desc_one_line);
-                        }
-                    }
-                }
-            }
-            "/status" => {
-                print_status(
-                    &state,
-                    enable_permission,
-                    enable_hooks,
-                    &todo_list,
-                    &task_board,
-                    &skill_manager,
-                );
-            }
-            "/sessions" => {
-                let mgr = &*session_mgr;
-                match mgr.list(false) {
-                    Ok(sessions) => {
-                        if sessions.is_empty() {
-                            println!(
-                                "No sessions saved. Use /session save to save the current session."
-                            );
-                        } else {
-                            println!("--- Sessions ({}) ---", sessions.len());
-                            for s in &sessions {
-                                println!("  {}", s.display_line());
-                            }
-                        }
-                    }
-                    Err(e) => eprintln!("Failed to list sessions: {e}"),
-                }
-            }
-            cmd if cmd.starts_with("/session") => {
-                let mgr = &*session_mgr;
-                let args: Vec<&str> = cmd.splitn(4, ' ').collect();
-
-                match args.get(1).copied() {
-                    Some("save") => {
-                        let all_messages = state.context_history.clone();
-                        let messages: Vec<Message> = all_messages
-                            .into_iter()
-                            .filter(|m| m.role != Role::System)
-                            .collect();
-                        let cwd = std::env::current_dir()
-                            .ok()
-                            .and_then(|p| p.to_str().map(|s| s.to_string()))
-                            .unwrap_or_default();
-                        let model = state.brain.current_model_name().to_string();
-                        let current_id = state.session_id.clone();
-                        match mgr.save(current_id.as_deref(), &messages, &cwd, &model) {
-                            Ok(id) => {
-                                state.session_id = Some(id.clone());
-                                println!("Session saved: {}", &id[..8]);
-                            }
-                            Err(e) => eprintln!("Failed to save session: {e}"),
-                        }
-                    }
-                    Some("resume") => {
-                        let session_id = args.get(2).copied().unwrap_or("");
-                        if session_id.is_empty() {
-                            println!("Usage: /session resume <id>");
-                        } else {
-                            match mgr.resume(session_id) {
-                                Ok(Some(session)) => {
-                                    state.context_history.clear();
-                                    state.session_id = None;
-                                    for msg in &session.messages {
-                                        state.context_history.extend_from_slice(&[msg.clone()]);
-                                    }
-                                    state.session_id = Some(session_id.to_string());
-                                    println!(
-                                        "Resumed session '{}' ({} messages).",
-                                        session.meta.title,
-                                        session.messages.len()
-                                    );
-                                }
-                                Ok(None) => println!("Session not found: {session_id}"),
-                                Err(e) => eprintln!("Failed to resume: {e}"),
-                            }
-                        }
-                    }
-                    Some("delete") => {
-                        let session_id = args.get(2).copied().unwrap_or("");
-                        if session_id.is_empty() {
-                            println!("Usage: /session delete <id>");
-                        } else {
-                            match mgr.delete(session_id) {
-                                Ok(true) => println!("Session deleted: {session_id}"),
-                                Ok(false) => println!("Session not found: {session_id}"),
-                                Err(e) => eprintln!("Failed to delete: {e}"),
-                            }
-                        }
-                    }
-                    Some("rename") => {
-                        let session_id = args.get(2).copied().unwrap_or("");
-                        let new_title = args.get(3).copied().unwrap_or("");
-                        if session_id.is_empty() || new_title.is_empty() {
-                            println!("Usage: /session rename <id> <new_title>");
-                        } else {
-                            match mgr.rename(session_id, new_title) {
-                                Ok(true) => println!("Renamed to: {new_title}"),
-                                Ok(false) => println!("Session not found: {session_id}"),
-                                Err(e) => eprintln!("Failed to rename: {e}"),
-                            }
-                        }
-                    }
-                    Some("archive") => {
-                        let session_id = args.get(2).copied().unwrap_or("");
-                        if session_id.is_empty() {
-                            println!("Usage: /session archive <id>");
-                        } else {
-                            match mgr.archive(session_id) {
-                                Ok(true) => println!("Archived: {session_id}"),
-                                _ => println!("Session not found."),
-                            }
-                        }
-                    }
-                    Some("search") => {
-                        let keyword = args.get(2).copied().unwrap_or("");
-                        if keyword.is_empty() {
-                            println!("Usage: /session search <keyword>");
-                        } else {
-                            match mgr.search(keyword, 20) {
-                                Ok(sessions) => {
-                                    if sessions.is_empty() {
-                                        println!("No sessions matching '{}'", keyword);
-                                    } else {
-                                        for s in &sessions {
-                                            println!("  {}", s.display_line());
-                                        }
-                                    }
-                                }
-                                Err(e) => eprintln!("Search failed: {e}"),
-                            }
-                        }
-                    }
-                    _ => {
-                        println!("Session commands:");
-                        println!("  /sessions               — list all sessions");
-                        println!("  /session save           — save current session");
-                        println!("  /session resume <id>    — resume a session");
-                        println!("  /session delete <id>    — delete a session");
-                        println!("  /session rename <id> <t>— rename a session");
-                        println!("  /session archive <id>   — archive a session");
-                        println!("  /session search <kw>    — search sessions");
-                    }
-                }
-            }
-            "/abort" => {
-                if let Some(ref rid) = state.current_run_id {
-                    let _ = state.run_manager.cancel_run(rid);
-                };
-                println!("Abort signal sent. The agent will stop at the next opportunity.");
-            }
-            "/state" => {
-                println!(
-                    "Agent state: {:?}",
-                    state
-                        .current_run_id
-                        .as_ref()
-                        .map(|_| "Running")
-                        .unwrap_or("Idle")
-                );
-            }
-            "/tool-mode" => {
-                println!("Tool execution mode: {:?}", state.brain.tool_execution_mode);
-            }
-            "/clear-queues" => {
-                println!("Steering and follow-up queues cleared.");
-            }
-            cmd if cmd.starts_with("/model ") => {
-                let name = cmd.strip_prefix("/model ").unwrap().trim();
-                match state.run_manager.switch_model(name) {
-                    Ok(()) => {
-                        state.brain = (**state.run_manager.brain()).clone();
-                        println!("Switched to model: {name}");
-                    }
-                    Err(e) => eprintln!("Error: {e}"),
-                }
-            }
-            cmd if cmd.starts_with("/temp ") => {
-                let val_str = cmd.strip_prefix("/temp ").unwrap().trim();
-                match val_str.parse::<f64>() {
-                    Ok(val) => {
-                        state.brain.set_temperature(val);
-                        println!("Temperature set to {val}");
-                    }
-                    Err(_) => eprintln!("Invalid temperature value"),
-                }
-            }
-            cmd if cmd.starts_with("/max-tokens ") => {
-                let val_str = cmd.strip_prefix("/max-tokens ").unwrap().trim();
-                match val_str.parse::<u32>() {
-                    Ok(val) => {
-                        state.brain.set_max_tokens(val);
-                        println!("Max tokens set to {val}");
-                    }
-                    Err(_) => eprintln!("Invalid max-tokens value"),
-                }
-            }
-            cmd if cmd.starts_with("/tool-mode ") => {
-                let mode_str = cmd.strip_prefix("/tool-mode ").unwrap().trim();
-                match mode_str.to_lowercase().as_str() {
-                    "parallel" | "par" => {
-                        state.brain.set_tool_execution_mode(ToolExecutionMode::Parallel);
-                        println!("Tool execution mode set to: parallel");
-                    }
-                    "sequential" | "seq" => {
-                        state.brain.set_tool_execution_mode(ToolExecutionMode::Sequential);
-                        println!("Tool execution mode set to: sequential");
-                    }
-                    _ => {
-                        eprintln!("Usage: /tool-mode <parallel|sequential>");
-                    }
-                }
-            }
-            cmd if cmd.starts_with("/steer ") => {
-                let msg = cmd.strip_prefix("/steer ").unwrap().trim();
-                if let Some(ref rid) = state.current_run_id {
-                    let _ = state.run_manager.command(
-                        rid,
-                        RunCommand::Steer {
-                            steer_id: format!(
-                                "steer-{}",
-                                std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_nanos()
-                            ),
-                            message: msg.to_string(),
-                        },
-                    );
-                }
-                println!("Steering message queued. It will be injected after the current turn.");
-            }
-            cmd if cmd.starts_with("/follow-up ") => {
-                let msg = cmd.strip_prefix("/follow-up ").unwrap().trim();
-                if let Some(ref rid) = state.current_run_id {
-                    let _ = state.run_manager.command(
-                        rid,
-                        RunCommand::FollowUp {
-                            message: msg.to_string(),
-                        },
-                    );
-                }
-                println!(
-                    "Follow-up message queued. It will be processed after the agent finishes."
-                );
-            }
-            cmd if cmd.starts_with("/todo ") => {
-                handle_todo_cmd(cmd, &todo_list);
-            }
-            cmd if cmd.starts_with("/tasks ") => {
-                handle_tasks_cmd(cmd, &task_board);
-            }
-            cmd if cmd.starts_with("/skill ") => {
-                let rest = cmd.strip_prefix("/skill ").unwrap().trim();
-
-                if rest.starts_with("deactivate ") {
-                    let name = rest.strip_prefix("deactivate ").unwrap().trim();
-                    let mut mgr = skill_manager.lock();
-                    if name == "all" {
-                        mgr.deactivate_all();
-                        println!("All skills deactivated.");
-                    } else if mgr.deactivate(name) {
-                        println!("Skill '{}' deactivated.", name);
-                    } else {
-                        eprintln!("Skill '{}' is not active.", name);
-                    }
-                } else if rest == "reload" {
-                    let mut mgr = skill_manager.lock();
-                    match mgr.scan() {
-                        Ok(count) => println!("Reloaded {} skills from disk.", count),
-                        Err(e) => eprintln!("Reload failed: {e}"),
-                    }
-                } else if rest == "active" {
-                    let mgr = skill_manager.lock();
-                    let active = mgr.active_skill_names();
-                    if active.is_empty() {
-                        println!("No active skills.");
-                    } else {
-                        println!("Active skills: {}", active.join(", "));
-                    }
-                } else {
-                    let mgr = skill_manager.lock();
-                    match mgr.load_skill_context(rest) {
-                        Ok(Some(content)) => {
-                            println!("{}", content);
-                        }
-                        Ok(None) => {
-                            eprintln!("Skill '{}' not found. Use /skills to list.", rest);
-                        }
-                        Err(e) => eprintln!("Error loading skill: {e}"),
-                    }
-                }
-            }
-            cmd if cmd.starts_with("/perm ") => {
-                let args = cmd.strip_prefix("/perm ").unwrap().trim();
-                if args.starts_with("test ") {
-                    let rest = args.strip_prefix("test ").unwrap().trim();
-                    let parts: Vec<&str> = rest.splitn(2, ' ').collect();
-                    let tool_name = parts[0];
-                    let tool_input = parts.get(1).unwrap_or(&"{}");
-                    let decision = state.brain.build_permission_policy().check(
-                        tool_name,
-                        tool_input,
-                        None,
-                        None,
-                        None,
-                    );
-                    println!(
-                        "Permission check: {}({}) -> {:?}",
-                        tool_name, tool_input, decision
-                    );
-                } else if args.starts_with("mode ") {
-                    let mode_str = args.strip_prefix("mode ").unwrap().trim();
-                    match parse_permission_mode(mode_str) {
-                        Ok(mode) => {
-                            state.brain.build_permission_policy().set_mode(mode);
-                            println!("Permission mode set to: {:?}", mode);
-                        }
-                        Err(e) => eprintln!("{e}"),
-                    }
-                } else {
-                    eprintln!("Usage:");
-                    eprintln!("  /perm test <tool_name> <input_json>");
-                    eprintln!("  /perm mode <paranoid|standard|developer|permissive|yolo>");
-                }
-            }
-            "/context" => {
-                let msgs = state.context_history.clone();
-                let tokens = state.context_history.len() as u32 * 4;
-                println!("=== Context ({tokens} tokens, {} messages) ===", msgs.len());
-                println!("\nMessages (newest last):");
-                for (i, msg) in msgs.iter().enumerate() {
-                    let role_str = match msg.role {
-                        Role::System => "SYS",
-                        Role::User => "USR",
-                        Role::Assistant => "AST",
-                        Role::Tool => "TOL",
-                    };
-                    let content = msg.content.as_deref().unwrap_or("");
-                    let preview = truncate(content, 100);
-                    if let Some(ref tc) = msg.tool_calls {
-                        let tool_names: Vec<&str> =
-                            tc.iter().map(|t| t.function.name.as_str()).collect();
-                        println!(
-                            "  [{i}] {role_str} [tools: {}] {}",
-                            tool_names.join(","),
-                            preview
-                        );
-                    } else {
-                        println!("  [{i}] {role_str} {preview}");
-                    }
-                }
-            }
-            cmd if cmd.starts_with("/memory ") => {
-                let rest = cmd.strip_prefix("/memory ").unwrap().trim();
-                if rest.starts_with("search ") {
-                    let query = rest.strip_prefix("search ").unwrap().trim();
-                    if let Some(ref memory) = state.brain.memory {
-                        let mem = memory.lock();
-                        match mem.search_conversation(query, 5) {
-                            Ok(results) => {
-                                if results.is_empty() {
-                                    println!("No results for '{}'", query);
-                                } else {
-                                    println!(
-                                        "=== Memory search: '{}' ({}) ===",
-                                        query,
-                                        results.len()
-                                    );
-                                    for (i, r) in results.iter().enumerate() {
-                                        let preview = truncate(&r.content, 80);
-                                        println!(
-                                            "  [{i}] importance={:.2} | {}",
-                                            r.importance, preview
-                                        );
-                                    }
-                                }
-                            }
-                            Err(e) => eprintln!("Search error: {e}"),
-                        }
-                    } else {
-                        println!("Memory is disabled.");
-                    }
-                } else if rest == "stats" {
-                    if let Some(ref memory) = state.brain.memory {
-                        let mem = memory.lock();
-                        match mem.stats() {
-                            Ok(stats) => {
-                                println!("=== Memory Stats ===");
-                                println!("Total:       {}", stats.total_count);
-                                println!("Avg strength:{:.2}", stats.avg_strength);
-                                println!("Avg importance:{:.2}", stats.avg_importance);
-                            }
-                            Err(e) => eprintln!("Stats error: {e}"),
-                        }
-                    } else {
-                        println!("Memory is disabled.");
-                    }
-                } else if rest == "pending clear" {
-                    let path = agent_core::paths::get_global_agverse_md_path();
-                    match agent_core::memory::agverse_md::clear_pending_notes_file(&path) {
-                        Ok(n) => println!("Cleared {n} pending note(s) from {}", path.display()),
-                        Err(e) => eprintln!("Clear pending failed: {e}"),
-                    }
-                } else if rest == "pending promote" {
-                    let path = agent_core::paths::get_global_agverse_md_path();
-                    match agent_core::memory::agverse_md::promote_pending_notes_file(&path) {
-                        Ok(n) => println!("Promoted {n} pending note(s) in {}", path.display()),
-                        Err(e) => eprintln!("Promote pending failed: {e}"),
-                    }
-                } else if rest == "maintain" {
-                    let path = agent_core::paths::get_global_agverse_md_path();
-                    match agent_core::memory::agverse_md::maintain_agverse_file(&path) {
-                        Ok(r) => println!(
-                            "Maintained {}: expired={}, trimmed={}, sections_ensured={}",
-                            path.display(),
-                            r.pending_expired,
-                            r.trimmed_bullets,
-                            r.sections_ensured
-                        ),
-                        Err(e) => eprintln!("Maintain failed: {e}"),
-                    }
-                } else {
-                    eprintln!(
-                        "Usage: /memory search <query> | /memory stats | /memory pending clear | /memory pending promote | /memory maintain"
-                    );
-                }
-            }
-            "/memory" => {
-                if let Some(ref memory) = state.brain.memory {
-                    let mem = memory.lock();
-                    println!("=== Core Memory ===");
-                    for block in mem.core().list() {
-                        println!("[{}]: {}", block.id, block.content);
-                    }
-                    println!("\nSession: {}", mem.session_id());
-                } else {
-                    println!("Memory is disabled.");
-                }
-            }
-            input if input.starts_with('/') => {
-                eprintln!(
-                    "Unknown command: {}. Type /help for available commands.",
-                    input
-                );
-            }
-            _ => {
-                run_agent(&mut state, &input, use_styles).await;
-            }
+    // ── Graceful shutdown (Ctrl+D, /quit, or input error) ───────────
+    let all_messages = state.context_history.clone();
+    let messages: Vec<Message> = all_messages
+        .into_iter()
+        .filter(|m| m.role != Role::System)
+        .collect();
+    if !messages.is_empty() {
+        let cwd = std::env::current_dir()
+            .ok()
+            .and_then(|p| p.to_str().map(|s| s.to_string()))
+            .unwrap_or_default();
+        let model = state.brain.current_model_name().to_string();
+        let mgr = &*session_mgr;
+        let current_id = state.session_id.clone();
+        if let Ok(id) = mgr.save(current_id.as_deref(), &messages, &cwd, &model) {
+            let preview = if id.len() >= 8 { &id[..8] } else { &id };
+            println!("Session auto-saved: {preview}");
         }
     }
 
+    {
+        let mut mgr = mcp_mgr.lock().await;
+        if let Err(e) = mgr.shutdown_all().await {
+            eprintln!("MCP shutdown warning: {e}");
+        }
+    }
+
+    if let Err(e) = rl.save_history(&history_path) {
+        eprintln!("History save warning: {e}");
+    }
+
+    println!("Bye!");
     Ok(ExitCode::SUCCESS)
 }
-
-fn handle_todo_cmd(cmd: &str, todo_list: &Arc<Mutex<TodoList>>) {
-    let args = cmd.strip_prefix("/todo ").unwrap().trim();
-
-    if args == "clear" {
-        let mut list = todo_list.lock();
-        list.items.clear();
-        println!("Todo list cleared.");
-        return;
-    }
-
-    if args.starts_with("add ") {
-        let rest = args.strip_prefix("add ").unwrap().trim();
-        let parts: Vec<&str> = rest.splitn(2, ' ').collect();
-        if parts.len() < 2 {
-            eprintln!("Usage: /todo add <id> <description>");
-            return;
-        }
-        let id = parts[0];
-        let desc = parts[1];
-        let mut list = todo_list.lock();
-        list.add(TodoItem::new(id, desc));
-        println!("Added todo '{}': {}", id, desc);
-        return;
-    }
-
-    if args.starts_with("done ") {
-        let id = args.strip_prefix("done ").unwrap().trim();
-        let mut list = todo_list.lock();
-        match list.update_status(id, TodoStatus::Completed) {
-            Ok(()) => println!("Todo '{}' marked done.", id),
-            Err(e) => eprintln!("Error: {}", e),
-        }
-        return;
-    }
-
-    if args.starts_with("start ") {
-        let id = args.strip_prefix("start ").unwrap().trim();
-        let mut list = todo_list.lock();
-        match list.update_status(id, TodoStatus::InProgress) {
-            Ok(()) => println!("Todo '{}' started.", id),
-            Err(e) => eprintln!("Error: {}", e),
-        }
-        return;
-    }
-
-    // Default: show list
-    let list = todo_list.lock();
-    if list.items.is_empty() {
-        println!("Todo list is empty. Use /todo add <id> <description>");
-    } else {
-        println!("{}", list.to_context_string());
-    }
-}
-
-fn handle_tasks_cmd(cmd: &str, task_board: &Arc<Mutex<TaskBoard>>) {
-    let args = cmd.strip_prefix("/tasks ").unwrap().trim();
-
-    if args == "clear" {
-        let mut board = task_board.lock();
-        *board = TaskBoard::new();
-        println!("Task board cleared.");
-        return;
-    }
-
-    if args.starts_with("add ") {
-        let rest = args.strip_prefix("add ").unwrap().trim();
-        let parts: Vec<&str> = rest.splitn(2, ' ').collect();
-        if parts.len() < 2 {
-            eprintln!("Usage: /tasks add <id> <description>");
-            return;
-        }
-        let id = parts[0];
-        let desc = parts[1];
-        let mut board = task_board.lock();
-        board.create(id, desc, vec![]);
-        println!("Task '{}' created: {}", id, desc);
-        return;
-    }
-
-    if args.starts_with("done ") {
-        let id = args.strip_prefix("done ").unwrap().trim();
-        let mut board = task_board.lock();
-        match board.update(id, TaskStatus::Completed, None) {
-            Ok(()) => println!("Task '{}' completed.", id),
-            Err(e) => eprintln!("Error: {e}"),
-        }
-        return;
-    }
-
-    if args.starts_with("start ") {
-        let id = args.strip_prefix("start ").unwrap().trim();
-        let mut board = task_board.lock();
-        match board.update(id, TaskStatus::InProgress, None) {
-            Ok(()) => println!("Task '{}' started.", id),
-            Err(e) => eprintln!("Error: {e}"),
-        }
-        return;
-    }
-
-    // Default: show board
-    let board = task_board.lock();
-    println!("{}", board.summary());
-}
-
-fn print_status(
-    state: &CliState,
-    enable_permission: bool,
-    enable_hooks: bool,
-    todo_list: &Arc<Mutex<TodoList>>,
-    task_board: &Arc<Mutex<TaskBoard>>,
-    skill_manager: &Arc<Mutex<SkillManager>>,
-) {
-    println!("=== Agent Status ===");
-    println!("Model:       {}", state.brain.current_model_name().to_string());
-    println!("State:       {:?}", state.current_run_id.as_ref().map(|_| "Running").unwrap_or("Idle"));
-    println!("Tool mode:   {:?}", state.brain.tool_execution_mode);
-    println!("Tokens:      {}", state.context_history.len() as u32 * 4);
-    println!("Memory:      {}", if state.brain.memory.is_some() { "on" } else { "off" });
-    println!(
-        "Permission:  {}",
-        if enable_permission { "on" } else { "off" }
-    );
-    println!("Hooks:       {}", if enable_hooks { "on" } else { "off" });
-    println!("Tools:       {}", state.brain.display_registry().list_names().len());
-    {
-        let list = todo_list.lock();
-        println!("Todo:        {}", list.summary());
-    }
-    {
-        let board = task_board.lock();
-        println!("Tasks:       {} total", board.all_tasks().len());
-    }
-    {
-        let mgr = skill_manager.lock();
-        println!(
-            "Skills:      {} loaded, {} active",
-            mgr.count(),
-            mgr.active_skill_names().len()
-        );
-    }
-}
-
-// ── UI helpers ─────────────────────────────────────────────────────
 
 /// Build args preview: strip `{}` for empty, show key-value pairs for others.
 fn fmt_tool_args(args: &serde_json::Value) -> String {
@@ -1537,93 +953,126 @@ async fn run_agent(
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         }
     }
-    state.context_history = Vec::new();
+    // Restore canonical transcript for multi-turn + session save.
+    if let Some(msgs) = state.run_manager.context_snapshot_for_run(&run_id).await {
+        state.context_history = msgs;
+    }
     state.current_run_id = None;
 }
 
-fn print_help() {
-    println!(
-        r#"=== Ageverse CLI ===
+/// Print slash-command outcome for REPL. Returns true if the REPL should quit.
+fn apply_repl_outcome(
+    state: &CliState,
+    outcome: commands::CommandOutcome,
+    enable_permission: bool,
+    enable_hooks: bool,
+) -> bool {
+    use commands::{CmdMessage, CommandOutcome, UiRequest};
+    match outcome {
+        CommandOutcome::Quit => true,
+        CommandOutcome::NotSlash => false,
+        CommandOutcome::Unknown(cmd) => {
+            eprintln!("Unknown command: {cmd}. Type /help for available commands.");
+            false
+        }
+        CommandOutcome::Handled { messages } => {
+            for m in messages {
+                match m {
+                    CmdMessage::Error(s) => eprintln!("{s}"),
+                    CmdMessage::Warn(s) | CmdMessage::Info(s) => println!("{s}"),
+                }
+            }
+            false
+        }
+        CommandOutcome::NeedsUi(ui) => {
+            match ui {
+                UiRequest::Help => println!("{}", commands::help_text()),
+                UiRequest::Status => {
+                    println!(
+                        "{}",
+                        commands::format_status(state, enable_permission, enable_hooks)
+                    );
+                }
+                UiRequest::ModelPicker { models, current } => {
+                    for m in models {
+                        if m == current {
+                            println!("  * {m} (current)");
+                        } else {
+                            println!("    {m}");
+                        }
+                    }
+                }
+                UiRequest::ModelForm => {
+                    println!(
+                        "Add models in ~/.agverse/config.toml, then /model <name>. (Form is TUI-only.)"
+                    );
+                }
+                UiRequest::SessionList => match state.session_mgr.list(false) {
+                    Ok(sessions) if sessions.is_empty() => {
+                        println!("No sessions saved. Use /session save.");
+                    }
+                    Ok(sessions) => {
+                        println!("--- Sessions ({}) ---", sessions.len());
+                        for s in &sessions {
+                            println!("  {}", s.display_line());
+                        }
+                    }
+                    Err(e) => eprintln!("Failed to list sessions: {e}"),
+                },
+                UiRequest::ShowText { title, body } => {
+                    println!("=== {title} ===\n{body}");
+                }
+                UiRequest::RewindList { points } => {
+                    println!("=== Rewind points (user messages) ===");
+                    for (idx, preview) in points {
+                        println!("  [{idx}] {preview}");
+                    }
+                    println!("\nUse /rewind <index> to go back to that point.");
+                }
+            }
+            false
+        }
+    }
+}
 
-  Usage (one-shot / Harbor):
-    ageverse -p "instruction" --model <key> --permission yolo
-    ageverse --instruction "..." --model hunyuan/tencent/hy3:free
 
-  Config: ~/.agverse/config.toml (same as desktop app)
+#[cfg(test)]
+mod instruction_merge_tests {
+    use super::merge_instruction;
 
-  General
-    /help              Show this help
-    /status            Show agent subsystem status
-    /quit, /exit       Exit (auto-saves current session)
+    #[test]
+    fn tty_no_flag_enters_repl() {
+        let got = merge_instruction(None, None, true).unwrap();
+        assert!(got.is_none());
+    }
 
-  Model & Context
-    /models            List available models
-    /model <name>      Switch model
-    /temp <float>      Set temperature
-    /max-tokens <int>  Set max output tokens
-    /tokens            Show current token count
-    /context           Show message history with token breakdown
-    /clear             Clear conversation context
-    /new               Start a fresh session (clear + new session ID)
-    /rewind            List rewindable conversation points
-    /rewind <idx>      Rewind conversation to message index
+    #[test]
+    fn non_tty_empty_without_flag_errors() {
+        let err = merge_instruction(None, None, false).unwrap_err();
+        assert!(err.to_string().contains("not a terminal"));
+    }
 
-  Agent Control
-    /abort             Abort the current agent run
-    /state             Show current agent state (Idle/Streaming/ExecutingTools/Aborted)
-    /tool-mode         Show current tool execution mode
-    /tool-mode <mode>  Set tool execution mode (parallel|sequential)
-    /steer <message>   Inject a steering message mid-run
-    /follow-up <msg>   Queue a follow-up message after agent finishes
-    /clear-queues      Clear steering and follow-up queues
+    #[test]
+    fn pipe_only_becomes_instruction() {
+        let got = merge_instruction(None, Some("hello".into()), false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(got, "hello");
+    }
 
-  Memory
-    /memory            Show core memory blocks
-    /memory search <q> Search conversation memory
-    /memory stats      Show memory statistics (count, strength, importance)
-    /memory pending clear    Discard Pending Notes from ~/.agverse/agverse.md
-    /memory pending promote  Move tagged Pending Notes into standard sections
-    /memory maintain         Expire old Pending + trim oversized agverse.md
+    #[test]
+    fn flag_plus_pipe_concatenates() {
+        let got = merge_instruction(Some("review".into()), Some("fn main() {}".into()), false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(got, "review\n\nfn main() {}");
+    }
 
-  Permission & Hooks
-    /permission        Show permission policy
-    /perm test <tool> <json>   Test permission for a tool call
-    /perm mode <mode>          Set mode: paranoid|standard|permissive|yolo
-    /hooks             Show registered hooks
-
-  MCP (Model Context Protocol)
-    /mcp               Show connected MCP servers and discovered tools
-
-  Planning (Todo)
-    /todo              Show todo list
-    /todo add <id> <desc>     Add a todo item
-    /todo start <id>          Mark item in-progress
-    /todo done <id>           Mark item completed
-    /todo clear               Clear all items
-
-  Task Board
-    /tasks             Show task board
-    /tasks add <id> <desc>    Add a task
-    /tasks start <id>         Mark task in-progress
-    /tasks done <id>          Mark task completed
-    /tasks clear              Clear all tasks
-
-  Sessions
-    /sessions          List saved sessions
-    /session save      Save current conversation
-    /session resume <id>     Resume a previous session
-    /session delete <id>     Delete a session
-    /session rename <id> <t> Rename a session
-    /session archive <id>    Archive a session
-    /session search <kw>     Search sessions by title/summary
-
-  Skills
-    /skills            List available skills
-    /skill <name>      Load a skill into context
-    /skill active      Show currently active skills
-    /skill deactivate <name|all>  Deactivate a skill
-    /skill reload      Rescan skill directories
-
-Just type a message to chat with the state."#
-    );
+    #[test]
+    fn flag_alone_on_tty() {
+        let got = merge_instruction(Some("hi".into()), None, true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(got, "hi");
+    }
 }

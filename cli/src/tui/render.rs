@@ -1,11 +1,9 @@
-use super::state::{AppState, BlockKind, CachedBlock};
+use super::state::{AppState, BlockKind, CachedBlock, ModalState};
 use ratatui::{
     Frame,
     layout::{Constraint, Margin, Rect},
     style::{Color, Style},
-    widgets::{
-        Scrollbar, ScrollbarOrientation, ScrollbarState,
-    },
+    widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 use std::time::Instant;
 
@@ -18,39 +16,46 @@ pub struct LayoutAreas {
     pub input: Rect,
 }
 
-pub fn compute_layout(area: Rect, dropdown_h: u16) -> LayoutAreas {
-    let main_bottom = area.height.saturating_sub(3 + dropdown_h);
-    let input_top = area.height.saturating_sub(3);
+/// Height of the input bar (bordered), growing with wrapped line count,
+/// capped at 40% of the terminal height.
+pub fn input_height(state: &AppState, width: u16) -> u16 {
+    super::widgets::input_bar::estimate_height(&state.input, width)
+}
 
-    let status_area = Rect::new(area.x, area.y, area.width, 3);
-    let main_area = Rect::new(area.x, area.y + 3, area.width, main_bottom.saturating_sub(3));
-    let dropdown_area = if dropdown_h > 0 {
-        Rect::new(area.x, input_top.saturating_sub(dropdown_h), area.width, dropdown_h)
-    } else {
-        Rect::default()
-    };
-    let input_area = Rect::new(area.x, input_top, area.width, 3);
+pub fn compute_layout(area: Rect, input_h: u16) -> LayoutAreas {
+    let input_h = input_h.max(3).min(area.height.saturating_sub(4).max(3));
+    let status_h = 1u16;
+    let input_top = area.height.saturating_sub(input_h);
+    let main_bottom = input_top;
+    let main_top = area.y + status_h;
+
+    let status_area = Rect::new(area.x, area.y, area.width, status_h);
+    let main_area = Rect::new(area.x, main_top, area.width, main_bottom.saturating_sub(main_top));
+    let input_area = Rect::new(area.x, area.y + input_top, area.width, input_h);
 
     LayoutAreas {
         status: status_area,
         main: main_area,
-        dropdown: dropdown_area,
+        dropdown: Rect::default(),
         input: input_area,
     }
 }
 
-pub fn dropdown_height(state: &AppState) -> u16 {
-    if state.autocomplete.active {
-        (state.autocomplete.filtered_options.len().min(8) + 2) as u16
-    } else {
-        0
+/// Autocomplete overlay rect — floats above the input bar, over the bottom
+/// of the conversation area, without reflowing the main layout.
+pub fn dropdown_overlay(state: &AppState, layout: &LayoutAreas) -> Option<Rect> {
+    if !state.autocomplete.active {
+        return None;
     }
+    let h = (state.autocomplete.filtered.len().min(8) + 2) as u16;
+    let y = layout.input.y.saturating_sub(h);
+    Some(Rect::new(layout.input.x, y, layout.input.width, h))
 }
 
 pub fn render(frame: &mut Frame, state: &AppState) {
     let area = frame.area();
-    let dropdown_h = dropdown_height(state);
-    let layout = compute_layout(area, dropdown_h);
+    let input_h = input_height(state, area.width);
+    let layout = compute_layout(area, input_h);
 
     frame.render_widget(super::widgets::status::StatusBar::new(state), layout.status);
 
@@ -60,16 +65,48 @@ pub fn render(frame: &mut Frame, state: &AppState) {
         render_conversation(frame, state, layout.main);
     }
 
-    if dropdown_h > 0 {
-        frame.render_widget(super::widgets::dropdown::Dropdown::new(state), layout.dropdown);
-    }
-
     let input_bar = super::widgets::input_bar::InputBar::new(state);
     let cursor_pos = input_bar.cursor_position(layout.input);
     frame.render_widget(input_bar, layout.input);
-    frame.set_cursor_position(cursor_pos);
 
-    frame.render_widget(super::widgets::modal::Modal::new(state), area);
+    if let Some(overlay) = dropdown_overlay(state, &layout) {
+        frame.render_widget(ratatui::widgets::Clear, overlay);
+        frame.render_widget(super::widgets::dropdown::Dropdown::new(state), overlay);
+    } else {
+        frame.set_cursor_position(cursor_pos);
+    }
+
+    render_modal(frame, state, area);
+}
+
+fn render_modal(frame: &mut Frame, state: &AppState, area: Rect) {
+    match &state.modal {
+        ModalState::None => {}
+        ModalState::ModelPicker { .. } | ModalState::ModelForm { .. } => {
+            frame.render_widget(super::widgets::modal::Modal::new(state), area);
+        }
+        ModalState::Approval { .. } => {
+            frame.render_widget(super::widgets::approval::ApprovalModal::new(state), area);
+        }
+        ModalState::Answer { .. } => {
+            frame.render_widget(super::widgets::modal::AnswerModal::new(state), area);
+        }
+        ModalState::SessionList { .. } => {
+            frame.render_widget(super::widgets::session_list::SessionListModal::new(state), area);
+        }
+        ModalState::Help => {
+            frame.render_widget(super::widgets::help::HelpModal, area);
+        }
+        ModalState::Pager { .. } => {
+            frame.render_widget(super::widgets::pager::PagerModal::new(state), area);
+        }
+        ModalState::RewindList { .. } => {
+            frame.render_widget(super::widgets::modal::RewindModal::new(state), area);
+        }
+        ModalState::QuitConfirm => {
+            frame.render_widget(super::widgets::modal::QuitConfirmModal, area);
+        }
+    }
 }
 
 // ── Conversation (block-level rendering) ─────────────────────────────
@@ -82,11 +119,16 @@ fn render_conversation(frame: &mut Frame, state: &AppState, area: Rect) {
     let scroll_from_top = max_scroll.saturating_sub(scroll);
 
     let hovered = state.hovered_subagent.as_deref();
-    let content_area = area.inner(Margin {
-        vertical: 0,
-        horizontal: 1,
-    });
-    render_blocks(frame, &state.cache.blocks, state.frame_count, hovered, scroll_from_top, content_area);
+    let content_area = area.inner(Margin { vertical: 0, horizontal: 1 });
+    render_blocks(
+        frame,
+        &state.cache.blocks,
+        state.frame_count,
+        hovered,
+        state.focused_block_id,
+        scroll_from_top,
+        content_area,
+    );
 
     render_scrollbar(frame, area, max_scroll, scroll_from_top);
 }
@@ -95,10 +137,7 @@ fn render_scrollbar(frame: &mut Frame, area: Rect, max_scroll: usize, position: 
     if max_scroll == 0 {
         return;
     }
-    let scrollbar_area = area.inner(Margin {
-        vertical: 0,
-        horizontal: 0,
-    });
+    let scrollbar_area = area.inner(Margin { vertical: 0, horizontal: 0 });
     let mut scrollbar_state = ScrollbarState::new(max_scroll).position(position);
     frame.render_stateful_widget(
         Scrollbar::new(ScrollbarOrientation::VerticalRight)
@@ -118,6 +157,7 @@ fn render_blocks(
     blocks: &[CachedBlock],
     frame_count: u64,
     hovered_id: Option<&str>,
+    focused_block_id: Option<u64>,
     scroll_from_top: usize,
     area: Rect,
 ) {
@@ -125,7 +165,6 @@ fn render_blocks(
 
     let visible_height = area.height as usize;
 
-    // Find first visible block
     let mut offset = 0;
     let mut start_idx = 0;
     let mut start_skip = 0;
@@ -138,7 +177,6 @@ fn render_blocks(
         offset += block.wrapped_height;
     }
 
-    // Build constraints for visible blocks
     let mut constraints: Vec<Constraint> = Vec::new();
     let mut visible: Vec<(&CachedBlock, usize)> = Vec::new();
     let mut remaining = visible_height;
@@ -166,25 +204,30 @@ fn render_blocks(
     for (i, (block, skip)) in visible.iter().enumerate() {
         let block_area = areas[i];
         let is_hovered = hovered_id.is_some_and(|id| block.subagent_id.as_deref() == Some(id));
+        let is_focused = focused_block_id.is_some() && block.block_id == focused_block_id;
 
         match &block.kind {
             BlockKind::System(_) => {
                 frame.render_widget(bw::SystemBlock::new(&block.lines, *skip), block_area);
             }
+            BlockKind::Separator(label) => {
+                frame.render_widget(bw::SeparatorBlock::new(label), block_area);
+            }
             BlockKind::User(_) => {
                 frame.render_widget(bw::UserBlock::new(&block.lines, *skip), block_area);
             }
-            BlockKind::Thought(_) => {
-                frame.render_widget(bw::ThoughtBlock::new(&block.lines, *skip), block_area);
+            BlockKind::Thought { expanded, .. } => {
+                frame.render_widget(
+                    bw::ThoughtBlock::new(&block.lines, *skip, *expanded, is_focused),
+                    block_area,
+                );
             }
             BlockKind::Response(_) => {
                 frame.render_widget(bw::ResponseBlock::new(&block.lines, *skip), block_area);
             }
-            BlockKind::Tool { name, args, result } => {
+            BlockKind::Tool { name, args, result, expanded, .. } => {
                 frame.render_widget(
-                    bw::ToolBlock::new(
-                        &block.lines, name, args, result, frame_count, *skip,
-                    ),
+                    bw::ToolBlock::new(&block.lines, name, args, result, frame_count, *skip, *expanded, is_focused),
                     block_area,
                 );
             }
@@ -215,8 +258,10 @@ pub fn rebuild_cache(state: &mut AppState, width: u16) {
     let w = width as usize;
     let entry_count = state.entries.len();
 
-    // Only rebuild entry blocks if entries changed
-    if state.cache.rendered_entry_count != entry_count || state.cache.width != width {
+    let should_rebuild_entries =
+        state.cache.rendered_entry_count != entry_count || state.cache.width != width || state.force_cache_rebuild;
+
+    if should_rebuild_entries {
         let mut entry_blocks: Vec<CachedBlock> = Vec::new();
         let mut first = true;
         for entry in &state.entries {
@@ -230,7 +275,6 @@ pub fn rebuild_cache(state: &mut AppState, width: u16) {
         state.cache.rendered_entry_count = entry_count;
     }
 
-    // Always rebuild streaming blocks
     let mut streaming_blocks: Vec<CachedBlock> = Vec::new();
     if let Some(ref streaming) = state.streaming {
         if !streaming.blocks.is_empty() {
@@ -244,39 +288,41 @@ pub fn rebuild_cache(state: &mut AppState, width: u16) {
     }
     state.cache.streaming_blocks = streaming_blocks;
 
-    // Combine into final blocks
-    let mut blocks: Vec<CachedBlock> = Vec::new();
-    blocks.extend(state.cache.entry_blocks.iter().cloned());
+    let mut blocks_out: Vec<CachedBlock> = Vec::new();
+    blocks_out.extend(state.cache.entry_blocks.iter().cloned());
 
-    if !state.cache.streaming_blocks.is_empty() && !blocks.is_empty() {
-        blocks.push(CachedBlock::spacing());
+    if !state.cache.streaming_blocks.is_empty() && !blocks_out.is_empty() {
+        blocks_out.push(CachedBlock::spacing());
     }
-    blocks.extend(state.cache.streaming_blocks.iter().cloned());
+    blocks_out.extend(state.cache.streaming_blocks.iter().cloned());
 
-    // "Working..." indicator
     let streaming_empty = state.streaming.as_ref().map_or(true, |s| s.blocks.is_empty());
     if state.agent_running && streaming_empty {
-        if !blocks.is_empty() {
-            blocks.push(CachedBlock::spacing());
+        if !blocks_out.is_empty() {
+            blocks_out.push(CachedBlock::spacing());
         }
         let lines = blocks::working_block_lines();
         let height = blocks::compute_block_height(&lines, width);
-        blocks.push(CachedBlock {
+        blocks_out.push(CachedBlock {
             kind: BlockKind::Working,
             wrapped_height: height,
             subagent_id: None,
+            block_id: None,
             lines,
         });
     }
 
-    let wrapped_height = blocks.iter().map(|b| b.wrapped_height).sum();
+    let wrapped_height = blocks_out.iter().map(|b| b.wrapped_height).sum();
+    let focusable_ids: Vec<u64> = blocks_out.iter().filter_map(|b| b.block_id).collect();
 
-    state.cache.blocks = blocks;
+    state.cache.blocks = blocks_out;
     state.cache.width = width;
     state.cache.wrapped_height = wrapped_height;
     state.cache.version = state.content_version;
     state.cache.last_rebuild = Some(Instant::now());
+    state.cache.focusable_ids = focusable_ids;
     state.cache_dirty = false;
+    state.force_cache_rebuild = false;
 }
 
 // ── Subagent detail view ────────────────────────────────────────────
@@ -300,10 +346,7 @@ fn render_subagent_detail(frame: &mut Frame, state: &AppState, area: Rect) {
     let subagent_scroll = state.subagent_scroll.min(max_scroll);
     let scroll_from_top = max_scroll.saturating_sub(subagent_scroll);
 
-    let content_area = area.inner(Margin {
-        vertical: 0,
-        horizontal: 1,
-    });
-    render_blocks(frame, &blks, state.frame_count, None, scroll_from_top, content_area);
+    let content_area = area.inner(Margin { vertical: 0, horizontal: 1 });
+    render_blocks(frame, &blks, state.frame_count, None, None, scroll_from_top, content_area);
     render_scrollbar(frame, area, max_scroll, scroll_from_top);
 }

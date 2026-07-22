@@ -4,7 +4,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph, Widget},
+    widgets::{Paragraph, Widget},
 };
 
 const SUCCESS_COLOR: Color = Color::Rgb(152, 195, 121);
@@ -23,77 +23,67 @@ impl<'a> Widget for StatusBar<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let state = self.state;
         let (state_text, state_style) = match state.agent_state.as_str() {
-            "streaming" => (
-                "working... [esc]",
-                Style::default()
-                    .fg(Color::Rgb(229, 192, 123))
-                    .add_modifier(Modifier::BOLD | Modifier::SLOW_BLINK),
-            ),
-            "thinking" => (
-                "thinking... [esc]",
-                Style::default()
-                    .fg(Color::Rgb(198, 120, 221))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            "responding" => (
-                "responding... [esc]",
-                Style::default()
-                    .fg(Color::Rgb(86, 182, 194))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            "running tools" => (
-                "running tools... [esc]",
+            "streaming" | "thinking" | "responding" | "running tools" => (
+                format!("{} [esc abort]", state.agent_state),
                 Style::default()
                     .fg(Color::Rgb(229, 192, 123))
                     .add_modifier(Modifier::BOLD),
             ),
-            "idle" => ("idle", Style::default().fg(SUCCESS_COLOR)),
-            other => (other, Style::default().fg(Color::White)),
+            "idle" => ("idle".into(), Style::default().fg(SUCCESS_COLOR)),
+            other => (other.to_string(), Style::default().fg(Color::White)),
         };
 
-        let mut status_spans = vec![
+        let mut spans = vec![
             Span::styled(
-                " 🤖 Agent Core ",
+                " ageverse ",
                 Style::default()
                     .fg(Color::Rgb(97, 175, 239))
                     .add_modifier(Modifier::BOLD),
             ),
+            Span::raw("│ "),
+            Span::styled(&state.model, Style::default().fg(Color::Rgb(140, 148, 168))),
             Span::raw(" │ "),
-            Span::styled("Model: ", Style::default().fg(Color::Rgb(55, 62, 80))),
             Span::styled(
-                format!("{} ", state.model),
-                Style::default().fg(Color::Rgb(140, 148, 168)),
-            ),
-            Span::raw(" │ "),
-            Span::styled("Tokens: ", Style::default().fg(Color::Rgb(55, 62, 80))),
-            Span::styled(
-                format!("{} ", state.tokens),
+                format!("{}tok", state.tokens),
                 Style::default().fg(Color::Rgb(140, 148, 168)),
             ),
             Span::raw(" │ "),
             Span::styled(
-                format!("{} ", state_text),
-                state_style,
+                format!("{:.0}%", state.context_pct),
+                Style::default().fg(Color::Rgb(140, 148, 168)),
             ),
+            Span::raw(" │ "),
+            Span::styled(
+                state.permission_label.clone(),
+                Style::default().fg(Color::Rgb(140, 148, 168)),
+            ),
+            Span::raw(" │ "),
+            Span::styled(state_text, state_style),
         ];
-
-        if state.scroll > 0 {
-            status_spans.push(Span::raw(" │ "));
-            status_spans.push(Span::styled(
-                "⬆ scroll paused — press End to resume ",
+        if state.steer_queue_depth > 0 {
+            spans.push(Span::raw(" │ "));
+            spans.push(Span::styled(
+                format!("steer:{}", state.steer_queue_depth),
+                Style::default().fg(Color::Rgb(198, 120, 221)),
+            ));
+        }
+        if !state.is_follow_mode() {
+            spans.push(Span::raw(" │ "));
+            spans.push(Span::styled(
+                "⬆ paused — G or End to follow",
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             ));
         }
+        if !state.session_short.is_empty() {
+            spans.push(Span::raw(" │ "));
+            spans.push(Span::styled(
+                state.session_short.clone(),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
 
-        let status_text = Line::from(status_spans);
-
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(Color::Rgb(92, 99, 112)));
-
-        Paragraph::new(status_text).block(block).render(area, buf);
+        Paragraph::new(Line::from(spans)).render(area, buf);
     }
 }
