@@ -1,12 +1,13 @@
 # Agverse
 
-**Agverse** is a Rust-native AI coding agent with three frontends over one runtime:
+**Agverse** is a Rust-native AI coding agent with four frontends over one runtime:
 
 | Surface | How you use it |
 | -------- | ---------------- |
 | **Desktop (GUI)** | Tauri + React app — `Agverse` |
 | **CLI (REPL)** | Interactive terminal chat — binary `ageverse` |
 | **TUI** | Full-screen terminal UI — `ageverse --tui` |
+| **Gateway** | Remote HTTP API — binary `agverse-gateway` (Axum; Cursor Cloud Agents–shaped) |
 
 This repository is named **`agent_core`**. The shared library crate is also `agent_core`; the CLI package is `agent-cli` and installs as the **`ageverse`** binary.
 
@@ -224,6 +225,7 @@ Recoverable paths emit `RunEvent::Notice` with severity and a `recoverable` flag
 agent_core/
 ├── core/                 # Rust library: agent_core (runtime, tools, memory, …)
 ├── cli/                  # ageverse binary (REPL + TUI + oneshot + eval)
+├── gateway/              # agverse-gateway HTTP control plane (remote hosting)
 ├── app/                  # Desktop UI (React/Vite + Tauri in app/src-tauri)
 ├── evals/                # Harness suites and reports
 ├── ageverse_harbor/      # Harbor benchmark adapter
@@ -326,6 +328,16 @@ cargo run -p agent-cli -- --tui
 
 Defaults to a safer permission posture (`developer`) unless you pass `--permission`.
 
+### Gateway — remote HTTP API
+
+Cursor Cloud Agents–shaped control plane over the same `RunManager`. See [`gateway/README.md`](gateway/README.md).
+
+```bash
+export AGVERSE_API_KEY=dev-secret
+cargo run -p agverse-gateway
+# listen: 127.0.0.1:8787
+```
+
 ### CLI — oneshot (scripts / pipes / Harbor)
 
 ```bash
@@ -381,6 +393,7 @@ Workspace crates:
 | ------- | ---- | ---- |
 | `agent_core` | `core/` | Shared runtime |
 | `agent-cli` | `cli/` | `ageverse` binary |
+| `agverse-gateway` | `gateway/` | Remote HTTP API |
 | `app` (Tauri) | `app/src-tauri/` | Desktop backend |
 
 ---
