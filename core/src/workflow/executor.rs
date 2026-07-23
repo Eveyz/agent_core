@@ -501,10 +501,16 @@ async fn execute_agent_node(
         Some(brain.todo_lists.clone()),
     );
 
-    // Also ensure ShellTool (when present) is the supervised version so the
-    // node's own shell commands are process-group isolated.
+    // Also ensure ShellTool / ReplTool (when present) are supervised so the
+    // node's own commands are process-group isolated.
     if registry.has("shell") {
         registry.register(Box::new(crate::tools::shell::ShellTool::with_supervisor(
+            supervisor.clone(),
+            None,
+        )));
+    }
+    if registry.has("repl") {
+        registry.register(Box::new(crate::tools::repl::ReplTool::with_supervisor(
             supervisor.clone(),
             None,
         )));

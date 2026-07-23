@@ -2065,10 +2065,15 @@ async fn run_agent_standalone(
         Some(brain.todo_lists.clone()),
     );
 
-    // Ensure ShellTool (when present) is the supervised version.
+    // Ensure ShellTool / ReplTool (when present) are supervised.
     if registry.has("shell") {
         registry.register(Box::new(
             agent_core::tools::shell::ShellTool::with_supervisor(supervisor.clone(), None),
+        ));
+    }
+    if registry.has("repl") {
+        registry.register(Box::new(
+            agent_core::tools::repl::ReplTool::with_supervisor(supervisor.clone(), None),
         ));
     }
 

@@ -97,6 +97,12 @@ pub fn default_rules_with_danger() -> Vec<(ToolPermissionPattern, DangerLevel, A
             DangerLevel::System,
             ApprovalLevel::Ask,
         ),
+        // Session REPL — arbitrary host code execution (same trust as shell)
+        (
+            ToolPermissionPattern::simple("repl"),
+            DangerLevel::System,
+            ApprovalLevel::Ask,
+        ),
         // ── Memory tools (safe) ──────────────────────────────────────
         (
             ToolPermissionPattern::simple("*_memory_*"),
@@ -336,5 +342,16 @@ mod tests {
             .unwrap();
         assert_eq!(catch_all.1, DangerLevel::System);
         assert_eq!(catch_all.2, ApprovalLevel::Ask);
+    }
+
+    #[test]
+    fn test_repl_defaults_to_system_ask() {
+        let rules = default_rules_with_danger();
+        let repl = rules
+            .iter()
+            .find(|(p, _, _)| p.tool_pattern == "repl")
+            .expect("repl rule");
+        assert_eq!(repl.1, DangerLevel::System);
+        assert_eq!(repl.2, ApprovalLevel::Ask);
     }
 }

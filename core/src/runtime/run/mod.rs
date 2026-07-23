@@ -273,10 +273,14 @@ impl Run {
             ]);
             crate::tools::skill::register_skill_tools(&mut registry, manager.clone());
         }
-        // Replace the default ShellTool with a supervised version
-        // (only present in Build mode — in other modes shell was already removed)
+        // Replace the default ShellTool / ReplTool with supervised versions
+        // (only present in Build mode — in other modes they were already removed)
         if mode == AgentMode::Build {
             registry.register(Box::new(crate::tools::shell::ShellTool::with_supervisor(
+                supervisor.clone(),
+                working_dir_for_tool.clone(),
+            )));
+            registry.register(Box::new(crate::tools::repl::ReplTool::with_supervisor(
                 supervisor.clone(),
                 working_dir_for_tool,
             )));

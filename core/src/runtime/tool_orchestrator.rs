@@ -88,7 +88,9 @@ impl<'a> ToolOrchestrator<'a> {
             // Extract command/path/host for fine-grained matching; these are
             // also reused below to scope any approval the user grants, so that
             // e.g. allowing one `shell` command does not allow every command.
-            let command = args.get("command").and_then(|v| v.as_str());
+            // For `repl`, synthesize a fingerprint from language+action+code.
+            let command_owned = invocation_command(&call.function.name, &args);
+            let command = command_owned.as_deref();
             let paths = invocation_paths(&args);
             let path_refs: Vec<&str> = paths.iter().map(String::as_str).collect();
             let raw_host = args
@@ -737,6 +739,18 @@ fn scoped_pattern(
         pattern = pattern.with_hosts(vec![h.to_string()]);
     }
     pattern
+}
+
+/// Extract a command-like fingerprint used for permission scoping.
+/// Shell uses `command`; repl synthesizes `language:action:code`.
+fn invocation_command(tool_name: &str, args: &Value) -> Option<String> {
+    if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
+        return Some(cmd.to_string());
+    }
+    if tool_name == "repl" {
+        return crate::tools::repl::repl_permission_fingerprint(args);
+    }
+    None
 }
 
 /// Extract every filesystem target exposed by the built-in tool schemas. A

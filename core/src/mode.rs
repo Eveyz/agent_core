@@ -75,6 +75,7 @@ simple 1–2 step tasks; use it only for complex multi-step work.",
                 "edit",
                 "sed",
                 "shell",
+                "repl",
                 "git_commit",
                 "todo_write",
                 "todo_update",
@@ -87,6 +88,7 @@ simple 1–2 step tasks; use it only for complex multi-step work.",
                 "edit",
                 "sed",
                 "shell",
+                "repl",
                 "git_commit",
                 "todo_write",
                 "todo_update",
@@ -119,6 +121,7 @@ mod tests {
             "write_file",
             "edit",
             "shell",
+            "repl",
             "todo_write",
             "todo_update",
             "todo_delete",
@@ -138,7 +141,7 @@ mod tests {
             !removed.contains(&"write_file"),
             "Plan must keep write_file for plan.md"
         );
-        for name in ["todo_write", "todo_read", "edit", "shell", "git_commit"] {
+        for name in ["todo_write", "todo_read", "edit", "shell", "repl", "git_commit"] {
             assert!(
                 removed.contains(&name),
                 "Plan must remove {name}"

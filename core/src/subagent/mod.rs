@@ -303,7 +303,7 @@ impl Subagent {
         self.approval_resolver.as_ref()
     }
 
-    /// Replace the ShellTool in the registry with a supervised version.
+    /// Replace the ShellTool / ReplTool in the registry with supervised versions.
     fn wire_supervisor_to_registry(&mut self, supervisor: &Arc<Mutex<ProcessSupervisor>>) {
         if self.registry.has("shell") {
             let working_dir = self
@@ -317,20 +317,36 @@ impl Subagent {
                     working_dir,
                 )));
         }
+        if self.registry.has("repl") {
+            let working_dir = self
+                .config
+                .working_dir
+                .as_ref()
+                .map(|p| p.to_string_lossy().to_string());
+            self.registry
+                .register(Box::new(crate::tools::repl::ReplTool::with_supervisor(
+                    supervisor.clone(),
+                    working_dir,
+                )));
+        }
     }
 
-    /// Replace the ShellTool in `registry` with one whose
+    /// Replace the ShellTool / ReplTool in `registry` with ones whose
     /// `default_working_dir` is set to the subagent's `working_dir`, if any.
-    /// This is how the subagent's shell commands execute in the intended
+    /// This is how the subagent's shell/repl commands execute in the intended
     /// directory WITHOUT touching the process-global CWD (which would race
     /// with concurrent subagents on the same tokio runtime).
     fn wire_working_dir(mut registry: ToolRegistry, config: &SubagentConfig) -> ToolRegistry {
         if let Some(ref wd) = config.working_dir {
+            let wd_str = wd.to_string_lossy().to_string();
             if registry.has("shell") {
                 registry.register(Box::new(
-                    crate::tools::shell::ShellTool::with_default_working_dir(Some(
-                        wd.to_string_lossy().to_string(),
-                    )),
+                    crate::tools::shell::ShellTool::with_default_working_dir(Some(wd_str.clone())),
+                ));
+            }
+            if registry.has("repl") {
+                registry.register(Box::new(
+                    crate::tools::repl::ReplTool::with_default_working_dir(Some(wd_str)),
                 ));
             }
         }

@@ -665,6 +665,11 @@ impl PermissionPolicy {
             return DangerLevel::System;
         }
 
+        // Session REPL executes arbitrary Python/JS on the host.
+        if tool_name == "repl" {
+            return DangerLevel::System;
+        }
+
         // Dynamic skill script tools execute arbitrary programs. Check this
         // before the broad read-only `skill_*` metadata-tool rule; API-facing
         // names replace dots with underscores.

@@ -7,6 +7,7 @@ pub mod glob;
 pub mod grep;
 pub mod read_file;
 pub mod recall_memory;
+pub mod repl;
 pub mod script;
 pub mod skill;
 pub mod subagent;
@@ -137,6 +138,7 @@ impl ToolRegistry {
         registry.register(Box::new(grep::GrepTool));
         registry.register(Box::new(glob::GlobTool));
         registry.register(Box::new(shell::ShellTool::new()));
+        registry.register(Box::new(repl::ReplTool::new()));
         registry.register(Box::new(webfetch::WebFetchTool::new()));
         if let Some(tool) = tavily_search::TavilySearchTool::from_env() {
             registry.register(Box::new(tool));
@@ -345,6 +347,7 @@ pub fn build_tool_by_name(name: &str) -> Option<Box<dyn Tool>> {
         "grep" => Some(Box::new(grep::GrepTool)),
         "glob" => Some(Box::new(glob::GlobTool)),
         "shell" | "bash" => Some(Box::new(shell::ShellTool::new())),
+        "repl" => Some(Box::new(repl::ReplTool::new())),
         "ask_user" => Some(Box::new(ask_user::AskUserTool)),
         "webfetch" => Some(Box::new(webfetch::WebFetchTool::new())),
         "tavily_search" => {
@@ -405,6 +408,12 @@ fn canonicalize_json_object(value: &serde_json::Value) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn with_defaults_includes_repl() {
+        let registry = ToolRegistry::with_defaults();
+        assert!(registry.has("repl"));
+    }
 
     #[test]
     fn remove_all_clears_has_and_definitions() {
