@@ -105,6 +105,7 @@ impl OpenAIClient {
         tools: &[ToolDefinition],
         stream: bool,
         cache_hint: Option<ClientCacheHint>,
+        required_tool: Option<&str>,
     ) -> Value {
         let api_mode = self.model.resolved_api_mode();
         let temperature = self.overrides.temperature.or(self.model.temperature);
@@ -122,6 +123,7 @@ impl OpenAIClient {
             self.model.reasoning_effort.as_deref(),
             self.model.supports_images(),
         );
+        providers::apply_required_tool_choice(&mut body, api_mode, required_tool);
 
         // NVIDIA's API gateway wraps DeepSeek models behind a chat_template_kwargs
         // translation layer.  Sending top-level `thinking` / `reasoning_effort`
@@ -230,7 +232,7 @@ impl OpenAIClient {
         tools: &[ToolDefinition],
         cache_hint: Option<ClientCacheHint>,
     ) -> Result<(String, Vec<crate::types::ToolCall>)> {
-        let body = self.build_request_body(messages, tools, false, cache_hint);
+        let body = self.build_request_body(messages, tools, false, cache_hint, None);
         let resp = self.send_with_retry(&body).await?;
         let data: Value = resp.json().await?;
 
@@ -276,8 +278,26 @@ impl OpenAIClient {
         tools: &[ToolDefinition],
         cache_hint: Option<ClientCacheHint>,
     ) -> Result<impl futures::Stream<Item = Result<StreamEvent>>> {
+        self.chat_completion_stream_with_hint_and_required_tool(
+            messages,
+            tools,
+            cache_hint,
+            None,
+        )
+        .await
+    }
+
+    /// Stream a completion while requiring the provider to call one named
+    /// tool. Existing callers remain on automatic tool selection.
+    pub async fn chat_completion_stream_with_hint_and_required_tool(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        cache_hint: Option<ClientCacheHint>,
+        required_tool: Option<&str>,
+    ) -> Result<impl futures::Stream<Item = Result<StreamEvent>>> {
         let http_t0 = std::time::Instant::now();
-        let body = self.build_request_body(messages, tools, true, cache_hint);
+        let body = self.build_request_body(messages, tools, true, cache_hint, required_tool);
         let resp = self.send_with_retry(&body).await?;
         let status = resp.status();
         let ct = resp

@@ -58,6 +58,39 @@ pub fn build_provider_body(
     }
 }
 
+/// Override provider-specific automatic tool selection with one required tool.
+///
+/// This is used for runtime invariants such as structured `@CustomAgent`
+/// mentions, where silently returning prose without dispatching the selected
+/// agent would violate the user's request.
+pub(crate) fn apply_required_tool_choice(
+    body: &mut Value,
+    api_mode: ApiMode,
+    required_tool: Option<&str>,
+) {
+    let Some(name) = required_tool.filter(|name| !name.is_empty()) else {
+        return;
+    };
+    if body.get("tools").is_none() {
+        return;
+    }
+
+    body["tool_choice"] = match api_mode {
+        ApiMode::ChatCompletions => json!({
+            "type": "function",
+            "function": { "name": name },
+        }),
+        ApiMode::Responses => json!({
+            "type": "function",
+            "name": name,
+        }),
+        ApiMode::AnthropicMessages => json!({
+            "type": "tool",
+            "name": name,
+        }),
+    };
+}
+
 /// Endpoint path relative to `base_url` (which may already include `/v1`).
 pub fn endpoint_for(api_mode: ApiMode, base_url: &str) -> String {
     let base = base_url.trim_end_matches('/');
@@ -707,6 +740,49 @@ mod tests {
         assert_eq!(
             ApiMode::infer("https://api.deepseek.com", "deepseek-chat"),
             ApiMode::ChatCompletions
+        );
+    }
+
+    #[test]
+    fn required_tool_choice_is_encoded_for_each_provider_protocol() {
+        let mut ordinary = json!({ "tools": [{}], "tool_choice": "auto" });
+        apply_required_tool_choice(&mut ordinary, ApiMode::ChatCompletions, None);
+        assert_eq!(ordinary["tool_choice"], "auto");
+
+        let mut chat = json!({ "tools": [{}], "tool_choice": "auto" });
+        apply_required_tool_choice(
+            &mut chat,
+            ApiMode::ChatCompletions,
+            Some("run_mentioned_agents"),
+        );
+        assert_eq!(
+            chat["tool_choice"],
+            json!({
+                "type": "function",
+                "function": { "name": "run_mentioned_agents" }
+            })
+        );
+
+        let mut responses = json!({ "tools": [{}] });
+        apply_required_tool_choice(
+            &mut responses,
+            ApiMode::Responses,
+            Some("run_mentioned_agents"),
+        );
+        assert_eq!(
+            responses["tool_choice"],
+            json!({ "type": "function", "name": "run_mentioned_agents" })
+        );
+
+        let mut anthropic = json!({ "tools": [{}] });
+        apply_required_tool_choice(
+            &mut anthropic,
+            ApiMode::AnthropicMessages,
+            Some("run_mentioned_agents"),
+        );
+        assert_eq!(
+            anthropic["tool_choice"],
+            json!({ "type": "tool", "name": "run_mentioned_agents" })
         );
     }
 }

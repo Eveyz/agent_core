@@ -35,6 +35,7 @@ import {
   type SendPayload,
   type AgentMentionPayload,
 } from './imageAttachments';
+import { resolveAgentMentions } from './agentMentions';
 import { resolveSupportsImages } from '../../utils/modelCapabilities';
 
 import { 
@@ -169,9 +170,7 @@ export const ChatInput = memo(function ChatInput({
 
     if (isProcessing) return;
     const images = pendingImages;
-    const agentMentions = selectedAgentMentions
-      .filter((mention) => input.includes(mention.token))
-      .map(({ token: _token, ...mention }) => mention);
+    const agentMentions = resolveAgentMentions(input, selectedAgentMentions, agents);
     setPendingImages([]);
     setSelectedAgentMentions([]);
     clearDraft();
@@ -181,7 +180,7 @@ export const ChatInput = memo(function ChatInput({
       agentMentions: agentMentions.length ? agentMentions : undefined,
     });
     closeAutocomplete();
-  }, [input, pendingImages, selectedAgentMentions, isProcessing, onSend, onBtwQuery, closeAutocomplete, clearDraft]);
+  }, [input, pendingImages, selectedAgentMentions, agents, isProcessing, onSend, onBtwQuery, closeAutocomplete, clearDraft]);
 
   const addImageFiles = useCallback(async (files: ArrayLike<Blob | File>) => {
     const next: PendingImage[] = [];

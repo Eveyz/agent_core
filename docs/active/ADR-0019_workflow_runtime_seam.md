@@ -40,6 +40,9 @@ Keep two runtimes with a narrow seam:
   compile into the same `WorkflowSpec`.
 - A run-scoped mention tool is registered only when the frontend sends a
   non-empty structured mention manifest.
+- That mention tool is a runtime-required action until it succeeds. Provider
+  requests encode the named tool choice explicitly, and the Run rejects a
+  text-only Final if a compatible gateway ignores that constraint.
 
 ## Consequences
 

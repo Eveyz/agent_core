@@ -144,6 +144,27 @@ impl Run {
 
         // Stage: Dispatch
         if tool_calls.is_empty() {
+            if let Some(required_tool) = self.required_tool.clone() {
+                tracing::warn!(
+                    %required_tool,
+                    "provider returned text without the runtime-required tool call"
+                );
+                let content = crate::hygiene::wrap_thinking(&thinking, &text);
+                self.append_conversation(Message::assistant(&content));
+                self.append_conversation(Message::system(&format!(
+                    "[Runtime requirement] You cannot finish this Run yet. Call the \
+                     `{required_tool}` tool now. The structured @Agent mention is \
+                     addressed to the selected custom agent, not to the parent agent."
+                )));
+                self.save_session_snapshot();
+                self.emit(RunEvent::MessageEnd {
+                    message_id: message_id.clone(),
+                    message: Message::assistant(&content),
+                });
+                self.emit(RunEvent::TurnEnded { index: turn_index });
+                return Ok(TurnOutcome::Continue);
+            }
+
             // Final answer — persist thinking for resume; memory uses visible text only.
             let content = crate::hygiene::wrap_thinking(&thinking, &text);
             let mut assistant_msg = Message::assistant(&content);
@@ -394,6 +415,7 @@ impl Run {
         let mut todo_write_ok = false;
         let mut todo_write_forced = false;
 
+        let mut required_tool_succeeded = false;
         for (call, result) in tool_calls.iter().zip(&tool_results) {
             let is_error = crate::runtime::execution::tool_result_is_error(result);
             let aborted = result.starts_with("Aborted")
@@ -425,6 +447,9 @@ impl Run {
             if !is_error && !aborted {
                 self.file_ledger
                     .observe_tool(&call.function.name, &call.function.arguments);
+                if self.required_tool.as_deref() == Some(call.function.name.as_str()) {
+                    required_tool_succeeded = true;
+                }
             }
 
             self.emit(RunEvent::ToolEnded {
@@ -452,6 +477,9 @@ impl Run {
                 stored,
                 Some(call.function.name.clone()),
             ));
+        }
+        if required_tool_succeeded {
+            self.required_tool = None;
         }
         self.save_session_snapshot();
 
@@ -614,10 +642,11 @@ impl Run {
                 let step_res = {
                     let stream_res = tokio::select! {
                         _ = self.cancel.cancelled() => return Err("aborted".to_string()),
-                        result = self.client.chat_completion_stream_with_hint(
+                        result = self.client.chat_completion_stream_with_hint_and_required_tool(
                             &attempt_messages,
                             &tools,
                             Some(cache_hint),
+                            self.required_tool.as_deref(),
                         ) => result,
                     };
 

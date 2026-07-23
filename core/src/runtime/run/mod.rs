@@ -111,6 +111,10 @@ pub struct Run {
     context: Context,
     client: OpenAIClient,
     registry: ToolRegistry,
+    /// A run-scoped tool that must complete before a text-only Final is valid.
+    /// Structured custom-agent mentions use this to make dispatch a runtime
+    /// invariant instead of a model suggestion.
+    required_tool: Option<String>,
     permission_policy: PermissionPolicy,
     hook_registry: Arc<parking_lot::Mutex<HookRegistry>>,
     recovery: RecoveryEngine,
@@ -309,8 +313,14 @@ impl Run {
                 Some(brain.todo_lists.clone()),
             );
         }
-        if let Some(factory) = scoped_tool_factory {
-            factory(&mut registry, cancel_token.clone(), id.clone());
+        let required_tool = scoped_tool_factory.and_then(|factory| {
+            factory(&mut registry, cancel_token.clone(), id.clone())
+        });
+        if let Some(ref name) = required_tool {
+            anyhow::ensure!(
+                registry.has(name),
+                "required run-scoped tool '{name}' was not registered"
+            );
         }
 
         let mut context = Context::new(&identity, max_context_tokens);
@@ -378,6 +388,7 @@ impl Run {
             context,
             client,
             registry,
+            required_tool,
             permission_policy,
             hook_registry: hooks,
             recovery,
@@ -668,4 +679,4 @@ fn build_iteration_limit_summary(context: &Context, max_iterations: usize) -> St
     msg
 }
 pub type ScopedToolFactory =
-    Arc<dyn Fn(&mut ToolRegistry, CancellationToken, RunId) + Send + Sync>;
+    Arc<dyn Fn(&mut ToolRegistry, CancellationToken, RunId) -> Option<String> + Send + Sync>;

@@ -320,12 +320,19 @@ async fn send_message(
                 let allowed = manifest
                     .mentions
                     .iter()
-                    .map(|mention| mention.agent_id.as_str())
+                    .map(|mention| {
+                        agent_core::agent_registry::get(&state.storage, &mention.agent_id)
+                            .map(|agent| format!("{} => {}", agent.name, mention.agent_id))
+                            .unwrap_or_else(|_| mention.agent_id.clone())
+                    })
                     .collect::<Vec<_>>()
                     .join(", ");
                 let description = format!(
                     "Plan and run the custom agents explicitly mentioned by the user. \
-                     You MUST use this tool before answering when delegation is requested. \
+                     This tool call is REQUIRED before answering any message carrying this \
+                     structured mention manifest, including questions about an agent's \
+                     identity or capabilities. Treat the message as addressed to the mentioned \
+                     agent or agents, never as a question to the parent agent. \
                      Only these agent IDs are allowed: {allowed}. Express all dependencies \
                      with depends_on and pass upstream handoffs through explicit inputs. \
                      After the tool returns, synthesize its result for the user."
@@ -348,6 +355,7 @@ async fn send_message(
                             description.clone(),
                         ),
                     ));
+                    Some("run_mentioned_agents".to_string())
                 }) as agent_core::runtime::run::ScopedToolFactory
             });
 
