@@ -56,7 +56,11 @@
     },
     "todoPanel": {
       "plan": "Plan",
-      "completed": "{{completed}}/{{total}} Completed"
+      "completed": "{{completed}}/{{total}} Completed",
+      "resume": "Resume",
+      "cancel": "Cancel",
+      "parked": "Parked",
+      "resumePrompt": "Continue the plan: {{title}}"
     },
     "turn": {
       "worked": "Worked {{summary}}",

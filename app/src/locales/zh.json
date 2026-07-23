@@ -56,7 +56,11 @@
     },
     "todoPanel": {
       "plan": "任务计划",
-      "completed": "已完成 {{completed}}/{{total}}"
+      "completed": "已完成 {{completed}}/{{total}}",
+      "resume": "继续",
+      "cancel": "取消",
+      "parked": "已搁置",
+      "resumePrompt": "继续执行计划：{{title}}"
     },
     "turn": {
       "worked": "已执行 {{summary}}",

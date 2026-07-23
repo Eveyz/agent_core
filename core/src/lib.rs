@@ -105,6 +105,7 @@ pub use tasks::{TaskBoard, TaskRecord, TaskStatus};
 pub use teams::{AgentTeam, MessageBus, TeamMessage, TeamMessageType};
 pub use todo::{
     is_bare_continue, is_continue_cue, is_explicit_plan_resume, is_object_bearing_continue,
+    parse_resume_target, ResumeTarget,
     ContinueResolution, ParkedPlanSummary, Plan, PlanDetail, PlanStatus, PlansSnapshot, SessionPlanStore,
     SessionTodoStore, TodoItem, TodoList, TodoStatus,
 };

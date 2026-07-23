@@ -764,6 +764,38 @@ impl SessionPlanStore {
         })
     }
 
+    /// Activate a parked plan whose title equals (or uniquely contains) `title`.
+    pub fn activate_by_title(&self, session_id: Option<&str>, title: &str) -> Result<String, String> {
+        let needle = title.trim();
+        if needle.is_empty() {
+            return Err("empty plan title".into());
+        }
+        let parked = self.parked(session_id);
+        let exact: Vec<_> = parked
+            .iter()
+            .filter(|p| p.title == needle)
+            .collect();
+        let id = if exact.len() == 1 {
+            exact[0].id.clone()
+        } else {
+            let partial: Vec<_> = parked
+                .iter()
+                .filter(|p| p.title.contains(needle) || needle.contains(p.title.as_str()))
+                .collect();
+            match partial.len() {
+                1 => partial[0].id.clone(),
+                0 => return Err(format!("No parked plan titled '{needle}'")),
+                _ => {
+                    return Err(format!(
+                        "Multiple parked plans match '{needle}' — pick one with /plan resume <id>"
+                    ))
+                }
+            }
+        };
+        self.activate(session_id, &id)?;
+        Ok(id)
+    }
+
     /// Cancel a plan by id.
     pub fn cancel(&self, session_id: Option<&str>, plan_id: &str) -> Result<(), String> {
         self.with_session_mut(session_id, |key, state| {
@@ -1177,6 +1209,7 @@ pub fn is_explicit_plan_resume(text: &str) -> bool {
         || t.contains("resume plan")
         || t.contains("continue the plan")
         || t.contains("continue with the plan")
+        || t.contains("continue executing the plan")
         || t.contains("continue the todo")
         || t.contains("resume the todo")
     {
@@ -1193,6 +1226,82 @@ pub fn is_explicit_plan_resume(text: &str) -> bool {
         return true;
     }
     false
+}
+
+/// What a resume cue is asking to restore.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResumeTarget {
+    /// `/plan resume <uuid>`
+    PlanId(String),
+    /// Natural language with a plan title, e.g. 「继续执行计划：Auth」.
+    Title(String),
+    /// Resume intent without naming which plan.
+    Unspecified,
+}
+
+/// Parse `/plan resume <id>` or natural "continue the plan: Title" into a target.
+pub fn parse_resume_target(text: &str) -> ResumeTarget {
+    let trimmed = text.trim();
+    if let Some(rest) = trimmed.strip_prefix("/plan resume") {
+        let rest = rest.trim();
+        if rest.is_empty() {
+            return ResumeTarget::Unspecified;
+        }
+        return ResumeTarget::PlanId(rest.to_string());
+    }
+    if !is_explicit_plan_resume(trimmed) {
+        return ResumeTarget::Unspecified;
+    }
+
+    // Longest prefixes first so "继续执行计划：" wins over "继续执行计划".
+    const PREFIXES: &[&str] = &[
+        "继续执行计划：",
+        "继续执行计划:",
+        "继续执行计划",
+        "继续刚才的计划：",
+        "继续刚才的计划:",
+        "继续刚才的计划",
+        "继续这个计划：",
+        "继续这个计划:",
+        "继续这个计划",
+        "继续计划：",
+        "继续计划:",
+        "继续计划",
+        "continue executing the plan:",
+        "continue executing the plan -",
+        "continue executing the plan —",
+        "continue executing the plan",
+        "continue with the plan:",
+        "continue with the plan -",
+        "continue with the plan —",
+        "continue with the plan",
+        "continue the plan:",
+        "continue the plan -",
+        "continue the plan —",
+        "continue the plan",
+        "resume the plan:",
+        "resume the plan -",
+        "resume the plan —",
+        "resume the plan",
+        "resume plan:",
+        "resume plan",
+    ];
+
+    let lower = trimmed.to_lowercase();
+    for prefix in PREFIXES {
+        let p = prefix.to_lowercase();
+        if lower.starts_with(&p) {
+            let rest = trimmed[prefix.len()..].trim();
+            let rest = rest
+                .trim_matches(['「', '」', '《', '》', '"', '"', '"', '\'', '“', '”'])
+                .trim();
+            if rest.is_empty() {
+                return ResumeTarget::Unspecified;
+            }
+            return ResumeTarget::Title(rest.to_string());
+        }
+    }
+    ResumeTarget::Unspecified
 }
 
 /// "Continue X" where X is a concrete object (not a plan resume).
@@ -1604,9 +1713,51 @@ mod tests {
         assert!(is_bare_continue("继续"));
         assert!(is_explicit_plan_resume("/plan resume"));
         assert!(is_explicit_plan_resume("继续刚才的计划"));
+        assert!(is_explicit_plan_resume("继续执行计划"));
+        assert!(is_explicit_plan_resume("Continue the plan: Auth"));
         assert!(is_object_bearing_continue("继续算斐波那契"));
         assert!(!is_bare_continue("继续算斐波那契"));
         assert!(!is_continue_cue("what is rust?"));
+    }
+
+    #[test]
+    fn parse_resume_target_natural_and_slash() {
+        assert_eq!(
+            parse_resume_target("/plan resume abc-123"),
+            ResumeTarget::PlanId("abc-123".into())
+        );
+        assert_eq!(
+            parse_resume_target("继续执行计划"),
+            ResumeTarget::Unspecified
+        );
+        assert_eq!(
+            parse_resume_target("继续执行计划：建立协议安全分级体系"),
+            ResumeTarget::Title("建立协议安全分级体系".into())
+        );
+        assert_eq!(
+            parse_resume_target("Continue the plan: Auth models"),
+            ResumeTarget::Title("Auth models".into())
+        );
+    }
+
+    #[test]
+    fn activate_by_title_picks_matching_parked() {
+        let store = SessionPlanStore::new();
+        store
+            .write_plan(Some("s"), vec!["Alpha step".into()], false, Some("p1"))
+            .unwrap();
+        store.park_active(Some("s"));
+        store
+            .write_plan(Some("s"), vec!["Beta step".into()], false, Some("p2"))
+            .unwrap();
+        store.park_active(Some("s"));
+        store.activate_by_title(Some("s"), "Alpha step").unwrap();
+        assert_eq!(
+            store.active_list(Some("s")).items[0].description,
+            "Alpha step"
+        );
+        assert_eq!(store.parked(Some("s")).len(), 1);
+        assert_eq!(store.parked(Some("s"))[0].title, "Beta step");
     }
 
     #[test]

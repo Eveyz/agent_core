@@ -70,11 +70,11 @@ function TodoPanel({
   const [collapsed, setCollapsed] = useState(true);
 
   const resumePlan = useCallback(
-    (planId: string) => {
+    (title: string) => {
       if (!sessionId || isProcessing) return;
-      onSend(`/plan resume ${planId}`);
+      onSend(t('chat.todoPanel.resumePrompt', { title }));
     },
-    [sessionId, isProcessing, onSend],
+    [sessionId, isProcessing, onSend, t],
   );
 
   const cancelPlan = useCallback(
@@ -146,7 +146,7 @@ function TodoPanel({
       {showParked && (
         <div className={`todo-parked${showActive ? ' todo-parked-below-active' : ''}`}>
           <div className="todo-header todo-parked-header">
-            <span className="todo-title">Parked</span>
+            <span className="todo-title">{t('chat.todoPanel.parked')}</span>
             <span className="todo-progress-text">{parked.length}</span>
           </div>
           <ul className="todo-list">
@@ -163,16 +163,16 @@ function TodoPanel({
                     type="button"
                     className="todo-parked-btn todo-parked-btn-resume"
                     disabled={isProcessing}
-                    onClick={() => resumePlan(p.id)}
+                    onClick={() => resumePlan(p.title)}
                   >
-                    Resume
+                    {t('chat.todoPanel.resume')}
                   </button>
                   <button
                     type="button"
                     className="todo-parked-btn todo-parked-btn-cancel"
                     onClick={() => cancelPlan(p.id)}
                   >
-                    Cancel
+                    {t('chat.todoPanel.cancel')}
                   </button>
                 </div>
               </li>

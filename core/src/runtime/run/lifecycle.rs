@@ -250,35 +250,59 @@ impl Run {
             self.emit_plans_updated();
             self.execution.sync_from_todos(&crate::todo::TodoList::new());
         } else if is_plan_resume || crate::todo::is_explicit_plan_resume(trimmed) {
-            let rest = trimmed
-                .strip_prefix("/plan resume")
-                .unwrap_or("")
-                .trim();
-            if is_plan_resume && !rest.is_empty() {
-                match self
-                    .brain
-                    .todo_lists
-                    .activate(self.session_id.as_deref(), rest)
-                {
-                    Ok(()) => {
-                        let list = self
-                            .brain
-                            .todo_lists
-                            .active_list(self.session_id.as_deref());
-                        self.execution.sync_from_todos(&list);
-                        self.execution.set_resume_hint(format!(
-                            "Resumed plan {rest}. Continue the NEXT step with tools."
-                        ));
-                        self.emit_plans_updated();
-                    }
-                    Err(e) => {
-                        self.execution.set_resume_hint(format!(
-                            "Could not resume plan: {e}. Call ask_user or /plan resume with a valid id."
-                        ));
+            use crate::todo::ResumeTarget;
+            match crate::todo::parse_resume_target(trimmed) {
+                ResumeTarget::PlanId(id) => {
+                    match self
+                        .brain
+                        .todo_lists
+                        .activate(self.session_id.as_deref(), &id)
+                    {
+                        Ok(()) => {
+                            let list = self
+                                .brain
+                                .todo_lists
+                                .active_list(self.session_id.as_deref());
+                            self.execution.sync_from_todos(&list);
+                            self.execution.set_resume_hint(
+                                "Plan resumed. Continue the NEXT incomplete step with tools."
+                                    .to_string(),
+                            );
+                            self.emit_plans_updated();
+                        }
+                        Err(e) => {
+                            self.execution.set_resume_hint(format!(
+                                "Could not resume plan: {e}. Call ask_user or name the plan clearly."
+                            ));
+                        }
                     }
                 }
-            } else {
-                self.apply_continue_resolution();
+                ResumeTarget::Title(title) => {
+                    match self
+                        .brain
+                        .todo_lists
+                        .activate_by_title(self.session_id.as_deref(), &title)
+                    {
+                        Ok(_) => {
+                            let list = self
+                                .brain
+                                .todo_lists
+                                .active_list(self.session_id.as_deref());
+                            self.execution.sync_from_todos(&list);
+                            self.execution.set_resume_hint(format!(
+                                "Plan \"{title}\" resumed. Continue the NEXT incomplete step with tools."
+                            ));
+                            self.emit_plans_updated();
+                        }
+                        Err(_) => {
+                            // Title ambiguous/missing — fall back to single-parked / ask_user.
+                            self.apply_continue_resolution();
+                        }
+                    }
+                }
+                ResumeTarget::Unspecified => {
+                    self.apply_continue_resolution();
+                }
             }
         } else if crate::todo::is_bare_continue(trimmed)
             && self
