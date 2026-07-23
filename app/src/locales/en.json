@@ -47,8 +47,10 @@
     "thought": "Thought",
     "footer": {
       "working": "Working...",
-      "generatingTools": "Generating tools…",
-      "generatingTool": "Generating {{name}}…",
+      "callingTools": "Calling tools…",
+      "callingTool": "{{verb}}…",
+      "generatingTools": "Calling tools…",
+      "generatingTool": "{{verb}}…",
       "modelThinking": "Model is thinking…",
       "modelWaiting": "Still waiting on the model…",
       "modelWaitingAlt": "Model is cooking up the next step…",
@@ -222,9 +224,17 @@
         "calledOthers_plural": "called {{count}} other tools"
       },
       "display": {
-        "preparingTool": "Preparing tool…",
-        "preparingNamed": "Preparing {{name}}…",
-        "preparingNamedPath": "Preparing {{name}} · {{basename}}",
+        "startingTool": "Starting…",
+        "callingNamed": "{{verb}} {{name}}…",
+        "callingNamedPath": "{{verb}} · {{basename}}",
+        "editingFile": "Editing {{basename}}",
+        "readingFile": "Reading {{basename}}",
+        "runningCommand": "Running…",
+        "searchingGeneric": "Searching…",
+        "exploringGeneric": "Exploring…",
+        "preparingTool": "Starting…",
+        "preparingNamed": "{{verb}} {{name}}…",
+        "preparingNamedPath": "{{verb}} · {{basename}}",
         "searching": "Searching \"{{query}}\"",
         "searched": "Searched \"{{query}}\"",
         "fetching": "Fetching {{url}}",
@@ -250,6 +260,17 @@
         "calledMcp": "Called MCP {{server}} · {{tool}}",
         "callingMcpSimple": "Calling MCP {{tool}}",
         "calledMcpSimple": "Called MCP {{tool}}"
+      },
+      "verbs": {
+        "editing": "Editing",
+        "writing": "Writing",
+        "reading": "Reading",
+        "running": "Running",
+        "searching": "Searching",
+        "exploring": "Exploring",
+        "fetching": "Fetching",
+        "updating": "Updating",
+        "calling": "Calling"
       }
     }
   },

@@ -6,7 +6,7 @@ import WrenchIcon from 'lucide-react/dist/esm/icons/wrench.mjs';
 import type { TurnBlock } from '../../features/chat/chatSlice';
 import { formatTime } from '../../utils/format';
 import type { TurnIteration, ApprovalBlock, SubagentRefBlock } from './turnHelpers';
-import { isSubagentTool, isSubagentRefBlock, generateSmartToolsLabel } from './turnHelpers';
+import { isSubagentTool, isSubagentRefBlock, generateSmartToolsLabel, argsWithHintPath } from './turnHelpers';
 import ToolBlockUI from './ToolBlockUI';
 import EditFileWidget from './EditFileWidget';
 import ReadFileWidget from './ReadFileWidget';
@@ -75,58 +75,32 @@ const TurnIterationUI = memo(function TurnIterationUI({
           );
           const approvalStatus: 'approved' | 'denied' | undefined = approvalBlock?.status as 'approved' | 'denied' | undefined;
 
+          // preparing = model still streaming tool args; treat as in-progress
+          // (Editing/Reading/Running) — not a separate "Preparing" phase in the UI.
+          const inProgress = b.phase === 'preparing' || b.active;
+
           if (name === 'edit') {
-            if (b.phase === 'preparing') {
-              return (
-                <ToolBlockUI
-                  key={b.call_id || idx}
-                  name={name}
-                  args={b.args}
-                  result={b.result}
-                  active={b.active}
-                  is_error={b.is_error}
-                  startTime={b.startTime}
-                  endTime={b.endTime}
-                  phase={b.phase}
-                  hint_path={b.hint_path}
-                />
-              );
-            }
             return (
               <EditFileWidget
                 key={b.call_id || idx}
-                args={b.args}
+                args={argsWithHintPath(b.args, b.hint_path, 'file_path')}
                 result={b.result}
-                active={b.active}
+                active={inProgress}
                 is_error={b.is_error}
               />
             );
           } else if (name === 'read_file') {
-            if (b.phase === 'preparing') {
-              return (
-                <ToolBlockUI
-                  key={b.call_id || idx}
-                  name={name}
-                  args={b.args}
-                  result={b.result}
-                  active={b.active}
-                  is_error={b.is_error}
-                  startTime={b.startTime}
-                  endTime={b.endTime}
-                  phase={b.phase}
-                  hint_path={b.hint_path}
-                />
-              );
-            }
             return (
               <ReadFileWidget
                 key={b.call_id || idx}
-                args={b.args}
-                active={b.active}
+                args={argsWithHintPath(b.args, b.hint_path, 'path')}
+                active={inProgress}
                 is_error={b.is_error}
               />
             );
           } else if (name === 'shell' || name === 'bash' || name === 'grep_search' || name === 'glob_search' || name === 'grep' || name === 'glob') {
+            // Shell preparing often has no command yet — keep ToolBlockUI so we
+            // don't flash "Running undefined". Once args arrive (running), use BashWidget.
             if (b.phase === 'preparing') {
               return (
                 <ToolBlockUI
@@ -134,7 +108,7 @@ const TurnIterationUI = memo(function TurnIterationUI({
                   name={name}
                   args={b.args}
                   result={b.result}
-                  active={b.active}
+                  active={true}
                   is_error={b.is_error}
                   startTime={b.startTime}
                   endTime={b.endTime}

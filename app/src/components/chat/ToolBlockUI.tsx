@@ -6,7 +6,7 @@ import { MarkdownContent } from './MarkdownContent';
 import { CodeBlock } from './CodeBlock';
 import { useTranslation } from 'react-i18next';
 import { getToolIcon } from './toolIcons';
-import { parseMcpToolName } from './turnHelpers';
+import { parseMcpToolName, progressiveToolVerbKey, basename as pathBasename } from './turnHelpers';
 import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
 import CopyIcon from 'lucide-react/dist/esm/icons/copy.mjs';
 import CheckCircleIcon from 'lucide-react/dist/esm/icons/check-circle.mjs';
@@ -210,6 +210,7 @@ const ToolBlockUI = memo(function ToolBlockUI({
   const { t } = useTranslation();
   const isPreparing = phase === 'preparing';
   const isExpandable = !isPreparing && name !== 'write_file' && name !== 'write_to_file';
+  const rowActive = Boolean(active || isPreparing);
   const [collapsed, setCollapsed] = useState(true);
   const [copied, setCopied] = useState(false);
 
@@ -246,32 +247,64 @@ const ToolBlockUI = memo(function ToolBlockUI({
   }, [args]);
 
   const displayLabel = useMemo(() => {
+    // preparing = model still composing tool args; show the same progressive
+    // verb users see while the tool runs (Editing/Writing/…), not "Preparing".
+    const inProgress = active || phase === 'preparing';
+    const hintOrArgPath =
+      hint_path ||
+      ((args as Record<string, unknown> | undefined)?.path as string | undefined) ||
+      ((args as Record<string, unknown> | undefined)?.file_path as string | undefined) ||
+      ((args as Record<string, unknown> | undefined)?.TargetFile as string | undefined);
+
     if (phase === 'preparing') {
-      const path =
-        hint_path ||
-        ((args as Record<string, unknown> | undefined)?.path as string | undefined) ||
-        ((args as Record<string, unknown> | undefined)?.file_path as string | undefined);
-      if (path) {
-        const basename = path.replace(/\\/g, '/').split('/').pop() || path;
-        return t('chat.tools.display.preparingNamedPath', { name, basename });
+      const verb = t(`chat.tools.verbs.${progressiveToolVerbKey(name || 'tool')}`);
+      if (name === 'write_file' || name === 'write_to_file') {
+        const file = hintOrArgPath ? pathBasename(hintOrArgPath) : '';
+        return t('chat.tools.display.creatingFile', { basename: file });
       }
-      if (name && name !== 'tool') return t('chat.tools.display.preparingNamed', { name });
-      return t('chat.tools.display.preparingTool');
+      if (hintOrArgPath) {
+        const file = pathBasename(hintOrArgPath);
+        if (name === 'edit') {
+          return t('chat.tools.display.editingFile', { basename: file });
+        }
+        if (name === 'read_file') {
+          return t('chat.tools.display.readingFile', { basename: file });
+        }
+        return t('chat.tools.display.callingNamedPath', { verb, basename: file });
+      }
+      if (name === 'edit') {
+        return t('chat.tools.display.editingFile', { basename: '…' });
+      }
+      if (name === 'read_file') {
+        return t('chat.tools.display.readingFile', { basename: '…' });
+      }
+      if (name && name !== 'tool') {
+        if (name === 'shell' || name === 'bash') {
+          return t('chat.tools.display.runningCommand');
+        }
+        if (name === 'grep' || name === 'grep_search') {
+          return t('chat.tools.display.searchingGeneric');
+        }
+        if (name === 'glob' || name === 'glob_search') {
+          return t('chat.tools.display.exploringGeneric');
+        }
+        return t('chat.tools.display.callingNamed', { verb, name });
+      }
+      return t('chat.tools.display.startingTool');
     }
     if (name === 'tavily_search') {
       const query = (args as Record<string, unknown> | undefined)?.query as string | undefined;
-      if (query) return active ? t('chat.tools.display.searching', { query }) : t('chat.tools.display.searched', { query });
+      if (query) return inProgress ? t('chat.tools.display.searching', { query }) : t('chat.tools.display.searched', { query });
     } else if (name === 'webfetch') {
       const url = (args as Record<string, unknown> | undefined)?.url as string | undefined;
-      if (url) return active ? t('chat.tools.display.fetching', { url }) : t('chat.tools.display.fetched', { url });
+      if (url) return inProgress ? t('chat.tools.display.fetching', { url }) : t('chat.tools.display.fetched', { url });
     } else if (name === 'write_file' || name === 'write_to_file') {
-      const path = ((args as Record<string, unknown> | undefined)?.TargetFile || (args as Record<string, unknown> | undefined)?.file_path || (args as Record<string, unknown> | undefined)?.path) as string | undefined;
+      const path = hintOrArgPath;
       if (path) {
-        const parts = path.replace(/\\/g, '/').split('/');
-        const basename = parts[parts.length - 1];
-        return active ? t('chat.tools.display.creatingFile', { basename }) : t('chat.tools.display.createdFile', { basename });
+        const file = pathBasename(path);
+        return inProgress ? t('chat.tools.display.creatingFile', { basename: file }) : t('chat.tools.display.createdFile', { basename: file });
       }
-      return active ? t('chat.tools.display.creatingFile', { basename: '' }) : t('chat.tools.display.createdFile', { basename: '' });
+      return inProgress ? t('chat.tools.display.creatingFile', { basename: '' }) : t('chat.tools.display.createdFile', { basename: '' });
     } else if (name === 'todo_write') {
       return t('chat.tools.display.createTaskList');
     } else if (name === 'todo_read') {
@@ -300,13 +333,13 @@ const ToolBlockUI = memo(function ToolBlockUI({
       const skillName = (args as Record<string, unknown> | undefined)?.name || (args as Record<string, unknown> | undefined)?.skill_name as string | undefined;
       const action = name === 'skill_load' ? t('sidebar.actions.load', { defaultValue: 'Load' }) : t('sidebar.actions.reload', { defaultValue: 'Reload' });
       if (skillName) {
-        return active ? t('chat.tools.display.skillActionName', { action, name: skillName }) : t('chat.tools.display.skillActionNameDone', { action, name: skillName });
+        return inProgress ? t('chat.tools.display.skillActionName', { action, name: skillName }) : t('chat.tools.display.skillActionNameDone', { action, name: skillName });
       }
       return t('chat.tools.display.skillAction', { action });
     } else if (name === 'skill_deactivate') {
       const skillName = (args as Record<string, unknown> | undefined)?.name || (args as Record<string, unknown> | undefined)?.skill_name as string | undefined;
       if (skillName) {
-        return active ? t('chat.tools.display.deactivatingSkill', { name: skillName }) : t('chat.tools.display.deactivatedSkill', { name: skillName });
+        return inProgress ? t('chat.tools.display.deactivatingSkill', { name: skillName }) : t('chat.tools.display.deactivatedSkill', { name: skillName });
       }
       return t('chat.tools.display.deactivateSkill');
     } else if (name === 'archival_memory_search') {
@@ -319,11 +352,11 @@ const ToolBlockUI = memo(function ToolBlockUI({
     const mcp = parseMcpToolName(name);
     if (mcp) {
       if (mcp.server) {
-        return active
+        return inProgress
           ? t('chat.tools.display.callingMcp', { server: mcp.server, tool: mcp.tool })
           : t('chat.tools.display.calledMcp', { server: mcp.server, tool: mcp.tool });
       }
-      return active
+      return inProgress
         ? t('chat.tools.display.callingMcpSimple', { tool: mcp.tool })
         : t('chat.tools.display.calledMcpSimple', { tool: mcp.tool });
     }
@@ -339,12 +372,12 @@ const ToolBlockUI = memo(function ToolBlockUI({
   }, [result, isSearch]);
 
   const ToolIcon = getToolIcon(name);
-  const isSearching = active && (name === 'tavily_search' || name === 'webfetch');
+  const isSearching = rowActive && (name === 'tavily_search' || name === 'webfetch');
 
   return (
     <div className="step-block">
       <div
-        className={`step-row ${active ? 'step-row-active' : ''} ${is_error ? 'step-row-error' : ''} ${isExpandable ? 'step-row-pointer' : 'step-row-default'}`}
+        className={`step-row ${rowActive ? 'step-row-active' : ''} ${is_error ? 'step-row-error' : ''} ${isExpandable ? 'step-row-pointer' : 'step-row-default'}`}
         onClick={() => {
           if (isExpandable) setCollapsed(!collapsed);
         }}

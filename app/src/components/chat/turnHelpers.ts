@@ -154,7 +154,92 @@ export function countSpawnedAgents(args?: unknown): number {
   return 1;
 }
 
-/** Extract a filename from a path string. */
+/**
+ * Progressive (in-progress) verb key for a tool name, used while args are still
+ * streaming (`preparing`) or the tool is executing (`running`). Prefer this
+ * over "Preparing"/"Generating" — those describe internals, not user intent.
+ *
+ * Resolve via `t('chat.tools.verbs.' + key)`.
+ */
+export type ProgressiveVerbKey =
+  | 'editing'
+  | 'writing'
+  | 'reading'
+  | 'running'
+  | 'searching'
+  | 'exploring'
+  | 'fetching'
+  | 'updating'
+  | 'calling';
+
+export function progressiveToolVerbKey(name: string): ProgressiveVerbKey {
+  switch (name) {
+    case 'edit':
+      return 'editing';
+    case 'write_file':
+    case 'write_to_file':
+      return 'writing';
+    case 'read_file':
+      return 'reading';
+    case 'shell':
+    case 'bash':
+      return 'running';
+    case 'grep':
+    case 'grep_search':
+    case 'tavily_search':
+      return 'searching';
+    case 'glob':
+    case 'glob_search':
+      return 'exploring';
+    case 'webfetch':
+      return 'fetching';
+    case 'todo_write':
+    case 'todo_update':
+      return 'updating';
+    case 'todo_read':
+      return 'reading';
+    default:
+      return 'calling';
+  }
+}
+
+/** @deprecated Prefer progressiveToolVerbKey + i18n. English fallback for non-i18n call sites. */
+export function progressiveToolVerb(name: string): string {
+  switch (progressiveToolVerbKey(name)) {
+    case 'editing':
+      return 'Editing';
+    case 'writing':
+      return 'Writing';
+    case 'reading':
+      return 'Reading';
+    case 'running':
+      return 'Running';
+    case 'searching':
+      return 'Searching';
+    case 'exploring':
+      return 'Exploring';
+    case 'fetching':
+      return 'Fetching';
+    case 'updating':
+      return 'Updating';
+    case 'calling':
+      return 'Calling';
+  }
+}
+
+/** Normalize preparing-phase path hints into the args shape widgets expect. */
+export function argsWithHintPath(
+  args: unknown,
+  hintPath: string | undefined,
+  pathKey: 'path' | 'file_path' = 'path'
+): unknown {
+  if (!hintPath) return args;
+  const obj = args && typeof args === 'object' ? { ...(args as Record<string, unknown>) } : {};
+  const existing = obj.path || obj.file_path || obj.TargetFile;
+  if (!existing) obj[pathKey] = hintPath;
+  return obj;
+}
+
 export function basename(path: string): string {
   const parts = path.replace(/\\/g, '/').split('/');
   return parts[parts.length - 1] || path;

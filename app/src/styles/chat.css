@@ -1175,12 +1175,38 @@
   to { transform: rotate(360deg); }
 }
 
-.step-row-active .tool-name {
-  animation: breathing-light 2s ease-in-out infinite;
+/* ── Active tool breathing (edit / read / shell / generic) ───────── */
+/* Was limited to `.tool-name`; specialized widgets use other label
+   classes (edit-file-label, bash-label), so breathe on `.step-label`. */
+.step-row-active .step-label {
+  animation: tool-breathe 2s ease-in-out infinite;
 }
 
+.step-row-active .step-icon:not(.step-icon-thinking):not(.step-icon-searching) {
+  animation: tool-icon-breathe 2s ease-in-out infinite;
+}
+
+@keyframes tool-breathe {
+  0%, 100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes tool-icon-breathe {
+  0%, 100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Legacy alias — kept so older selectors still resolve if referenced */
 @keyframes breathing-light {
-  0%, 100% { opacity: 0.6; }
+  0%, 100% { opacity: 0.55; }
   50% { opacity: 1; }
 }
 

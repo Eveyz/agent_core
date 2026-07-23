@@ -3,6 +3,7 @@ import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
 import CopyIcon from 'lucide-react/dist/esm/icons/copy.mjs';
 import { useTranslation } from 'react-i18next';
 import type { ChatEntry, TurnBlock } from '../../features/chat/chatSlice';
+import { progressiveToolVerbKey } from './turnHelpers';
 
 /** After this many ms with no new stream tokens, show a "waiting on model" hint. */
 const MODEL_IDLE_MS = 4_000;
@@ -106,9 +107,12 @@ const TurnFooter = memo(function TurnFooter({ entry }: { entry: ChatEntry }) {
     if (preparing.length > 0) {
       const names = [...new Set(preparing.map((b) => b.name).filter((n) => n && n !== 'tool'))];
       if (names.length === 1) {
-        return t('chat.footer.generatingTool', { name: names[0] });
+        const verb = t(`chat.tools.verbs.${progressiveToolVerbKey(names[0])}`);
+        // "Editing…" / "Writing…" — same progressive tense as the tool row.
+        // Avoid "Generating write_file" which sounds like codegen.
+        return t('chat.footer.callingTool', { verb });
       }
-      return t('chat.footer.generatingTools');
+      return t('chat.footer.callingTools');
     }
 
     const hasActiveTool = entry.blocks.some(

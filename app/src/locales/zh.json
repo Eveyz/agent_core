@@ -47,8 +47,10 @@
     "thought": "思考过程",
     "footer": {
       "working": "运行中...",
-      "generatingTools": "正在生成工具…",
-      "generatingTool": "正在生成 {{name}}…",
+      "callingTools": "正在调用工具…",
+      "callingTool": "正在{{verb}}…",
+      "generatingTools": "正在调用工具…",
+      "generatingTool": "正在{{verb}}…",
       "modelThinking": "模型还在想…",
       "modelWaiting": "还在等模型…",
       "modelWaitingAlt": "模型还在酝酿下一步…",
@@ -222,9 +224,17 @@
         "calledOthers_plural": "已调用 {{count}} 个其他工具"
       },
       "display": {
-        "preparingTool": "正在准备工具…",
-        "preparingNamed": "正在准备 {{name}}…",
-        "preparingNamedPath": "正在准备 {{name}} · {{basename}}",
+        "startingTool": "开始中…",
+        "callingNamed": "正在{{verb}} {{name}}…",
+        "callingNamedPath": "正在{{verb}} · {{basename}}",
+        "editingFile": "正在编辑 {{basename}}",
+        "readingFile": "正在读取 {{basename}}",
+        "runningCommand": "正在运行…",
+        "searchingGeneric": "正在搜索…",
+        "exploringGeneric": "正在浏览…",
+        "preparingTool": "开始中…",
+        "preparingNamed": "正在{{verb}} {{name}}…",
+        "preparingNamedPath": "正在{{verb}} · {{basename}}",
         "searching": "正在搜索 \"{{query}}\"",
         "searched": "已搜索 \"{{query}}\"",
         "fetching": "正在抓取 {{url}}",
@@ -250,6 +260,17 @@
         "calledMcp": "已调用 MCP {{server}} · {{tool}}",
         "callingMcpSimple": "正在调用 MCP {{tool}}",
         "calledMcpSimple": "已调用 MCP {{tool}}"
+      },
+      "verbs": {
+        "editing": "编辑",
+        "writing": "写入",
+        "reading": "读取",
+        "running": "运行",
+        "searching": "搜索",
+        "exploring": "浏览",
+        "fetching": "抓取",
+        "updating": "更新",
+        "calling": "调用"
       }
     }
   },
