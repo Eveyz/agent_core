@@ -21,8 +21,14 @@ struct AppState {
     storage: agent_core::memory::storage::Storage,
     /// PLAN-0009: custom agent registry (CRUD over the `agents` table).
     agent_registry: agent_core::agent_registry::AgentRegistry,
-    /// PLAN-0009: active workflow run cancel tokens (run_id -> token).
-    workflow_cancels: Arc<AsyncMutex<std::collections::HashMap<String, agent_core::CancellationToken>>>,
+    /// Durable orchestration kernel shared by mentions and saved workflows.
+    workflow_runtime: Arc<
+        agent_core::workflow::runtime::DurableWorkflowRuntime<
+            agent_core::workflow::runtime::SqliteWorkflowStore,
+        >,
+    >,
+    /// Rollback switch for run-scoped `@CustomAgent` planning.
+    agent_mentions_enabled: bool,
     /// MCP client manager — connects to configured MCP servers.
     mcp_manager: Arc<AsyncMutex<McpClientManager>>,
     /// Snapshot of discovered MCP tool definitions, updated after every
@@ -172,6 +178,8 @@ async fn send_message(
     model: Option<String>,
     #[allow(non_snake_case)]
     images: Option<Vec<IncomingImagePayload>>,
+    #[allow(non_snake_case)]
+    agent_mentions: Option<Vec<agent_core::workflow::runtime::AgentMention>>,
 ) -> Result<SendMessageResult, String> {
     // Load history + session-level pinned goal
     let mut history = vec![];
@@ -291,6 +299,57 @@ async fn send_message(
         user_images.iter().map(to_frontend_image).collect();
 
     let manager = state.run_manager.lock().await;
+    let scoped_tool_factory: Option<agent_core::runtime::run::ScopedToolFactory> =
+        agent_mentions
+            .filter(|_| state.agent_mentions_enabled)
+            .filter(|mentions| !mentions.is_empty())
+            .map(|mentions| {
+                let manifest = agent_core::workflow::runtime::MentionManifest { mentions };
+                let runtime = state.workflow_runtime.clone();
+                let compiler = agent_core::workflow::runtime::MentionWorkflowCompiler::new(
+                    state.storage.clone(),
+                );
+                let caller_permission = manager.brain().config.permissions.clone();
+                let scope = agent_core::workflow::runtime::RunScope {
+                    session_id: session_id.clone().unwrap_or_default(),
+                    parent_prompt_id: early_prompt_id.clone().unwrap_or_default(),
+                    workspace: working_dir.clone().unwrap_or_default(),
+                    trigger: "agent_mention".to_string(),
+                    ..Default::default()
+                };
+                let allowed = manifest
+                    .mentions
+                    .iter()
+                    .map(|mention| mention.agent_id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let description = format!(
+                    "Plan and run the custom agents explicitly mentioned by the user. \
+                     You MUST use this tool before answering when delegation is requested. \
+                     Only these agent IDs are allowed: {allowed}. Express all dependencies \
+                     with depends_on and pass upstream handoffs through explicit inputs. \
+                     After the tool returns, synthesize its result for the user."
+                );
+                Arc::new(move |
+                    registry: &mut agent_core::ToolRegistry,
+                    cancel_token,
+                    parent_run_id,
+                | {
+                    let mut bound_scope = scope.clone();
+                    bound_scope.parent_run_id = parent_run_id;
+                    registry.register(Box::new(
+                        agent_core::workflow::runtime::MentionWorkflowTool::new(
+                            runtime.clone(),
+                            compiler.clone(),
+                            manifest.clone(),
+                            caller_permission.clone(),
+                            bound_scope,
+                            cancel_token,
+                            description.clone(),
+                        ),
+                    ));
+                }) as agent_core::runtime::run::ScopedToolFactory
+            });
 
     // Prompt lifecycle (create / finish / persist) lives in RunManager so CLI
     // and Tauri share one prompts-table source of truth.
@@ -304,6 +363,7 @@ async fn send_message(
             initial_goal_completed,
             user_images,
             early_prompt_id.clone(),
+            scoped_tool_factory,
         )
         .await
     {
@@ -1993,14 +2053,6 @@ async fn run_agent_standalone(
     input: String,
     session_id: Option<String>,
 ) -> Result<String, String> {
-    use agent_core::runtime::supervisor::ProcessSupervisor;
-    use agent_core::skills::SkillManager;
-    use agent_core::subagent::Subagent;
-    use agent_core::tools::subagent::{
-        ApprovalRouting, re_wire_subagent_tools_with_skills,
-    };
-    use agent_core::CancellationToken;
-
     let run_manager = state.run_manager.lock().await;
     let brain = run_manager.brain().clone();
     drop(run_manager);
@@ -2015,123 +2067,31 @@ async fn run_agent_standalone(
         .await
         .map_err(|e| format!("task failed: {e}"))??
     };
-
-    // Build runtime components from the Brain.
-    let mut subagent_config = agent_core::agent_registry::build_subagent_config(&def);
-    let effective_skills = if let Some(ref sm) = brain.skill_manager {
-        let mgr = sm.lock();
-        mgr.resolve_subagent_skills(&def.skills, session_id.as_deref())
-    } else {
-        def.skills.clone()
-    };
-    subagent_config.skills = effective_skills.clone();
-    // Inject skill content into the system prompt (content path).
-    subagent_config.system_prompt = SkillManager::inject_skill_content_into(
-        brain.skill_manager.as_ref(),
-        &effective_skills,
-        &subagent_config.system_prompt,
-    );
-
-    let model_config = agent_core::agent_registry::build_model_config(&def, &brain.config);
     let permission_config =
         agent_core::agent_registry::build_permission_config(&def, &brain.config.permissions);
-
-    // Standalone agent gets its own ProcessSupervisor + cancel token so:
-    //  - its shell children are process-group isolated and killed on cancel
-    //  - any subagent it spawns (path D) inherits the supervisor+cancel
-    //    via re_wire_subagent_tools (vs. the Brain-built registry's None,None)
-    let supervisor = std::sync::Arc::new(parking_lot::Mutex::new(ProcessSupervisor::new()));
-    let cancel_token = CancellationToken::new();
-
-    // Build tool registry: inherit all if tools empty, else named subset.
-    let mut registry = if def.tools.is_empty() {
-        brain.build_tool_registry(agent_core::AgentMode::Build)
-    } else {
-        agent_core::ToolRegistry::from_names(&def.tools)
-    };
-
-    // Re-wire subagent meta tools with our supervisor + cancel so spawned
-    // grand-subagents are cancellable. (depth 0: standalone agent itself).
-    re_wire_subagent_tools_with_skills(
-        &mut registry,
-        model_config.clone(),
-        Some(state.session_manager.clone()),
-        permission_config.clone(),
-        Some(supervisor.clone()),
-        Some(cancel_token.clone()),
-        0,
-        brain.skill_manager.clone(),
-        ApprovalRouting::LegacyScoped,
-        Some(brain.todo_lists.clone()),
-    );
-
-    // Ensure ShellTool / ReplTool (when present) are supervised.
-    if registry.has("shell") {
-        registry.register(Box::new(
-            agent_core::tools::shell::ShellTool::with_supervisor(supervisor.clone(), None),
-        ));
-    }
-    if registry.has("repl") {
-        registry.register(Box::new(
-            agent_core::tools::repl::ReplTool::with_supervisor(supervisor.clone(), None),
-        ));
-    }
-
-    // Register script tools for declared skills ∪ session actives.
-    SkillManager::sync_skill_scripts_for_skills(
-        brain.skill_manager.as_ref(),
-        &effective_skills,
-        &mut registry,
-        Some(supervisor.clone()),
-    );
-
-    // Build the per-agent memory store (if enabled).
-    let memory = if def.memory_enabled > 0 {
-        let store = build_agent_memory_store(&brain, storage.clone());
-        Some(std::sync::Arc::new(store))
-    } else {
-        None
-    };
-
-    let mut subagent = Subagent::new_with_memory(
-        &def.name,
-        subagent_config,
-        &model_config,
-        registry,
-        permission_config,
-        memory,
-        Some(def.memory_identity()),
-    )
-    .with_supervisor(supervisor.clone())
-    .with_cancel_token(cancel_token);
-
     let session = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let started = std::time::Instant::now();
-    let _ = app_handle; // (event emission wired later via event_tx)
-
-    let result = subagent.run(&input).await.map_err(|e| e.to_string())?;
-    let elapsed_ms = started.elapsed().as_millis() as i64;
-
-    // Record execution history.
-    let entry = agent_core::agent_registry::AgentHistoryEntry {
-        agent_id: def.id.clone(),
-        session_id: session,
-        workflow_run_id: String::new(),
-        trigger: "manual".to_string(),
-        input: input.clone(),
-        output: result.output.clone(),
-        iterations_used: result.iterations_used as u32,
-        success: result.success,
-        model_used: model_config.model_id.clone(),
-        process_time_ms: elapsed_ms,
-        ..Default::default()
-    };
-    let history_storage = storage.clone();
-    let _ = tokio::task::spawn_blocking(move || {
-        let _ = agent_core::agent_registry::history::record(&history_storage, &entry);
-    })
-    .await;
-
+    let runner = agent_core::agent_registry::CustomAgentRunner::new(
+        storage,
+        brain,
+        state.session_manager.clone(),
+    );
+    let _ = app_handle;
+    let result = runner
+        .run(agent_core::agent_registry::CustomAgentInvocation {
+            agent: def,
+            input,
+            session_id: session,
+            working_dir: None,
+            workflow_run_id: None,
+            trigger: "manual".to_string(),
+            permission_config,
+            approval_resolver: None,
+            cancel_token: agent_core::CancellationToken::new(),
+            event_tx: None,
+            subagent_depth: 0,
+        })
+        .await
+        .map_err(|error| error.to_string())?;
     Ok(result.output)
 }
 
@@ -2244,88 +2204,103 @@ async fn delete_workflow(state: State<'_, AppState>, id: String) -> Result<(), S
     .map_err(|e| format!("delete_workflow task failed: {e}"))?
 }
 
-/// Execute a workflow. Returns the run result.
-///
-/// Emits `workflow_event` Tauri events for real-time node status updates.
+/// Start a saved workflow on the durable runtime and return its stable Run ID.
 #[tauri::command]
 async fn run_workflow(
     state: State<'_, AppState>,
-    app_handle: AppHandle,
+    _app_handle: AppHandle,
     workflow_id: String,
     input: Option<serde_json::Value>,
     session_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    use agent_core::workflow::{WorkflowExecutor, get as get_workflow_def};
+    use agent_core::workflow::runtime::{
+        LegacyWorkflowCompiler, RunScope, StartRun, WorkflowRuntime, WorkflowSource,
+    };
 
-    // Load the workflow definition.
     let storage = state.storage.clone();
     let wf = {
         let s = storage.clone();
         let wid = workflow_id.clone();
         tokio::task::spawn_blocking(move || {
-            get_workflow_def(&s, &wid).map_err(|e| e.to_string())
+            agent_core::workflow::get(&s, &wid).map_err(|e| e.to_string())
         })
         .await
         .map_err(|e| format!("task failed: {e}"))??
     };
 
-    // Access the Brain.
     let run_manager = state.run_manager.lock().await;
-    let brain = run_manager.brain().clone();
+    let caller_permission = run_manager.brain().config.permissions.clone();
     drop(run_manager);
-
-    let input = input.unwrap_or_else(|| serde_json::json!({}));
     let session = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-
-    // Create a cancel token and register it.
-    let cancel_token = agent_core::CancellationToken::new();
-    let run_id_placeholder = uuid::Uuid::new_v4().to_string();
-    {
-        let mut cancels = state.workflow_cancels.lock().await;
-        cancels.insert(run_id_placeholder.clone(), cancel_token.clone());
-    }
-
-    // Event channel: forward workflow events to the frontend.
-    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<agent_core::types::AgentEvent>();
-    let app_handle_clone = app_handle.clone();
-    tokio::spawn(async move {
-        while let Some(ev) = event_rx.recv().await {
-            let _ = app_handle_clone.emit("workflow_event", &ev);
-        }
-    });
-
-    let executor = WorkflowExecutor::new(storage.clone(), brain);
-    let result = executor
-        .execute(&wf, input, &session, cancel_token, Some(event_tx))
+    let workspace = {
+        let session_manager = state.session_manager.clone();
+        let session_id = session.clone();
+        tokio::task::spawn_blocking(move || {
+            session_manager
+                .resume(&session_id)
+                .ok()
+                .flatten()
+                .map(|saved| saved.meta.cwd)
+                .unwrap_or_default()
+        })
         .await
-        .map_err(|e| e.to_string())?;
-
-    // Clean up the cancel token.
-    {
-        let mut cancels = state.workflow_cancels.lock().await;
-        cancels.remove(&run_id_placeholder);
-    }
-
-    Ok(serde_json::json!({
-        "run_id": result.run_id,
-        "status": result.status,
-        "output": result.output,
-        "error": result.error,
-        "total_token_input": result.total_token_input,
-        "total_token_output": result.total_token_output,
-    }))
+        .map_err(|error| format!("resolve workflow workspace task failed: {error}"))?
+    };
+    let spec = LegacyWorkflowCompiler::new(storage)
+        .compile(&wf, &caller_permission)
+        .map_err(|error| error.to_string())?;
+    let receipt = state
+        .workflow_runtime
+        .start(StartRun {
+            request_id: format!("saved-workflow:{workflow_id}:{}", uuid::Uuid::new_v4()),
+            source: WorkflowSource::Inline(spec),
+            input: input.unwrap_or_else(|| serde_json::json!({})),
+            scope: RunScope {
+                session_id: session,
+                continuation_key: workflow_id,
+                workspace,
+                trigger: "saved_workflow".to_string(),
+                ..Default::default()
+            },
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    serde_json::to_value(receipt).map_err(|error| error.to_string())
 }
 
 /// Cancel a running workflow.
 #[tauri::command]
 async fn cancel_workflow_run(state: State<'_, AppState>, run_id: String) -> Result<(), String> {
-    let mut cancels = state.workflow_cancels.lock().await;
-    if let Some(token) = cancels.remove(&run_id) {
-        token.cancel();
-        Ok(())
-    } else {
-        Err(format!("no active workflow run with id '{run_id}'"))
-    }
+    use agent_core::workflow::runtime::{RunId, WorkflowCommand, WorkflowRuntime};
+    state
+        .workflow_runtime
+        .command(
+            &RunId(run_id),
+            WorkflowCommand::Cancel {
+                command_id: uuid::Uuid::new_v4().to_string(),
+                reason: "cancelled by user".to_string(),
+            },
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn observe_workflow_run(
+    state: State<'_, AppState>,
+    run_id: String,
+    after_sequence: Option<u64>,
+) -> Result<agent_core::workflow::runtime::RunObservation, String> {
+    use agent_core::workflow::runtime::{ObserveRun, RunId, WorkflowRuntime};
+    state
+        .workflow_runtime
+        .observe(ObserveRun {
+            run_id: RunId(run_id),
+            after_sequence,
+        })
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -2618,6 +2593,35 @@ pub fn run() {
                 .reflection_daemon
                 .clone();
 
+            let custom_agent_runner = Arc::new(
+                agent_core::agent_registry::CustomAgentRunner::new(
+                    storage.clone(),
+                    run_manager.brain().clone(),
+                    session_manager.clone(),
+                ),
+            );
+            let workflow_activities =
+                agent_core::workflow::runtime::ActivityRegistry::new([Arc::new(
+                    agent_core::workflow::runtime::CustomAgentActivityAdapter::new(
+                        custom_agent_runner,
+                    ),
+                )
+                    as Arc<dyn agent_core::workflow::runtime::ActivityAdapter>])
+                .expect("Failed to build workflow activity registry");
+            let workflow_store = Arc::new(
+                agent_core::workflow::runtime::SqliteWorkflowStore::new(storage.clone())
+                    .expect("Failed to initialize durable workflow storage"),
+            );
+            let workflow_runtime = Arc::new(
+                agent_core::workflow::runtime::DurableWorkflowRuntime::new(
+                    workflow_store,
+                    workflow_activities,
+                ),
+            );
+            let agent_mentions_enabled = std::env::var("AGENT_CORE_AGENT_MENTIONS")
+                .map(|value| !matches!(value.as_str(), "0" | "false" | "off"))
+                .unwrap_or(true);
+
             app.manage(AppState {
                 run_manager: Arc::new(AsyncMutex::new(run_manager)),
                 config_path: config_path_str,
@@ -2625,10 +2629,22 @@ pub fn run() {
                 session_manager,
                 storage: storage.clone(),
                 agent_registry: agent_core::agent_registry::AgentRegistry::new(storage.clone()),
-                workflow_cancels: Arc::new(AsyncMutex::new(std::collections::HashMap::new())),
+                workflow_runtime: workflow_runtime.clone(),
+                agent_mentions_enabled,
                 mcp_manager,
                 mcp_tool_defs,
                 preview_manager,
+            });
+
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) =
+                    agent_core::workflow::runtime::WorkflowRuntime::recover(
+                        workflow_runtime.as_ref(),
+                    )
+                    .await
+                {
+                    eprintln!("[workflow] recovery failed: {error}");
+                }
             });
 
             if let Some(daemon) = reflection_daemon {
@@ -2714,7 +2730,7 @@ pub fn run() {
             search_agent_memory, get_agent_history, run_agent_standalone,
             validate_workflow,
             create_workflow, list_workflows, get_workflow, save_workflow, delete_workflow,
-            run_workflow, cancel_workflow_run, list_workflow_runs, get_workflow_run_results,
+            run_workflow, cancel_workflow_run, observe_workflow_run, list_workflow_runs, get_workflow_run_results,
             generate_agent_skill_drafts, list_skill_drafts, approve_skill_draft, reject_skill_draft,
             preview::preview_start, preview::preview_stop, preview::preview_restart,
             preview::preview_get, preview::preview_list, preview::preview_set_visibility,

@@ -6,7 +6,7 @@
 
 | Type | Count | Description |
 |------|-------|-------------|
-| ADR | 1 | Architecture Decision Records |
+| ADR | 4 | Architecture Decision Records |
 | RFC | 2 | Requests for Comments |
 | PLAN | 12 | Development Plans |
 | RUN | 0 | Runbooks |
@@ -21,6 +21,9 @@
 | ID | Title | Status | Author | Updated |
 |----|-------|--------|--------|---------|
 | ADR-0001 | Memory Layer Abstraction — Core, Recall, and Archival Storage | Draft | agent_core | 2026-06-24 |
+| ADR-0019 | Workflow Runtime Seam | Draft | agent_core | 2026-07-23 |
+| ADR-0020 | Workflow History and Recovery | Draft | agent_core | 2026-07-23 |
+| ADR-0021 | Workflow Side-effect Semantics | Draft | agent_core | 2026-07-23 |
 
 ## RFC (Requests for Comments)
 

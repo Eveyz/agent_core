@@ -12,15 +12,23 @@
 pub mod definition;
 pub mod history;
 pub mod memory;
+pub mod runner;
 pub mod skill_drafts;
 
 pub use definition::{
-    build_model_config, build_permission_config, build_subagent_config, create, delete, get,
-    list, update, AgentDef, AgentDefUpdate,
+    AgentDef, AgentDefUpdate, build_model_config, build_permission_config, build_subagent_config,
+    create, delete, get, list, update,
 };
-pub use history::{count as history_count, get_recent, list as history_list, record as history_record, AgentHistoryEntry};
+pub use history::{
+    AgentHistoryEntry, count as history_count, get_recent, list as history_list,
+    record as history_record,
+};
 pub use memory::{AgentMemoryRecord, AgentMemoryStore};
-pub use skill_drafts::{approve_draft, generate_drafts, get_draft, list_drafts, reject_draft, DraftGenerationResult, SkillDraft};
+pub use runner::{CustomAgentInvocation, CustomAgentRunResult, CustomAgentRunner};
+pub use skill_drafts::{
+    DraftGenerationResult, SkillDraft, approve_draft, generate_drafts, get_draft, list_drafts,
+    reject_draft,
+};
 
 use crate::config::Config;
 use crate::memory::storage::Storage;
@@ -85,7 +93,11 @@ impl AgentRegistry {
 
     /// Build a [`crate::config::ModelConfig`] from an [`AgentDef`], falling
     /// back to the config's default model.
-    pub fn build_model_config(&self, def: &AgentDef, config: &Config) -> crate::config::ModelConfig {
+    pub fn build_model_config(
+        &self,
+        def: &AgentDef,
+        config: &Config,
+    ) -> crate::config::ModelConfig {
         build_model_config(def, config)
     }
 }

@@ -310,6 +310,7 @@ impl RunManager {
             initial_goal_completed,
             Vec::new(),
             None,
+            None,
         )
         .await
     }
@@ -328,6 +329,7 @@ impl RunManager {
         initial_goal_completed: bool,
         user_images: Vec<crate::types::ImageAttachment>,
         existing_prompt_id: Option<String>,
+        scoped_tool_factory: Option<super::run::ScopedToolFactory>,
     ) -> Result<CreateRunResult> {
         let run_id = uuid::Uuid::new_v4().to_string();
 
@@ -396,6 +398,7 @@ impl RunManager {
             initial_goal,
             initial_goal_completed,
             self.session_manager.clone(),
+            scoped_tool_factory,
         ) {
             Ok(run) => run,
             Err(e) => {

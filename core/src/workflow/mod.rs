@@ -14,15 +14,23 @@ pub mod context;
 pub mod definition;
 pub mod executor;
 pub mod planner;
+pub mod runtime;
 pub mod trust;
 pub mod validate;
 
 pub use context::{RouterConfig, RouterRule, WorkflowContext};
 pub use definition::{
-    create, create_run, delete, finish_run, get, get_run_node_results, list, list_runs,
-    record_node_result, save, set_node_status, EdgeDef, NodeDef, NodeType, OnNodeFailure,
-    TrustMode, WorkflowDef, WorkflowRun, WorkflowRunNodeResult,
+    EdgeDef, NodeDef, NodeType, OnNodeFailure, TrustMode, WorkflowDef, WorkflowRun,
+    WorkflowRunNodeResult, create, create_run, delete, finish_run, get, get_run_node_results, list,
+    list_runs, record_node_result, save, set_node_status,
 };
 pub use executor::{WorkflowExecutor, WorkflowRunResult};
-pub use planner::{plan, ExecutionPlan, Stage};
-pub use validate::{validate, ValidationIssue, ValidationResult, Severity};
+pub use planner::{ExecutionPlan, Stage, plan};
+pub use runtime::{
+    ActivityAdapter, ActivityDescriptor, ActivityInvocation, ActivityOutcome,
+    DurableWorkflowRuntime, InMemoryWorkflowStore, NodeKind as RuntimeNodeKind,
+    NodeSpec as RuntimeNodeSpec, ObserveRun, RunId as DurableRunId, RunObservation, RunScope,
+    RunStatus as DurableRunStatus, StartReceipt, StartRun, ValueExpr, WorkflowCommand,
+    WorkflowPolicy, WorkflowRuntime, WorkflowSource, WorkflowSpec,
+};
+pub use validate::{Severity, ValidationIssue, ValidationResult, validate};

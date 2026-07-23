@@ -25,6 +25,7 @@ import {
   plansHydrated,
 } from './features/chat/chatSlice';
 import { openSettings, fetchConfig } from './features/settings/settingsSlice';
+import { fetchAgents } from './features/agents/agentSlice';
 import {
   fetchProjects,
   createSession,
@@ -259,12 +260,14 @@ function App() {
   useEffect(() => {
     dispatch(fetchConfig());
     dispatch(fetchProjects());
+    dispatch(fetchAgents());
   }, [dispatch]);
 
   const handleSend = useCallback(
     async (payload: SendPayload | string) => {
       const msg = typeof payload === 'string' ? payload : payload.text;
       const pendingImages = typeof payload === 'string' ? undefined : payload.images;
+      const agentMentions = typeof payload === 'string' ? undefined : payload.agentMentions;
       const trimmed = msg.trim();
       const isGoalClear =
         trimmed === '/goal clear' ||
@@ -404,6 +407,7 @@ function App() {
               mime_type: img.mimeType,
               data_base64: img.dataBase64,
             })),
+            agentMentions,
           },
         );
         dispatch(runIdSet({

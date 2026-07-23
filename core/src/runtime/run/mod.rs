@@ -233,6 +233,7 @@ impl Run {
         initial_goal: Option<String>,
         initial_goal_completed: bool,
         session_manager: Option<Arc<crate::session::SessionManager>>,
+        scoped_tool_factory: Option<ScopedToolFactory>,
     ) -> anyhow::Result<Self> {
         let client = brain.build_client()?;
         let permission_policy = brain.build_permission_policy();
@@ -307,6 +308,9 @@ impl Run {
                 Some(approval_resolver.clone()),
                 Some(brain.todo_lists.clone()),
             );
+        }
+        if let Some(factory) = scoped_tool_factory {
+            factory(&mut registry, cancel_token.clone(), id.clone());
         }
 
         let mut context = Context::new(&identity, max_context_tokens);
@@ -663,3 +667,5 @@ fn build_iteration_limit_summary(context: &Context, max_iterations: usize) -> St
 
     msg
 }
+pub type ScopedToolFactory =
+    Arc<dyn Fn(&mut ToolRegistry, CancellationToken, RunId) + Send + Sync>;

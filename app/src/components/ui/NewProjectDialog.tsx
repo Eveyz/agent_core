@@ -78,7 +78,6 @@ export const NewProjectDialog = memo(function NewProjectDialog({
     invoke<string>("get_default_project_path", { name: name || "untitled" })
       .then((p) => {
         if (cancelled || pathOverride !== null) return;
-        const sep = p.includes("\\") ? "\\" : "/";
         const idx = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
         if (idx > 0) {
           setParentDir(p.slice(0, idx));

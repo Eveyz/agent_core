@@ -14,14 +14,9 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent_registry::{self, AgentHistoryEntry, AgentMemoryStore};
-use crate::memory::embedding::EmbeddingModel;
+use crate::agent_registry::{self, CustomAgentInvocation, CustomAgentRunner};
 use crate::memory::storage::Storage;
-use crate::mode::AgentMode;
 use crate::runtime::Brain;
-use crate::skills::SkillManager;
-use crate::subagent::Subagent;
-use crate::tools::ToolRegistry;
 use crate::types::{AgentEvent, EventSender};
 
 use super::context::{RouterConfig, WorkflowContext};
@@ -42,42 +37,6 @@ pub struct WorkflowRunResult {
 pub struct WorkflowExecutor {
     storage: Storage,
     brain: Arc<Brain>,
-}
-
-struct WorkflowAgentGuard {
-    storage: Storage,
-    entry: AgentHistoryEntry,
-    runtime_id: Option<String>,
-    started: std::time::Instant,
-    finished: bool,
-}
-
-impl WorkflowAgentGuard {
-    fn set_runtime(&mut self, runtime_id: String) {
-        self.runtime_id = Some(runtime_id);
-    }
-
-    fn finish(&mut self) {
-        self.finished = true;
-    }
-}
-
-impl Drop for WorkflowAgentGuard {
-    fn drop(&mut self) {
-        if self.finished {
-            return;
-        }
-        let recovery = self.runtime_id.as_ref().and_then(|runtime_id| {
-            crate::subagent::transcript::TranscriptRecorder::default_path(runtime_id)
-                .ok()
-                .filter(|path| path.exists())
-                .map(|path| format!("Runtime ID: {runtime_id}\nPartial transcript: {}", path.display()))
-        }).unwrap_or_else(|| "Partial transcript could not be persisted".to_string());
-        self.entry.output = format!("Workflow agent was cancelled or aborted\n\n{recovery}");
-        self.entry.success = false;
-        self.entry.process_time_ms = self.started.elapsed().as_millis() as i64;
-        let _ = agent_registry::history::record(&self.storage, &self.entry);
-    }
 }
 
 impl WorkflowExecutor {
@@ -370,7 +329,7 @@ impl WorkflowExecutor {
 async fn execute_node(
     node: &NodeDef,
     input: &serde_json::Value,
-    brain: &Brain,
+    brain: &Arc<Brain>,
     storage: &Storage,
     workflow: &WorkflowDef,
     session_id: &str,
@@ -433,7 +392,7 @@ async fn execute_node(
 async fn execute_agent_node(
     node: &NodeDef,
     input: &serde_json::Value,
-    brain: &Brain,
+    brain: &Arc<Brain>,
     storage: &Storage,
     workflow: &WorkflowDef,
     session_id: &str,
@@ -441,201 +400,42 @@ async fn execute_agent_node(
     cancel_token: CancellationToken,
     event_tx: Option<EventSender>,
 ) -> Result<(serde_json::Value, (i64, i64))> {
-    use crate::runtime::supervisor::ProcessSupervisor;
-    use crate::tools::subagent::re_wire_subagent_tools_with_skills;
-
-    // Fetch the agent definition.
     let agent_id = node.agent_id.clone();
     let s = storage.clone();
     let def = tokio::task::spawn_blocking(move || agent_registry::get(&s, &agent_id)).await??;
-
-    // Build runtime components.
-    let mut subagent_config = agent_registry::build_subagent_config(&def);
-    let effective_skills = if let Some(ref sm) = brain.skill_manager {
-        let mgr = sm.lock();
-        mgr.resolve_subagent_skills(&def.skills, Some(session_id))
-    } else {
-        def.skills.clone()
-    };
-    subagent_config.skills = effective_skills.clone();
-    subagent_config.system_prompt = SkillManager::inject_skill_content_into(
-        brain.skill_manager.as_ref(),
-        &effective_skills,
-        &subagent_config.system_prompt,
-    );
-
-    let model_config = agent_registry::build_model_config(&def, &brain.config);
     let permission_config = workflow
         .trust_mode
         .build_permission_config(&brain.config.permissions, &def);
-
-    // Each workflow agent node owns its own ProcessSupervisor so its shell
-    // children are process-group isolated and killed when the node finishes
-    // (or when the workflow is cancelled — the cancel_token is propagated
-    // to the subagent below, which stops the turn loop and lets Drop reap).
-    let supervisor = Arc::new(Mutex::new(ProcessSupervisor::new()));
-
-    let mut registry = if def.tools.is_empty() {
-        brain.build_tool_registry(AgentMode::Build)
-    } else {
-        ToolRegistry::from_names(&def.tools)
-    };
-
-    // Re-wire subagent meta tools so spawns from inside this agent carry
-    // the node's supervisor + workflow cancel_token (rather than the
-    // Brain-default `None, None`). When def.tools is empty, the Brain
-    // build returns the full Build registry including `subagent`/`subagents`
-    // — those would otherwise spawn grand-subagents with NO cancel
-    // propagation. Subject to the recursion depth cap enforced by
-    // spawn_single; this node is at depth 1 (workflow parent → agent node).
-    re_wire_subagent_tools_with_skills(
-        &mut registry,
-        model_config.clone(),
-        Some(Arc::new(crate::session::SessionManager::new(storage.clone()))),
-        permission_config.clone(),
-        Some(supervisor.clone()),
-        Some(cancel_token.clone()),
-        1,
-        brain.skill_manager.clone(),
-        crate::tools::subagent::ApprovalRouting::LegacyScoped,
-        Some(brain.todo_lists.clone()),
-    );
-
-    // Also ensure ShellTool / ReplTool (when present) are supervised so the
-    // node's own commands are process-group isolated.
-    if registry.has("shell") {
-        registry.register(Box::new(crate::tools::shell::ShellTool::with_supervisor(
-            supervisor.clone(),
-            None,
-        )));
-    }
-    if registry.has("repl") {
-        registry.register(Box::new(crate::tools::repl::ReplTool::with_supervisor(
-            supervisor.clone(),
-            None,
-        )));
-    }
-
-    // Register skill scripts for declared skills ∪ parent session actives.
-    SkillManager::sync_skill_scripts_for_skills(
-        brain.skill_manager.as_ref(),
-        &effective_skills,
-        &mut registry,
-        Some(supervisor.clone()),
-    );
-
-    let memory = if def.memory_enabled > 0 {
-        Some(Arc::new(build_agent_memory_store(brain, storage.clone())))
-    } else {
-        None
-    };
-
     let task = format_agent_input(node, input);
-    let mut recovery_guard = WorkflowAgentGuard {
-        storage: storage.clone(),
-        entry: AgentHistoryEntry {
-            agent_id: def.id.clone(),
+    let runner = CustomAgentRunner::new(
+        storage.clone(),
+        brain.clone(),
+        Arc::new(crate::session::SessionManager::new(storage.clone())),
+    );
+    let result = runner
+        .run(CustomAgentInvocation {
+            agent: def,
+            input: task,
             session_id: session_id.to_string(),
-            workflow_run_id: run_id.to_string(),
+            working_dir: None,
+            workflow_run_id: Some(run_id.to_string()),
             trigger: "workflow".to_string(),
-            input: task.clone(),
-            model_used: model_config.model_id.clone(),
-            ..Default::default()
-        },
-        runtime_id: None,
-        started: std::time::Instant::now(),
-        finished: false,
-    };
-    let mut subagent = Subagent::new_with_memory(
-        &def.name,
-        subagent_config,
-        &model_config,
-        registry,
-        permission_config,
-        memory,
-        Some(def.memory_identity()),
-    )
-    .with_runtime_scope(Some(session_id.to_string()), None, Some(run_id.to_string()))
-    .with_supervisor(supervisor.clone())
-    .with_cancel_token(cancel_token);
-
-    let runtime_subagent_id = subagent.id().to_string();
-    recovery_guard.set_runtime(runtime_subagent_id.clone());
-    let started = std::time::Instant::now();
-    let run_result = subagent.run_with_sender(&task, event_tx).await;
-    let transcript_ref = subagent.transcript_path();
-    let elapsed_ms = started.elapsed().as_millis() as i64;
-    if transcript_ref.is_none() {
-        tracing::warn!(subagent_id = %runtime_subagent_id, node_id = %node.id,
-            "Workflow subagent transcript could not be persisted");
-    }
-    let result = match run_result {
-        Ok(result) => result,
-        Err(error) => {
-            let recovery = transcript_ref
-                .as_ref()
-                .map(|path| format!("Partial transcript: {}", path.display()))
-                .unwrap_or_else(|| "Partial transcript could not be persisted".to_string());
-            let entry = AgentHistoryEntry {
-                agent_id: def.id.clone(),
-                session_id: session_id.to_string(),
-                workflow_run_id: run_id.to_string(),
-                trigger: "workflow".to_string(),
-                input: task,
-                output: format!("{error}\n\n{recovery}"),
-                success: false,
-                model_used: model_config.model_id.clone(),
-                process_time_ms: elapsed_ms,
-                ..Default::default()
-            };
-            let hist_storage = storage.clone();
-            let _ = tokio::task::spawn_blocking(move || {
-                let _ = agent_registry::history::record(&hist_storage, &entry);
-            })
-            .await;
-            recovery_guard.finish();
-            return Err(error.context(recovery));
-        }
-    };
-    let transcript_path = transcript_ref
-        .as_ref()
-        .map(|path| path.display().to_string());
-    let history_output = match &transcript_path {
-        Some(path) => format!("{}\n\nTranscript: {path}", result.output),
-        None => result.output.clone(),
-    };
-
-    // Record agent history.
-    let entry = AgentHistoryEntry {
-        agent_id: def.id.clone(),
-        session_id: session_id.to_string(),
-        workflow_run_id: run_id.to_string(),
-        trigger: "workflow".to_string(),
-        input: task,
-        output: history_output,
-        iterations_used: result.iterations_used as u32,
-        success: result.success,
-        model_used: model_config.model_id.clone(),
-        process_time_ms: elapsed_ms,
-        ..Default::default()
-    };
-    let hist_storage = storage.clone();
-    let _ = tokio::task::spawn_blocking(move || {
-        let _ = agent_registry::history::record(&hist_storage, &entry);
-    })
-    .await;
-    recovery_guard.finish();
-
-    // V1: token tracking not yet wired from Subagent streams.
-    let tokens = (0i64, 0i64);
+            permission_config,
+            approval_resolver: None,
+            cancel_token,
+            event_tx,
+            subagent_depth: 1,
+        })
+        .await?;
     let output = serde_json::json!({
         "result": result.output,
         "success": result.success,
         "iterations": result.iterations_used,
-        "transcript_ref": transcript_path,
+        "transcript_ref": result.transcript_ref,
     });
 
-    Ok((output, tokens))
+    // SubagentResult does not expose token usage yet.
+    Ok((output, (0, 0)))
 }
 
 /// Apply a node's router: mark downstream nodes not in the route targets as skipped.
@@ -659,18 +459,6 @@ fn apply_router(
             skip.insert(target);
         }
     }
-}
-
-/// Build an [`AgentMemoryStore`] from the Brain's embedding configuration.
-pub fn build_agent_memory_store(brain: &Brain, storage: Storage) -> AgentMemoryStore {
-    if let Some(ref mem) = brain.config.memory {
-        if cfg!(feature = "embeddings") && mem.embedding_enabled {
-            if let Ok(model) = EmbeddingModel::new(&mem.embedding_model) {
-                return AgentMemoryStore::new(storage, Arc::new(model));
-            }
-        }
-    }
-    AgentMemoryStore::without_embedding(storage)
 }
 
 /// Format a node's resolved JSON input into a readable task string.

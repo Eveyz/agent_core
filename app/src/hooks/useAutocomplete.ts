@@ -2,16 +2,19 @@ import { useState, useCallback, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { parseMentions, findMentionBoundaries } from '../utils/mentions';
 import { useSkills } from './useSkills';
+import type { AgentDef } from '../features/agents/types';
 
 export type IconType = 'folder' | 'file' | 'command' | 'file-code' | 'file-json' | 'file-image' | 'file-text'
   | 'lang-js' | 'lang-ts' | 'lang-jsx' | 'lang-tsx' | 'lang-py' | 'lang-go' | 'lang-css' | 'lang-rs' | 'lang-html'
-  | 'skill' | 'cmd-btw' | 'cmd-learn' | 'cmd-goal' | 'cmd-subagents' | 'cmd-clear' | 'cmd-help';
+  | 'skill' | 'agent' | 'cmd-btw' | 'cmd-learn' | 'cmd-goal' | 'cmd-subagents' | 'cmd-clear' | 'cmd-help';
 
 export interface AutocompleteItem {
   label: string;
   value: string;
   icon: IconType;
   description?: string;
+  agentId?: string;
+  revisionId?: string;
 }
 
 function getFileIcon(filename: string): IconType {
@@ -67,7 +70,9 @@ export function useAutocomplete(
   setInput: (v: string) => void,
   textareaRef: React.RefObject<HTMLTextAreaElement | null>,
   projectPath?: string,
-  isChatMode?: boolean
+  isChatMode?: boolean,
+  agents: AgentDef[] = [],
+  onAgentMention?: (mention: { agentId: string; revisionId: string; token: string }) => void,
 ) {
   const { skills } = useSkills();
   const [showAutocomplete, setShowAutocomplete] = useState(false);
@@ -88,9 +93,22 @@ export function useAutocomplete(
       value: skill.name,
       icon: 'skill',
     }));
+    const agentItems: AutocompleteItem[] = agents
+      .filter((agent) =>
+        agent.name.toLowerCase().includes(q)
+        || agent.description.toLowerCase().includes(q)
+      )
+      .map((agent) => ({
+        label: agent.name,
+        value: agent.name,
+        icon: 'agent' as const,
+        description: agent.description || 'Custom agent',
+        agentId: agent.id,
+        revisionId: agent.updated_at,
+      }));
 
     if (isChatMode) {
-      setAutocompleteItems(skillItems);
+      setAutocompleteItems([...agentItems, ...skillItems]);
       setSelectedIndex(0);
       return;
     }
@@ -108,13 +126,13 @@ export function useAutocomplete(
           icon: e.type === 'dir' ? 'folder' : getFileIcon(e.name),
         };
       });
-      setAutocompleteItems([...skillItems, ...mapped]);
+      setAutocompleteItems([...agentItems, ...skillItems, ...mapped]);
       setSelectedIndex(0);
     } catch {
-      setAutocompleteItems(skillItems);
+      setAutocompleteItems([...agentItems, ...skillItems]);
       setSelectedIndex(0);
     }
-  }, [projectPath, skills, isChatMode]);
+  }, [projectPath, skills, isChatMode, agents]);
 
   const closeAutocomplete = useCallback(() => {
     setShowAutocomplete(false);
@@ -129,7 +147,15 @@ export function useAutocomplete(
       const after = input.slice(triggerInfo.end);
       let insertValue = item.value;
       if (triggerInfo.type === '@') {
-        if (item.icon === 'skill') {
+        if (item.icon === 'agent' && item.agentId) {
+          const safeName = item.label.trim().replace(/\s+/g, '_');
+          insertValue = `@${safeName} `;
+          onAgentMention?.({
+            agentId: item.agentId,
+            revisionId: item.revisionId ?? '',
+            token: `@${safeName}`,
+          });
+        } else if (item.icon === 'skill') {
           insertValue = `@skill:${item.value} `;
         } else {
           const isDir = item.icon === 'folder';
@@ -145,7 +171,7 @@ export function useAutocomplete(
         textareaRef.current?.focus();
       }, 0);
     },
-    [input, triggerInfo, closeAutocomplete, setInput, textareaRef]
+    [input, triggerInfo, closeAutocomplete, setInput, textareaRef, onAgentMention]
   );
 
   const handleAutocompleteKeydown = useCallback(

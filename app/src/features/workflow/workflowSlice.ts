@@ -1,4 +1,4 @@
-import { createSlice, createAsyncThunk, type PayloadAction } from '@reduxjs/toolkit';
+import { createSlice, createAsyncThunk, createAction, type PayloadAction } from '@reduxjs/toolkit';
 import { invoke } from '@tauri-apps/api/core';
 import type {
   WorkflowDef,
@@ -56,12 +56,62 @@ export const deleteWorkflow = createAsyncThunk<string, string>(
   },
 );
 
+interface DurableRunObservation {
+  snapshot: {
+    run_id: string;
+    status: string;
+    output: unknown;
+    error: string;
+    nodes: Record<string, {
+      status: string;
+      output: unknown;
+      error: string;
+      artifacts: unknown[];
+      attempt: number;
+    }>;
+  };
+  events: Array<{ sequence: number; created_at: string; kind: unknown }>;
+}
+
+export const workflowRunStarted = createAction<string>('workflow/runStarted');
+export const workflowRunObserved = createAction<DurableRunObservation>('workflow/runObserved');
+
+const terminalWorkflowStatuses = new Set(['succeeded', 'failed', 'cancelled', 'needs_attention']);
+const toLegacyRunStatus = (status: string) => status === 'succeeded' ? 'completed' : status;
+const toLegacyNodeStatus = (status: string) => status === 'succeeded' ? 'completed' : status;
+
 export const runWorkflow = createAsyncThunk<
   WorkflowRunResult,
   { workflowId: string; input?: unknown; sessionId?: string }
->('workflow/run', async ({ workflowId, input, sessionId }) =>
-  invoke<WorkflowRunResult>('run_workflow', { workflowId, input, sessionId }),
-);
+>('workflow/run', async ({ workflowId, input, sessionId }, thunkApi) => {
+  const receipt = await invoke<{ run_id: string; created: boolean }>(
+    'run_workflow',
+    { workflowId, input, sessionId },
+  );
+  thunkApi.dispatch(workflowRunStarted(receipt.run_id));
+  while (true) {
+    if (thunkApi.signal.aborted) {
+      await invoke('cancel_workflow_run', { runId: receipt.run_id });
+      throw new Error('Workflow run cancelled');
+    }
+    const observation = await invoke<DurableRunObservation>('observe_workflow_run', {
+      runId: receipt.run_id,
+      afterSequence: null,
+    });
+    thunkApi.dispatch(workflowRunObserved(observation));
+    if (terminalWorkflowStatuses.has(observation.snapshot.status)) {
+      return {
+        run_id: receipt.run_id,
+        status: toLegacyRunStatus(observation.snapshot.status),
+        output: observation.snapshot.output,
+        error: observation.snapshot.error,
+        total_token_input: 0,
+        total_token_output: 0,
+      };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+});
 
 export const cancelWorkflowRun = createAsyncThunk<void, string>(
   'workflow/cancel',
@@ -267,16 +317,51 @@ const workflowSlice = createSlice({
         state.runStatus = 'running';
         state.error = null;
         state.activeNodeResults = {};
+        state.activeRunId = null;
+      })
+      .addCase(workflowRunStarted, (state, action) => {
+        state.activeRunId = action.payload;
+      })
+      .addCase(workflowRunObserved, (state, action) => {
+        state.runStatus = toLegacyRunStatus(action.payload.snapshot.status);
+        for (const [nodeId, node] of Object.entries(action.payload.snapshot.nodes)) {
+          state.activeNodeResults[nodeId] = {
+            id: `${action.payload.snapshot.run_id}:${nodeId}`,
+            workflow_run_id: action.payload.snapshot.run_id,
+            node_id: nodeId,
+            agent_history_id: '',
+            status: toLegacyNodeStatus(node.status),
+            input: null,
+            output: node.output,
+            error: node.error,
+            token_input: 0,
+            token_output: 0,
+            cost_usd: 0,
+            latency_ms: 0,
+            started_at: null,
+            finished_at: terminalWorkflowStatuses.has(action.payload.snapshot.status)
+              ? new Date().toISOString()
+              : null,
+            created_at: new Date().toISOString(),
+          };
+        }
       })
       .addCase(runWorkflow.fulfilled, (state, action) => {
         state.isExecuting = false;
         state.runStatus = action.payload.status;
         state.lastRunResult = action.payload;
+        state.activeRunId = null;
       })
       .addCase(runWorkflow.rejected, (state, action) => {
         state.isExecuting = false;
         state.runStatus = 'failed';
         state.error = action.error.message ?? 'Workflow run failed';
+        state.activeRunId = null;
+      })
+      .addCase(cancelWorkflowRun.fulfilled, (state) => {
+        state.runStatus = 'cancelled';
+        state.isExecuting = false;
+        state.activeRunId = null;
       })
       .addCase(fetchWorkflowRuns.fulfilled, (state, action) => {
         state.runs = action.payload;

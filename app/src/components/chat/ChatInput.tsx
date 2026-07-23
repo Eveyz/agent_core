@@ -33,6 +33,7 @@ import {
   revokePendingImages,
   type PendingImage,
   type SendPayload,
+  type AgentMentionPayload,
 } from './imageAttachments';
 import { resolveSupportsImages } from '../../utils/modelCapabilities';
 
@@ -81,6 +82,9 @@ export const ChatInput = memo(function ChatInput({
   const [showSteerQueue, setShowSteerQueue] = useState(false);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+  const [selectedAgentMentions, setSelectedAgentMentions] = useState<
+    Array<AgentMentionPayload & { token: string }>
+  >([]);
 
   const activeProjectId = useSelector((state: RootState) => state.project.activeProjectId);
   const activeSessionId = useSelector((state: RootState) => state.project.activeSessionId);
@@ -88,6 +92,7 @@ export const ChatInput = memo(function ChatInput({
   const activeProject = projects.find((p) => p.id === activeProjectId);
   const steerQueue = useSelector((state: RootState) => state.chat.steerQueue[state.project.activeSessionId ?? '']);
   const config = useSelector((state: RootState) => state.settings.config);
+  const agents = useSelector((state: RootState) => state.agents.agents);
   const supportsImages = useMemo(() => {
     const slash = currentModel.indexOf('/');
     if (slash >= 0 && config) {
@@ -113,7 +118,24 @@ export const ChatInput = memo(function ChatInput({
     handleMentionBackspace,
     handleChange,
     highlightedHTML,
-  } = useAutocomplete(input, setInput, textareaRef, activeProject?.path, activeProjectId === '__adhoc_chat__');
+  } = useAutocomplete(
+    input,
+    setInput,
+    textareaRef,
+    activeProject?.path,
+    activeProjectId === '__adhoc_chat__',
+    agents,
+    useCallback((mention: { agentId: string; revisionId: string; token: string }) => {
+      setSelectedAgentMentions((current) => {
+        if (current.some((item) => item.agent_id === mention.agentId)) return current;
+        return [...current, {
+          agent_id: mention.agentId,
+          revision_id: mention.revisionId,
+          token: mention.token,
+        }];
+      });
+    }, []),
+  );
 
   const {
     branches,
@@ -147,11 +169,19 @@ export const ChatInput = memo(function ChatInput({
 
     if (isProcessing) return;
     const images = pendingImages;
+    const agentMentions = selectedAgentMentions
+      .filter((mention) => input.includes(mention.token))
+      .map(({ token: _token, ...mention }) => mention);
     setPendingImages([]);
+    setSelectedAgentMentions([]);
     clearDraft();
-    onSend({ text: trimmed, images: images.length ? images : undefined });
+    onSend({
+      text: trimmed,
+      images: images.length ? images : undefined,
+      agentMentions: agentMentions.length ? agentMentions : undefined,
+    });
     closeAutocomplete();
-  }, [input, pendingImages, isProcessing, onSend, onBtwQuery, closeAutocomplete, clearDraft]);
+  }, [input, pendingImages, selectedAgentMentions, isProcessing, onSend, onBtwQuery, closeAutocomplete, clearDraft]);
 
   const addImageFiles = useCallback(async (files: ArrayLike<Blob | File>) => {
     const next: PendingImage[] = [];
@@ -284,6 +314,13 @@ export const ChatInput = memo(function ChatInput({
   }, []);
 
   useEffect(() => {
+    setSelectedAgentMentions((current) => {
+      const retained = current.filter((mention) => input.includes(mention.token));
+      return retained.length === current.length ? current : retained;
+    });
+  }, [input]);
+
+  useEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
     el.style.height = 'auto';
@@ -344,6 +381,7 @@ export const ChatInput = memo(function ChatInput({
                 {item.icon === 'cmd-clear' && <Trash2Icon size={14} color="var(--gray-400)" />}
                 {item.icon === 'cmd-help' && <HelpCircleIcon size={14} color="var(--accent)" />}
                 {item.icon === 'skill' && <ZapIcon size={14} color="var(--violet-500)" />}
+                {item.icon === 'agent' && <BotIcon size={14} color="var(--accent)" />}
                 <span className="autocomplete-label">{item.label}</span>
                 {item.description && (
                   <span style={{ marginLeft: 8, fontSize: 11, opacity: 0.6 }}>{item.description}</span>

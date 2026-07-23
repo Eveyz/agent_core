@@ -45,17 +45,32 @@ pub(crate) fn unregister_run_resolver(run_id: &str) {
 #[derive(Clone)]
 pub struct ApprovalResolver {
     inner: Arc<Mutex<PendingApprovalMap>>,
+    automatic_choice: Option<ApprovalChoice>,
 }
 
 impl ApprovalResolver {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
+            automatic_choice: None,
+        }
+    }
+
+    /// Build a resolver for unattended execution. Any tool call that would
+    /// normally block for approval is denied immediately.
+    pub fn auto_deny() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(HashMap::new())),
+            automatic_choice: Some(ApprovalChoice::Deny),
         }
     }
 
     /// Insert a pending approval (called by the executor).
     pub fn insert(&self, prompt_id: String, tx: tokio::sync::oneshot::Sender<ApprovalChoice>) {
+        if let Some(choice) = &self.automatic_choice {
+            let _ = tx.send(choice.clone());
+            return;
+        }
         self.inner.lock().insert(prompt_id, tx);
     }
 
@@ -133,6 +148,15 @@ mod tests {
     fn resolve_nonexistent_returns_false() {
         let resolver = ApprovalResolver::new();
         assert!(!resolver.resolve("nope", ApprovalChoice::Deny));
+    }
+
+    #[tokio::test]
+    async fn auto_deny_resolver_never_leaves_a_waiter() {
+        let resolver = ApprovalResolver::auto_deny();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        resolver.insert("p1".into(), tx);
+        assert!(resolver.is_empty());
+        assert!(matches!(rx.await, Ok(ApprovalChoice::Deny)));
     }
 
     #[test]

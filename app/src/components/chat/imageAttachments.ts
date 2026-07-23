@@ -15,6 +15,13 @@ export interface ChatImageRef {
 export interface SendPayload {
   text: string;
   images?: PendingImage[];
+  agentMentions?: AgentMentionPayload[];
+}
+
+export interface AgentMentionPayload {
+  agent_id: string;
+  revision_id: string;
+  optional?: boolean;
 }
 
 export function blobToBase64(blob: Blob): Promise<string> {
