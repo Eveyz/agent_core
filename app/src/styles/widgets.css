@@ -1049,25 +1049,69 @@
 
 /* ── Bash / Shell widget ──────────────────────────────────────────── */
 .bash-details-wrapper {
-  margin: 8px 12px 8px 19px;
-  border-radius: 8px;
-  background: var(--bg-secondary);
+  margin: 6px 12px 8px 19px;
+  border-radius: var(--radius-md, 8px);
+  background: var(--code-bg);
   /* clip corners without killing child overflow-x scrollbars */
   overflow: clip;
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--border-subtle);
   min-width: 0;
   max-width: 100%;
 }
 
+.bash-details-wrapper-fail {
+  border-color: color-mix(in srgb, var(--danger) 28%, var(--border-subtle));
+}
+
 .bash-details-header {
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 10px;
+  min-height: 28px;
+  background: transparent;
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .bash-details-header-label {
-  font-size: 12px;
-  color: var(--text-muted);
+  font-family: var(--font-sans, inherit);
+  font-size: 10px;
   font-weight: 500;
+  color: var(--code-lang-color);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.bash-details-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.bash-details-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 4px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+  user-select: none;
+}
+
+.bash-details-status-chip.bash-details-status-ok {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+}
+
+.bash-details-status-chip.bash-details-status-fail {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 
 .bash-details-body {
@@ -1094,17 +1138,18 @@
   display: flex;
   align-items: flex-start;
   gap: 0;
-  padding: 12px;
-  color: var(--text-primary);
+  padding: 10px 12px;
+  color: var(--code-text);
   white-space: pre-wrap;
   word-break: break-word;
   overflow-wrap: anywhere;
 }
 
 .bash-prompt {
-  color: var(--text-muted);
+  color: var(--code-lang-color);
   flex-shrink: 0;
   user-select: none;
+  margin-right: 2px;
 }
 
 .bash-details-command-fallback {
@@ -1150,19 +1195,10 @@
 
 .bash-details-output-wrapper {
   position: relative;
-  border-top: 1px solid var(--border-color);
+  border-top: 1px solid var(--border-subtle);
   min-width: 0;
   display: flex;
   flex-direction: column;
-}
-
-.bash-output-toolbar {
-  display: flex;
-  justify-content: flex-end;
-  gap: 6px;
-  padding: 6px 10px 0;
-  flex-shrink: 0;
-  background: var(--overlay-0_02);
 }
 
 .bash-output-scroll-area {
@@ -1170,7 +1206,7 @@
   max-height: 400px;
   overflow: auto;
   -webkit-overflow-scrolling: touch;
-  background: var(--overlay-0_02);
+  background: transparent;
 }
 
 .bash-output-scroll-area.is-wrapping {
@@ -1179,23 +1215,27 @@
 
 .bash-output-btn {
   display: flex;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
-  padding: 4px;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: var(--radius-xs, 4px);
+  padding: 3px;
   cursor: pointer;
-  color: var(--text-muted);
+  color: var(--code-lang-color);
   flex-shrink: 0;
+  transition: background-color var(--transition-fast, 0.12s ease), color var(--transition-fast, 0.12s ease);
 }
 
-.bash-output-btn:hover {
-  color: var(--text-secondary);
-  background: var(--overlay-0_04);
+.bash-output-btn:hover,
+.bash-output-btn[data-active] {
+  color: var(--code-text);
+  background: var(--bg-hover);
 }
 
 .bash-details-output {
   display: block;
-  padding: 8px 12px 12px;
+  padding: 8px 12px 10px;
   color: var(--text-muted);
   background: transparent;
   box-sizing: border-box;
@@ -1204,7 +1244,7 @@
 }
 
 .bash-stream + .bash-stream {
-  border-top: 1px solid var(--border-color);
+  border-top: 1px solid var(--border-subtle);
 }
 
 .bash-stream-label {
@@ -1266,23 +1306,4 @@
   overflow-wrap: anywhere;
   width: 100%;
   min-width: 0;
-}
-
-.bash-details-status {
-  display: flex;
-  justify-content: flex-end;
-  align-items: center;
-  padding: 8px 12px;
-  font-weight: 500;
-  font-size: 12px;
-  border-top: 1px solid var(--border-color);
-  font-family: var(--font-sans);
-}
-
-.bash-details-status-ok {
-  color: var(--success);
-}
-
-.bash-details-status-fail {
-  color: var(--error, var(--danger));
 }

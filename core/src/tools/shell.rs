@@ -195,9 +195,12 @@ impl ShellTool {
                     loop {
                         match lines.next_line().await {
                             Ok(Some(line)) => {
-                                on_update(&line);
-                                result.push_str(&line);
-                                result.push('\n');
+                                // AsyncBufReadExt::lines strips the trailing newline;
+                                // re-add it so streaming UI matches the final result.
+                                let mut chunk = line;
+                                chunk.push('\n');
+                                on_update(&chunk);
+                                result.push_str(&chunk);
                             }
                             Ok(None) => break,
                             Err(e) => {
@@ -306,9 +309,12 @@ impl ShellTool {
                     loop {
                         match lines.next_line().await {
                             Ok(Some(line)) => {
-                                on_update(&line);
-                                result.push_str(&line);
-                                result.push('\n');
+                                // AsyncBufReadExt::lines strips the trailing newline;
+                                // re-add it so streaming UI matches the final result.
+                                let mut chunk = line;
+                                chunk.push('\n');
+                                on_update(&chunk);
+                                result.push_str(&chunk);
                             }
                             Ok(None) => break,
                             Err(e) => {
@@ -507,5 +513,37 @@ mod tests {
 
         let out = tool().execute(json!({"command": command})).await.unwrap();
         assert!(out.contains("a") && out.contains("b") && out.contains("c"));
+    }
+
+    #[tokio::test]
+    async fn test_shell_stream_updates_include_newlines() {
+        use std::sync::{Arc, Mutex};
+        #[cfg(windows)]
+        let command = "Write-Output \"a`nb`nc\"";
+        #[cfg(not(windows))]
+        let command = "printf 'a\\nb\\nc\\n'";
+
+        let chunks = Arc::new(Mutex::new(Vec::<String>::new()));
+        let chunks_cb = chunks.clone();
+        let on_update: super::super::ToolUpdateFn = Arc::new(move |partial: &str| {
+            chunks_cb.lock().unwrap().push(partial.to_string());
+        });
+
+        let out = tool()
+            .execute_with_stream(json!({ "command": command }), Some(on_update), None)
+            .await
+            .unwrap();
+
+        let streamed = chunks.lock().unwrap().join("");
+        // Streaming concatenation should preserve line breaks the same way as final output.
+        assert!(
+            streamed.contains('\n'),
+            "streamed chunks must include newlines, got: {streamed:?}"
+        );
+        assert!(
+            !streamed.replace('\n', "").contains("ab") || streamed.contains("a\nb"),
+            "lines must not be glued together: {streamed:?}"
+        );
+        assert!(out.contains("a\n") || out.contains("a\r\n") || out.lines().any(|l| l == "a"));
     }
 }

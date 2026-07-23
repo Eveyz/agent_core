@@ -195,100 +195,102 @@ export function SkillSelector({ onSelect, externalOpen, onExternalOpenChange }: 
       </button>
 
       {open && (
-        <div className="model-dropdown skill-dropdown" onKeyDown={handleKeyDown} role="listbox">
-          <div className="model-dropdown-header">
-            <button
-              className="skill-refresh-btn"
-              onClick={handleRefresh}
-              title="Refresh skills"
-              aria-label="Refresh skills"
-            >
-              <RefreshIcon size={14} />
-            </button>
-            <div className="model-dropdown-search">
-              <SearchIcon size={14} />
-              <input
-                ref={searchInputRef}
-                className="model-dropdown-search-input"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search skills..."
-                aria-label="Search skills"
-              />
-            </div>
-          </div>
-
-          <div className="model-dropdown-list" ref={listRef}>
-            {loading && <div className="model-dropdown-empty">Loading skills...</div>}
-
-            {!loading && allItems.length === 0 && (
-              <div className="model-dropdown-empty">
-                No skills found
-                {skills.length === 0 && (
-                  <div style={{ marginTop: '8px', fontSize: '12px' }}>
-                    <button type="button" className="skill-settings-link" onClick={handleOpenSkillSettings}>
-                      Install skills in Settings
-                    </button>
-                  </div>
-                )}
+        <div className="model-dropdown-shell">
+          <div className="model-dropdown skill-dropdown" onKeyDown={handleKeyDown} role="listbox">
+            <div className="model-dropdown-header">
+              <button
+                className="skill-refresh-btn"
+                onClick={handleRefresh}
+                title="Refresh skills"
+                aria-label="Refresh skills"
+              >
+                <RefreshIcon size={14} />
+              </button>
+              <div className="model-dropdown-search">
+                <SearchIcon size={14} />
+                <input
+                  ref={searchInputRef}
+                  className="model-dropdown-search-input"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search skills..."
+                  aria-label="Search skills"
+                />
               </div>
-            )}
+            </div>
 
-            {!loading && allItems.length > 0 && (
-              <>
-                {filteredRecent.length > 0 && (
-                  <div className="skill-dropdown-section">
-                    <div className="skill-dropdown-section-header">
-                      <ClockIcon size={12} />
-                      <span>Recent</span>
-                    </div>
-                    {filteredRecent.map((skill) => (
-                      <button
-                        key={`recent-${skill.name}`}
-                        className={`skill-dropdown-item ${
-                          allItems[selectedIndex]?.skill.name === skill.name ? 'selected' : ''
-                        }`}
-                        onClick={() => handleSelect(skill)}
-                        role="option"
-                        aria-selected={allItems[selectedIndex]?.skill.name === skill.name}
-                      >
-                        <ZapIcon size={14} className="skill-item-icon" style={{ color: 'var(--violet-500)' }} />
-                        <div className="skill-item-content">
-                          <div className="skill-item-name">{skill.name}</div>
-                          <div className="skill-item-description">{skill.description}</div>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                )}
+            <div className="model-dropdown-list" ref={listRef}>
+              {loading && <div className="model-dropdown-empty">Loading skills...</div>}
 
-                {filteredSkills.length > 0 && (
-                  <div className="skill-dropdown-section">
-                    <div className="skill-dropdown-section-header">
-                      <ZapIcon size={12} />
-                      <span>All Skills</span>
-                    </div>
-                    {filteredSkills.map((skill) => (
-                      <button
-                        key={skill.name}
-                        className={`skill-dropdown-item ${
-                          allItems[selectedIndex]?.skill.name === skill.name ? 'selected' : ''
-                        }`}
-                        onClick={() => handleSelect(skill)}
-                        role="option"
-                        aria-selected={allItems[selectedIndex]?.skill.name === skill.name}
-                      >
-                        <ZapIcon size={14} className="skill-item-icon" style={{ color: 'var(--violet-500)' }} />
-                        <div className="skill-item-content">
-                          <div className="skill-item-name">{skill.name}</div>
-                          <div className="skill-item-description">{skill.description}</div>
-                        </div>
+              {!loading && allItems.length === 0 && (
+                <div className="model-dropdown-empty">
+                  No skills found
+                  {skills.length === 0 && (
+                    <div style={{ marginTop: '8px', fontSize: '12px' }}>
+                      <button type="button" className="skill-settings-link" onClick={handleOpenSkillSettings}>
+                        Install skills in Settings
                       </button>
-                    ))}
-                  </div>
-                )}
-              </>
-            )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {!loading && allItems.length > 0 && (
+                <>
+                  {filteredRecent.length > 0 && (
+                    <div className="skill-dropdown-section">
+                      <div className="skill-dropdown-section-header">
+                        <ClockIcon size={12} />
+                        <span>Recent</span>
+                      </div>
+                      {filteredRecent.map((skill) => (
+                        <button
+                          key={`recent-${skill.name}`}
+                          className={`skill-dropdown-item ${
+                            allItems[selectedIndex]?.skill.name === skill.name ? 'selected' : ''
+                          }`}
+                          onClick={() => handleSelect(skill)}
+                          role="option"
+                          aria-selected={allItems[selectedIndex]?.skill.name === skill.name}
+                        >
+                          <ZapIcon size={14} className="skill-item-icon" style={{ color: 'var(--violet-500)' }} />
+                          <div className="skill-item-content">
+                            <div className="skill-item-name">{skill.name}</div>
+                            <div className="skill-item-description">{skill.description}</div>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {filteredSkills.length > 0 && (
+                    <div className="skill-dropdown-section">
+                      <div className="skill-dropdown-section-header">
+                        <ZapIcon size={12} />
+                        <span>All Skills</span>
+                      </div>
+                      {filteredSkills.map((skill) => (
+                        <button
+                          key={skill.name}
+                          className={`skill-dropdown-item ${
+                            allItems[selectedIndex]?.skill.name === skill.name ? 'selected' : ''
+                          }`}
+                          onClick={() => handleSelect(skill)}
+                          role="option"
+                          aria-selected={allItems[selectedIndex]?.skill.name === skill.name}
+                        >
+                          <ZapIcon size={14} className="skill-item-icon" style={{ color: 'var(--violet-500)' }} />
+                          <div className="skill-item-content">
+                            <div className="skill-item-name">{skill.name}</div>
+                            <div className="skill-item-description">{skill.description}</div>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
           </div>
         </div>
       )}

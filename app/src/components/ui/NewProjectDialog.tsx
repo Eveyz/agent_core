@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -35,34 +35,34 @@ export const NewProjectDialog = memo(function NewProjectDialog({
   const { t } = useTranslation();
   const nameRef = useRef<HTMLInputElement>(null);
   const [name, setName] = useState("");
-  const [path, setPath] = useState("");
-  const [documentsDir, setDocumentsDir] = useState("");
-  const [pathTouched, setPathTouched] = useState(false);
-  const pathTouchedRef = useRef(false);
+  /** Parent directory chosen by default Documents / Browse. */
+  const [parentDir, setParentDir] = useState("");
+  /**
+   * When the user types in the path field, freeze the full path.
+   * Browse / name typing do not set this — Browse only updates parentDir so
+   * the leaf folder keeps tracking the project name.
+   */
+  const [pathOverride, setPathOverride] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const folder = useMemo(() => sanitizeFolderName(name || "untitled"), [name]);
+  const path = pathOverride ?? (parentDir ? joinPath(parentDir, folder) : "");
 
   useEffect(() => {
     if (!isOpen) return;
     setName("");
-    setPath("");
-    setPathTouched(false);
-    pathTouchedRef.current = false;
+    setParentDir("");
+    setPathOverride(null);
     setError(null);
     let cancelled = false;
     (async () => {
       try {
         const dir = await invoke<string>("get_documents_dir");
         if (!cancelled) {
-          setDocumentsDir(dir);
-          setPath((currentPath) => {
-            if (pathTouchedRef.current) return currentPath;
-            const currentName = nameRef.current?.value || "";
-            const folder = sanitizeFolderName(currentName || "untitled");
-            return joinPath(dir, folder);
-          });
+          setParentDir(dir);
         }
       } catch {
-        if (!cancelled) setDocumentsDir("");
+        if (!cancelled) setParentDir("");
       }
       setTimeout(() => nameRef.current?.focus(), 50);
     })();
@@ -71,31 +71,35 @@ export const NewProjectDialog = memo(function NewProjectDialog({
     };
   }, [isOpen]);
 
+  // Fallback when Documents dir is unavailable: ask Rust for a full default path.
   useEffect(() => {
-    if (!isOpen || pathTouched) return;
-    const folder = sanitizeFolderName(name || "untitled");
-    if (documentsDir) {
-      setPath(joinPath(documentsDir, folder));
-    } else {
-      invoke<string>("get_default_project_path", { name: name || "untitled" })
-        .then((p) => {
-          if (!pathTouchedRef.current) {
-            setPath(p);
-          }
-        })
-        .catch(() => undefined);
-    }
-  }, [name, documentsDir, isOpen, pathTouched]);
+    if (!isOpen || parentDir || pathOverride !== null) return;
+    let cancelled = false;
+    invoke<string>("get_default_project_path", { name: name || "untitled" })
+      .then((p) => {
+        if (cancelled || pathOverride !== null) return;
+        const sep = p.includes("\\") ? "\\" : "/";
+        const idx = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+        if (idx > 0) {
+          setParentDir(p.slice(0, idx));
+        } else {
+          setPathOverride(p);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, parentDir, pathOverride, name]);
 
   const handleBrowse = useCallback(async () => {
     const selected = await open({ directory: true, multiple: false });
     if (selected && typeof selected === "string") {
-      const folder = sanitizeFolderName(name || "untitled");
-      setPath(joinPath(selected, folder));
-      setPathTouched(true);
-      pathTouchedRef.current = true;
+      // Browse picks the parent location only; leaf follows the project name.
+      setParentDir(selected);
+      setPathOverride(null);
     }
-  }, [name]);
+  }, []);
 
   const handleSubmit = useCallback(() => {
     const trimmedName = name.trim();
@@ -154,9 +158,7 @@ export const NewProjectDialog = memo(function NewProjectDialog({
             className="dialog-input"
             value={path}
             onChange={(e) => {
-              setPath(e.target.value);
-              setPathTouched(true);
-              pathTouchedRef.current = true;
+              setPathOverride(e.target.value);
             }}
             onKeyDown={(e) => {
               if (e.key === "Enter") handleSubmit();

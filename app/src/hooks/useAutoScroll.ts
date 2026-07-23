@@ -32,8 +32,9 @@ function isNearBottom(el: HTMLElement): boolean {
  * - Do not infer "user scrolled up" from scrollTop deltas — height shrinks
  *   look identical to scrolling up and falsely disable sticking.
  * - Ignore scroll events caused by our own programmatic pins.
- * - Keep `isAtBottom` in sync when we pin, so the floating button does not
- *   stick around after the viewport is already near the bottom.
+ * - Keep `isAtBottom` geometric (distance from bottom), never couple it to
+ *   stick-to-bottom. Wheel-up releases follow, but must not force-show the
+ *   jump button when the viewport is still near the latest content.
  * - Wheel/touch-up releases stick immediately; scroll must not re-stick while
  *   still in the soft near zone (that felt like "too much gravity" during stream).
  */
@@ -66,12 +67,11 @@ export function useAutoScroll<
     });
   }, []);
 
+  /** Button visibility is geometric only — independent of stick-to-bottom. */
   const syncAtBottom = useCallback(() => {
     const el = scrollRef.current;
     if (!el || el.clientHeight === 0) return;
-    if (stickToBottom.current && isNearBottom(el)) {
-      setIsAtBottom(true);
-    }
+    setIsAtBottom(isNearBottom(el));
   }, []);
 
   const pinToBottom = useCallback(() => {
@@ -126,9 +126,14 @@ export function useAutoScroll<
   }, [markProgrammatic, syncAtBottom]);
 
   // Non-streaming updates (new entry, session switch, stream end): pin once in layout.
+  // If the user has left the bottom, still refresh the jump-button flag from geometry
+  // so a stale isAtBottom=false cannot outlive being visually docked.
   useLayoutEffect(() => {
-    if (!stickToBottom.current) return;
-    pinToBottom();
+    if (stickToBottom.current) {
+      pinToBottom();
+    } else {
+      syncAtBottom();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, isProcessing]);
 
@@ -173,9 +178,12 @@ export function useAutoScroll<
 
     let touchLastY: number | null = null;
 
+    // Release auto-follow only. Never force-show the jump button here — a
+    // trackpad nudge at the true bottom used to flip isAtBottom false with no
+    // scroll event, leaving the chevron stuck until the user clicked it.
     const leaveBottom = () => {
       stickToBottom.current = false;
-      setIsAtBottom(false);
+      setIsAtBottom(isNearBottom(el));
     };
 
     const handleScroll = () => {

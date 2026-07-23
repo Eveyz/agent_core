@@ -251,10 +251,6 @@ const BashWidget = memo(function BashWidget({
     return () => clearTimeout(timer);
   }, [copied]);
 
-  const statusLabel = failed
-    ? (exitCode !== null ? `✗ Fail (exit ${exitCode})` : '✗ Fail')
-    : '✓ Success';
-
   return (
     <div className="step-block bash-block">
       <div
@@ -274,9 +270,49 @@ const BashWidget = memo(function BashWidget({
         </div>
       </div>
       {!collapsed && (
-        <div className="bash-details-wrapper">
+        <div className={`bash-details-wrapper ${failed ? 'bash-details-wrapper-fail' : ''}`}>
           <div className="bash-details-header">
             <span className="bash-details-header-label">{shellLabel}</span>
+            <div className="bash-details-header-actions">
+              {!active && (
+                <span
+                  className={`bash-details-status-chip ${failed ? 'bash-details-status-fail' : 'bash-details-status-ok'}`}
+                >
+                  {failed ? (
+                    exitCode !== null ? `Fail · ${exitCode}` : 'Fail'
+                  ) : (
+                    <>
+                      <CheckIcon size={11} strokeWidth={2.5} />
+                      Success
+                    </>
+                  )}
+                </span>
+              )}
+              {result && (
+                <>
+                  <button
+                    className="code-block-copy-btn bash-output-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setWrapLines((w) => !w);
+                    }}
+                    title={wrapLines ? 'Unwrap lines' : 'Wrap lines'}
+                    type="button"
+                    data-active={wrapLines || undefined}
+                  >
+                    <WrapTextIcon size={13} />
+                  </button>
+                  <button
+                    className="code-block-copy-btn bash-output-btn"
+                    onClick={handleCopy}
+                    title="Copy output"
+                    type="button"
+                  >
+                    {copied ? <CheckIcon size={13} color="var(--success)" /> : <CopyIcon size={13} />}
+                  </button>
+                </>
+              )}
+            </div>
           </div>
           <div className="bash-details-body">
             <div className="bash-details-command">
@@ -290,38 +326,11 @@ const BashWidget = memo(function BashWidget({
                 <span className="bash-details-command-fallback">{command}</span>
               )}
             </div>
-            {result && (
+            {result && outputSections.length > 0 && (
               <div className="bash-details-output-wrapper">
-                <div className="bash-output-toolbar">
-                  <button
-                    className="code-block-wrap-btn bash-output-btn"
-                    onClick={() => setWrapLines(!wrapLines)}
-                    title={wrapLines ? 'Unwrap lines (allow horizontal scroll)' : 'Wrap lines'}
-                    type="button"
-                    style={{
-                      background: wrapLines ? 'var(--overlay-0_08)' : 'var(--bg-secondary)',
-                      color: wrapLines ? 'var(--accent)' : 'var(--text-muted)',
-                    }}
-                  >
-                    <WrapTextIcon size={14} />
-                  </button>
-                  <button
-                    className="code-block-copy-btn bash-output-btn"
-                    onClick={handleCopy}
-                    title="Copy output"
-                    type="button"
-                  >
-                    {copied ? <CheckIcon size={14} color="var(--success)" /> : <CopyIcon size={14} />}
-                  </button>
-                </div>
                 <div className={`bash-output-scroll-area ${wrapLines ? 'is-wrapping' : ''}`}>
                   <ShellOutputBody sections={outputSections} wrapLines={wrapLines} />
                 </div>
-              </div>
-            )}
-            {!active && (
-              <div className={`bash-details-status ${failed ? 'bash-details-status-fail' : 'bash-details-status-ok'}`}>
-                {statusLabel}
               </div>
             )}
           </div>
