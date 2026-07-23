@@ -1011,10 +1011,13 @@
   max-height: 60vh;
   padding: 0;
   max-width: 100%;
+  scrollbar-width: thin; /* Firefox */
+  scrollbar-color: var(--code-scrollbar-thumb) var(--code-scrollbar-track);
 }
 
 .code-block-content::-webkit-scrollbar {
-  height: 8px;
+  width: 5px;
+  height: 5px;
 }
 
 .code-block-content::-webkit-scrollbar-track {

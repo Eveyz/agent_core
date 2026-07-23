@@ -36,3 +36,9 @@ evals/out/
 jobs
 /harbor
 __pycache__
+
+# Agents
+.agents
+.antigravitycli
+.claude
+.workbuddy
