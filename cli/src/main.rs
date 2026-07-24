@@ -7,6 +7,7 @@ mod dry_run;
 mod oneshot;
 mod state;
 mod tui;
+mod workflow_authoring;
 
 use agent_core::{
     ApprovalChoice, Message, MessageDelta, PermissionMode, Role, RunCommand, RunEvent,
@@ -756,12 +757,16 @@ async fn run_main() -> anyhow::Result<ExitCode> {
                 enable_hooks,
             )
             .await;
+            let workflow_goal = state.pending_workflow_request.take();
             if apply_repl_outcome(&state, outcome, enable_permission, enable_hooks) {
                 break;
             }
+            if let Some(goal) = workflow_goal {
+                run_agent(&mut state, &goal, use_styles, true).await;
+            }
             continue;
         }
-        run_agent(&mut state, &input, use_styles).await;
+        run_agent(&mut state, &input, use_styles, false).await;
     }
 
     // ── Graceful shutdown (Ctrl+D, /quit, or input error) ───────────
@@ -853,10 +858,33 @@ async fn run_agent(
     state: &mut CliState,
     input: &str,
     use_styles: bool,
+    authoring_mode: bool,
 ) {
     let session_id = state.session_id.clone();
     let history = std::mem::take(&mut state.context_history);
-    let created = match state.run_manager.create_run(input, session_id.clone(), history).await {
+    let workspace = std::env::current_dir()
+        .ok()
+        .and_then(|path| path.to_str().map(str::to_string))
+        .unwrap_or_default();
+    let scoped_tool_factory = authoring_mode
+        .then(|| workflow_authoring::scoped_tool_factory(state, session_id.clone(), workspace));
+    let prompt = authoring_mode.then(|| workflow_authoring::authoring_prompt(input));
+    let run_input = prompt.as_deref().unwrap_or(input);
+    let created = match state
+        .run_manager
+        .create_run_with_workdir_and_images(
+            run_input,
+            session_id.clone(),
+            None,
+            history,
+            None,
+            false,
+            Vec::new(),
+            None,
+            scoped_tool_factory,
+        )
+        .await
+    {
         Ok(result) => result,
         Err(e) => { eprintln!("Error creating run: {e}"); return; }
     };

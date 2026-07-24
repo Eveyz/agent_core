@@ -5,6 +5,8 @@
 //! a single agent's model/tool loop.
 
 mod activity;
+mod authoring;
+mod authoring_tool;
 mod custom_agent;
 mod engine;
 mod legacy;
@@ -17,6 +19,14 @@ mod tool;
 pub use activity::{
     ActivityAdapter, ActivityDescriptor, ActivityInvocation, ActivityOutcome, ActivityRegistry,
     RecoveryDisposition,
+};
+pub use authoring::{
+    AgentBinding, ApplyWorkflowDraft, DraftStep, InlineAgentBlueprint, PublishWorkflowDraft,
+    PublishedWorkflowReceipt, WorkflowAuthoringService, WorkflowDraftReceipt, WorkflowDraftRecord,
+    WorkflowDraftSpec,
+};
+pub use authoring_tool::{
+    WorkflowApplyDraftTool, WorkflowCatalogTool, WorkflowPreviewTool, WorkflowPublishTool,
 };
 pub use custom_agent::{
     AgentHandoff, CUSTOM_AGENT_ACTIVITY_KIND, CustomAgentActivityAdapter, FrozenCustomAgentConfig,

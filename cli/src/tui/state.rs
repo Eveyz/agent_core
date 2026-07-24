@@ -242,6 +242,7 @@ pub struct AppState {
     // ── Pending actions consumed by the async event loop (mod.rs) ──
     pub pending_command: Option<String>,
     pub pending_request: Option<String>,
+    pub pending_workflow_request: Option<String>,
     pub pending_steer: Option<String>,
     /// (prompt_id, choice_key) — choice_key is resolved via
     /// `commands::approval_from_choice_key`.
@@ -308,6 +309,7 @@ impl AppState {
             agent_running: false,
             pending_command: None,
             pending_request: None,
+            pending_workflow_request: None,
             pending_steer: None,
             pending_approval: None,
             pending_answer: None,
@@ -427,6 +429,25 @@ impl AppState {
 
     pub fn take_pending_request(&mut self) -> Option<String> {
         self.pending_request.take()
+    }
+    pub fn submit_workflow(&mut self, goal: String) {
+        if self.agent_running {
+            self.push_notice("Finish or abort the active run before starting workflow authoring.");
+            return;
+        }
+        let display = if goal.trim().is_empty() {
+            "/workflow".to_string()
+        } else {
+            format!("/workflow {}", goal.trim())
+        };
+        self.entries.push(Entry::User { text: display });
+        self.pending_workflow_request = Some(goal);
+        self.agent_running = true;
+        self.agent_state = "streaming".into();
+        self.mark_dirty();
+    }
+    pub fn take_pending_workflow_request(&mut self) -> Option<String> {
+        self.pending_workflow_request.take()
     }
     pub fn take_pending_steer(&mut self) -> Option<String> {
         self.pending_steer.take()

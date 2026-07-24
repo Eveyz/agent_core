@@ -177,7 +177,10 @@ async fn run_app(terminal: &mut ratatui::DefaultTerminal, cli: Arc<Mutex<CliStat
 
         // ── 5. Pending user message → create_run ────────────────────
         if let Some(req) = state.take_pending_request() {
-            events::spawn_run(cli.clone(), tx.clone(), req);
+            events::spawn_run(cli.clone(), tx.clone(), req, false);
+        }
+        if let Some(req) = state.take_pending_workflow_request() {
+            events::spawn_run(cli.clone(), tx.clone(), req, true);
         }
 
         // ── 6. Cache rebuild + scroll clamp ──────────────────────────
@@ -281,10 +284,14 @@ async fn handle_pending_command(cli: &Arc<Mutex<CliState>>, state: &mut AppState
             .map(short_id)
             .unwrap_or_else(|| "(new)".into());
         state.tokens = s.context_history.len() * 4;
+        let workflow_goal = s.pending_workflow_request.take();
         state.recompute_context_pct();
         drop(s);
 
         apply_outcome(state, outcome);
+        if let Some(goal) = workflow_goal {
+            state.submit_workflow(goal);
+        }
     } else if let Some(data) = cmd.strip_prefix("register_model:") {
         apply_register_model(cli, state, data).await;
     } else if let Some(name) = cmd.strip_prefix("select_model:") {

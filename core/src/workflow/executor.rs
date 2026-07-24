@@ -425,6 +425,7 @@ async fn execute_agent_node(
             cancel_token,
             event_tx,
             subagent_depth: 1,
+            record_history: true,
         })
         .await?;
     let output = serde_json::json!({

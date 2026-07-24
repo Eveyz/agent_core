@@ -144,6 +144,7 @@ impl LegacyWorkflowCompiler {
                             config: serde_json::to_value(FrozenCustomAgentConfig {
                                 agent,
                                 permission,
+                                record_history: true,
                             })?,
                         },
                         inputs,

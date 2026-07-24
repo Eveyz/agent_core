@@ -62,6 +62,7 @@ pub const ALL_COMMANDS: &[(&str, &str)] = &[
     ("/skill active", "Active skills"),
     ("/skill deactivate", "Deactivate skill(s)"),
     ("/skill reload", "Rescan skills"),
+    ("/workflow", "Create a durable workflow with the agent"),
 ];
 
 #[derive(Debug, Clone)]
@@ -149,6 +150,14 @@ pub fn help_text() -> String {
     lines.join("\n")
 }
 
+fn workflow_goal(input: &str) -> Option<&str> {
+    if input == "/workflow" {
+        Some("")
+    } else {
+        input.strip_prefix("/workflow ").map(str::trim)
+    }
+}
+
 /// Sync slash dispatch (no await). Async-only commands return a placeholder
 /// message directing the caller to use `dispatch_async`.
 pub fn dispatch_sync(
@@ -160,6 +169,14 @@ pub fn dispatch_sync(
     let input = cmd.trim();
     if !input.starts_with('/') {
         return CommandOutcome::NotSlash;
+    }
+    if let Some(goal) = workflow_goal(input) {
+        state.pending_workflow_request = Some(goal.to_string());
+        return if goal.is_empty() {
+            CommandOutcome::info("Starting workflow authoring…")
+        } else {
+            CommandOutcome::info("Creating a workflow draft…")
+        };
     }
 
     match input {
@@ -970,10 +987,21 @@ mod tests {
         assert!(!ALL_COMMANDS.is_empty());
         assert!(ALL_COMMANDS.iter().any(|(c, _)| *c == "/help"));
         assert!(ALL_COMMANDS.iter().any(|(c, _)| *c == "/mcp"));
+        assert!(ALL_COMMANDS.iter().any(|(c, _)| *c == "/workflow"));
     }
 
     #[test]
     fn help_text_contains_quit() {
         assert!(help_text().contains("/quit"));
+    }
+
+    #[test]
+    fn workflow_command_extracts_optional_goal() {
+        assert_eq!(workflow_goal("/workflow"), Some(""));
+        assert_eq!(
+            workflow_goal("/workflow research then review"),
+            Some("research then review")
+        );
+        assert_eq!(workflow_goal("/workflows"), None);
     }
 }

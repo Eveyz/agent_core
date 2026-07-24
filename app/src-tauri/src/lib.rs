@@ -2097,6 +2097,7 @@ async fn run_agent_standalone(
             cancel_token: agent_core::CancellationToken::new(),
             event_tx: None,
             subagent_depth: 0,
+            record_history: true,
         })
         .await
         .map_err(|error| error.to_string())?;

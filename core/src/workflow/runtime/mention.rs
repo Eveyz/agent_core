@@ -131,7 +131,11 @@ impl MentionWorkflowCompiler {
                 key: task.key,
                 kind: NodeKind::Activity {
                     kind: CUSTOM_AGENT_ACTIVITY_KIND.to_string(),
-                    config: serde_json::to_value(FrozenCustomAgentConfig { agent, permission })?,
+                    config: serde_json::to_value(FrozenCustomAgentConfig {
+                        agent,
+                        permission,
+                        record_history: true,
+                    })?,
                 },
                 inputs,
                 after: task.depends_on,

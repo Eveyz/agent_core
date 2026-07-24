@@ -1,4 +1,10 @@
-use agent_core::{Brain, CancellationToken, McpClientManager, RunManager, SessionManager, SkillManager, TaskBoard, TodoList};
+use agent_core::{
+    workflow::runtime::{
+        DurableWorkflowRuntime, SqliteWorkflowStore, WorkflowAuthoringService,
+    },
+    Brain, CancellationToken, McpClientManager, RunManager, SessionManager, SkillManager,
+    TaskBoard, TodoList,
+};
 use parking_lot::Mutex;
 use std::sync::Arc;
 
@@ -29,4 +35,10 @@ pub struct CliState {
     pub mcp_mgr: Arc<tokio::sync::Mutex<McpClientManager>>,
     /// Session manager for persistence (shared with RunManager prompt lifecycle).
     pub session_mgr: Arc<SessionManager>,
+    /// Durable runtime used by workflow draft previews.
+    pub workflow_runtime: Arc<DurableWorkflowRuntime<SqliteWorkflowStore>>,
+    /// Workflow draft/compiler/catalog service.
+    pub workflow_authoring: Arc<WorkflowAuthoringService>,
+    /// `/workflow` handoff consumed by the active CLI frontend.
+    pub pending_workflow_request: Option<String>,
 }

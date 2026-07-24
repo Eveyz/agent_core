@@ -73,7 +73,7 @@ pub async fn bootstrap_runtime(opts: BootstrapOptions) -> anyhow::Result<CliStat
     let session_db = session_db_path.to_string_lossy();
     let session_storage =
         agent_core::memory::storage::Storage::new(&session_db).expect("Failed to open session DB");
-    let session_mgr = Arc::new(SessionManager::new(session_storage));
+    let session_mgr = Arc::new(SessionManager::new(session_storage.clone()));
 
     let run_manager = RunManager::new(brain).with_session_manager(session_mgr.clone());
 
@@ -124,6 +124,30 @@ pub async fn bootstrap_runtime(opts: BootstrapOptions) -> anyhow::Result<CliStat
 
     // Keep CliState.brain in sync with the RunManager Arc after model/permission setup.
     let brain_snapshot = (**run_manager.brain()).clone();
+    let custom_agent_runner = Arc::new(agent_core::agent_registry::CustomAgentRunner::new(
+        session_storage.clone(),
+        run_manager.brain().clone(),
+        session_mgr.clone(),
+    ));
+    let workflow_activities = agent_core::workflow::runtime::ActivityRegistry::new([Arc::new(
+        agent_core::workflow::runtime::CustomAgentActivityAdapter::new(custom_agent_runner),
+    )
+        as Arc<dyn agent_core::workflow::runtime::ActivityAdapter>])?;
+    let workflow_store = Arc::new(
+        agent_core::workflow::runtime::SqliteWorkflowStore::new(session_storage.clone())?,
+    );
+    let workflow_runtime = Arc::new(
+        agent_core::workflow::runtime::DurableWorkflowRuntime::new(
+            workflow_store.clone(),
+            workflow_activities,
+        ),
+    );
+    let workflow_authoring = Arc::new(
+        agent_core::workflow::runtime::WorkflowAuthoringService::new(
+            session_storage,
+            workflow_store,
+        )?,
+    );
 
     Ok(CliState {
         brain: brain_snapshot,
@@ -137,6 +161,9 @@ pub async fn bootstrap_runtime(opts: BootstrapOptions) -> anyhow::Result<CliStat
         skill_manager,
         mcp_mgr,
         session_mgr,
+        workflow_runtime,
+        workflow_authoring,
+        pending_workflow_request: None,
     })
 }
 

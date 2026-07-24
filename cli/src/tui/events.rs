@@ -16,13 +16,46 @@ use super::state::AppEvent;
 /// event to the UI channel as `AppEvent::Run`. When the run reaches a
 /// terminal state, restores the canonical context snapshot into
 /// `CliState.context_history` and clears `current_run_id`.
-pub fn spawn_run(cli: Arc<TokioMutex<CliState>>, tx: UnboundedSender<AppEvent>, input: String) {
+pub fn spawn_run(
+    cli: Arc<TokioMutex<CliState>>,
+    tx: UnboundedSender<AppEvent>,
+    input: String,
+    workflow_authoring: bool,
+) {
     tokio::spawn(async move {
         let run_id = {
             let mut state = cli.lock().await;
             let session_id = state.session_id.clone();
             let history = std::mem::take(&mut state.context_history);
-            let created = match state.run_manager.create_run(&input, session_id, history).await {
+            let workspace = std::env::current_dir()
+                .ok()
+                .and_then(|path| path.to_str().map(str::to_string))
+                .unwrap_or_default();
+            let scoped_tool_factory = workflow_authoring.then(|| {
+                crate::workflow_authoring::scoped_tool_factory(
+                    &state,
+                    session_id.clone(),
+                    workspace,
+                )
+            });
+            let prompt = workflow_authoring
+                .then(|| crate::workflow_authoring::authoring_prompt(&input));
+            let run_input = prompt.as_deref().unwrap_or(&input);
+            let created = match state
+                .run_manager
+                .create_run_with_workdir_and_images(
+                    run_input,
+                    session_id,
+                    None,
+                    history,
+                    None,
+                    false,
+                    Vec::new(),
+                    None,
+                    scoped_tool_factory,
+                )
+                .await
+            {
                 Ok(c) => c,
                 Err(e) => {
                     let _ = tx.send(AppEvent::Run(RunEvent::RunFailed { error: e.to_string() }));

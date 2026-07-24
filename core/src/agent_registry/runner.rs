@@ -43,6 +43,8 @@ pub struct CustomAgentInvocation {
     pub cancel_token: CancellationToken,
     pub event_tx: Option<EventSender>,
     pub subagent_depth: u8,
+    /// Whether to record this invocation in saved-agent history.
+    pub record_history: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,6 +62,7 @@ struct AgentRunHistoryGuard {
     runtime_id: Option<String>,
     started: std::time::Instant,
     finished: bool,
+    enabled: bool,
 }
 
 impl AgentRunHistoryGuard {
@@ -74,7 +77,7 @@ impl AgentRunHistoryGuard {
 
 impl Drop for AgentRunHistoryGuard {
     fn drop(&mut self) {
-        if self.finished {
+        if self.finished || !self.enabled {
             return;
         }
         let recovery = self
@@ -121,6 +124,7 @@ impl CustomAgentRunner {
             cancel_token,
             event_tx,
             subagent_depth,
+            record_history,
         } = invocation;
 
         let mut subagent_config = super::build_subagent_config(&agent);
@@ -203,6 +207,7 @@ impl CustomAgentRunner {
             runtime_id: None,
             started: std::time::Instant::now(),
             finished: false,
+            enabled: record_history,
         };
         let mut subagent = Subagent::new_with_memory(
             &agent.name,
@@ -238,11 +243,13 @@ impl CustomAgentRunner {
                 history_guard.entry.output = format!("{error}\n\n{recovery}");
                 history_guard.entry.success = false;
                 history_guard.entry.process_time_ms = elapsed_ms;
-                let entry = history_guard.entry.clone();
-                let storage = self.storage.clone();
-                tokio::task::spawn_blocking(move || super::history::record(&storage, &entry))
-                    .await
-                    .context("record custom agent failure task failed")??;
+                if record_history {
+                    let entry = history_guard.entry.clone();
+                    let storage = self.storage.clone();
+                    tokio::task::spawn_blocking(move || super::history::record(&storage, &entry))
+                        .await
+                        .context("record custom agent failure task failed")??;
+                }
                 history_guard.finish();
                 return Err(error.context(recovery));
             }
@@ -255,11 +262,13 @@ impl CustomAgentRunner {
         history_guard.entry.iterations_used = result.iterations_used as u32;
         history_guard.entry.success = result.success;
         history_guard.entry.process_time_ms = elapsed_ms;
-        let entry = history_guard.entry.clone();
-        let storage = self.storage.clone();
-        tokio::task::spawn_blocking(move || super::history::record(&storage, &entry))
-            .await
-            .context("record custom agent history task failed")??;
+        if record_history {
+            let entry = history_guard.entry.clone();
+            let storage = self.storage.clone();
+            tokio::task::spawn_blocking(move || super::history::record(&storage, &entry))
+                .await
+                .context("record custom agent history task failed")??;
+        }
         history_guard.finish();
 
         Ok(CustomAgentRunResult {
