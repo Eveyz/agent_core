@@ -585,12 +585,12 @@ impl SkillManager {
 
         let mut lines: Vec<String> = Vec::new();
         lines.push(
-            "Available skills (inactive: call `skill_load` with the name, or wait for \
-             `@skill:name` / auto-trigger. Do not browse skill directories to discover \
-             SKILL.md; use `skill_search` if this compact catalog is truncated. \
-             Active skills are already injected below — follow their body \
-             and use `skill_read_resource` on listed asset paths; do not call `skill_load` again \
-             for [ACTIVE] skills):"
+            "Available skills — match description/triggers/read_when to the task, then \
+             `skill_load` the best fit early (usually 1 skill, never speculative stacks). \
+             User `@skill:name` / auto-trigger override your choice. Do not browse skill \
+             directories for SKILL.md; use `skill_search` if this catalog is truncated. \
+             [ACTIVE] skills are already injected — follow their body and \
+             `skill_read_resource` on listed assets; do not call `skill_load` again:"
                 .to_string(),
         );
 
@@ -1485,6 +1485,7 @@ Skill body for {}"#,
         let catalog = mgr.build_catalog();
         assert!(catalog.contains("[ACTIVE]"));
         assert!(catalog.contains("do not call `skill_load` again"));
+        assert!(catalog.contains("usually 1 skill"));
     }
 
     #[test]

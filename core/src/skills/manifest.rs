@@ -213,14 +213,21 @@ impl SkillManifest {
 
     /// Produce a one-line catalog entry for the agent's system prompt.
     pub fn catalog_line(&self) -> String {
-        let triggers_str = if self.triggers.is_empty() {
+        let mut extras = Vec::new();
+        if !self.triggers.is_empty() {
+            extras.push(format!("triggers: {}", self.triggers.join(", ")));
+        }
+        if !self.read_when.is_empty() {
+            extras.push(format!("read_when: {}", self.read_when.join("; ")));
+        }
+        let extras_str = if extras.is_empty() {
             String::new()
         } else {
-            format!(" [triggers: {}]", self.triggers.join(", "))
+            format!(" [{}]", extras.join(" | "))
         };
         format!(
             "- **{}** (p{}): {}{}",
-            self.name, self.priority, self.description, triggers_str
+            self.name, self.priority, self.description, extras_str
         )
     }
 }
@@ -592,6 +599,12 @@ content"#;
         assert!(manifest.matches_trigger("how to git commit properly"));
         assert!(manifest.matches_trigger("working with git today"));
         assert!(!manifest.matches_trigger("how to write Python code"));
+
+        let line = manifest.catalog_line();
+        assert!(line.contains("git-workflow"));
+        assert!(line.contains("triggers:"));
+        assert!(line.contains("read_when:"));
+        assert!(line.contains("working with git"));
     }
 
     #[test]

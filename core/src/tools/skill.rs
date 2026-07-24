@@ -209,7 +209,7 @@ impl Tool for SkillListTool {
 
     fn description(&self) -> &str {
         "List all available skills with names, descriptions, triggers, and active status. \
-Use this to discover what skills are available before loading one."
+Use when the compact Skill Catalog is truncated or you need full discovery before skill_load."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -285,8 +285,9 @@ impl Tool for SkillLoadTool {
     }
 
     fn description(&self) -> &str {
-        "Load a skill by name to inject its content into your context. \
-Args: name (string). The skill's knowledge will guide your responses."
+        "Load a skill by name when its catalog description/triggers clearly match the \
+current task. Prefer one skill per task; do not load speculative stacks. \
+Args: name (string). Injects the skill body into context for subsequent turns."
     }
 
     fn parameters_schema(&self) -> Value {

@@ -21,8 +21,11 @@ pub const DEFAULT_PRINCIPLES_CORE: &str = r#"Rules:
 **Batch reads**: When you need to read multiple independent files, issue ALL `read_file` calls in a single response. Do not read files one at a time across multiple turns. The system runs independent tool calls in parallel, so one turn with N reads costs the same as one turn with 1 read — but N sequential turns cost N× more.
 
 Skills:
-- Inactive skills: use `skill_search`/`skill_list`, then activate with `skill_load` or `@skill:name` / auto-trigger. Do not browse skill directories to discover `SKILL.md`.
-- Active skills: their body is already in context. Follow it. Prefer `skill_read_resource` for paths under `### Skill assets`; use absolute paths only when another tool requires them. Do not shell-`find` or glob the skill tree. Do not call `skill_load` again for skills marked `[ACTIVE]`.
+- Match the Skill Catalog against the task. When a skill's description / triggers / read_when clearly fit, call `skill_load` early — before deep tool work — so its instructions guide the turn.
+- Load at most **1** skill per task (2 only if they cover disjoint needs). Prefer the highest-priority / most specific match. Do not load "just in case".
+- Skip skill_load for trivial work (1–2 tool calls, quick lookup, single-file tweak) unless the user `@skill:` names one.
+- User `@skill:name` and auto-trigger win over your own choice. Do not browse skill directories to discover `SKILL.md`; if the compact catalog is truncated, use `skill_search` then `skill_load`.
+- Active skills: body is already in context — follow it. Prefer `skill_read_resource` for paths under `### Skill assets`; use absolute paths only when a tool requires them. Do not shell-`find` or glob the skill tree. Do not call `skill_load` again for `[ACTIVE]` skills.
 
 ## Clarification Protocol
 
