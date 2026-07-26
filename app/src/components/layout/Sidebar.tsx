@@ -333,8 +333,11 @@ export const Sidebar = memo(function Sidebar({
     (sessionId: string, projectId: string) => {
       dispatch(setActiveProject(projectId));
       dispatch(setActiveSession(sessionId));
+      // Always navigate to chat — re-clicking the already-active session does not
+      // change activeSessionId, so App's [activeSessionId] effect would not fire.
+      onNavigate?.("chat");
     },
-    [dispatch],
+    [dispatch, onNavigate],
   );
 
   const handleDeleteSession = useCallback(

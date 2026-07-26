@@ -32,15 +32,21 @@
 
 .agent-list-search-container {
   padding: 0 16px 16px;
-  position: relative;
 }
 
-.search-icon {
+.agent-list-search-field {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.agent-list-search-field .search-icon {
   position: absolute;
-  left: 26px;
+  left: 12px;
   top: 50%;
   transform: translateY(-50%);
   color: var(--text-muted);
+  pointer-events: none;
 }
 
 .agent-list-search {
@@ -48,9 +54,10 @@
   background: var(--bg-input);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-md);
-  padding: 8px 12px 8px 32px;
+  padding: 8px 12px 8px 34px;
   color: var(--text-main);
   font-size: 13px;
+  line-height: 1.4;
   outline: none;
   transition: all 0.2s ease;
 }

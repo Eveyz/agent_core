@@ -33,14 +33,16 @@ export function AgentList({ agents, selectedAgentId }: AgentListProps) {
       </div>
       
       <div className="agent-list-search-container">
-        <SearchIcon size={14} className="search-icon" />
-        <input 
-          type="text" 
-          placeholder="Search agents..." 
-          className="agent-list-search"
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-        />
+        <div className="agent-list-search-field">
+          <SearchIcon size={14} className="search-icon" />
+          <input
+            type="text"
+            placeholder="Search agents..."
+            className="agent-list-search"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+          />
+        </div>
       </div>
 
       <div className="agent-list-items">

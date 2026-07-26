@@ -77,38 +77,49 @@
 .agent-tabs-nav {
   display: flex;
   gap: 4px;
-  /*background: var(--bg-hover);*/
-  padding: 6px;
+  padding: 4px;
   border-radius: var(--radius-lg);
   width: fit-content;
   border: 1px solid var(--border-color);
   margin-bottom: 8px;
+  background: var(--bg-hover);
 }
 
-.tab-btn {
-  /*background: transparent;*/
-  border: 1px solid #fff !important;
+.agent-tabs-nav .tab-btn {
+  background: transparent !important;
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
   padding: 8px 18px;
+  height: auto;
   color: var(--text-muted);
   font-size: 13px;
   font-weight: 500;
   border-radius: var(--radius-md);
   cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: color 0.15s ease, background 0.15s ease;
   position: relative;
   text-decoration: none;
 }
 
-.tab-btn:hover {
+.agent-tabs-nav .tab-btn:hover {
   color: var(--text-main);
-  background: transparent;
+  background: var(--overlay-0_05) !important;
 }
 
-.tab-btn.active {
+.agent-tabs-nav .tab-btn.active {
   color: var(--text-main);
-  background: var(--border-color);
-  border: 1px solid var(--border-color) !important;
-  box-shadow: none;
+  background: var(--bg-main) !important;
+  font-weight: 500;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+.agent-tabs-nav .tab-btn:focus,
+.agent-tabs-nav .tab-btn:focus-visible,
+.agent-tabs-nav .tab-btn:active {
+  outline: none !important;
+  box-shadow: none !important;
 }
 
 .agent-tabs-nav .tab-btn.active::after {
