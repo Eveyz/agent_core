@@ -19,6 +19,47 @@ use super::{
     store::WorkflowStore,
 };
 
+pub fn workflow_authoring_tool_factory<S: WorkflowStore>(
+    service: Arc<WorkflowAuthoringService>,
+    runtime: Arc<DurableWorkflowRuntime<S>>,
+    caller_permission: PermissionConfig,
+    scope: RunScope,
+) -> crate::runtime::run::ScopedToolFactory {
+    Arc::new(move |registry, cancel_token, parent_run_id| {
+        let available_tools = registry
+            .list_names()
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let mut bound_scope = scope.clone();
+        bound_scope.parent_run_id = parent_run_id.clone();
+        if bound_scope.session_id.is_empty() {
+            bound_scope.session_id = parent_run_id.clone();
+        }
+        registry.register(Box::new(WorkflowCatalogTool::new(
+            service.clone(),
+            available_tools,
+        )));
+        registry.register(Box::new(WorkflowApplyDraftTool::new(
+            service.clone(),
+            caller_permission.clone(),
+            parent_run_id.clone(),
+        )));
+        registry.register(Box::new(WorkflowPreviewTool::<S>::new(
+            service.clone(),
+            runtime.clone(),
+            bound_scope,
+            cancel_token,
+            parent_run_id.clone(),
+        )));
+        registry.register(Box::new(WorkflowPublishTool::new(
+            service.clone(),
+            parent_run_id,
+        )));
+        Some("workflow_catalog".to_string())
+    })
+}
+
 pub struct WorkflowCatalogTool {
     service: Arc<WorkflowAuthoringService>,
     available_tools: Vec<String>,

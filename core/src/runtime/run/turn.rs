@@ -153,8 +153,8 @@ impl Run {
                 self.append_conversation(Message::assistant(&content));
                 self.append_conversation(Message::system(&format!(
                     "[Runtime requirement] You cannot finish this Run yet. Call the \
-                     `{required_tool}` tool now. The structured @Agent mention is \
-                     addressed to the selected custom agent, not to the parent agent."
+                     `{required_tool}` tool now. This tool is required by the scoped \
+                     feature that started the Run; do not answer on its behalf."
                 )));
                 self.save_session_snapshot();
                 self.emit(RunEvent::MessageEnd {

@@ -22,6 +22,7 @@ import ClockIcon from 'lucide-react/dist/esm/icons/clock.mjs';
 import MessageSquareIcon from 'lucide-react/dist/esm/icons/message-square.mjs';
 import BookOpenIcon from 'lucide-react/dist/esm/icons/book-open.mjs';
 import TargetIcon from 'lucide-react/dist/esm/icons/target.mjs';
+import WorkflowIcon from 'lucide-react/dist/esm/icons/workflow.mjs';
 import BotIcon from 'lucide-react/dist/esm/icons/bot.mjs';
 import Trash2Icon from 'lucide-react/dist/esm/icons/trash-2.mjs';
 import HelpCircleIcon from 'lucide-react/dist/esm/icons/help-circle.mjs';
@@ -376,6 +377,7 @@ export const ChatInput = memo(function ChatInput({
                 {item.icon === 'cmd-btw' && <MessageSquareIcon size={14} color="var(--info)" />}
                 {item.icon === 'cmd-learn' && <BookOpenIcon size={14} color="var(--amber-500)" />}
                 {item.icon === 'cmd-goal' && <TargetIcon size={14} color="var(--danger)" />}
+                {item.icon === 'cmd-workflow' && <WorkflowIcon size={14} color="var(--violet-500)" />}
                 {item.icon === 'cmd-subagents' && <BotIcon size={14} color="#6366f1" />}
                 {item.icon === 'cmd-clear' && <Trash2Icon size={14} color="var(--gray-400)" />}
                 {item.icon === 'cmd-help' && <HelpCircleIcon size={14} color="var(--accent)" />}

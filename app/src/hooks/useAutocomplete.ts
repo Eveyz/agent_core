@@ -6,7 +6,7 @@ import type { AgentDef } from '../features/agents/types';
 
 export type IconType = 'folder' | 'file' | 'command' | 'file-code' | 'file-json' | 'file-image' | 'file-text'
   | 'lang-js' | 'lang-ts' | 'lang-jsx' | 'lang-tsx' | 'lang-py' | 'lang-go' | 'lang-css' | 'lang-rs' | 'lang-html'
-  | 'skill' | 'agent' | 'cmd-btw' | 'cmd-learn' | 'cmd-goal' | 'cmd-subagents' | 'cmd-clear' | 'cmd-help';
+  | 'skill' | 'agent' | 'cmd-btw' | 'cmd-learn' | 'cmd-goal' | 'cmd-workflow' | 'cmd-subagents' | 'cmd-clear' | 'cmd-help';
 
 export interface AutocompleteItem {
   label: string;
@@ -52,11 +52,12 @@ function getFileIcon(filename: string): IconType {
   }
 }
 
-const COMMANDS: AutocompleteItem[] = [
+export const COMMANDS: AutocompleteItem[] = [
   { label: 'btw',    value: '/btw ',    icon: 'cmd-btw', description: 'Ask a side question without polluting context' },
   { label: 'learn',  value: '/learn ',  icon: 'cmd-learn', description: 'Save a learning to persistent memory' },
   { label: 'goal',   value: '/goal ',   icon: 'cmd-goal', description: 'Pin a session goal — clarify, plan, execute; Stop keeps it' },
   { label: 'goal clear', value: '/goal clear', icon: 'cmd-goal', description: 'Clear the pinned session goal' },
+  { label: 'workflow', value: '/workflow ', icon: 'cmd-workflow', description: 'Build and publish a durable multi-agent workflow' },
   { label: 'plan park', value: '/plan park', icon: 'cmd-goal', description: 'Park the active todo plan (detour without losing progress)' },
   { label: 'plan resume', value: '/plan resume', icon: 'cmd-goal', description: 'Resume the latest parked plan (or pick one)' },
   { label: 'plan clear', value: '/plan clear', icon: 'cmd-goal', description: 'Clear all active and parked plans for this session' },

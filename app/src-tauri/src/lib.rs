@@ -27,6 +27,8 @@ struct AppState {
             agent_core::workflow::runtime::SqliteWorkflowStore,
         >,
     >,
+    /// Durable draft/compiler/catalog service used by `/workflow` Runs.
+    workflow_authoring: Arc<agent_core::workflow::runtime::WorkflowAuthoringService>,
     /// Rollback switch for run-scoped `@CustomAgent` planning.
     agent_mentions_enabled: bool,
     /// MCP client manager — connects to configured MCP servers.
@@ -162,6 +164,35 @@ fn attachment_under_agverse(path: &std::path::Path) -> bool {
         return false;
     };
     canonical.starts_with(agverse.join("sessions"))
+}
+
+fn workflow_authoring_goal(message: &str) -> Option<&str> {
+    let message = message.trim();
+    if message == "/workflow" {
+        return Some("");
+    }
+    message.strip_prefix("/workflow ").map(str::trim)
+}
+
+#[cfg(test)]
+mod workflow_command_tests {
+    use super::workflow_authoring_goal;
+
+    #[test]
+    fn recognizes_workflow_authoring_commands() {
+        assert_eq!(workflow_authoring_goal("/workflow"), Some(""));
+        assert_eq!(
+            workflow_authoring_goal("  /workflow build a research pipeline  "),
+            Some("build a research pipeline")
+        );
+    }
+
+    #[test]
+    fn leaves_other_messages_on_the_normal_runtime_path() {
+        assert_eq!(workflow_authoring_goal("/workflows"), None);
+        assert_eq!(workflow_authoring_goal("please run /workflow"), None);
+        assert_eq!(workflow_authoring_goal("normal message"), None);
+    }
 }
 
 // ── Run lifecycle commands ───────────────────────────────────────────
@@ -300,35 +331,51 @@ async fn send_message(
 
     let manager = state.run_manager.lock().await;
     let scoped_tool_factory: Option<agent_core::runtime::run::ScopedToolFactory> =
-        agent_mentions
-            .filter(|_| state.agent_mentions_enabled)
-            .filter(|mentions| !mentions.is_empty())
-            .map(|mentions| {
-                let manifest = agent_core::workflow::runtime::MentionManifest { mentions };
-                let runtime = state.workflow_runtime.clone();
-                let compiler = agent_core::workflow::runtime::MentionWorkflowCompiler::new(
-                    state.storage.clone(),
-                );
-                let caller_permission = manager.brain().config.permissions.clone();
-                let scope = agent_core::workflow::runtime::RunScope {
-                    session_id: session_id.clone().unwrap_or_default(),
-                    parent_prompt_id: early_prompt_id.clone().unwrap_or_default(),
-                    workspace: working_dir.clone().unwrap_or_default(),
-                    trigger: "agent_mention".to_string(),
-                    ..Default::default()
-                };
-                let allowed = manifest
-                    .mentions
-                    .iter()
-                    .map(|mention| {
-                        agent_core::agent_registry::get(&state.storage, &mention.agent_id)
-                            .map(|agent| format!("{} => {}", agent.name, mention.agent_id))
-                            .unwrap_or_else(|_| mention.agent_id.clone())
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let description = format!(
-                    "Plan and run the custom agents explicitly mentioned by the user. \
+        if workflow_authoring_goal(&message).is_some() {
+            Some(
+                agent_core::workflow::runtime::workflow_authoring_tool_factory(
+                    state.workflow_authoring.clone(),
+                    state.workflow_runtime.clone(),
+                    manager.brain().config.permissions.clone(),
+                    agent_core::workflow::runtime::RunScope {
+                        session_id: session_id.clone().unwrap_or_default(),
+                        parent_prompt_id: early_prompt_id.clone().unwrap_or_default(),
+                        workspace: working_dir.clone().unwrap_or_default(),
+                        trigger: "workflow_authoring".to_string(),
+                        ..Default::default()
+                    },
+                ),
+            )
+        } else {
+            agent_mentions
+                .filter(|_| state.agent_mentions_enabled)
+                .filter(|mentions| !mentions.is_empty())
+                .map(|mentions| {
+                    let manifest = agent_core::workflow::runtime::MentionManifest { mentions };
+                    let runtime = state.workflow_runtime.clone();
+                    let compiler = agent_core::workflow::runtime::MentionWorkflowCompiler::new(
+                        state.storage.clone(),
+                    );
+                    let caller_permission = manager.brain().config.permissions.clone();
+                    let scope = agent_core::workflow::runtime::RunScope {
+                        session_id: session_id.clone().unwrap_or_default(),
+                        parent_prompt_id: early_prompt_id.clone().unwrap_or_default(),
+                        workspace: working_dir.clone().unwrap_or_default(),
+                        trigger: "agent_mention".to_string(),
+                        ..Default::default()
+                    };
+                    let allowed = manifest
+                        .mentions
+                        .iter()
+                        .map(|mention| {
+                            agent_core::agent_registry::get(&state.storage, &mention.agent_id)
+                                .map(|agent| format!("{} => {}", agent.name, mention.agent_id))
+                                .unwrap_or_else(|_| mention.agent_id.clone())
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let description = format!(
+                        "Plan and run the custom agents explicitly mentioned by the user. \
                      This tool call is REQUIRED before answering any message carrying this \
                      structured mention manifest, including questions about an agent's \
                      identity or capabilities. Treat the message as addressed to the mentioned \
@@ -336,28 +383,29 @@ async fn send_message(
                      Only these agent IDs are allowed: {allowed}. Express all dependencies \
                      with depends_on and pass upstream handoffs through explicit inputs. \
                      After the tool returns, synthesize its result for the user."
-                );
-                Arc::new(move |
-                    registry: &mut agent_core::ToolRegistry,
-                    cancel_token,
-                    parent_run_id,
-                | {
-                    let mut bound_scope = scope.clone();
-                    bound_scope.parent_run_id = parent_run_id;
-                    registry.register(Box::new(
-                        agent_core::workflow::runtime::MentionWorkflowTool::new(
-                            runtime.clone(),
-                            compiler.clone(),
-                            manifest.clone(),
-                            caller_permission.clone(),
-                            bound_scope,
-                            cancel_token,
-                            description.clone(),
-                        ),
-                    ));
-                    Some("run_mentioned_agents".to_string())
-                }) as agent_core::runtime::run::ScopedToolFactory
-            });
+                    );
+                    Arc::new(move |
+                        registry: &mut agent_core::ToolRegistry,
+                        cancel_token,
+                        parent_run_id,
+                    | {
+                        let mut bound_scope = scope.clone();
+                        bound_scope.parent_run_id = parent_run_id;
+                        registry.register(Box::new(
+                            agent_core::workflow::runtime::MentionWorkflowTool::new(
+                                runtime.clone(),
+                                compiler.clone(),
+                                manifest.clone(),
+                                caller_permission.clone(),
+                                bound_scope,
+                                cancel_token,
+                                description.clone(),
+                            ),
+                        ));
+                        Some("run_mentioned_agents".to_string())
+                    }) as agent_core::runtime::run::ScopedToolFactory
+                })
+        };
 
     // Prompt lifecycle (create / finish / persist) lives in RunManager so CLI
     // and Tauri share one prompts-table source of truth.
@@ -2623,9 +2671,16 @@ pub fn run() {
             );
             let workflow_runtime = Arc::new(
                 agent_core::workflow::runtime::DurableWorkflowRuntime::new(
-                    workflow_store,
+                    workflow_store.clone(),
                     workflow_activities,
                 ),
+            );
+            let workflow_authoring = Arc::new(
+                agent_core::workflow::runtime::WorkflowAuthoringService::new(
+                    storage.clone(),
+                    workflow_store,
+                )
+                .expect("Failed to initialize workflow authoring storage"),
             );
             let agent_mentions_enabled = std::env::var("AGENT_CORE_AGENT_MENTIONS")
                 .map(|value| !matches!(value.as_str(), "0" | "false" | "off"))
@@ -2639,6 +2694,7 @@ pub fn run() {
                 storage: storage.clone(),
                 agent_registry: agent_core::agent_registry::AgentRegistry::new(storage.clone()),
                 workflow_runtime: workflow_runtime.clone(),
+                workflow_authoring,
                 agent_mentions_enabled,
                 mcp_manager,
                 mcp_tool_defs,

@@ -27,6 +27,7 @@ pub use authoring::{
 };
 pub use authoring_tool::{
     WorkflowApplyDraftTool, WorkflowCatalogTool, WorkflowPreviewTool, WorkflowPublishTool,
+    workflow_authoring_tool_factory,
 };
 pub use custom_agent::{
     AgentHandoff, CUSTOM_AGENT_ACTIVITY_KIND, CustomAgentActivityAdapter, FrozenCustomAgentConfig,

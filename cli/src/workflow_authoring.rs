@@ -1,11 +1,6 @@
-use std::sync::Arc;
-
 use agent_core::{
     runtime::run::ScopedToolFactory,
-    workflow::runtime::{
-        RunScope, SqliteWorkflowStore, WorkflowApplyDraftTool, WorkflowCatalogTool,
-        WorkflowPreviewTool, WorkflowPublishTool,
-    },
+    workflow::runtime::{RunScope, workflow_authoring_tool_factory},
 };
 
 use crate::state::CliState;
@@ -33,47 +28,17 @@ pub fn scoped_tool_factory(
     session_id: Option<String>,
     workspace: String,
 ) -> ScopedToolFactory {
-    let service = state.workflow_authoring.clone();
-    let runtime = state.workflow_runtime.clone();
-    let caller_permission = state.run_manager.brain().config.permissions.clone();
-    Arc::new(move |registry, cancel_token, parent_run_id| {
-        let available_tools = registry
-            .list_names()
-            .into_iter()
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-        let scope = RunScope {
-            session_id: session_id.clone().unwrap_or_else(|| parent_run_id.clone()),
-            parent_run_id: parent_run_id.clone(),
-            workspace: workspace.clone(),
+    workflow_authoring_tool_factory(
+        state.workflow_authoring.clone(),
+        state.workflow_runtime.clone(),
+        state.run_manager.brain().config.permissions.clone(),
+        RunScope {
+            session_id: session_id.unwrap_or_default(),
+            workspace,
             trigger: "workflow_authoring_preview".to_string(),
             ..Default::default()
-        };
-        registry.register(Box::new(WorkflowCatalogTool::new(
-            service.clone(),
-            available_tools,
-        )));
-        registry.register(Box::new(WorkflowApplyDraftTool::new(
-            service.clone(),
-            caller_permission.clone(),
-            parent_run_id.clone(),
-        )));
-        registry.register(Box::new(WorkflowPreviewTool::<SqliteWorkflowStore>::new(
-            service.clone(),
-            runtime.clone(),
-            scope,
-            cancel_token,
-            parent_run_id.clone(),
-        )));
-        registry.register(Box::new(WorkflowPublishTool::new(
-            service.clone(),
-            parent_run_id,
-        )));
-        // Authoring may need catalog inspection and interactive clarification
-        // before a valid complete draft exists, so no single tool is forced on
-        // the first model turn.
-        None
-    })
+        },
+    )
 }
 
 #[cfg(test)]
