@@ -25,7 +25,7 @@ import {
   updateEdgeData,
 } from "../../features/workflow/workflowSlice";
 import { fetchAgents } from "../../features/agents/agentSlice";
-import type { WorkflowDef } from "../../features/workflow/types";
+import type { WorkflowDef, WorkflowLibraryEntry } from "../../features/workflow/types";
 import { EdgeConfigPanel } from "./EdgeConfigPanel";
 import { WorkflowRunView } from "./WorkflowRunView";
 import { invoke } from "@tauri-apps/api/core";
@@ -39,11 +39,16 @@ import { WorkflowSidebar } from "./WorkflowSidebar";
 import { WorkflowCanvas } from "./WorkflowCanvas";
 import { NodePropertiesPanel } from "./NodePropertiesPanel";
 import { NodeInspectorDrawer } from "./NodeInspectorDrawer";
+import { RuntimeWorkflowDetail } from "./RuntimeWorkflowDetail";
 
 // ── Conversion helpers ──────────────────────────────────────────────
 // Now inside converters.ts
 
-export function WorkflowEditor() {
+interface WorkflowEditorProps {
+  onContinueInChat?: (entry: WorkflowLibraryEntry) => void;
+}
+
+export function WorkflowEditor({ onContinueInChat }: WorkflowEditorProps) {
   const dispatch = useAppDispatch();
   const activeWorkflow = useAppSelector((s) => s.workflow.activeWorkflow);
   const agents = useAppSelector((s) => s.agents.agents);
@@ -52,6 +57,9 @@ export function WorkflowEditor() {
   const workflows = useAppSelector((s) => s.workflow.workflows);
   const activeNodeResults = useAppSelector((s) => s.workflow.activeNodeResults);
   const inspectedNodeId = useAppSelector((s) => s.workflow.inspectedNodeId);
+  const activeProjectId = useAppSelector((s) => s.project.activeProjectId);
+  const activeSessionId = useAppSelector((s) => s.project.activeSessionId);
+  const projects = useAppSelector((s) => s.project.projects);
   
   const nodes = useAppSelector((s) => s.workflow.nodes);
   const edges = useAppSelector((s) => s.workflow.edges);
@@ -64,6 +72,23 @@ export function WorkflowEditor() {
   const [nameFocusKey, setNameFocusKey] = useState(0);
   const [creatingWorkflow, setCreatingWorkflow] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [libraryEntries, setLibraryEntries] = useState<WorkflowLibraryEntry[]>([]);
+  const [activeLibraryId, setActiveLibraryId] = useState<string>();
+  const activeLibraryEntry = libraryEntries.find((entry) => entry.workflow_id === activeLibraryId);
+  const workspace = projects.find((project) => project.id === activeProjectId)?.path;
+
+  const refreshLibrary = useCallback(async () => {
+    try {
+      const entries = await invoke<WorkflowLibraryEntry[]>("list_workflow_library", {
+        projectId: activeProjectId,
+        workspace: workspace ?? null,
+        includeWorkflow: true,
+      });
+      setLibraryEntries(entries);
+    } catch (error) {
+      setCreateError(`Failed to load workflow library: ${error}`);
+    }
+  }, [activeProjectId, workspace]);
 
   const dirty = isReduxDirty || (activeWorkflow && wfName !== activeWorkflow.name) || false;
 
@@ -71,6 +96,10 @@ export function WorkflowEditor() {
     dispatch(fetchWorkflows());
     dispatch(fetchAgents());
   }, [dispatch]);
+
+  useEffect(() => {
+    void refreshLibrary();
+  }, [refreshLibrary]);
 
   // Only reset the title when switching to a different workflow.
   useEffect(() => {
@@ -199,7 +228,34 @@ export function WorkflowEditor() {
   };
 
   const selectWorkflow = (wf: WorkflowDef) => {
+    setActiveLibraryId(undefined);
     dispatch(setActiveWorkflow(wf));
+  };
+
+  const selectLibrary = (entry: WorkflowLibraryEntry) => {
+    setActiveLibraryId(entry.workflow_id);
+    dispatch(setActiveWorkflow(null));
+    dispatch(setSelectedNodeId(null));
+    dispatch(setSelectedEdgeId(null));
+    dispatch(setInspectedNodeId(null));
+  };
+
+  const publishLegacy = async (workflow: WorkflowDef) => {
+    if (!activeProjectId || !workspace) {
+      setCreateError("Select a project before publishing a legacy workflow.");
+      return;
+    }
+    setCreateError(null);
+    try {
+      await invoke("publish_legacy_workflow_for_chat", {
+        legacyWorkflowId: workflow.id,
+        projectId: activeProjectId,
+        workspace,
+      });
+      await refreshLibrary();
+    } catch (error) {
+      setCreateError(`Legacy publish failed: ${error}`);
+    }
   };
 
   const handleNodeClick = useCallback((_: unknown, node: Node) => { 
@@ -235,30 +291,45 @@ export function WorkflowEditor() {
     <div className="workflow-editor-container">
       <WorkflowSidebar 
         workflows={displayWorkflows} 
+        libraryEntries={libraryEntries}
         activeWorkflowId={activeWorkflow?.id} 
+        activeLibraryId={activeLibraryId}
         creatingWorkflow={creatingWorkflow}
         onNewWorkflow={handleNewWorkflow} 
         onSelectWorkflow={selectWorkflow} 
+        onSelectLibrary={selectLibrary}
+        onPublishLegacy={publishLegacy}
       />
 
       <div className="workflow-editor-main">
         {createError && (
           <div className="workflow-create-error">{createError}</div>
         )}
-        <WorkflowToolbar 
-          wfName={wfName}
-          setWfName={setWfName}
-          hasActiveWorkflow={!!activeWorkflow}
-          dirty={dirty}
-          validationMsg={validationMsg}
-          nameFocusKey={nameFocusKey}
-          onSave={handleSave}
-          onValidate={handleValidate}
-          onRun={handleRun}
-          onShowResults={() => dispatch(setShowRunView(true))}
-        />
+        {!activeLibraryEntry && (
+          <WorkflowToolbar
+            wfName={wfName}
+            setWfName={setWfName}
+            hasActiveWorkflow={!!activeWorkflow}
+            dirty={dirty}
+            validationMsg={validationMsg}
+            nameFocusKey={nameFocusKey}
+            onSave={handleSave}
+            onValidate={handleValidate}
+            onRun={handleRun}
+            onShowResults={() => dispatch(setShowRunView(true))}
+          />
+        )}
 
-        {activeWorkflow ? (
+        {activeLibraryEntry ? (
+          <RuntimeWorkflowDetail
+            entry={activeLibraryEntry}
+            sessionId={activeSessionId ?? undefined}
+            projectId={activeProjectId ?? undefined}
+            workspace={workspace}
+            onChanged={refreshLibrary}
+            onContinueInChat={(entry) => onContinueInChat?.(entry)}
+          />
+        ) : activeWorkflow ? (
           <ReactFlowProvider>
             <WorkflowCanvas 
               nodes={displayNodes}
@@ -279,7 +350,7 @@ export function WorkflowEditor() {
         )}
       </div>
 
-      {selectedNode && (
+      {!activeLibraryEntry && selectedNode && (
         <NodePropertiesPanel 
           selectedNode={selectedNode}
           edges={edges}
@@ -291,7 +362,7 @@ export function WorkflowEditor() {
         />
       )}
 
-      {selectedEdge && (
+      {!activeLibraryEntry && selectedEdge && (
         <EdgeConfigPanel
           edge={selectedEdge}
           onClose={() => dispatch(setSelectedEdgeId(null))}
@@ -301,11 +372,11 @@ export function WorkflowEditor() {
         />
       )}
 
-      {showRunView && activeWorkflow && (
+      {!activeLibraryEntry && showRunView && activeWorkflow && (
         <WorkflowRunView workflowId={activeWorkflow.id} onClose={() => dispatch(setShowRunView(false))} />
       )}
 
-      {inspectedNodeId && (
+      {!activeLibraryEntry && inspectedNodeId && (
         <NodeInspectorDrawer 
           nodeId={inspectedNodeId}
           nodeLabel={(displayNodes.find(n => n.id === inspectedNodeId)?.data.label as string) || inspectedNodeId}

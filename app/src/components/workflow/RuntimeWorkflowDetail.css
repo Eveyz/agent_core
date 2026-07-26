@@ -1,0 +1,151 @@
+.runtime-workflow-detail {
+  height: 100%;
+  overflow: auto;
+  padding: 28px;
+  color: var(--text-main);
+}
+
+.runtime-workflow-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  padding-bottom: 22px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.runtime-workflow-header h2 {
+  margin: 10px 0 6px;
+  font-size: 24px;
+}
+
+.runtime-workflow-header p {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.runtime-workflow-badges,
+.runtime-workflow-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.runtime-workflow-badges span {
+  border: 1px solid var(--accent-border);
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: var(--accent);
+  background: var(--accent-subtle);
+  font-size: 11px;
+  text-transform: capitalize;
+}
+
+.runtime-workflow-actions {
+  align-self: flex-start;
+}
+
+.runtime-workflow-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.runtime-workflow-status {
+  margin-top: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  font-size: 12px;
+}
+
+.runtime-workflow-section {
+  margin-top: 28px;
+}
+
+.runtime-workflow-section h3 {
+  margin: 0 0 14px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--text-muted);
+}
+
+.runtime-workflow-dag {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.runtime-workflow-node {
+  padding: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+}
+
+.runtime-workflow-node-title {
+  font-weight: 600;
+}
+
+.runtime-workflow-node-agent,
+.runtime-workflow-node-links {
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.runtime-workflow-node p {
+  margin: 12px 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.runtime-workflow-node-links {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.runtime-workflow-metadata dl {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 8px 16px;
+  font-size: 12px;
+}
+
+.runtime-workflow-metadata dt {
+  color: var(--text-muted);
+}
+
+.runtime-workflow-metadata dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.runtime-workflow-history {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.runtime-workflow-history > div {
+  display: grid;
+  grid-template-columns: 90px 170px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 9px 11px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+}
+
+.runtime-workflow-history code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.runtime-workflow-history small {
+  grid-column: 1 / -1;
+  color: var(--danger);
+}

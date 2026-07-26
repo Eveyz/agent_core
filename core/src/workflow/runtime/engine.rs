@@ -64,6 +64,9 @@ enum PreparedExecution {
     Timer {
         fire_at: String,
     },
+    Child {
+        request: StartRun,
+    },
     Immediate(ActivityOutcome),
 }
 
@@ -512,7 +515,21 @@ impl<S: WorkflowStore> DurableWorkflowRuntime<S> {
                 fire_at: timer_fire_at
                     .ok_or_else(|| anyhow::anyhow!("timer fire time was not scheduled"))?,
             },
-            NodeKind::ChildWorkflow { .. } | NodeKind::ForEach { .. } => {
+            NodeKind::ChildWorkflow { revision_id } => {
+                let mut child_scope = run.scope.clone();
+                child_scope.parent_run_id = run.run_id.0.clone();
+                child_scope.continuation_key = node.key.0.clone();
+                child_scope.trigger = "child_workflow".to_string();
+                PreparedExecution::Child {
+                    request: StartRun {
+                        request_id: format!("child:{}:{}", run.request_id, node.key.0),
+                        source: WorkflowSource::Published(revision_id.clone()),
+                        input,
+                        scope: child_scope,
+                    },
+                }
+            }
+            NodeKind::ForEach { .. } => {
                 PreparedExecution::Immediate(ActivityOutcome::Failed {
                     error: format!(
                         "workflow node kind is not enabled in V1: {}",
@@ -541,6 +558,7 @@ impl<S: WorkflowStore> DurableWorkflowRuntime<S> {
         prepared: PreparedNode,
     ) -> (NodeSpec, u32, Result<ActivityOutcome>) {
         let cancellation = prepared.cancel_token.clone();
+        let child_handles_cancellation = matches!(&prepared.execution, PreparedExecution::Child { .. });
         let execution = async {
             match prepared.execution {
                 PreparedExecution::Activity { kind, invocation } => {
@@ -597,11 +615,61 @@ impl<S: WorkflowStore> DurableWorkflowRuntime<S> {
                         Err(error) => Err(error),
                     }
                 }
+                PreparedExecution::Child { request } => {
+                    let receipt = self.start(request).await?;
+                    loop {
+                        let observation = self
+                            .observe(ObserveRun {
+                                run_id: receipt.run_id.clone(),
+                                after_sequence: None,
+                            })
+                            .await?;
+                        if observation.snapshot.status.is_terminal() {
+                            return Ok(match observation.snapshot.status {
+                                RunStatus::Succeeded => ActivityOutcome::Completed {
+                                    output: observation.snapshot.output,
+                                    artifacts: Vec::new(),
+                                },
+                                RunStatus::NeedsAttention => ActivityOutcome::OutcomeUnknown {
+                                    reason: observation.snapshot.error,
+                                },
+                                RunStatus::Failed | RunStatus::Cancelled => {
+                                    ActivityOutcome::Failed {
+                                        error: observation.snapshot.error,
+                                        retryable: false,
+                                    }
+                                }
+                                _ => unreachable!("terminal status handled above"),
+                            });
+                        }
+                        tokio::select! {
+                            _ = cancellation.cancelled() => {
+                                let _ = self.command(
+                                    &receipt.run_id,
+                                    WorkflowCommand::Cancel {
+                                        command_id: format!(
+                                            "parent-cancel:{}:{}",
+                                            prepared.node.key.0,
+                                            receipt.run_id.0
+                                        ),
+                                        reason: "parent workflow was cancelled".to_string(),
+                                    },
+                                ).await;
+                                return Err(anyhow::anyhow!("parent workflow was cancelled"));
+                            }
+                            _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+                        }
+                    }
+                }
             }
         };
-        let outcome = tokio::select! {
-            _ = cancellation.cancelled() => Err(anyhow::anyhow!("workflow run cancelled")),
-            outcome = execution => outcome,
+        let outcome = if child_handles_cancellation {
+            execution.await
+        } else {
+            tokio::select! {
+                _ = cancellation.cancelled() => Err(anyhow::anyhow!("workflow run cancelled")),
+                outcome = execution => outcome,
+            }
         };
         (prepared.node, prepared.attempt, outcome)
     }
@@ -1030,7 +1098,7 @@ mod tests {
     use crate::workflow::runtime::{
         ActivityAdapter, ActivityDescriptor, ActivityInvocation, ActivityOutcome, EffectPolicy,
         InMemoryWorkflowStore, NodeKey, NodeSpec, RetryPolicy, RunScope, ValueExpr, WorkflowPolicy,
-        WorkflowSpec,
+        WorkflowRevisionId, WorkflowSpec,
     };
 
     struct EchoActivity;
@@ -1250,6 +1318,69 @@ mod tests {
             .events
             .iter()
             .any(|event| { matches!(event.kind, WorkflowEventKind::NodeCompleted { .. }) }));
+    }
+
+    #[tokio::test]
+    async fn child_workflow_runs_pinned_revision_and_is_idempotent() {
+        let store = Arc::new(InMemoryWorkflowStore::default());
+        let revision_id = WorkflowRevisionId("child:r1".into());
+        store
+            .publish_revision(&revision_id, &echo_spec())
+            .expect("publish child");
+        let activities =
+            ActivityRegistry::new([Arc::new(EchoActivity) as Arc<dyn ActivityAdapter>])
+                .expect("activity registry");
+        let runtime = DurableWorkflowRuntime::new(store, activities);
+        let parent = WorkflowSpec {
+            schema_version: 1,
+            nodes: vec![NodeSpec {
+                key: NodeKey::from("child"),
+                kind: NodeKind::ChildWorkflow {
+                    revision_id: revision_id.clone(),
+                },
+                inputs: BTreeMap::from([(
+                    "value".into(),
+                    ValueExpr::RunInput {
+                        pointer: "/value".into(),
+                    },
+                )]),
+                after: Vec::new(),
+                retry: RetryPolicy::default(),
+                timeout_ms: None,
+                effect: EffectPolicy::ReadOnly,
+                resources: Vec::new(),
+            }],
+            result: ValueExpr::NodeOutput {
+                node: NodeKey::from("child"),
+                pointer: String::new(),
+            },
+            policy: WorkflowPolicy::default(),
+        };
+        let request = StartRun {
+            request_id: "parent-with-child".into(),
+            source: WorkflowSource::Inline(parent),
+            input: json!({ "value": 42 }),
+            scope: RunScope::default(),
+        };
+        let first = runtime.start(request.clone()).await.expect("first parent");
+        let second = runtime.start(request).await.expect("same parent");
+        assert_eq!(first.run_id, second.run_id);
+        assert!(!second.created);
+        loop {
+            let observed = runtime
+                .observe(ObserveRun {
+                    run_id: first.run_id.clone(),
+                    after_sequence: None,
+                })
+                .await
+                .expect("observe parent");
+            if observed.snapshot.status.is_terminal() {
+                assert_eq!(observed.snapshot.status, RunStatus::Succeeded);
+                assert_eq!(observed.snapshot.output, json!(42));
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
     }
 
     #[tokio::test]

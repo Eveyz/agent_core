@@ -47,7 +47,9 @@ import { Sidebar } from './components/layout/Sidebar';
 import { CosmicBackground } from './components/layout/CosmicBackground';
 import { EmptyState } from './components/chat/EmptyState';
 import type { SendPayload } from './components/chat/imageAttachments';
+import type { WorkflowLibraryEntry } from './features/workflow/types';
 import { ChatInput } from './components/chat/ChatInput';
+import { setSessionDraft } from './hooks/sessionDraftStore';
 import ApprovalBlockUI from './components/chat/ApprovalBlockUI';
 import ClarificationOverlay from './components/chat/ClarificationOverlay';
 import SettingsModal from './components/settings/SettingsModal';
@@ -122,6 +124,15 @@ function App() {
   const [activeView, setActiveView] = useState<AppView>('chat');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [rightSidebarExpanded, setRightSidebarExpanded] = useState(false);
+
+  const continueWorkflowInChat = useCallback((entry: WorkflowLibraryEntry) => {
+    const text = `/workflow edit ${entry.workflow_id}`;
+    if (activeSessionId) {
+      setSessionDraft(activeSessionId, text);
+    }
+    setActiveView('chat');
+    window.dispatchEvent(new CustomEvent('agverse:composer-prefill', { detail: text }));
+  }, [activeSessionId]);
 
   // When a session is selected (via sidebar click), auto-switch to chat view.
   // This handles the case where the user was on Agents/Workflows view and
@@ -268,6 +279,7 @@ function App() {
       const msg = typeof payload === 'string' ? payload : payload.text;
       const pendingImages = typeof payload === 'string' ? undefined : payload.images;
       const agentMentions = typeof payload === 'string' ? undefined : payload.agentMentions;
+      const workflowMentions = typeof payload === 'string' ? undefined : payload.workflowMentions;
       const trimmed = msg.trim();
       const isGoalClear =
         trimmed === '/goal clear' ||
@@ -408,6 +420,7 @@ function App() {
               data_base64: img.dataBase64,
             })),
             agentMentions,
+            workflowMentions,
           },
         );
         dispatch(runIdSet({
@@ -552,7 +565,7 @@ function App() {
             <AgentsPage />
           ) : activeView === "workflows" ? (
             <Suspense fallback={<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--text-muted)' }}>Loading workflow editor...</div>}>
-              <WorkflowEditor />
+              <WorkflowEditor onContinueInChat={continueWorkflowInChat} />
             </Suspense>
           ) : viewingSubagentPath.length > 0 && activeSubagent ? (
             <SubagentDetailPage

@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use crate::permission::PermissionConfig;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -193,6 +194,10 @@ pub struct RunScope {
     pub continuation_key: String,
     #[serde(default)]
     pub workspace: String,
+    #[serde(default)]
+    pub project_id: String,
+    #[serde(default)]
+    pub permission_ceiling: Option<PermissionConfig>,
     #[serde(default)]
     pub trigger: String,
 }

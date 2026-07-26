@@ -3,10 +3,11 @@ import { invoke } from '@tauri-apps/api/core';
 import { parseMentions, findMentionBoundaries } from '../utils/mentions';
 import { useSkills } from './useSkills';
 import type { AgentDef } from '../features/agents/types';
+import type { WorkflowLibraryEntry } from '../features/workflow/types';
 
 export type IconType = 'folder' | 'file' | 'command' | 'file-code' | 'file-json' | 'file-image' | 'file-text'
   | 'lang-js' | 'lang-ts' | 'lang-jsx' | 'lang-tsx' | 'lang-py' | 'lang-go' | 'lang-css' | 'lang-rs' | 'lang-html'
-  | 'skill' | 'agent' | 'cmd-btw' | 'cmd-learn' | 'cmd-goal' | 'cmd-workflow' | 'cmd-subagents' | 'cmd-clear' | 'cmd-help';
+  | 'skill' | 'agent' | 'workflow' | 'cmd-btw' | 'cmd-learn' | 'cmd-goal' | 'cmd-workflow' | 'cmd-subagents' | 'cmd-clear' | 'cmd-help';
 
 export interface AutocompleteItem {
   label: string;
@@ -15,6 +16,8 @@ export interface AutocompleteItem {
   description?: string;
   agentId?: string;
   revisionId?: string;
+  workflowId?: string;
+  workflowScope?: string;
 }
 
 function getFileIcon(filename: string): IconType {
@@ -57,7 +60,7 @@ export const COMMANDS: AutocompleteItem[] = [
   { label: 'learn',  value: '/learn ',  icon: 'cmd-learn', description: 'Save a learning to persistent memory' },
   { label: 'goal',   value: '/goal ',   icon: 'cmd-goal', description: 'Pin a session goal — clarify, plan, execute; Stop keeps it' },
   { label: 'goal clear', value: '/goal clear', icon: 'cmd-goal', description: 'Clear the pinned session goal' },
-  { label: 'workflow', value: '/workflow ', icon: 'cmd-workflow', description: 'Build and publish a durable multi-agent workflow' },
+  { label: 'workflow', value: '/workflow ', icon: 'cmd-workflow', description: 'Build a temporary durable workflow; use save or publish for reuse' },
   { label: 'plan park', value: '/plan park', icon: 'cmd-goal', description: 'Park the active todo plan (detour without losing progress)' },
   { label: 'plan resume', value: '/plan resume', icon: 'cmd-goal', description: 'Resume the latest parked plan (or pick one)' },
   { label: 'plan clear', value: '/plan clear', icon: 'cmd-goal', description: 'Clear all active and parked plans for this session' },
@@ -71,9 +74,16 @@ export function useAutocomplete(
   setInput: (v: string) => void,
   textareaRef: React.RefObject<HTMLTextAreaElement | null>,
   projectPath?: string,
+  projectId?: string,
   isChatMode?: boolean,
   agents: AgentDef[] = [],
   onAgentMention?: (mention: { agentId: string; revisionId: string; token: string }) => void,
+  onWorkflowMention?: (mention: {
+    workflowId: string;
+    revisionId: string;
+    scope: string;
+    token: string;
+  }) => void,
 ) {
   const { skills } = useSkills();
   const [showAutocomplete, setShowAutocomplete] = useState(false);
@@ -107,9 +117,34 @@ export function useAutocomplete(
         agentId: agent.id,
         revisionId: agent.updated_at,
       }));
+    let workflowItems: AutocompleteItem[] = [];
+    try {
+      const workflows = await invoke<WorkflowLibraryEntry[]>('list_workflow_library', {
+        projectId: projectId || null,
+        workspace: projectPath || null,
+        includeWorkflow: false,
+      });
+      workflowItems = workflows
+        .filter((workflow) => workflow.latest_revision)
+        .filter((workflow) =>
+          workflow.name.toLowerCase().includes(q)
+          || workflow.description.toLowerCase().includes(q)
+        )
+        .map((workflow) => ({
+          label: workflow.name,
+          value: workflow.name,
+          icon: 'workflow' as const,
+          description: `${workflow.scope.kind === 'project' ? 'Project' : 'Personal'} workflow · r${workflow.latest_revision!.revision_number}`,
+          revisionId: workflow.latest_revision!.revision_id,
+          workflowId: workflow.workflow_id,
+          workflowScope: workflow.scope.kind,
+        }));
+    } catch {
+      workflowItems = [];
+    }
 
     if (isChatMode) {
-      setAutocompleteItems([...agentItems, ...skillItems]);
+      setAutocompleteItems([...workflowItems, ...agentItems, ...skillItems]);
       setSelectedIndex(0);
       return;
     }
@@ -127,13 +162,13 @@ export function useAutocomplete(
           icon: e.type === 'dir' ? 'folder' : getFileIcon(e.name),
         };
       });
-      setAutocompleteItems([...agentItems, ...skillItems, ...mapped]);
+      setAutocompleteItems([...workflowItems, ...agentItems, ...skillItems, ...mapped]);
       setSelectedIndex(0);
     } catch {
-      setAutocompleteItems([...agentItems, ...skillItems]);
+      setAutocompleteItems([...workflowItems, ...agentItems, ...skillItems]);
       setSelectedIndex(0);
     }
-  }, [projectPath, skills, isChatMode, agents]);
+  }, [projectPath, projectId, skills, isChatMode, agents]);
 
   const closeAutocomplete = useCallback(() => {
     setShowAutocomplete(false);
@@ -156,6 +191,15 @@ export function useAutocomplete(
             revisionId: item.revisionId ?? '',
             token: `@${safeName}`,
           });
+        } else if (item.icon === 'workflow' && item.workflowId && item.revisionId) {
+          const safeName = item.label.trim().replace(/\s+/g, '_');
+          insertValue = `@workflow:${safeName} `;
+          onWorkflowMention?.({
+            workflowId: item.workflowId,
+            revisionId: item.revisionId,
+            scope: item.workflowScope ?? 'user',
+            token: `@workflow:${safeName}`,
+          });
         } else if (item.icon === 'skill') {
           insertValue = `@skill:${item.value} `;
         } else {
@@ -172,7 +216,7 @@ export function useAutocomplete(
         textareaRef.current?.focus();
       }, 0);
     },
-    [input, triggerInfo, closeAutocomplete, setInput, textareaRef, onAgentMention]
+    [input, triggerInfo, closeAutocomplete, setInput, textareaRef, onAgentMention, onWorkflowMention]
   );
 
   const handleAutocompleteKeydown = useCallback(

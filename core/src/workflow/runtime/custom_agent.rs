@@ -68,8 +68,12 @@ impl ActivityAdapter for CustomAgentActivityAdapter {
     }
 
     async fn invoke(&self, invocation: ActivityInvocation) -> Result<ActivityOutcome> {
-        let config: FrozenCustomAgentConfig = serde_json::from_value(invocation.config.clone())
+        let mut config: FrozenCustomAgentConfig = serde_json::from_value(invocation.config.clone())
             .context("invalid frozen custom-agent activity config")?;
+        if let Some(caller) = &invocation.scope.permission_ceiling {
+            config.permission =
+                super::mention::intersect_permission_ceiling(caller, config.permission);
+        }
         let task = format_agent_task(&invocation.input);
         let result = self
             .runner

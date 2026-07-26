@@ -4,6 +4,74 @@ export type NodeType = 'input' | 'output' | 'agent' | 'transform' | 'human_appro
 export type TrustMode = 'inherit' | 'trusted' | 'readonly';
 export type OnNodeFailure = 'abort' | 'continue' | 'skip';
 
+export type WorkflowLifecycle = 'transient' | 'draft' | 'published';
+export type WorkflowSourceKind = 'runtime' | 'legacy';
+
+export type WorkflowLibraryScope =
+  | { kind: 'session'; session_id: string }
+  | { kind: 'project'; project_id: string; workspace: string }
+  | { kind: 'user' };
+
+export interface PublishedWorkflowReceipt {
+  workflow_id: string;
+  draft_id: string;
+  draft_version: number;
+  revision_id: string;
+  revision_number: number;
+  program_hash: string;
+  published_at: string;
+}
+
+export interface RuntimeWorkflowStep {
+  key: string;
+  instruction: string;
+  after: string[];
+  inputs: Record<string, unknown>;
+  agent: {
+    type: 'saved' | 'inline';
+    agent_id?: string;
+    revision_id?: string;
+    blueprint?: {
+      name: string;
+      description?: string;
+    };
+  };
+}
+
+export interface RuntimeWorkflowSpec {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+  steps: RuntimeWorkflowStep[];
+  result: Record<string, unknown>;
+  policy: Record<string, unknown>;
+}
+
+export interface WorkflowLibraryEntry {
+  workflow_id: string;
+  name: string;
+  description: string;
+  scope: WorkflowLibraryScope;
+  lifecycle: WorkflowLifecycle;
+  source_kind: WorkflowSourceKind;
+  draft_id: string;
+  draft_version: number;
+  draft_status: string;
+  program_hash: string;
+  latest_revision?: PublishedWorkflowReceipt | null;
+  updated_at: string;
+  workflow?: RuntimeWorkflowSpec | null;
+}
+
+export interface WorkflowRuntimeRunSummary {
+  run_id: string;
+  status: string;
+  trigger: string;
+  created_at: string;
+  updated_at: string;
+  failed_nodes: string[];
+}
+
 export type NodeRunStatus = 
   | 'pending'
   | 'running'

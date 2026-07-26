@@ -15,6 +15,7 @@ mod model;
 mod reducer;
 mod store;
 mod tool;
+mod workflow_mention;
 
 pub use activity::{
     ActivityAdapter, ActivityDescriptor, ActivityInvocation, ActivityOutcome, ActivityRegistry,
@@ -22,12 +23,13 @@ pub use activity::{
 };
 pub use authoring::{
     AgentBinding, ApplyWorkflowDraft, DraftStep, InlineAgentBlueprint, PublishWorkflowDraft,
-    PublishedWorkflowReceipt, WorkflowAuthoringService, WorkflowDraftReceipt, WorkflowDraftRecord,
-    WorkflowDraftSpec,
+    PublishedWorkflowReceipt, SaveWorkflowDraft, WorkflowAuthoringService, WorkflowDraftReceipt,
+    WorkflowDraftRecord, WorkflowDraftSpec, WorkflowLibraryEntry, WorkflowLifecycle,
+    WorkflowRuntimeRunSummary, WorkflowScope, WorkflowSourceKind,
 };
 pub use authoring_tool::{
     WorkflowApplyDraftTool, WorkflowCatalogTool, WorkflowPreviewTool, WorkflowPublishTool,
-    workflow_authoring_tool_factory,
+    WorkflowSaveDraftTool, workflow_authoring_tool_factory,
 };
 pub use custom_agent::{
     AgentHandoff, CUSTOM_AGENT_ACTIVITY_KIND, CustomAgentActivityAdapter, FrozenCustomAgentConfig,
@@ -41,3 +43,7 @@ pub use mention::{
 pub use model::*;
 pub use store::{InMemoryWorkflowStore, SqliteWorkflowStore, WorkflowStore};
 pub use tool::MentionWorkflowTool;
+pub use workflow_mention::{
+    WorkflowMention, WorkflowMentionCompiler, WorkflowMentionManifest, WorkflowMentionPlan,
+    WorkflowMentionTask, WorkflowMentionTool, workflow_mention_tool_factory,
+};

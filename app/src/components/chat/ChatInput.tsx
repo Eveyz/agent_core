@@ -35,8 +35,10 @@ import {
   type PendingImage,
   type SendPayload,
   type AgentMentionPayload,
+  type WorkflowMentionPayload,
 } from './imageAttachments';
 import { resolveAgentMentions } from './agentMentions';
+import { resolveWorkflowMentions } from './workflowMentions';
 import { resolveSupportsImages } from '../../utils/modelCapabilities';
 
 import { 
@@ -87,6 +89,9 @@ export const ChatInput = memo(function ChatInput({
   const [selectedAgentMentions, setSelectedAgentMentions] = useState<
     Array<AgentMentionPayload & { token: string }>
   >([]);
+  const [selectedWorkflowMentions, setSelectedWorkflowMentions] = useState<
+    Array<WorkflowMentionPayload & { token: string }>
+  >([]);
 
   const activeProjectId = useSelector((state: RootState) => state.project.activeProjectId);
   const activeSessionId = useSelector((state: RootState) => state.project.activeSessionId);
@@ -109,6 +114,17 @@ export const ChatInput = memo(function ChatInput({
 
   const { input, setInput, clearDraft } = useSessionDraft(activeSessionId);
 
+  useEffect(() => {
+    const prefill = (event: Event) => {
+      const text = (event as CustomEvent<string>).detail;
+      if (typeof text !== 'string') return;
+      setInput(text);
+      requestAnimationFrame(() => textareaRef.current?.focus());
+    };
+    window.addEventListener('agverse:composer-prefill', prefill);
+    return () => window.removeEventListener('agverse:composer-prefill', prefill);
+  }, [setInput]);
+
   const {
     showAutocomplete,
     autocompleteItems,
@@ -125,6 +141,7 @@ export const ChatInput = memo(function ChatInput({
     setInput,
     textareaRef,
     activeProject?.path,
+    activeProjectId ?? undefined,
     activeProjectId === '__adhoc_chat__',
     agents,
     useCallback((mention: { agentId: string; revisionId: string; token: string }) => {
@@ -133,6 +150,23 @@ export const ChatInput = memo(function ChatInput({
         return [...current, {
           agent_id: mention.agentId,
           revision_id: mention.revisionId,
+          token: mention.token,
+        }];
+      });
+    }, []),
+    useCallback((mention: {
+      workflowId: string;
+      revisionId: string;
+      scope: string;
+      token: string;
+    }) => {
+      setSelectedWorkflowMentions((current) => {
+        if (current.some((item) => item.workflow_id === mention.workflowId)) return current;
+        return [...current, {
+          workflow_id: mention.workflowId,
+          revision_id: mention.revisionId,
+          scope: mention.scope,
+          display_token: mention.token,
           token: mention.token,
         }];
       });
@@ -172,16 +206,19 @@ export const ChatInput = memo(function ChatInput({
     if (isProcessing) return;
     const images = pendingImages;
     const agentMentions = resolveAgentMentions(input, selectedAgentMentions, agents);
+    const workflowMentions = resolveWorkflowMentions(input, selectedWorkflowMentions);
     setPendingImages([]);
     setSelectedAgentMentions([]);
+    setSelectedWorkflowMentions([]);
     clearDraft();
     onSend({
       text: trimmed,
       images: images.length ? images : undefined,
       agentMentions: agentMentions.length ? agentMentions : undefined,
+      workflowMentions: workflowMentions.length ? workflowMentions : undefined,
     });
     closeAutocomplete();
-  }, [input, pendingImages, selectedAgentMentions, agents, isProcessing, onSend, onBtwQuery, closeAutocomplete, clearDraft]);
+  }, [input, pendingImages, selectedAgentMentions, selectedWorkflowMentions, agents, isProcessing, onSend, onBtwQuery, closeAutocomplete, clearDraft]);
 
   const addImageFiles = useCallback(async (files: ArrayLike<Blob | File>) => {
     const next: PendingImage[] = [];
@@ -383,6 +420,7 @@ export const ChatInput = memo(function ChatInput({
                 {item.icon === 'cmd-help' && <HelpCircleIcon size={14} color="var(--accent)" />}
                 {item.icon === 'skill' && <ZapIcon size={14} color="var(--violet-500)" />}
                 {item.icon === 'agent' && <BotIcon size={14} color="var(--accent)" />}
+                {item.icon === 'workflow' && <WorkflowIcon size={14} color="var(--violet-500)" />}
                 <span className="autocomplete-label">{item.label}</span>
                 {item.description && (
                   <span style={{ marginLeft: 8, fontSize: 11, opacity: 0.6 }}>{item.description}</span>

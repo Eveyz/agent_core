@@ -12,7 +12,8 @@ use crate::{permission::PermissionConfig, tools::Tool};
 use super::{
     DurableWorkflowRuntime,
     authoring::{
-        ApplyWorkflowDraft, PublishWorkflowDraft, WorkflowAuthoringService, WorkflowDraftSpec,
+        ApplyWorkflowDraft, PublishWorkflowDraft, SaveWorkflowDraft, WorkflowAuthoringService,
+        WorkflowDraftSpec, WorkflowScope,
     },
     engine::WorkflowRuntime,
     model::{ObserveRun, RunScope, StartRun, WorkflowCommand, WorkflowSource},
@@ -44,6 +45,15 @@ pub fn workflow_authoring_tool_factory<S: WorkflowStore>(
             service.clone(),
             caller_permission.clone(),
             parent_run_id.clone(),
+            WorkflowScope::Session {
+                session_id: bound_scope.session_id.clone(),
+            },
+        )));
+        registry.register(Box::new(WorkflowSaveDraftTool::new(
+            service.clone(),
+            parent_run_id.clone(),
+            bound_scope.project_id.clone(),
+            bound_scope.workspace.clone(),
         )));
         registry.register(Box::new(WorkflowPreviewTool::<S>::new(
             service.clone(),
@@ -150,7 +160,9 @@ impl Tool for WorkflowCatalogTool {
             "defaults": {
                 "inline_agent_memory": "stateless",
                 "max_concurrency": 3,
-                "failure_policy": "abort"
+                "failure_policy": "abort",
+                "lifecycle": "transient",
+                "save_scope": "project"
             }
         }))?)
     }
@@ -169,6 +181,7 @@ pub struct WorkflowApplyDraftTool {
     service: Arc<WorkflowAuthoringService>,
     caller_permission: PermissionConfig,
     parent_run_id: String,
+    initial_scope: WorkflowScope,
 }
 
 impl WorkflowApplyDraftTool {
@@ -176,11 +189,13 @@ impl WorkflowApplyDraftTool {
         service: Arc<WorkflowAuthoringService>,
         caller_permission: PermissionConfig,
         parent_run_id: String,
+        initial_scope: WorkflowScope,
     ) -> Self {
         Self {
             service,
             caller_permission,
             parent_run_id,
+            initial_scope,
         }
     }
 }
@@ -293,7 +308,7 @@ impl Tool for WorkflowApplyDraftTool {
         let request_id = request_id("apply", &self.parent_run_id, &args)?;
         let args: ApplyArgs = serde_json::from_value(args)
             .map_err(|error| anyhow::anyhow!("invalid workflow draft: {error}"))?;
-        let receipt = self.service.apply_draft(
+        let receipt = self.service.apply_draft_in_scope(
             ApplyWorkflowDraft {
                 request_id,
                 draft_id: args.draft_id,
@@ -301,14 +316,121 @@ impl Tool for WorkflowApplyDraftTool {
                 workflow: args.workflow,
             },
             &self.caller_permission,
+            self.initial_scope.clone(),
         )?;
         Ok(serde_json::to_string(&json!({
             "draft": receipt,
             "next_actions": [
                 "Use workflow_preview to test this exact draft version.",
-                "Use workflow_publish only after the user approves publishing."
+                "Use workflow_save_draft when the user asks to keep it.",
+                "Use workflow_publish only after the saved draft is explicitly approved for publishing."
             ]
         }))?)
+    }
+}
+
+#[derive(Deserialize)]
+struct SaveArgs {
+    draft_id: String,
+    expected_version: u64,
+    #[serde(default = "default_project_scope")]
+    scope: String,
+    #[serde(default)]
+    project_id: String,
+    #[serde(default)]
+    workspace: String,
+}
+
+fn default_project_scope() -> String {
+    "project".to_string()
+}
+
+pub struct WorkflowSaveDraftTool {
+    service: Arc<WorkflowAuthoringService>,
+    parent_run_id: String,
+    project_id: String,
+    workspace: String,
+}
+
+impl WorkflowSaveDraftTool {
+    pub fn new(
+        service: Arc<WorkflowAuthoringService>,
+        parent_run_id: String,
+        project_id: String,
+        workspace: String,
+    ) -> Self {
+        Self {
+            service,
+            parent_run_id,
+            project_id,
+            workspace,
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for WorkflowSaveDraftTool {
+    fn name(&self) -> &str {
+        "workflow_save_draft"
+    }
+
+    fn description(&self) -> &str {
+        "Move a validated temporary workflow draft into the reusable Workflow Library. \
+         Project scope is the default and writes a declarative package under \
+         .agverse/workflows; user scope keeps the draft in the personal Library. \
+         Saving does not publish and the workflow cannot be @mentioned until published."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["draft_id", "expected_version"],
+            "properties": {
+                "draft_id": {"type": "string"},
+                "expected_version": {"type": "integer", "minimum": 1},
+                "scope": {"type": "string", "enum": ["project", "user"], "default": "project"},
+                "project_id": {"type": "string", "description": "Defaults to the active project."},
+                "workspace": {"type": "string", "description": "Defaults to the active project workspace."}
+            }
+        })
+    }
+
+    async fn execute(&self, args: Value) -> Result<String> {
+        let request_id = request_id("save", &self.parent_run_id, &args)?;
+        let args: SaveArgs = serde_json::from_value(args)
+            .map_err(|error| anyhow::anyhow!("invalid workflow save request: {error}"))?;
+        let scope = match args.scope.as_str() {
+            "user" => WorkflowScope::User,
+            "project" => {
+                let project_id = if args.project_id.is_empty() {
+                    self.project_id.clone()
+                } else {
+                    args.project_id
+                };
+                let workspace = if args.workspace.is_empty() {
+                    self.workspace.clone()
+                } else {
+                    args.workspace
+                };
+                if project_id.is_empty() || workspace.is_empty() {
+                    bail!("project scope requires an active project and workspace");
+                }
+                WorkflowScope::Project {
+                    project_id,
+                    workspace,
+                }
+            }
+            other => bail!("unsupported workflow scope: {other}"),
+        };
+        Ok(serde_json::to_string(&self.service.save_draft(
+            SaveWorkflowDraft {
+                request_id,
+                draft_id: args.draft_id,
+                expected_version: args.expected_version,
+                scope,
+            },
+        )?)?)
     }
 }
 
@@ -340,7 +462,8 @@ impl Tool for WorkflowPublishTool {
 
     fn description(&self) -> &str {
         "Publish a validated workflow draft as a new immutable runtime revision. Call only when \
-         the user explicitly asks to publish or confirms the presented draft."
+         the user explicitly asks to publish or confirms the presented draft. Temporary drafts \
+         must first be moved into the Library with workflow_save_draft."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -526,6 +649,9 @@ mod tests {
             service.clone(),
             PermissionConfig::default(),
             "parent-run".to_string(),
+            WorkflowScope::Session {
+                session_id: "session-a".to_string(),
+            },
         );
         let args = json!({
             "workflow": {

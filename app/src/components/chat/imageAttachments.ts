@@ -16,6 +16,15 @@ export interface SendPayload {
   text: string;
   images?: PendingImage[];
   agentMentions?: AgentMentionPayload[];
+  workflowMentions?: WorkflowMentionPayload[];
+}
+
+export interface WorkflowMentionPayload {
+  workflow_id: string;
+  revision_id: string;
+  scope: string;
+  display_token: string;
+  optional?: boolean;
 }
 
 export interface AgentMentionPayload {

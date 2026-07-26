@@ -211,10 +211,13 @@ async fn send_message(
     images: Option<Vec<IncomingImagePayload>>,
     #[allow(non_snake_case)]
     agent_mentions: Option<Vec<agent_core::workflow::runtime::AgentMention>>,
+    #[allow(non_snake_case)]
+    workflow_mentions: Option<Vec<agent_core::workflow::runtime::WorkflowMention>>,
 ) -> Result<SendMessageResult, String> {
     // Load history + session-level pinned goal
     let mut history = vec![];
     let mut working_dir = None;
+    let mut working_project_id = None;
     let mut initial_goal: Option<String> = None;
     let mut initial_goal_completed = false;
     if let Some(ref sid) = session_id {
@@ -230,6 +233,12 @@ async fn send_message(
             initial_goal = sess.meta.pinned_goal.clone();
             initial_goal_completed = sess.meta.goal_completed;
         }
+        let sm = state.session_manager.clone();
+        let sid_owned = sid.clone();
+        working_project_id = tokio::task::spawn_blocking(move || sm.get_project_id(&sid_owned))
+            .await
+            .map_err(|e| format!("session project lookup task failed: {e}"))?
+            .map_err(|e| format!("failed to resolve session project: {e}"))?;
     }
 
     // Persist /goal mutations on the session before creating the Run.
@@ -341,7 +350,26 @@ async fn send_message(
                         session_id: session_id.clone().unwrap_or_default(),
                         parent_prompt_id: early_prompt_id.clone().unwrap_or_default(),
                         workspace: working_dir.clone().unwrap_or_default(),
+                        project_id: working_project_id.clone().unwrap_or_default(),
+                        permission_ceiling: Some(manager.brain().config.permissions.clone()),
                         trigger: "workflow_authoring".to_string(),
+                        ..Default::default()
+                    },
+                ),
+            )
+        } else if let Some(mentions) = workflow_mentions.filter(|mentions| !mentions.is_empty()) {
+            Some(
+                agent_core::workflow::runtime::workflow_mention_tool_factory(
+                    state.workflow_runtime.clone(),
+                    state.workflow_authoring.clone(),
+                    agent_core::workflow::runtime::WorkflowMentionManifest { mentions },
+                    agent_core::workflow::runtime::RunScope {
+                        session_id: session_id.clone().unwrap_or_default(),
+                        parent_prompt_id: early_prompt_id.clone().unwrap_or_default(),
+                        workspace: working_dir.clone().unwrap_or_default(),
+                        project_id: working_project_id.clone().unwrap_or_default(),
+                        permission_ceiling: Some(manager.brain().config.permissions.clone()),
+                        trigger: "workflow_mention".to_string(),
                         ..Default::default()
                     },
                 ),
@@ -361,6 +389,8 @@ async fn send_message(
                         session_id: session_id.clone().unwrap_or_default(),
                         parent_prompt_id: early_prompt_id.clone().unwrap_or_default(),
                         workspace: working_dir.clone().unwrap_or_default(),
+                        project_id: working_project_id.clone().unwrap_or_default(),
+                        permission_ceiling: Some(caller_permission.clone()),
                         trigger: "agent_mention".to_string(),
                         ..Default::default()
                     };
@@ -1337,6 +1367,15 @@ async fn delete_session(state: State<'_, AppState>, session_id: String) -> Resul
         manager.brain().todo_lists.remove_session(&session_id);
         manager.brain().clear_skill_session(&session_id);
     }
+    let authoring = state.workflow_authoring.clone();
+    let cleanup_session_id = session_id.clone();
+    tokio::task::spawn_blocking(move || {
+        authoring
+            .delete_transient_for_session(&cleanup_session_id)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("workflow cleanup task failed: {error}"))??;
     let sm = state.session_manager.clone();
     tokio::task::spawn_blocking(move || {
         sm.delete(&session_id).map_err(|e| e.to_string())
@@ -2171,6 +2210,229 @@ async fn validate_workflow(
 // ── PLAN-0009: Workflow CRUD + Execution ────────────────────────────
 
 #[tauri::command]
+async fn list_workflow_library(
+    state: State<'_, AppState>,
+    project_id: Option<String>,
+    workspace: Option<String>,
+    include_workflow: Option<bool>,
+) -> Result<Vec<agent_core::workflow::runtime::WorkflowLibraryEntry>, String> {
+    let authoring = state.workflow_authoring.clone();
+    let permission = {
+        let manager = state.run_manager.lock().await;
+        manager.brain().config.permissions.clone()
+    };
+    tokio::task::spawn_blocking(move || {
+        if let (Some(project_id), Some(workspace)) = (project_id.as_deref(), workspace.as_deref()) {
+            authoring
+                .sync_project_library(project_id, workspace, &permission)
+                .map_err(|error| error.to_string())?;
+        }
+        authoring
+            .catalog(project_id.as_deref(), include_workflow.unwrap_or(false))
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("list workflow library task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn get_workflow_library_entry(
+    state: State<'_, AppState>,
+    workflow_id: String,
+) -> Result<agent_core::workflow::runtime::WorkflowLibraryEntry, String> {
+    let authoring = state.workflow_authoring.clone();
+    tokio::task::spawn_blocking(move || {
+        authoring
+            .get_library_entry(&workflow_id)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("get workflow library entry task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn list_workflow_revision_history(
+    state: State<'_, AppState>,
+    workflow_id: String,
+) -> Result<Vec<agent_core::workflow::runtime::PublishedWorkflowReceipt>, String> {
+    let authoring = state.workflow_authoring.clone();
+    tokio::task::spawn_blocking(move || {
+        authoring
+            .revisions_for_workflow(&workflow_id)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("list workflow revisions task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn list_runtime_workflow_runs(
+    state: State<'_, AppState>,
+    workflow_id: String,
+    limit: Option<usize>,
+) -> Result<Vec<agent_core::workflow::runtime::WorkflowRuntimeRunSummary>, String> {
+    let authoring = state.workflow_authoring.clone();
+    tokio::task::spawn_blocking(move || {
+        authoring
+            .runtime_history(&workflow_id, limit.unwrap_or(20))
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("list runtime workflow runs task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn save_workflow_library_draft(
+    state: State<'_, AppState>,
+    draft_id: String,
+    expected_version: u64,
+    scope: String,
+    project_id: Option<String>,
+    workspace: Option<String>,
+) -> Result<agent_core::workflow::runtime::WorkflowDraftReceipt, String> {
+    use agent_core::workflow::runtime::{SaveWorkflowDraft, WorkflowScope};
+    let target_scope = match scope.as_str() {
+        "user" => WorkflowScope::User,
+        "project" => WorkflowScope::Project {
+            project_id: project_id.filter(|value| !value.is_empty()).ok_or_else(|| {
+                "project_id is required for a project workflow".to_string()
+            })?,
+            workspace: workspace.filter(|value| !value.is_empty()).ok_or_else(|| {
+                "workspace is required for a project workflow".to_string()
+            })?,
+        },
+        other => return Err(format!("unsupported workflow scope: {other}")),
+    };
+    let authoring = state.workflow_authoring.clone();
+    tokio::task::spawn_blocking(move || {
+        authoring
+            .save_draft(SaveWorkflowDraft {
+                request_id: format!("desktop-save:{}", uuid::Uuid::new_v4()),
+                draft_id,
+                expected_version,
+                scope: target_scope,
+            })
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("save workflow draft task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn publish_workflow_revision(
+    state: State<'_, AppState>,
+    draft_id: String,
+    expected_version: u64,
+) -> Result<agent_core::workflow::runtime::PublishedWorkflowReceipt, String> {
+    let authoring = state.workflow_authoring.clone();
+    tokio::task::spawn_blocking(move || {
+        authoring
+            .publish(agent_core::workflow::runtime::PublishWorkflowDraft {
+                request_id: format!("desktop-publish:{}", uuid::Uuid::new_v4()),
+                draft_id,
+                expected_version,
+            })
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("publish workflow revision task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn delete_workflow_library_entry(
+    state: State<'_, AppState>,
+    workflow_id: String,
+    expected_version: u64,
+) -> Result<(), String> {
+    let authoring = state.workflow_authoring.clone();
+    tokio::task::spawn_blocking(move || {
+        authoring
+            .delete_library_entry(&workflow_id, expected_version)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("delete workflow library entry task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn publish_legacy_workflow_for_chat(
+    state: State<'_, AppState>,
+    legacy_workflow_id: String,
+    project_id: String,
+    workspace: String,
+) -> Result<agent_core::workflow::runtime::PublishedWorkflowReceipt, String> {
+    let permission = {
+        let manager = state.run_manager.lock().await;
+        manager.brain().config.permissions.clone()
+    };
+    let storage = state.storage.clone();
+    let authoring = state.workflow_authoring.clone();
+    tokio::task::spawn_blocking(move || {
+        let legacy = agent_core::workflow::get(&storage, &legacy_workflow_id)
+            .map_err(|error| error.to_string())?;
+        let program =
+            agent_core::workflow::runtime::LegacyWorkflowCompiler::new(storage)
+                .compile(&legacy, &permission)
+                .map_err(|error| error.to_string())?;
+        authoring
+            .publish_imported_program(
+                &format!("legacy-publish:{}", uuid::Uuid::new_v4()),
+                legacy.name,
+                legacy.description,
+                legacy.input_schema,
+                program,
+                agent_core::workflow::runtime::WorkflowScope::Project {
+                    project_id,
+                    workspace,
+                },
+            )
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("publish legacy workflow task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn run_published_workflow(
+    state: State<'_, AppState>,
+    workflow_id: String,
+    revision_id: Option<String>,
+    input: Option<serde_json::Value>,
+    session_id: Option<String>,
+    project_id: Option<String>,
+    workspace: Option<String>,
+) -> Result<agent_core::workflow::runtime::StartReceipt, String> {
+    use agent_core::workflow::runtime::{
+        RunScope, StartRun, WorkflowRuntime, WorkflowSource,
+    };
+    let revision = state
+        .workflow_authoring
+        .resolve_published_revision(&workflow_id, revision_id.as_deref())
+        .map_err(|error| error.to_string())?;
+    let permission_ceiling = {
+        let manager = state.run_manager.lock().await;
+        manager.brain().config.permissions.clone()
+    };
+    state
+        .workflow_runtime
+        .start(StartRun {
+            request_id: format!("desktop-library-run:{}", uuid::Uuid::new_v4()),
+            source: WorkflowSource::Published(revision.revision_id),
+            input: input.unwrap_or_else(|| serde_json::json!({})),
+            scope: RunScope {
+                session_id: session_id.unwrap_or_default(),
+                project_id: project_id.unwrap_or_default(),
+                permission_ceiling: Some(permission_ceiling),
+                workspace: workspace.unwrap_or_default(),
+                trigger: "workflow_library".to_string(),
+                ..Default::default()
+            },
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn create_workflow(
     state: State<'_, AppState>,
     name: String,
@@ -2794,6 +3056,11 @@ pub fn run() {
             create_agent, list_agents, get_agent, update_agent, delete_agent,
             search_agent_memory, get_agent_history, run_agent_standalone,
             validate_workflow,
+            list_workflow_library, get_workflow_library_entry,
+            list_workflow_revision_history, list_runtime_workflow_runs,
+            save_workflow_library_draft, publish_workflow_revision,
+            delete_workflow_library_entry, run_published_workflow,
+            publish_legacy_workflow_for_chat,
             create_workflow, list_workflows, get_workflow, save_workflow, delete_workflow,
             run_workflow, cancel_workflow_run, observe_workflow_run, list_workflow_runs, get_workflow_run_results,
             generate_agent_skill_drafts, list_skill_drafts, approve_skill_draft, reject_skill_draft,
