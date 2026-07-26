@@ -3,6 +3,15 @@ import { invoke } from '@tauri-apps/api/core';
 import PlayIcon from 'lucide-react/dist/esm/icons/play.mjs';
 import SendIcon from 'lucide-react/dist/esm/icons/send.mjs';
 import UploadIcon from 'lucide-react/dist/esm/icons/upload.mjs';
+import {
+  Background,
+  Controls,
+  Position,
+  ReactFlow,
+  type Edge,
+  type Node,
+} from '@xyflow/react';
+import '@xyflow/react/dist/style.css';
 import type {
   PublishedWorkflowReceipt,
   WorkflowLibraryEntry,
@@ -30,16 +39,62 @@ export function RuntimeWorkflowDetail({
   const [status, setStatus] = useState('');
   const [revisions, setRevisions] = useState<PublishedWorkflowReceipt[]>([]);
   const [runs, setRuns] = useState<WorkflowRuntimeRunSummary[]>([]);
-  const steps = entry.workflow?.steps ?? [];
-  const dependents = useMemo(() => {
-    const result = new Map<string, string[]>();
-    for (const step of steps) {
-      for (const dependency of step.after ?? []) {
-        result.set(dependency, [...(result.get(dependency) ?? []), step.key]);
+  const programNodes = entry.program?.nodes ?? [];
+  const graph = useMemo(() => {
+    const depth = new Map<string, number>();
+    for (const node of programNodes) depth.set(node.key, 0);
+    for (let pass = 0; pass < programNodes.length; pass += 1) {
+      let changed = false;
+      for (const node of programNodes) {
+        const nextDepth = Math.max(
+          0,
+          ...(node.after ?? []).map((dependency) => (depth.get(dependency) ?? 0) + 1),
+        );
+        if (nextDepth > (depth.get(node.key) ?? 0)) {
+          depth.set(node.key, nextDepth);
+          changed = true;
+        }
       }
+      if (!changed) break;
     }
-    return result;
-  }, [steps]);
+    const rows = new Map<number, number>();
+    const graphNodes: Node[] = programNodes.map((node) => {
+      const column = depth.get(node.key) ?? 0;
+      const row = rows.get(column) ?? 0;
+      rows.set(column, row + 1);
+      const kind = node.kind.type === 'activity'
+        ? node.kind.kind ?? 'activity'
+        : node.kind.type.replace(/_/g, ' ');
+      return {
+        id: node.key,
+        position: { x: column * 280, y: row * 130 },
+        data: {
+          label: (
+            <div className="runtime-workflow-graph-label">
+              <strong>{node.key}</strong>
+              <span>{kind}</span>
+              <small>
+                {node.effect.replace(/_/g, ' ')}
+                {' · '}
+                {Object.keys(node.inputs ?? {}).length} input(s)
+              </small>
+            </div>
+          ),
+        },
+        sourcePosition: Position.Right,
+        targetPosition: Position.Left,
+      };
+    });
+    const graphEdges: Edge[] = programNodes.flatMap((node) =>
+      (node.after ?? []).map((dependency) => ({
+        id: `${dependency}->${node.key}`,
+        source: dependency,
+        target: node.key,
+        animated: false,
+      })),
+    );
+    return { nodes: graphNodes, edges: graphEdges };
+  }, [programNodes]);
 
   const refreshHistory = async () => {
     const [revisionHistory, runHistory] = await Promise.all([
@@ -124,23 +179,27 @@ export function RuntimeWorkflowDetail({
       {status && <div className="runtime-workflow-status">{status}</div>}
 
       <section className="runtime-workflow-section">
-        <h3>Durable DAG</h3>
+        <h3>Executable DAG</h3>
         <div className="runtime-workflow-dag">
-          {steps.map((step) => (
-            <article key={step.key} className="runtime-workflow-node">
-              <div className="runtime-workflow-node-title">{step.key}</div>
-              <div className="runtime-workflow-node-agent">
-                {step.agent.type === 'saved'
-                  ? `Saved agent · ${step.agent.agent_id}`
-                  : `Inline agent · ${step.agent.blueprint?.name ?? 'Unnamed'}`}
-              </div>
-              <p>{step.instruction}</p>
-              <div className="runtime-workflow-node-links">
-                <span>After: {step.after?.length ? step.after.join(', ') : 'start'}</span>
-                <span>Next: {dependents.get(step.key)?.join(', ') || 'result'}</span>
-              </div>
-            </article>
-          ))}
+          {programNodes.length > 0 ? (
+            <ReactFlow
+              key={entry.program_hash}
+              nodes={graph.nodes}
+              edges={graph.edges}
+              fitView
+              fitViewOptions={{ padding: 0.25 }}
+              nodesDraggable={false}
+              nodesConnectable={false}
+              deleteKeyCode={null}
+            >
+              <Background color="var(--border-color)" gap={20} />
+              <Controls showInteractive={false} />
+            </ReactFlow>
+          ) : (
+            <div className="runtime-workflow-dag-empty">
+              This workflow has no executable nodes. Edit its draft or republish the canvas workflow.
+            </div>
+          )}
         </div>
       </section>
 

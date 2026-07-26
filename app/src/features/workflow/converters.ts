@@ -30,7 +30,13 @@ export function edgeDefToRF(e: EdgeDef): Edge {
     id: e.id,
     source: e.source_node_id,
     target: e.target_node_id,
+    sourceHandle: e.source_handle || undefined,
+    targetHandle: e.target_handle || undefined,
     label: e.label || undefined,
+    data: {
+      condition: e.condition,
+      data_mapping: e.data_mapping,
+    },
     animated: true,
   };
 }
@@ -44,8 +50,10 @@ export function rfToEdgeDef(e: Edge, workflowId: string): EdgeDef {
     source_handle: (e.sourceHandle as string) ?? '',
     target_handle: (e.targetHandle as string) ?? '',
     label: (e.label as string) ?? '',
-    condition: '',
-    data_mapping: { pass_through: true },
+    condition: ((e.data as Record<string, unknown> | undefined)?.condition as string) ?? '',
+    data_mapping:
+      ((e.data as Record<string, unknown> | undefined)?.data_mapping as Record<string, unknown>)
+      ?? { pass_through: true },
     created_at: '',
   };
 }

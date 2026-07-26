@@ -1,7 +1,11 @@
 import { useEffect, useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppSelector } from "../../hooks/useAppDispatch";
-import type { WorkflowRun, WorkflowRunNodeResult } from "../../features/workflow/types";
+import type {
+  WorkflowRun,
+  WorkflowRunNodeResult,
+  WorkflowRuntimeRunSummary,
+} from "../../features/workflow/types";
 import XIcon from "lucide-react/dist/esm/icons/x.mjs";
 import CheckCircleIcon from "lucide-react/dist/esm/icons/check-circle.mjs";
 import XCircleIcon from "lucide-react/dist/esm/icons/x-circle.mjs";
@@ -10,6 +14,27 @@ import LoaderIcon from "lucide-react/dist/esm/icons/loader.mjs";
 
 const RUN_HISTORY_LIMIT = 20;
 const POLL_INTERVAL_MS = 1500;
+const TERMINAL_STATUSES = new Set([
+  "completed",
+  "succeeded",
+  "failed",
+  "cancelled",
+  "needs_attention",
+]);
+
+interface DurableRunObservation {
+  snapshot: {
+    run_id: string;
+    status: string;
+    output: unknown;
+    error: string;
+    nodes: Record<string, {
+      status: string;
+      output: unknown;
+      error: string;
+    }>;
+  };
+}
 
 const STATUS_META: Record<string, { color: string; icon: typeof CheckCircleIcon }> = {
   completed: { color: "var(--success)", icon: CheckCircleIcon },
@@ -36,15 +61,42 @@ export function WorkflowRunView({
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [nodeResults, setNodeResults] = useState<WorkflowRunNodeResult[]>([]);
   const [loadingResults, setLoadingResults] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const selectedRunIsActive = runs.some(
+    (run) => run.id === selectedRunId && !TERMINAL_STATUSES.has(run.status),
+  );
+
+  useEffect(() => {
+    setSelectedRunId(null);
+    setNodeResults([]);
+  }, [workflowId]);
 
   // Load run history.
   const loadRuns = useCallback(async () => {
     try {
-      const data = await invoke<WorkflowRun[]>("list_workflow_runs", { workflowId, limit: RUN_HISTORY_LIMIT });
+      const summaries = await invoke<WorkflowRuntimeRunSummary[]>("list_canvas_workflow_runs", {
+        workflowId,
+        limit: RUN_HISTORY_LIMIT,
+      });
+      const data: WorkflowRun[] = summaries.map((run) => ({
+        id: run.run_id,
+        workflow_id: workflowId,
+        session_id: "",
+        status: run.status === "succeeded" ? "completed" : run.status,
+        input: null,
+        output: null,
+        error: "",
+        total_token_input: 0,
+        total_token_output: 0,
+        started_at: run.created_at,
+        finished_at: TERMINAL_STATUSES.has(run.status) ? run.updated_at : null,
+        created_at: run.created_at,
+      }));
       setRuns(data);
+      setLoadError("");
       if (data.length > 0 && !selectedRunId) setSelectedRunId(data[0].id);
     } catch (e) {
-      console.error(e);
+      setLoadError(`Run history unavailable: ${e}`);
     }
   }, [workflowId, selectedRunId]);
 
@@ -63,15 +115,39 @@ export function WorkflowRunView({
     setLoadingResults(true);
 
     const fetchResults = () => {
-      invoke<WorkflowRunNodeResult[]>("get_workflow_run_results", { runId: selectedRunId })
-        .then((results) => { if (isMounted) setNodeResults(results); })
-        .catch((e) => { if (isMounted) console.error(e); })
+      invoke<DurableRunObservation>("observe_workflow_run", {
+        runId: selectedRunId,
+        afterSequence: null,
+      })
+        .then((observation) => {
+          if (!isMounted) return;
+          const now = new Date().toISOString();
+          setNodeResults(Object.entries(observation.snapshot.nodes).map(([nodeId, node]) => ({
+            id: `${observation.snapshot.run_id}:${nodeId}`,
+            workflow_run_id: observation.snapshot.run_id,
+            node_id: nodeId,
+            agent_history_id: "",
+            status: node.status === "succeeded" ? "completed" : node.status,
+            input: null,
+            output: node.output,
+            error: node.error,
+            token_input: 0,
+            token_output: 0,
+            cost_usd: 0,
+            latency_ms: 0,
+            started_at: null,
+            finished_at: TERMINAL_STATUSES.has(observation.snapshot.status) ? now : null,
+            created_at: now,
+          })));
+          setLoadError("");
+        })
+        .catch((e) => { if (isMounted) setLoadError(`Run details unavailable: ${e}`); })
         .finally(() => { if (isMounted) setLoadingResults(false); });
     };
 
     fetchResults();
 
-    if (running) {
+    if (running || selectedRunIsActive) {
       const interval = setInterval(fetchResults, POLL_INTERVAL_MS);
       return () => {
         isMounted = false;
@@ -80,7 +156,7 @@ export function WorkflowRunView({
     }
 
     return () => { isMounted = false; };
-  }, [selectedRunId, running]);
+  }, [selectedRunId, running, selectedRunIsActive]);
 
   const totalTokens = nodeResults.reduce((sum, r) => sum + r.token_input + r.token_output, 0);
   const totalLatency = nodeResults.reduce((sum, r) => sum + r.latency_ms, 0);
@@ -129,6 +205,11 @@ export function WorkflowRunView({
 
           {/* Node results detail */}
           <div style={{ flex: 1, overflowY: "auto", padding: "14px 18px" }}>
+            {loadError && (
+              <div style={{ marginBottom: "12px", color: "var(--danger)", fontSize: "12px" }}>
+                {loadError}
+              </div>
+            )}
             {lastRunResult && (
               <div style={{ marginBottom: "14px", padding: "10px 12px", background: "var(--bg-app)", borderRadius: "8px" }}>
                 <div style={{ fontSize: "12px", fontWeight: 600, marginBottom: "6px" }}>Last Run Summary</div>

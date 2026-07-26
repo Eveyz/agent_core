@@ -1,12 +1,9 @@
-import { useMemo, useCallback, useRef } from "react";
+import { useMemo } from "react";
 import type { Node, Edge } from "@xyflow/react";
 import type { AgentDef } from "../../features/agents/types";
 import { RouterEditor, type RouterConfig } from "./EdgeConfigPanel";
 import InfoIcon from "lucide-react/dist/esm/icons/info.mjs";
 import "./NodePropertiesPanel.css";
-
-// Named constants
-const DEBOUNCE_MS = 300;
 
 interface NodePropertiesPanelProps {
   selectedNode: Node;
@@ -30,15 +27,6 @@ export function NodePropertiesPanel({
   const nodeData = (selectedNode.data || {}) as Record<string, unknown>;
   const nodeConfig = (nodeData.config || {}) as Record<string, unknown>;
   const outputConstraint = (nodeConfig.output_constraint as string) || "text";
-
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const debouncedUpdate = useCallback((data: Record<string, unknown>) => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => {
-      onUpdateNode(selectedNode.id, data);
-    }, DEBOUNCE_MS);
-  }, [selectedNode.id, onUpdateNode]);
 
   // Downstream nodes for router editor — computed once, not on every render
   const downstream = useMemo(() =>
@@ -70,7 +58,7 @@ export function NodePropertiesPanel({
             onChange={(e) => {
               const label = e.target.value;
               const updated = { ...nodeData, label };
-              debouncedUpdate(updated);
+              onUpdateNode(selectedNode.id, updated);
             }}
           />
         </div>
@@ -100,7 +88,7 @@ export function NodePropertiesPanel({
               onChange={(e) => {
                 const input_template = e.target.value;
                 const updated = { ...nodeData, config: { ...nodeConfig, input_template } };
-                debouncedUpdate(updated);
+                onUpdateNode(selectedNode.id, updated);
               }}
               placeholder="e.g. {node_1.output} please analyze..."
               style={{ minHeight: "80px", resize: "vertical" }}
@@ -117,7 +105,7 @@ export function NodePropertiesPanel({
                 onChange={(e) => {
                   const model_override = e.target.value;
                   const updated = { ...nodeData, config: { ...nodeConfig, model_override } };
-                  debouncedUpdate(updated);
+                  onUpdateNode(selectedNode.id, updated);
                 }}
                 placeholder="Leave blank for agent default"
               />
@@ -131,7 +119,7 @@ export function NodePropertiesPanel({
                 onChange={(e) => {
                   const val = e.target.value ? Number(e.target.value) : undefined;
                   const updated = { ...nodeData, config: { ...nodeConfig, max_iterations_override: val } };
-                  debouncedUpdate(updated);
+                  onUpdateNode(selectedNode.id, updated);
                 }}
                 placeholder="Default"
               />
@@ -165,7 +153,7 @@ export function NodePropertiesPanel({
                     onChange={(e) => {
                       const response_schema = e.target.value;
                       const updated = { ...nodeData, config: { ...nodeConfig, response_schema } };
-                      debouncedUpdate(updated);
+                      onUpdateNode(selectedNode.id, updated);
                     }}
                     placeholder='{"type": "object", "properties": {...}}'
                     spellCheck={false}

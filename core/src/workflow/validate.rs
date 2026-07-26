@@ -38,6 +38,15 @@ pub struct ValidationResult {
 pub fn validate(wf: &WorkflowDef) -> ValidationResult {
     let mut issues = Vec::new();
 
+    if wf.nodes.is_empty() {
+        issues.push(ValidationIssue {
+            severity: Severity::Error,
+            code: "empty_workflow".to_string(),
+            message: "Workflow must contain at least one node".to_string(),
+            node_ids: vec![],
+        });
+    }
+
     // 1. Cycle detection (delegates to the planner's Kahn algorithm).
     match planner::plan(&wf.nodes, &wf.edges) {
         Ok(plan) => {
@@ -205,6 +214,13 @@ mod tests {
         );
         let result = validate(&wf);
         assert!(result.valid, "issues: {:?}", result.issues);
+    }
+
+    #[test]
+    fn empty_workflow_is_invalid() {
+        let result = validate(&make_wf(vec![], vec![]));
+        assert!(!result.valid);
+        assert!(result.issues.iter().any(|issue| issue.code == "empty_workflow"));
     }
 
     #[test]

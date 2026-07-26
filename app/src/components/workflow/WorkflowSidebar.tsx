@@ -14,7 +14,6 @@ interface WorkflowSidebarProps {
   onNewWorkflow: () => void;
   onSelectWorkflow: (wf: WorkflowDef) => void;
   onSelectLibrary: (entry: WorkflowLibraryEntry) => void;
-  onPublishLegacy: (wf: WorkflowDef) => void;
 }
 
 const PALETTE: { type: NodeType; label: string }[] = [
@@ -33,7 +32,6 @@ export function WorkflowSidebar({
   onNewWorkflow,
   onSelectWorkflow,
   onSelectLibrary,
-  onPublishLegacy,
 }: WorkflowSidebarProps) {
   const agents = useAppSelector((s) => s.agents.agents);
   const [scopeFilter, setScopeFilter] = useState<"all" | "project" | "user">("all");
@@ -77,7 +75,7 @@ export function WorkflowSidebar({
           onClick={onNewWorkflow}
           disabled={creatingWorkflow}
         >
-          <PlusIcon size={14} /> {creatingWorkflow ? "Creating..." : "New Workflow"}
+          <PlusIcon size={14} /> {creatingWorkflow ? "Creating..." : "New Canvas Workflow"}
         </button>
       </div>
       
@@ -96,7 +94,7 @@ export function WorkflowSidebar({
         </div>
         {renderLibraryGroup("Published", published)}
         {renderLibraryGroup("Drafts", drafts)}
-        <div className="workflow-sidebar-section-title">Legacy</div>
+        <div className="workflow-sidebar-section-title">Canvas workflows</div>
         {workflows.map((wf) => (
           <button
             type="button"
@@ -105,22 +103,6 @@ export function WorkflowSidebar({
             className={`workflow-sidebar-item ${activeWorkflowId === wf.id ? "active" : ""}`}
           >
             <span>{wf.name || "Untitled"}</span>
-            <small
-              role="button"
-              tabIndex={0}
-              onClick={(event) => {
-                event.stopPropagation();
-                onPublishLegacy(wf);
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.stopPropagation();
-                  onPublishLegacy(wf);
-                }
-              }}
-            >
-              Publish for chat reuse
-            </small>
           </button>
         ))}
         {workflows.length === 0 && <div className="workflow-sidebar-empty">None</div>}

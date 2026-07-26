@@ -47,6 +47,37 @@ export interface RuntimeWorkflowSpec {
   policy: Record<string, unknown>;
 }
 
+export interface RuntimeWorkflowProgramNode {
+  key: string;
+  kind: {
+    type: 'activity' | 'output' | 'choice' | 'wait_signal' | 'timer' | 'child_workflow' | 'for_each';
+    kind?: string;
+    config?: Record<string, unknown>;
+    name?: string;
+    delay_ms?: number;
+    revision_id?: string;
+  };
+  inputs: Record<string, unknown>;
+  after: string[];
+  retry: {
+    max_attempts: number;
+    backoff_ms: number;
+  };
+  timeout_ms?: number | null;
+  effect: 'pure' | 'read_only' | 'workspace_write' | 'external';
+  resources: Array<{ resource: string; exclusive: boolean }>;
+}
+
+export interface RuntimeWorkflowProgram {
+  schema_version: number;
+  nodes: RuntimeWorkflowProgramNode[];
+  result: Record<string, unknown>;
+  policy: {
+    max_concurrency: number;
+    on_failure: string;
+  };
+}
+
 export interface WorkflowLibraryEntry {
   workflow_id: string;
   name: string;
@@ -61,6 +92,7 @@ export interface WorkflowLibraryEntry {
   latest_revision?: PublishedWorkflowReceipt | null;
   updated_at: string;
   workflow?: RuntimeWorkflowSpec | null;
+  program?: RuntimeWorkflowProgram | null;
 }
 
 export interface WorkflowRuntimeRunSummary {

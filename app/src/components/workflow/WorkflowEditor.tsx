@@ -72,6 +72,7 @@ export function WorkflowEditor({ onContinueInChat }: WorkflowEditorProps) {
   const [nameFocusKey, setNameFocusKey] = useState(0);
   const [creatingWorkflow, setCreatingWorkflow] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [isPublishing, setIsPublishing] = useState(false);
   const [libraryEntries, setLibraryEntries] = useState<WorkflowLibraryEntry[]>([]);
   const [activeLibraryId, setActiveLibraryId] = useState<string>();
   const activeLibraryEntry = libraryEntries.find((entry) => entry.workflow_id === activeLibraryId);
@@ -166,7 +167,7 @@ export function WorkflowEditor({ onContinueInChat }: WorkflowEditorProps) {
     if (!activeWorkflow) return;
     const nodeDefs = nodes.map((n) => rfToNodeDef(n, activeWorkflow.id));
     const edgeDefs = edges.map((e) => rfToEdgeDef(e, activeWorkflow.id));
-    await dispatch(saveWorkflow({
+    return dispatch(saveWorkflow({
       id: activeWorkflow.id,
       name: wfName || activeWorkflow.name,
       nodes: nodeDefs,
@@ -174,24 +175,32 @@ export function WorkflowEditor({ onContinueInChat }: WorkflowEditorProps) {
       trust_mode: activeWorkflow.trust_mode,
       max_concurrent: activeWorkflow.max_concurrent,
       on_node_failure: activeWorkflow.on_node_failure,
-    }));
+    })).unwrap();
+  };
+
+  const validateActiveWorkflow = async () => {
+    if (!activeWorkflow) return null;
+    const nodeDefs = nodes.map((n) => rfToNodeDef(n, activeWorkflow.id));
+    const edgeDefs = edges.map((e) => rfToEdgeDef(e, activeWorkflow.id));
+    const result = await invoke<{
+      valid: boolean;
+      issues: { severity: string; code: string; message: string }[];
+    }>("validate_workflow", { nodes: nodeDefs, edges: edgeDefs });
+    if (result.valid) {
+      const warnings = result.issues.filter((issue) => issue.severity === "warning");
+      setValidationMsg(warnings.length > 0 ? `Valid (${warnings.length} warning(s))` : "Valid");
+    } else {
+      const errors = result.issues.filter((issue) => issue.severity === "error");
+      setValidationMsg(`${errors.length} error(s): ${errors.map((error) => error.message).join("; ")}`);
+    }
+    return result;
   };
 
   const handleValidate = async () => {
-    if (!activeWorkflow) return;
-    const nodeDefs = nodes.map((n) => rfToNodeDef(n, activeWorkflow.id));
-    const edgeDefs = edges.map((e) => rfToEdgeDef(e, activeWorkflow.id));
     try {
-      const result = await invoke<{ valid: boolean; issues: { severity: string; code: string; message: string }[] }>("validate_workflow", { nodes: nodeDefs, edges: edgeDefs });
-      if (result.valid) {
-        const warnings = result.issues.filter((i) => i.severity === "warning");
-        setValidationMsg(warnings.length > 0 ? `Valid (${warnings.length} warning(s))` : "Valid");
-      } else {
-        const errors = result.issues.filter((i) => i.severity === "error");
-        setValidationMsg(`${errors.length} error(s): ${errors.map((e) => e.message).join("; ")}`);
-      }
-    } catch (e) {
-      setValidationMsg(`Validation failed: ${e}`);
+      await validateActiveWorkflow();
+    } catch (error) {
+      setValidationMsg(`Validation failed: ${error}`);
     }
   };
 
@@ -240,21 +249,34 @@ export function WorkflowEditor({ onContinueInChat }: WorkflowEditorProps) {
     dispatch(setInspectedNodeId(null));
   };
 
-  const publishLegacy = async (workflow: WorkflowDef) => {
+  const publishLegacy = async () => {
+    if (!activeWorkflow) return;
     if (!activeProjectId || !workspace) {
-      setCreateError("Select a project before publishing a legacy workflow.");
+      setCreateError("Select a project before publishing a canvas workflow.");
       return;
     }
     setCreateError(null);
+    setIsPublishing(true);
     try {
-      await invoke("publish_legacy_workflow_for_chat", {
-        legacyWorkflowId: workflow.id,
+      const validation = await validateActiveWorkflow();
+      if (!validation?.valid) {
+        setCreateError("Publishing stopped because the canvas workflow has validation errors.");
+        return;
+      }
+      if (dirty) {
+        await handleSave();
+      }
+      const receipt = await invoke<{ revision_number: number }>("publish_legacy_workflow_for_chat", {
+        legacyWorkflowId: activeWorkflow.id,
         projectId: activeProjectId,
         workspace,
       });
       await refreshLibrary();
+      setValidationMsg(`Published revision ${receipt.revision_number} for chat reuse`);
     } catch (error) {
-      setCreateError(`Legacy publish failed: ${error}`);
+      setCreateError(`Canvas publish failed: ${error}`);
+    } finally {
+      setIsPublishing(false);
     }
   };
 
@@ -298,7 +320,6 @@ export function WorkflowEditor({ onContinueInChat }: WorkflowEditorProps) {
         onNewWorkflow={handleNewWorkflow} 
         onSelectWorkflow={selectWorkflow} 
         onSelectLibrary={selectLibrary}
-        onPublishLegacy={publishLegacy}
       />
 
       <div className="workflow-editor-main">
@@ -315,8 +336,10 @@ export function WorkflowEditor({ onContinueInChat }: WorkflowEditorProps) {
             nameFocusKey={nameFocusKey}
             onSave={handleSave}
             onValidate={handleValidate}
+            onPublish={publishLegacy}
             onRun={handleRun}
             onShowResults={() => dispatch(setShowRunView(true))}
+            isPublishing={isPublishing}
           />
         )}
 
@@ -330,7 +353,7 @@ export function WorkflowEditor({ onContinueInChat }: WorkflowEditorProps) {
             onContinueInChat={(entry) => onContinueInChat?.(entry)}
           />
         ) : activeWorkflow ? (
-          <ReactFlowProvider>
+          <ReactFlowProvider key={activeWorkflow.id}>
             <WorkflowCanvas 
               nodes={displayNodes}
               edges={edges}

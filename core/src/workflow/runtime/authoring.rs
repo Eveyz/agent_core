@@ -259,6 +259,11 @@ pub struct WorkflowLibraryEntry {
     pub updated_at: String,
     #[serde(default)]
     pub workflow: Option<WorkflowDraftSpec>,
+    /// The executable DAG compiled from the editable draft. Imported canvas
+    /// workflows do not have authoring steps, so viewers must use this program
+    /// instead of assuming `workflow.steps` is always populated.
+    #[serde(default)]
+    pub program: Option<WorkflowSpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -523,6 +528,70 @@ impl WorkflowAuthoringService {
                 updated_at,
                 failed_nodes,
             });
+        }
+        Ok(result)
+    }
+
+    /// Run history for workflows authored in the legacy canvas and executed by
+    /// the durable runtime. Canvas runs are correlated through RunScope rather
+    /// than the obsolete `workflow_runs` table.
+    pub fn runtime_history_for_continuation_key(
+        &self,
+        continuation_key: &str,
+        limit: usize,
+    ) -> Result<Vec<WorkflowRuntimeRunSummary>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let conn = self.storage.conn();
+        let mut statement = conn.prepare(
+            r#"
+            SELECT id, status, scope, created_at, updated_at
+            FROM durable_workflow_runs
+            ORDER BY updated_at DESC
+            "#,
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            let (run_id, status, scope_json, created_at, updated_at) = row?;
+            let scope: RunScope = serde_json::from_str(&scope_json).unwrap_or_default();
+            if scope.continuation_key != continuation_key {
+                continue;
+            }
+            let mut event_statement = conn.prepare(
+                "SELECT event FROM durable_workflow_events WHERE run_id = ?1 ORDER BY sequence",
+            )?;
+            let events =
+                event_statement.query_map(params![run_id], |row| row.get::<_, String>(0))?;
+            let failed_nodes = events
+                .filter_map(|event| event.ok())
+                .filter_map(|event| serde_json::from_str::<WorkflowEventKind>(&event).ok())
+                .filter_map(|event| match event {
+                    WorkflowEventKind::NodeFailed { node, .. }
+                    | WorkflowEventKind::NodeNeedsAttention { node, .. } => Some(node.0),
+                    _ => None,
+                })
+                .collect();
+            result.push(WorkflowRuntimeRunSummary {
+                run_id,
+                status,
+                trigger: scope.trigger,
+                created_at,
+                updated_at,
+                failed_nodes,
+            });
+            if result.len() >= limit {
+                break;
+            }
         }
         Ok(result)
     }
@@ -840,7 +909,8 @@ impl WorkflowAuthoringService {
             r#"
             SELECT f.id, f.name, f.description, f.scope_kind, f.scope_id, f.workspace,
                    f.owner_session_id, f.lifecycle, f.updated_at,
-                   d.id, d.version, d.status, d.program_hash, d.draft_spec
+                   d.id, d.version, d.status, d.program_hash, d.draft_spec,
+                   d.compiled_spec
             FROM workflow_authoring_definitions f
             JOIN workflow_authoring_drafts d ON d.workflow_id = f.id
             WHERE f.lifecycle != 'transient'
@@ -873,6 +943,7 @@ impl WorkflowAuthoringService {
                 row.get::<_, String>(11)?,
                 row.get::<_, String>(12)?,
                 row.get::<_, String>(13)?,
+                row.get::<_, String>(14)?,
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -901,6 +972,7 @@ impl WorkflowAuthoringService {
                 draft_status,
                 program_hash,
                 draft_json,
+                compiled_json,
             ) = row;
             entries.push(WorkflowLibraryEntry {
                 latest_revision: latest_by_workflow.get(&workflow_id).cloned(),
@@ -908,6 +980,14 @@ impl WorkflowAuthoringService {
                     Some(
                         serde_json::from_str(&draft_json)
                             .context("invalid stored workflow draft")?,
+                    )
+                } else {
+                    None
+                },
+                program: if include_workflow {
+                    Some(
+                        serde_json::from_str(&compiled_json)
+                            .context("invalid stored compiled workflow")?,
                     )
                 } else {
                     None
@@ -1292,6 +1372,10 @@ impl WorkflowAuthoringService {
         scope: WorkflowScope,
     ) -> Result<PublishedWorkflowReceipt> {
         ensure_request_id(request_id)?;
+        if let Some(receipt) = self.load_idempotent_response(request_id, "publish_imported")? {
+            return serde_json::from_str(&receipt)
+                .context("invalid stored imported workflow publish receipt");
+        }
         if matches!(scope, WorkflowScope::Session { .. }) {
             bail!("an imported workflow must use project or user scope");
         }
@@ -1375,6 +1459,14 @@ impl WorkflowAuthoringService {
                 receipt.program_hash,
                 now,
             ],
+        )?;
+        transaction.execute(
+            r#"
+            INSERT INTO workflow_authoring_requests
+                (request_id, operation, response, created_at)
+            VALUES (?1, 'publish_imported', ?2, ?3)
+            "#,
+            params![request_id, serde_json::to_string(&receipt)?, now],
         )?;
         transaction.commit()?;
         drop(conn);
@@ -2165,5 +2257,41 @@ mod tests {
                 .next()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn imported_legacy_program_exposes_a_viewable_dag() {
+        let (_directory, service, _store) = service();
+        let program = service
+            .compile(&inline_draft(), &PermissionConfig::default())
+            .expect("compile legacy-shaped program");
+        let expected_nodes = program.nodes.len();
+        let published = service
+            .publish_imported_program(
+                "legacy-import",
+                "Imported legacy".into(),
+                String::new(),
+                json!({"type": "object"}),
+                program,
+                WorkflowScope::User,
+            )
+            .expect("publish imported program");
+        let entry = service
+            .get_library_entry(&published.workflow_id)
+            .expect("library entry");
+        let stored_program = entry.program.expect("viewable program");
+        assert_eq!(stored_program.nodes.len(), expected_nodes);
+        let repeated = service
+            .publish_imported_program(
+                "legacy-import",
+                "Imported legacy".into(),
+                String::new(),
+                json!({"type": "object"}),
+                stored_program,
+                WorkflowScope::User,
+            )
+            .expect("repeat publish is idempotent");
+        assert_eq!(repeated.workflow_id, published.workflow_id);
+        assert_eq!(service.catalog(None, false).expect("catalog").len(), 1);
     }
 }

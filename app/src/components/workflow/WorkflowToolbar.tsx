@@ -5,6 +5,7 @@ import PlayIcon from "lucide-react/dist/esm/icons/play.mjs";
 import SquareIcon from "lucide-react/dist/esm/icons/square.mjs";
 import BarChartIcon from "lucide-react/dist/esm/icons/bar-chart-3.mjs";
 import LoaderIcon from "lucide-react/dist/esm/icons/loader-2.mjs";
+import UploadIcon from "lucide-react/dist/esm/icons/upload.mjs";
 import { useAppDispatch, useAppSelector } from "../../hooks/useAppDispatch";
 import { cancelWorkflowRun } from "../../features/workflow/workflowSlice";
 import "./WorkflowToolbar.css";
@@ -19,8 +20,10 @@ interface WorkflowToolbarProps {
   nameFocusKey: number;
   onSave: () => void;
   onValidate: () => void;
+  onPublish: () => void;
   onRun: () => void;
   onShowResults: () => void;
+  isPublishing?: boolean;
 }
 
 export function WorkflowToolbar({
@@ -32,8 +35,10 @@ export function WorkflowToolbar({
   nameFocusKey,
   onSave,
   onValidate,
+  onPublish,
   onRun,
   onShowResults,
+  isPublishing = false,
 }: WorkflowToolbarProps) {
   const dispatch = useAppDispatch();
   const isExecuting = useAppSelector((s) => s.workflow.isExecuting);
@@ -94,6 +99,15 @@ export function WorkflowToolbar({
       </button>
       <button className="btn-secondary toolbar-btn" onClick={onValidate} disabled={!hasActiveWorkflow}>
         <ShieldCheckIcon size={14} /> Validate
+      </button>
+      <button
+        className="btn-secondary toolbar-btn"
+        onClick={onPublish}
+        disabled={!hasActiveWorkflow || isPublishing || isExecuting}
+        title="Validate and save this canvas workflow, then publish an immutable revision for @workflow"
+      >
+        {isPublishing ? <LoaderIcon size={14} className="spin" /> : <UploadIcon size={14} />}
+        {isPublishing ? "Publishing..." : "Publish for chat"}
       </button>
 
       <div className="toolbar-spacer" />

@@ -2196,6 +2196,7 @@ async fn run_agent_standalone(
 /// can validate before saving.
 #[tauri::command]
 async fn validate_workflow(
+    state: State<'_, AppState>,
     nodes: Vec<agent_core::workflow::NodeDef>,
     edges: Vec<agent_core::workflow::EdgeDef>,
 ) -> Result<agent_core::workflow::ValidationResult, String> {
@@ -2204,7 +2205,28 @@ async fn validate_workflow(
         edges,
         ..Default::default()
     };
-    Ok(agent_core::workflow::validate(&wf))
+    let mut result = agent_core::workflow::validate(&wf);
+    for node in &wf.nodes {
+        if node.node_type == agent_core::workflow::NodeType::Agent
+            && !node.agent_id.is_empty()
+            && agent_core::agent_registry::get(&state.storage, &node.agent_id).is_err()
+        {
+            result.issues.push(agent_core::workflow::ValidationIssue {
+                severity: agent_core::workflow::Severity::Error,
+                code: "unknown_agent".to_string(),
+                message: format!(
+                    "Agent node '{}' references an agent that no longer exists",
+                    node.label
+                ),
+                node_ids: vec![node.id.clone()],
+            });
+        }
+    }
+    result.valid = !result
+        .issues
+        .iter()
+        .any(|issue| issue.severity == agent_core::workflow::Severity::Error);
+    Ok(result)
 }
 
 // ── PLAN-0009: Workflow CRUD + Execution ────────────────────────────
@@ -2374,9 +2396,14 @@ async fn publish_legacy_workflow_for_chat(
             agent_core::workflow::runtime::LegacyWorkflowCompiler::new(storage)
                 .compile(&legacy, &permission)
                 .map_err(|error| error.to_string())?;
+        let request_id = format!(
+            "legacy-publish:{}:{}",
+            legacy.id,
+            legacy.updated_at
+        );
         authoring
             .publish_imported_program(
-                &format!("legacy-publish:{}", uuid::Uuid::new_v4()),
+                &request_id,
                 legacy.name,
                 legacy.description,
                 legacy.input_schema,
@@ -2635,6 +2662,23 @@ async fn list_workflow_runs(
     })
     .await
     .map_err(|e| format!("list_workflow_runs task failed: {e}"))?
+}
+
+#[tauri::command]
+async fn list_canvas_workflow_runs(
+    state: State<'_, AppState>,
+    workflow_id: String,
+    limit: Option<usize>,
+) -> Result<Vec<agent_core::workflow::runtime::WorkflowRuntimeRunSummary>, String> {
+    let authoring = state.workflow_authoring.clone();
+    let limit = limit.unwrap_or(20);
+    tokio::task::spawn_blocking(move || {
+        authoring
+            .runtime_history_for_continuation_key(&workflow_id, limit)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("list canvas workflow runs task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -3062,7 +3106,8 @@ pub fn run() {
             delete_workflow_library_entry, run_published_workflow,
             publish_legacy_workflow_for_chat,
             create_workflow, list_workflows, get_workflow, save_workflow, delete_workflow,
-            run_workflow, cancel_workflow_run, observe_workflow_run, list_workflow_runs, get_workflow_run_results,
+            run_workflow, cancel_workflow_run, observe_workflow_run, list_workflow_runs,
+            list_canvas_workflow_runs, get_workflow_run_results,
             generate_agent_skill_drafts, list_skill_drafts, approve_skill_draft, reject_skill_draft,
             preview::preview_start, preview::preview_stop, preview::preview_restart,
             preview::preview_get, preview::preview_list, preview::preview_set_visibility,
