@@ -7,22 +7,19 @@ use super::Run;
 /// Pure decision helper for `maybe_compact` so the threshold math can be
 /// unit-tested in isolation (without constructing a full `Run`).
 ///
-/// Returns `Some(keep)` = number of recent turns to retain via chunked_drop,
-/// or `None` when the context is under the compaction threshold.
+/// Returns the soft target token budget, or `None` when the context is under
+/// the compaction threshold.
 fn compact_decision(
     max_tokens: usize,
     current_tokens: usize,
-    context_len: usize,
-    keep_recent: usize,
+    threshold_ratio: f64,
+    target_ratio: f64,
 ) -> Option<usize> {
-    const COMPACT_THRESHOLD: f64 = 0.80;
-
-    let threshold = (max_tokens as f64 * COMPACT_THRESHOLD) as usize;
+    let threshold = (max_tokens as f64 * threshold_ratio.clamp(0.0, 1.0)) as usize;
     if current_tokens < threshold {
         return None;
     }
-    let keep = (context_len / 2).max(4).min(keep_recent);
-    Some(keep)
+    Some((max_tokens as f64 * target_ratio.clamp(0.0, threshold_ratio)) as usize)
 }
 
 fn compaction_stage_strategy(chunked: bool, trimmed: bool) -> Option<&'static str> {
@@ -41,8 +38,8 @@ impl Run {
     ///
     /// 0. **Ledger merge**: fold deterministic file touches into RollingSummary
     ///    before dropping turns (PLAN-0016).
-    /// 1. **Chunked drop (preferred)**: When token usage exceeds 80% of the
-    ///    context window, batch-drop the oldest 50% of conversation turns.
+    /// 1. **Chunked drop (preferred)**: When token usage exceeds the configured
+    ///    threshold, retain the largest whole-turn suffix within the soft target.
     /// 2. **LLM summarize (fallback)**: Incremental delta merge into
     ///    RollingSummary; `micro_compact()` as last resort.
     ///
@@ -53,13 +50,13 @@ impl Run {
         let current = self.context.current_token_count();
         let max_tokens = self.client.model.max_context_tokens;
         let context_len = self.context.len();
-        let keep = match compact_decision(
+        let target_tokens = match compact_decision(
             max_tokens,
             current,
-            context_len,
-            self.context.compressor.gradient_keep_recent,
+            self.context.compressor.auto_compact_threshold,
+            self.context.compressor.target_ratio,
         ) {
-            Some(k) => k,
+            Some(target) => target,
             None => return, // under threshold — nothing to do
         };
 
@@ -70,7 +67,10 @@ impl Run {
         }
 
         // Tier 1: Chunked drop — zero-cost, cache-friendly bulk removal.
-        let chunked = self.context.chunked_drop(keep) > 0;
+        let chunked = self
+            .context
+            .chunked_drop_to_target(target_tokens, self.context.compressor.gradient_keep_recent)
+            > 0;
         if chunked {
             // Dropped turns are gone; strip thinking from what remains so old
             // CoT does not linger across the compaction boundary.
@@ -82,7 +82,8 @@ impl Run {
                     .upsert_ledger_into_rolling_summary(&self.file_ledger);
             }
             // Check if this brought us below the threshold.
-            let threshold = (max_tokens as f64 * 0.80) as usize;
+            let threshold =
+                (max_tokens as f64 * self.context.compressor.auto_compact_threshold) as usize;
             if self.context.current_token_count() < threshold {
                 let tokens_after = self.context.current_token_count();
                 tracing::info!(
@@ -91,7 +92,8 @@ impl Run {
                     tokens_after,
                     "Chunked drop compact applied"
                 );
-                self.emit_context_compacted("chunked_drop", current, tokens_after);
+                self.emit_context_compacted("chunked_drop", current, tokens_after)
+                    .await;
                 debug_assert_eq!(
                     self.full_transcript.len(),
                     full_len_before,
@@ -114,10 +116,12 @@ impl Run {
                 tokens_after = tokens_after_trim,
                 "Deterministic context compact applied"
             );
-            self.emit_context_compacted(strategy, current, tokens_after_trim);
+            self.emit_context_compacted(strategy, current, tokens_after_trim)
+                .await;
         }
 
-        let threshold = (max_tokens as f64 * 0.80) as usize;
+        let threshold =
+            (max_tokens as f64 * self.context.compressor.auto_compact_threshold) as usize;
         if tokens_after_trim < threshold {
             debug_assert_eq!(
                 self.full_transcript.len(),
@@ -141,7 +145,8 @@ impl Run {
         let (result_text, _) = match self.client.chat_completion(&messages, &[]).await {
             Ok(r) => r,
             Err(_) => {
-                self.fallback_micro_compact(context_len, current, full_len_before);
+                self.fallback_micro_compact(context_len, current, full_len_before)
+                    .await;
                 return;
             }
         };
@@ -156,18 +161,16 @@ impl Run {
                 s
             }
             Err(_) => {
-                self.fallback_micro_compact(context_len, current, full_len_before);
+                self.fallback_micro_compact(context_len, current, full_len_before)
+                    .await;
                 return;
             }
         };
 
         self.context
             .apply_summary_with_ledger(request.split_index, &summary, &self.file_ledger);
-        self.emit_context_compacted(
-            "llm_summary",
-            current,
-            self.context.current_token_count(),
-        );
+        self.emit_context_compacted("llm_summary", current, self.context.current_token_count())
+            .await;
         debug_assert_eq!(
             self.full_transcript.len(),
             full_len_before,
@@ -193,7 +196,8 @@ impl Run {
         let request = match self.context.prepare_summary(num_turns) {
             Some(r) => r,
             None => {
-                self.fallback_micro_compact(self.context.len(), tokens_before, full_len_before);
+                self.fallback_micro_compact(self.context.len(), tokens_before, full_len_before)
+                    .await;
                 return;
             }
         };
@@ -202,7 +206,8 @@ impl Run {
         let (result_text, _) = match self.client.chat_completion(&messages, &[]).await {
             Ok(r) => r,
             Err(_) => {
-                self.fallback_micro_compact(self.context.len(), tokens_before, full_len_before);
+                self.fallback_micro_compact(self.context.len(), tokens_before, full_len_before)
+                    .await;
                 return;
             }
         };
@@ -210,7 +215,8 @@ impl Run {
         let summary: crate::compressor::TurnSummary = match serde_json::from_str(&result_text) {
             Ok(s) => s,
             Err(_) => {
-                self.fallback_micro_compact(self.context.len(), tokens_before, full_len_before);
+                self.fallback_micro_compact(self.context.len(), tokens_before, full_len_before)
+                    .await;
                 return;
             }
         };
@@ -221,11 +227,12 @@ impl Run {
             "llm_summary",
             tokens_before,
             self.context.current_token_count(),
-        );
+        )
+        .await;
         debug_assert_eq!(self.full_transcript.len(), full_len_before);
     }
 
-    fn fallback_micro_compact(
+    async fn fallback_micro_compact(
         &mut self,
         context_len: usize,
         tokens_before: usize,
@@ -240,15 +247,22 @@ impl Run {
             "micro_compact",
             tokens_before,
             self.context.current_token_count(),
-        );
+        )
+        .await;
         debug_assert_eq!(self.full_transcript.len(), full_len_before);
         self.refresh_usage_snapshot_only();
     }
 
-    fn emit_context_compacted(&mut self, strategy: &str, tokens_before: usize, tokens_after: usize) {
+    async fn emit_context_compacted(
+        &mut self,
+        strategy: &str,
+        tokens_before: usize,
+        tokens_after: usize,
+    ) {
         // Publish the new snapshot before the event. The frontend refreshes
         // usage as soon as it receives ContextCompacted.
         self.refresh_usage_snapshot_only();
+        self.persist_model_window_checkpoint().await;
         self.emit(crate::runtime::event::RunEvent::ContextCompacted {
             summary: format!(
                 "{strategy}: {tokens_before} → {tokens_after} tokens (model window only; full transcript unchanged)"
@@ -259,78 +273,85 @@ impl Run {
         });
     }
 
+    async fn persist_model_window_checkpoint(&self) {
+        let (Some(session_manager), Some(session_id)) =
+            (self.session_manager.clone(), self.session_id.clone())
+        else {
+            return;
+        };
+        let model_id = self.client.model.model_id.clone();
+        let prompt_id = self.prompt_id.clone();
+        let full_transcript = self.full_transcript.clone();
+        let model_window = self.context.raw_messages().to_vec();
+        // Invalidate queued snapshot writers before taking the shared lock.
+        // A writer already holding the lock completes first; this commit then
+        // replaces it. A queued writer observes the newer generation and skips.
+        self.session_snapshot_gen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let snapshot_lock = self.session_snapshot_lock.clone();
+        match tokio::task::spawn_blocking(move || {
+            let _guard = snapshot_lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            session_manager.save_live_model_window_checkpoint(
+                &session_id,
+                prompt_id.as_deref(),
+                &model_id,
+                &full_transcript,
+                &model_window,
+            )
+        })
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "failed to persist compacted model window");
+            }
+            Err(error) => {
+                tracing::warn!(%error, "model-window checkpoint task failed");
+            }
+        }
+    }
+
     /// Update the Context Usage ring without rewriting the full-transcript snapshot.
     fn refresh_usage_snapshot_only(&self) {
         *self.usage_snapshot.write() = self.context.usage_snapshot();
+        *self.model_window_snapshot.write() = self.context.raw_messages().to_vec();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compressor::{SummaryFiles, TurnSummary, ROLLING_SUMMARY_PREFIX};
+    use crate::compressor::{ROLLING_SUMMARY_PREFIX, SummaryFiles, TurnSummary};
     use crate::context::ContextEngine;
     use crate::types::Role;
 
     #[test]
     fn test_compact_decision_returns_none_under_threshold() {
         // 500 tokens vs 10000 max — well below the 80% threshold.
-        assert_eq!(compact_decision(10_000, 500, 10, 6), None);
+        assert_eq!(compact_decision(10_000, 500, 0.8, 0.2), None);
     }
 
     #[test]
     fn test_compact_decision_returns_none_at_exactly_threshold_minus_one() {
         // 7999 tokens vs 8000 threshold — returns None at strictly-below.
-        assert_eq!(compact_decision(10_000, 7999, 30, 6), None);
+        assert_eq!(compact_decision(10_000, 7999, 0.8, 0.2), None);
     }
 
     #[test]
     fn test_compact_decision_triggers_at_threshold() {
         // exactly 80% → triggers chunked_drop
-        assert!(compact_decision(10_000, 8_000, 30, 6).is_some());
+        assert_eq!(compact_decision(10_000, 8_000, 0.8, 0.2), Some(2_000));
     }
 
     #[test]
-    fn test_compact_decision_keep_is_half_of_context_len() {
-        // 20 turns → keep 10 (cap of 20 not hit)
-        let keep = compact_decision(10_000, 9_000, 20, 20).unwrap();
-        assert_eq!(keep, 10);
-    }
-
-    #[test]
-    fn test_compact_decision_keep_min_is_4() {
-        // 2 turns → keep 4 (the min floor)
-        let keep = compact_decision(10_000, 9_000, 2, 6).unwrap();
-        assert_eq!(keep, 4);
-    }
-
-    #[test]
-    fn test_compact_decision_keep_respects_cap() {
-        // 100 turns, cap=20 → keep 20 (the cap)
-        let keep = compact_decision(10_000, 9_000, 100, 20).unwrap();
-        assert_eq!(keep, 20);
-    }
-
-    #[test]
-    fn test_compact_decision_keep_respects_small_cap() {
-        // 100 turns, cap=6 → keep 6 (tight cap from gradient_keep_recent)
-        let keep = compact_decision(10_000, 9_000, 100, 6).unwrap();
-        assert_eq!(keep, 6);
-    }
-
-    #[test]
-    fn test_compact_decision_keep_at_floor_when_odd_len() {
-        // 5 turns → keep = max(5/2, 4) = max(2, 4) = 4
-        let keep = compact_decision(10_000, 9_000, 5, 6).unwrap();
-        assert_eq!(keep, 4);
+    fn test_compact_decision_uses_configured_soft_target() {
+        assert_eq!(compact_decision(256_000, 322_723, 0.8, 0.2), Some(51_200));
     }
 
     #[test]
     fn compaction_stage_reports_trim_only_with_final_count() {
-        assert_eq!(
-            compaction_stage_strategy(false, true),
-            Some("trim_to_fit")
-        );
+        assert_eq!(compaction_stage_strategy(false, true), Some("trim_to_fit"));
     }
 
     #[test]
@@ -374,7 +395,11 @@ mod tests {
         let dropped = engine.chunked_drop(6);
         assert!(dropped > 0);
         assert!(engine.len() < model_len_before);
-        assert_eq!(full.len(), full_len_before, "chunked_drop must not touch full");
+        assert_eq!(
+            full.len(),
+            full_len_before,
+            "chunked_drop must not touch full"
+        );
         assert_eq!(full[0].content, first_user);
 
         let summary = TurnSummary {

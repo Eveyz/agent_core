@@ -12,7 +12,9 @@
 use crate::types::{ImageAttachment, Message, ReasoningState};
 use anyhow::Result;
 use chrono::Utc;
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 const REASONING_METADATA_KEY: &str = "_reasoning";
 const IMAGES_METADATA_KEY: &str = "_images";
@@ -147,6 +149,20 @@ pub(crate) fn messages_for_snapshot(messages: &[Message]) -> Vec<Message> {
             message.metadata = merge_ephemeral_into_metadata(&message);
             message.reasoning = None;
             message.images = None;
+            message
+        })
+        .collect()
+}
+
+fn messages_from_snapshot(messages: Vec<Message>) -> Vec<Message> {
+    messages
+        .into_iter()
+        .map(|mut message| {
+            let (metadata, reasoning, images) =
+                split_ephemeral_from_metadata(message.metadata.take());
+            message.metadata = metadata;
+            message.reasoning = reasoning;
+            message.images = images;
             message
         })
         .collect()
@@ -344,6 +360,160 @@ impl SessionManager {
         crate::paths::session_messages_snapshot_path(session_id)
     }
 
+    fn transcript_prefix_sha256(messages: &[Message]) -> Result<String> {
+        let encoded = serde_json::to_vec(&messages_for_snapshot(messages))?;
+        Ok(hex::encode(Sha256::digest(encoded)))
+    }
+
+    /// Persist the compactable model window separately from the canonical
+    /// transcript. `source_message_count` plus the prefix hash lets the next
+    /// Run safely append messages written after this checkpoint while
+    /// rejecting checkpoints from a rewound or otherwise rewritten branch.
+    pub fn save_model_window_checkpoint(
+        &self,
+        session_id: &str,
+        model_id: &str,
+        full_transcript: &[Message],
+        model_window: &[Message],
+    ) -> Result<()> {
+        let source_prefix_sha256 = Self::transcript_prefix_sha256(full_transcript)?;
+        let messages_json = serde_json::to_string(&messages_for_snapshot(model_window))?;
+        let now = Utc::now().to_rfc3339();
+        self.storage.conn().execute(
+            "INSERT INTO session_model_windows
+                (session_id, source_message_count, source_prefix_sha256, model_id, messages_json, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(session_id) DO UPDATE SET
+                source_message_count = excluded.source_message_count,
+                source_prefix_sha256 = excluded.source_prefix_sha256,
+                model_id = excluded.model_id,
+                messages_json = excluded.messages_json,
+                updated_at = excluded.updated_at",
+            rusqlite::params![
+                session_id,
+                full_transcript.len() as i64,
+                source_prefix_sha256,
+                model_id,
+                messages_json,
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Atomically persist the live canonical transcript and the compacted
+    /// model window that hashes it. This path deliberately leaves the session
+    /// and prompt lifecycle running; terminal persistence finishes them later.
+    pub fn save_live_model_window_checkpoint(
+        &self,
+        session_id: &str,
+        prompt_id: Option<&str>,
+        model_id: &str,
+        full_transcript: &[Message],
+        model_window: &[Message],
+    ) -> Result<()> {
+        validate_transcript(full_transcript)?;
+        let meta = self
+            .get_meta(session_id)?
+            .ok_or_else(|| anyhow::anyhow!("session '{session_id}' does not exist"))?;
+        self.save_full(
+            Some(session_id),
+            full_transcript,
+            &meta.cwd,
+            &meta.model_used,
+            None,
+            "main",
+            None,
+            prompt_id,
+            Some((model_id, model_window)),
+            false,
+        )?;
+        let snapshot = Self::snapshot_path(session_id);
+        if snapshot.exists() {
+            std::fs::remove_file(snapshot)?;
+        }
+        Ok(())
+    }
+
+    /// Restore a model-window checkpoint and append any canonical messages
+    /// added since it was written. Returns `None` for stale/rewound branches.
+    pub fn load_model_window_checkpoint(
+        &self,
+        session_id: &str,
+        full_transcript: &[Message],
+        active_model_id: &str,
+    ) -> Result<Option<Vec<Message>>> {
+        let checkpoint: Option<(usize, String, String, String)> = self
+            .storage
+            .conn()
+            .query_row(
+                "SELECT source_message_count, source_prefix_sha256, model_id, messages_json
+                 FROM session_model_windows WHERE session_id = ?1",
+                rusqlite::params![session_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)? as usize,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((source_message_count, expected_hash, checkpoint_model_id, messages_json)) =
+            checkpoint
+        else {
+            return Ok(None);
+        };
+        if source_message_count > full_transcript.len()
+            || Self::transcript_prefix_sha256(&full_transcript[..source_message_count])?
+                != expected_hash
+        {
+            self.storage.conn().execute(
+                "DELETE FROM session_model_windows WHERE session_id = ?1",
+                rusqlite::params![session_id],
+            )?;
+            return Ok(None);
+        }
+
+        let persisted_window: Vec<Message> = serde_json::from_str(&messages_json)?;
+        let mut model_window = messages_from_snapshot(persisted_window);
+        model_window.extend_from_slice(&full_transcript[source_message_count..]);
+        if checkpoint_model_id != active_model_id {
+            crate::hygiene::strip_all_thinking(&mut model_window);
+        }
+        Ok(Some(model_window))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn model_window_checkpoint_shape(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<(usize, usize)>> {
+        self.storage
+            .conn()
+            .query_row(
+                "SELECT source_message_count, messages_json
+                 FROM session_model_windows WHERE session_id = ?1",
+                rusqlite::params![session_id],
+                |row| {
+                    let source_message_count = row.get::<_, i64>(0)? as usize;
+                    let messages_json: String = row.get(1)?;
+                    let messages: Vec<Message> =
+                        serde_json::from_str(&messages_json).map_err(|error| {
+                            rusqlite::Error::FromSqlConversionFailure(
+                                messages_json.len(),
+                                rusqlite::types::Type::Text,
+                                Box::new(error),
+                            )
+                        })?;
+                    Ok((source_message_count, messages.len()))
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
     /// Atomically promote the runtime's raw transcript snapshot into SQLite.
     /// Returns false when no snapshot exists.
     pub fn commit_snapshot(&self, session_id: &str) -> Result<bool> {
@@ -406,6 +576,8 @@ impl SessionManager {
             "main",
             None,
             binding_prompt_id,
+            None,
+            true,
         )?;
         let snapshot = Self::snapshot_path(session_id);
         if snapshot.exists() {
@@ -534,7 +706,7 @@ impl SessionManager {
         project_id: Option<&str>,
     ) -> Result<String> {
         self.save_full(
-            session_id, messages, cwd, model_used, None, "main", project_id, None,
+            session_id, messages, cwd, model_used, None, "main", project_id, None, None, true,
         )
     }
 
@@ -551,7 +723,7 @@ impl SessionManager {
         ];
         self.save_full(
             None, // always create new
-            &messages, "", "subagent", None, "subagent", None, None,
+            &messages, "", "subagent", None, "subagent", None, None, None, true,
         )
     }
 
@@ -655,6 +827,8 @@ impl SessionManager {
             "subagent",
             None,
             Some(prompt_id),
+            None,
+            true,
         )?;
         let _ = self.finish_prompt(prompt_id, "completed", &serde_json::json!({}));
         Ok(())
@@ -690,6 +864,8 @@ impl SessionManager {
         session_type: &str,
         project_id: Option<&str>,
         binding_prompt_id: Option<&str>,
+        model_window_checkpoint: Option<(&str, &[Message])>,
+        mark_ended: bool,
     ) -> Result<String> {
         let mut db = self.storage.conn();
 
@@ -711,10 +887,17 @@ impl SessionManager {
         let id = if exists {
             let id = session_id.unwrap();
             // Update existing session
-            tx.execute(
-                "UPDATE sessions SET message_count = ?1, prompt_count = ?2, updated_at = ?3, end_time = ?4, cwd = ?5, model_used = ?6 WHERE id = ?7",
-                rusqlite::params![msg_count, 0, now, now, cwd, model_used, id],
-            )?;
+            if mark_ended {
+                tx.execute(
+                    "UPDATE sessions SET message_count = ?1, prompt_count = ?2, updated_at = ?3, end_time = ?4, cwd = ?5, model_used = ?6 WHERE id = ?7",
+                    rusqlite::params![msg_count, 0, now, now, cwd, model_used, id],
+                )?;
+            } else {
+                tx.execute(
+                    "UPDATE sessions SET message_count = ?1, prompt_count = ?2, updated_at = ?3, cwd = ?4, model_used = ?5 WHERE id = ?6",
+                    rusqlite::params![msg_count, 0, now, cwd, model_used, id],
+                )?;
+            }
             // Delete old messages (prompts are kept — they track lifecycle independently)
             tx.execute(
                 "DELETE FROM session_messages WHERE session_id = ?1",
@@ -854,6 +1037,40 @@ impl SessionManager {
                 )?;
                 global_msg_idx += 1;
             }
+        }
+
+        if !mark_ended
+            && let Some(prompt_id) = binding_prompt_id
+        {
+            tx.execute(
+                "UPDATE prompts SET status = 'running', ended_at = NULL WHERE id = ?1",
+                rusqlite::params![prompt_id],
+            )?;
+        }
+
+        if let Some((checkpoint_model_id, model_window)) = model_window_checkpoint {
+            let source_prefix_sha256 = Self::transcript_prefix_sha256(messages)?;
+            let messages_json =
+                serde_json::to_string(&messages_for_snapshot(model_window))?;
+            tx.execute(
+                "INSERT INTO session_model_windows
+                    (session_id, source_message_count, source_prefix_sha256, model_id, messages_json, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(session_id) DO UPDATE SET
+                    source_message_count = excluded.source_message_count,
+                    source_prefix_sha256 = excluded.source_prefix_sha256,
+                    model_id = excluded.model_id,
+                    messages_json = excluded.messages_json,
+                    updated_at = excluded.updated_at",
+                rusqlite::params![
+                    id,
+                    messages.len() as i64,
+                    source_prefix_sha256,
+                    checkpoint_model_id,
+                    messages_json,
+                    now,
+                ],
+            )?;
         }
 
         // Commit the transaction. If we crash before this point, everything
@@ -1850,9 +2067,114 @@ mod tests {
         mgr.save_canonical_transcript(&id, &full).unwrap();
         let recovered = mgr.resume(&id).unwrap().unwrap();
         assert_eq!(recovered.messages.len(), full.len());
+        assert_eq!(recovered.messages[0].content.as_deref(), Some("old user 0"));
+    }
+
+    #[test]
+    fn model_window_checkpoint_survives_next_run_and_merges_new_messages() {
+        let (mgr, _dir) = make_manager();
+        let full = vec![
+            Message::user("old user"),
+            Message::assistant("old assistant"),
+            Message::user("recent user"),
+            Message::assistant("recent assistant").with_reasoning(ReasoningState {
+                text: Some("reasoning".into()),
+                encrypted_content: Some("opaque-checkpoint".into()),
+                signature: Some("signature".into()),
+                summary: None,
+            }),
+        ];
+        let id = mgr.save(None, &full, "/tmp", "model-a").unwrap();
+        let compacted = full[2..].to_vec();
+
+        mgr.save_model_window_checkpoint(&id, "model-a", &full, &compacted)
+            .unwrap();
+        mgr.save_canonical_transcript(&id, &full).unwrap();
+        let persisted_full = mgr.resume(&id).unwrap().unwrap().messages;
+        let initial = mgr
+            .load_model_window_checkpoint(&id, &persisted_full, "model-a")
+            .unwrap()
+            .unwrap();
+        assert_eq!(initial.len(), compacted.len());
         assert_eq!(
-            recovered.messages[0].content.as_deref(),
-            Some("old user 0")
+            initial[0].content.as_deref(),
+            compacted[0].content.as_deref()
+        );
+        assert_eq!(
+            initial[1]
+                .reasoning
+                .as_ref()
+                .and_then(|reasoning| reasoning.encrypted_content.as_deref()),
+            Some("opaque-checkpoint")
+        );
+
+        let mut extended = persisted_full;
+        extended.push(Message::user("next run"));
+        let restored = mgr
+            .load_model_window_checkpoint(&id, &extended, "model-a")
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored.len(), compacted.len() + 1);
+        assert_eq!(
+            restored[0].content.as_deref(),
+            compacted[0].content.as_deref()
+        );
+        assert_eq!(
+            restored
+                .last()
+                .and_then(|message| message.content.as_deref()),
+            Some("next run")
+        );
+
+        let mut rewritten = extended;
+        rewritten[0] = Message::user("rewound branch");
+        assert!(
+            mgr.load_model_window_checkpoint(&id, &rewritten, "model-a")
+                .unwrap()
+                .is_none(),
+            "a checkpoint from another transcript branch must not be reused"
+        );
+    }
+
+    #[test]
+    fn model_switch_reuses_compacted_text_but_strips_provider_bound_reasoning() {
+        let (mgr, _dir) = make_manager();
+        let checkpoint_source = vec![
+            Message::user("recent user"),
+            Message::assistant("recent assistant").with_reasoning(ReasoningState {
+                text: Some("private thinking".into()),
+                encrypted_content: Some("provider-a-blob".into()),
+                signature: Some("provider-a-signature".into()),
+                summary: None,
+            }),
+        ];
+        let id = mgr
+            .save(None, &checkpoint_source, "/tmp", "model-a")
+            .unwrap();
+        mgr.save_model_window_checkpoint(&id, "model-a", &checkpoint_source, &checkpoint_source)
+            .unwrap();
+        let mut full = checkpoint_source;
+        full.push(
+            Message::assistant("suffix assistant").with_reasoning(ReasoningState {
+                text: Some("suffix private thinking".into()),
+                encrypted_content: Some("suffix-provider-a-blob".into()),
+                signature: Some("suffix-provider-a-signature".into()),
+                summary: None,
+            }),
+        );
+
+        let restored = mgr
+            .load_model_window_checkpoint(&id, &full, "model-b")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(restored.len(), 3);
+        assert_eq!(restored[1].content.as_deref(), Some("recent assistant"));
+        assert!(
+            restored[1..]
+                .iter()
+                .all(|message| message.reasoning.is_none()),
+            "provider-bound reasoning in both the checkpoint and appended suffix must not cross a model switch"
         );
     }
 
@@ -2246,6 +2568,8 @@ mod tests {
                 "subagent",
                 None,
                 None,
+                None,
+                true,
             )
             .unwrap();
 
@@ -2441,9 +2765,7 @@ mod tests {
     #[test]
     fn pre_allocate_subagent_session_then_finalize() {
         let (mgr, _dir) = make_manager();
-        let parent = mgr
-            .save(None, &make_messages(), "/tmp", "gpt")
-            .unwrap();
+        let parent = mgr.save(None, &make_messages(), "/tmp", "gpt").unwrap();
         {
             let db = mgr.storage.conn();
             db.execute(

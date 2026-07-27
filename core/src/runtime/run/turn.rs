@@ -1153,34 +1153,18 @@ impl Run {
             .fetch_add(1, Ordering::Relaxed)
             + 1;
         let gen_arc = self.session_snapshot_gen.clone();
+        let snapshot_lock = self.session_snapshot_lock.clone();
 
         self.join_set.spawn(async move {
             let write_result = tokio::task::spawn_blocking(move || {
-                // Another save was queued after us — skip this write.
-                if gen_arc.load(Ordering::Relaxed) != generation {
-                    return Ok(());
-                }
-                let json = serde_json::to_string(&messages).map_err(|e| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string())
-                })?;
-                // Re-check after serialize: a newer save may have started.
-                if gen_arc.load(Ordering::Relaxed) != generation {
-                    return Ok(());
-                }
-                if let Some(parent) = path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                let tmp_path = path.with_extension("tmp.snapshot");
-                match std::fs::write(&tmp_path, &json).and_then(|_| std::fs::rename(&tmp_path, &path))
-                {
-                    Ok(()) => Ok(()),
-                    Err(e) => {
-                        let _ = std::fs::remove_file(&tmp_path);
-                        Err(e)
-                    }
-                }
-            })
-            .await;
+                write_snapshot_if_current(
+                    &path,
+                    &messages,
+                    generation,
+                    &gen_arc,
+                    &snapshot_lock,
+                )
+            }).await;
 
             match write_result {
                 Ok(Ok(())) => {}
@@ -1192,6 +1176,81 @@ impl Run {
                 }
             }
         });
+    }
+}
+
+fn write_snapshot_if_current(
+    path: &std::path::Path,
+    messages: &[Message],
+    generation: u64,
+    current_generation: &std::sync::atomic::AtomicU64,
+    snapshot_lock: &std::sync::Mutex<()>,
+) -> std::io::Result<()> {
+    let _guard = snapshot_lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if current_generation.load(Ordering::Relaxed) != generation {
+        return Ok(());
+    }
+    let json = serde_json::to_string(messages)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+    if current_generation.load(Ordering::Relaxed) != generation {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let tmp_path = path.with_extension("tmp.snapshot");
+    match std::fs::write(&tmp_path, &json).and_then(|_| std::fs::rename(&tmp_path, path)) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp_path);
+            Err(e)
+        }
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+
+    #[test]
+    fn invalidated_writer_waiting_on_commit_lock_cannot_restore_stale_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.json");
+        let generation = Arc::new(std::sync::atomic::AtomicU64::new(1));
+        let lock = Arc::new(std::sync::Mutex::new(()));
+        let held = lock.lock().unwrap();
+        let queued = Arc::new(Barrier::new(2));
+
+        let writer = {
+            let generation = generation.clone();
+            let lock = lock.clone();
+            let queued = queued.clone();
+            let path = path.clone();
+            std::thread::spawn(move || {
+                queued.wait();
+                write_snapshot_if_current(
+                    &path,
+                    &[Message::user("stale")],
+                    1,
+                    &generation,
+                    &lock,
+                )
+                .unwrap();
+            })
+        };
+
+        queued.wait();
+        generation.fetch_add(1, Ordering::Relaxed);
+        drop(held);
+        writer.join().unwrap();
+
+        assert!(
+            !path.exists(),
+            "a writer invalidated while waiting for the live-checkpoint lock must skip rename"
+        );
     }
 }
 

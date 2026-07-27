@@ -22,21 +22,21 @@ use tokio::sync::{Mutex, broadcast, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::context::ContextUsageSnapshot;
 use crate::mode::AgentMode;
 use crate::permission::ApprovalChoice;
 use crate::reflector::Reflector;
 use crate::runtime::approval::ApprovalResolver;
-use crate::runtime::input::{ClarificationAnswers, InputResolver};
 use crate::runtime::brain::Brain;
 use crate::runtime::command::RunCommand;
 use crate::runtime::event::{Envelope, RunEvent, RunId};
 use crate::runtime::event_log::EventLog;
+use crate::runtime::input::{ClarificationAnswers, InputResolver};
 use crate::runtime::run::{Run, default_runs_dir};
 use crate::runtime::state::RunState;
 use crate::session::SessionManager;
-use crate::worktree::WorktreeManager;
 use crate::types::Message;
-use crate::context::ContextUsageSnapshot;
+use crate::worktree::WorktreeManager;
 
 /// Capacity for the event broadcast channel per Run.
 const EVENT_CHANNEL_CAPACITY: usize = 1024;
@@ -82,6 +82,9 @@ pub struct RunHandle {
     context_snapshot: Arc<RwLock<Vec<Message>>>,
     /// Shared context usage breakdown (refreshed with context_snapshot).
     usage_snapshot: Arc<RwLock<ContextUsageSnapshot>>,
+    /// Compactable conversation window, distinct from the canonical transcript.
+    #[allow(dead_code)] // retained by the handle; queried by regression tests
+    model_window_snapshot: Arc<RwLock<Vec<Message>>>,
 }
 
 impl RunHandle {
@@ -117,6 +120,11 @@ impl RunHandle {
     /// Best-effort read-only context usage breakdown.
     pub fn usage_snapshot(&self) -> ContextUsageSnapshot {
         self.usage_snapshot.read().clone()
+    }
+
+    #[cfg(test)]
+    fn model_window_snapshot(&self) -> Vec<Message> {
+        self.model_window_snapshot.read().clone()
     }
 
     /// Wait for the Run's task to complete.
@@ -336,9 +344,7 @@ impl RunManager {
         // Canonical prompt row — sole source of truth for session rewind.
         let prompt_id: Option<String> = if let Some(pid) = existing_prompt_id {
             Some(pid)
-        } else if let (Some(sid), Some(sm)) =
-            (session_id.as_ref(), self.session_manager.as_ref())
-        {
+        } else if let (Some(sid), Some(sm)) = (session_id.as_ref(), self.session_manager.as_ref()) {
             let sm = sm.clone();
             let sid = sid.clone();
             let model = self
@@ -357,6 +363,37 @@ impl RunManager {
 
         // Get the current model config
         let model_config = self.brain.current_model_config()?;
+        let checkpoint_model_id = model_config.model_id.clone();
+        let model_history = if let (Some(session_id), Some(session_manager)) =
+            (session_id.as_ref(), self.session_manager.as_ref())
+        {
+            let session_id = session_id.clone();
+            let session_manager = session_manager.clone();
+            let full_history = history.clone();
+            let active_model_id = checkpoint_model_id.clone();
+            match tokio::task::spawn_blocking(move || {
+                session_manager.load_model_window_checkpoint(
+                    &session_id,
+                    &full_history,
+                    &active_model_id,
+                )
+            })
+            .await
+            {
+                Ok(Ok(Some(checkpoint))) => checkpoint,
+                Ok(Ok(None)) => history.clone(),
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "failed to load model-window checkpoint");
+                    history.clone()
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "model-window checkpoint task failed");
+                    history.clone()
+                }
+            }
+        } else {
+            history.clone()
+        };
 
         // Create channels
         let (cmd_tx, cmd_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
@@ -379,6 +416,7 @@ impl RunManager {
         let context_snapshot = Arc::new(RwLock::new(Vec::<Message>::new()));
         let max_ctx = model_config.max_context_tokens;
         let usage_snapshot = Arc::new(RwLock::new(ContextUsageSnapshot::empty(max_ctx)));
+        let model_window_snapshot = Arc::new(RwLock::new(Vec::<Message>::new()));
 
         // Create the Run
         let mut run = match Run::new(
@@ -392,9 +430,11 @@ impl RunManager {
             seq.clone(),
             working_dir,
             history,
+            model_history,
             mode,
             context_snapshot.clone(),
             usage_snapshot.clone(),
+            model_window_snapshot.clone(),
             initial_goal,
             initial_goal_completed,
             self.session_manager.clone(),
@@ -434,6 +474,8 @@ impl RunManager {
         let writer_cancel = cancel_token.clone();
         let writer_state = shared_state.clone();
         let writer_snapshot = context_snapshot.clone();
+        let writer_model_window = model_window_snapshot.clone();
+        let writer_model_id = checkpoint_model_id.clone();
         let writer_sm = self.session_manager.clone();
         let writer_session_id = session_id.clone();
         let writer_prompt_id = prompt_id.clone();
@@ -483,20 +525,37 @@ impl RunManager {
                         let sid = sid.clone();
                         let pid = pid.clone();
                         let messages = writer_snapshot.read().clone();
+                        let model_window = writer_model_window.read().clone();
+                        let model_id = writer_model_id.clone();
                         let status = status.to_string();
                         let _ = tokio::task::spawn_blocking(move || {
                             if !messages.is_empty() {
-                                if let Err(e) =
+                                let transcript_saved = if let Err(e) =
                                     sm.save_canonical_transcript_for_prompt(&sid, &messages, &pid)
                                 {
                                     tracing::warn!(
                                         error = %e,
                                         "failed to persist canonical transcript"
                                     );
+                                    false
+                                } else {
+                                    true
+                                };
+                                if transcript_saved
+                                    && let Err(e) = sm.save_model_window_checkpoint(
+                                        &sid,
+                                        &model_id,
+                                        &messages,
+                                        &model_window,
+                                    )
+                                {
+                                    tracing::warn!(
+                                        error = %e,
+                                        "failed to persist model-window checkpoint"
+                                    );
                                 }
                             }
-                            if let Err(e) =
-                                sm.finish_prompt(&pid, &status, &serde_json::json!({}))
+                            if let Err(e) = sm.finish_prompt(&pid, &status, &serde_json::json!({}))
                             {
                                 tracing::warn!(error = %e, "failed to finish prompt");
                             }
@@ -533,14 +592,18 @@ impl RunManager {
         // Continuous Learning: Diff Observer
         // Before starting a new run, we check if the user modified files that the previous run touched.
         if let Ok(runs) = crate::runtime::event_log::EventLog::list_runs(
-            crate::paths::get_runs_dir().to_string_lossy().as_ref()
+            crate::paths::get_runs_dir().to_string_lossy().as_ref(),
         ) {
             // Because the current run's log hasn't been written yet (the log task hasn't processed RunCreated),
             // the last run in the directory is truly the "previous" run.
             if let Some(prev_run_id) = runs.last() {
-                let diffs = crate::reflector::diff_observer::DiffObserver::check_for_diffs(prev_run_id);
+                let diffs =
+                    crate::reflector::diff_observer::DiffObserver::check_for_diffs(prev_run_id);
                 if !diffs.is_empty() {
-                    tracing::info!(diff_count = diffs.len(), "Diff Observer found manual edits to previous run's files");
+                    tracing::info!(
+                        diff_count = diffs.len(),
+                        "Diff Observer found manual edits to previous run's files"
+                    );
                     if let Ok(client) = self.brain.build_client() {
                         crate::memory::diff_preference::DiffPreferenceEngine::spawn_analysis(
                             client,
@@ -553,7 +616,6 @@ impl RunManager {
                 }
             }
         }
-
 
         // Spawn the Run's task
         let user_input_owned = user_input.to_string();
@@ -597,7 +659,10 @@ impl RunManager {
                     .join(format!("{reflect_run_id}.jsonl"));
                 match Reflector::load_event_log(&log_path).await {
                     Ok(events) => {
-                        crate::reflector::diff_observer::DiffObserver::take_snapshot(&reflect_run_id, &events);
+                        crate::reflector::diff_observer::DiffObserver::take_snapshot(
+                            &reflect_run_id,
+                            &events,
+                        );
                         let suggestions = reflector.analyze(&events);
                         for sug in &suggestions {
                             match reflector.apply(sug).await {
@@ -651,14 +716,12 @@ impl RunManager {
             cancel_token,
             context_snapshot,
             usage_snapshot,
+            model_window_snapshot,
         };
 
         self.runs.lock().await.insert(run_id.clone(), handle);
 
-        Ok(CreateRunResult {
-            run_id,
-            prompt_id,
-        })
+        Ok(CreateRunResult { run_id, prompt_id })
     }
 
     /// Send a command to a specific Run.
@@ -878,28 +941,244 @@ mod tests {
     use crate::config::Config;
 
     fn test_config() -> Config {
-        let toml = r#"
+        test_config_with_base_url("http://127.0.0.1:1")
+    }
+
+    fn test_config_with_base_url(base_url: &str) -> Config {
+        let toml = format!(
+            r#"
 default_model = "test/default"
 
 [providers.test]
 name = "test"
-base_url = "http://127.0.0.1:1"
+base_url = "{base_url}"
 api_key = "sk-test"
+max_context_tokens = 100000
 
 [providers.test.models]
-default = { model_id = "mock" }
-"#;
-        let mut config: Config = toml::from_str(toml).unwrap();
+default = {{ model_id = "mock", max_context_tokens = 100000 }}
+"#
+        );
+        let mut config: Config = toml::from_str(&toml).unwrap();
         config.rebuild_models();
         config
+    }
+
+    /// Build a transcript above the 80% compaction threshold (~80k tokens @ 100k max).
+    fn oversized_transcript_for_compaction() -> Vec<Message> {
+        let payload = "w ".repeat(5_000);
+        let mut full = Vec::with_capacity(20);
+        for i in 0..8 {
+            full.push(Message::user(&format!("task-{i} {payload}")));
+            full.push(Message::assistant(&format!("answer-{i} {payload}")));
+        }
+        full
     }
 
     #[tokio::test]
     async fn create_run_returns_id() {
         let brain = Brain::from_config(test_config()).unwrap();
         let manager = RunManager::new(brain);
-        let run_id = manager.create_run("hello", None, vec![]).await.unwrap().run_id;
+        let run_id = manager
+            .create_run("hello", None, vec![])
+            .await
+            .unwrap()
+            .run_id;
         assert!(!run_id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn create_run_restores_compacted_model_window_instead_of_full_transcript() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = crate::memory::storage::Storage::new(
+            dir.path().join("memory.db").to_string_lossy().as_ref(),
+        )
+        .unwrap();
+        let session_manager = Arc::new(SessionManager::new(storage));
+        let full = vec![
+            Message::user("old user"),
+            Message::assistant("old assistant"),
+            Message::user("recent user"),
+            Message::assistant("recent assistant"),
+        ];
+        let session_id = session_manager.save(None, &full, "/tmp", "mock").unwrap();
+        session_manager
+            .save_model_window_checkpoint(&session_id, "mock", &full, &full[2..])
+            .unwrap();
+
+        let brain = Brain::from_config(test_config()).unwrap();
+        let manager = RunManager::new(brain).with_session_manager(session_manager);
+        let run_id = manager
+            .create_run("next", Some(session_id), full)
+            .await
+            .unwrap()
+            .run_id;
+        let runs = manager.runs.lock().await;
+        let window = runs.get(&run_id).unwrap().model_window_snapshot();
+
+        assert_eq!(window.len(), 2);
+        assert_eq!(
+            window[0].content.as_deref(),
+            Some("recent user"),
+            "the next Run must not re-expand the canonical transcript"
+        );
+    }
+
+    #[tokio::test]
+    async fn compaction_checkpoint_is_durable_before_terminal_and_prevents_next_run_reexpansion() {
+        use crate::eval::mock_llm::{start_mock_server, MockScript, MockStep};
+
+        let summary_json = r#"{"goal":"test","decisions":[],"files":{},"errors_open":[],"facts":[],"notes":[]}"#;
+        let mock = start_mock_server(MockScript {
+            steps: vec![
+                MockStep::Text {
+                    text: summary_json.into(),
+                    cache_hit: 0,
+                    cache_miss: 0,
+                },
+                MockStep::Text {
+                    text: "done".into(),
+                    cache_hit: 0,
+                    cache_miss: 0,
+                },
+            ],
+        })
+        .await
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let storage = crate::memory::storage::Storage::new(
+            dir.path().join("memory.db").to_string_lossy().as_ref(),
+        )
+        .unwrap();
+        let session_manager = Arc::new(SessionManager::new(storage));
+        let full = oversized_transcript_for_compaction();
+        let full_message_count = full.len();
+        let session_id = session_manager.save(None, &full, "/tmp", "mock").unwrap();
+        let brain = Brain::from_config(test_config_with_base_url(&mock.base_url)).unwrap();
+        let manager = RunManager::new(brain).with_session_manager(session_manager.clone());
+        assert_eq!(manager.current_max_context_tokens(), 100_000);
+        assert!(
+            manager.estimate_usage_from_messages(&full).used_tokens >= 80_000,
+            "fixture must begin above the active model's 80% threshold"
+        );
+        let first_run = manager
+            .create_run("compact now", Some(session_id.clone()), full.clone())
+            .await
+            .unwrap()
+            .run_id;
+        assert!(
+            manager
+                .context_usage_for_run(&first_run)
+                .await
+                .unwrap()
+                .used_tokens
+                >= 80_000,
+            "the actual Run must begin above its 80% threshold"
+        );
+        let mut checkpoint_full = full.clone();
+        checkpoint_full.push(Message::user_with_model("compact now", "mock"));
+        manager
+            .command(&first_run, RunCommand::Start)
+            .await
+            .unwrap();
+
+        let checkpoint_result = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+            loop {
+                if let Some((source_len, window_len)) = session_manager
+                    .model_window_checkpoint_shape(&session_id)
+                    .unwrap()
+                    && source_len == checkpoint_full.len()
+                    && window_len < checkpoint_full.len()
+                {
+                    break session_manager
+                        .load_model_window_checkpoint(&session_id, &checkpoint_full, "mock")
+                        .unwrap()
+                        .unwrap();
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        })
+        .await;
+        let checkpoint = match checkpoint_result {
+            Ok(checkpoint) => checkpoint,
+            Err(error) => {
+                let shape = session_manager
+                    .model_window_checkpoint_shape(&session_id)
+                    .unwrap();
+                let runs = manager.runs.lock().await;
+                let handle = runs.get(&first_run).unwrap();
+                panic!(
+                    "compaction must be durable before the model request completes: {error}; \
+                     state={:?}, checkpoint={shape:?}, window_len={}, used_tokens={}",
+                    handle.state(),
+                    handle.model_window_snapshot().len(),
+                    handle.usage_snapshot().used_tokens,
+                );
+            }
+        };
+        assert!(checkpoint.len() < full.len());
+        let resumed = session_manager.resume(&session_id).unwrap().unwrap();
+        let resumed_full = resumed.messages;
+        assert_eq!(
+            resumed_full.len(),
+            checkpoint_full.len(),
+            "the canonical source referenced by the checkpoint must already be durable"
+        );
+        assert_eq!(
+            resumed.prompts.last().map(|prompt| prompt.status.as_str()),
+            Some("running"),
+            "a live compaction checkpoint must not finish the prompt"
+        );
+        assert!(
+            session_manager
+                .get_meta(&session_id)
+                .unwrap()
+                .unwrap()
+                .end_time
+                .is_none(),
+            "a live compaction checkpoint must not end the session"
+        );
+
+        let second_run = manager
+            .create_run("next", Some(session_id), resumed_full)
+            .await
+            .unwrap()
+            .run_id;
+        let mut second_events = manager.subscribe(&second_run).await.unwrap();
+        {
+            let runs = manager.runs.lock().await;
+            let second = runs.get(&second_run).unwrap();
+            assert!(second.model_window_snapshot().len() < full_message_count);
+            assert!(
+                second.usage_snapshot().used_tokens < 80_000,
+                "the next Run should wait for the active model's 80% threshold"
+            );
+        }
+        manager
+            .command(&second_run, RunCommand::Start)
+            .await
+            .unwrap();
+        let compacted_again = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match second_events.recv().await.unwrap().event {
+                    RunEvent::ContextCompacted { .. } => break true,
+                    RunEvent::RunCompleted { .. }
+                    | RunEvent::RunCancelled { .. }
+                    | RunEvent::RunFailed { .. } => break false,
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .unwrap_or(false);
+        assert!(
+            !compacted_again,
+            "a restored window below the active model's 80% threshold must not compact again"
+        );
+        let _ = manager.cancel_run(&first_run).await;
+        let _ = manager.cancel_run(&second_run).await;
+        mock.shutdown().await;
     }
 
     #[tokio::test]
@@ -915,7 +1194,11 @@ default = { model_id = "mock" }
     async fn cancel_run_sends_command() {
         let brain = Brain::from_config(test_config()).unwrap();
         let manager = RunManager::new(brain);
-        let run_id = manager.create_run("hello", None, vec![]).await.unwrap().run_id;
+        let run_id = manager
+            .create_run("hello", None, vec![])
+            .await
+            .unwrap()
+            .run_id;
         // Cancel before start should work
         manager.cancel_run(&run_id).await.unwrap();
     }
@@ -946,8 +1229,16 @@ default = { model_id = "mock" }
         let manager = RunManager::new(brain);
 
         // Create two runs — they should coexist
-        let id1 = manager.create_run("task 1", None, vec![]).await.unwrap().run_id;
-        let id2 = manager.create_run("task 2", None, vec![]).await.unwrap().run_id;
+        let id1 = manager
+            .create_run("task 1", None, vec![])
+            .await
+            .unwrap()
+            .run_id;
+        let id2 = manager
+            .create_run("task 2", None, vec![])
+            .await
+            .unwrap()
+            .run_id;
 
         let runs = manager.list_runs().await;
         assert_eq!(runs.len(), 2);

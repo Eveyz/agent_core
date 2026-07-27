@@ -830,10 +830,11 @@ impl ContextEngine {
         let conversation_tokens: usize = self.messages.iter().map(message_token_count).sum();
 
         let mut segments = Vec::new();
-        let push = |segments: &mut Vec<ContextSegmentUsage>, key: &str, label: &str, tokens: usize| {
-            if tokens > 0 {
-                segments.push(ContextSegmentUsage {
-                    key: key.to_string(),
+        let push =
+            |segments: &mut Vec<ContextSegmentUsage>, key: &str, label: &str, tokens: usize| {
+                if tokens > 0 {
+                    segments.push(ContextSegmentUsage {
+                        key: key.to_string(),
                     label: label.to_string(),
                     tokens,
                 });
@@ -1109,6 +1110,59 @@ impl ContextEngine {
         }
 
         removed
+    }
+
+    /// Drop whole old turns at the boundary whose resulting token count is
+    /// closest to `target_tokens`. The target is advisory: cuts happen only at
+    /// real User boundaries and at least `min_keep_recent` messages remain.
+    pub fn chunked_drop_to_target(
+        &mut self,
+        target_tokens: usize,
+        min_keep_recent: usize,
+    ) -> usize {
+        let current = self.current_token_count();
+        if current <= target_tokens || self.messages.len() <= min_keep_recent {
+            return 0;
+        }
+
+        let message_tokens: Vec<usize> = self.messages.iter().map(message_token_count).collect();
+        let conversation_tokens: usize = message_tokens.iter().sum();
+        let non_conversation_tokens = current.saturating_sub(conversation_tokens);
+        let preserve_summary = self
+            .messages
+            .first()
+            .and_then(|message| message.content.as_deref())
+            .is_some_and(|content| {
+                content.starts_with(crate::compressor::ROLLING_SUMMARY_PREFIX)
+                    || content.starts_with("[Compressed turns")
+            });
+        let start = usize::from(preserve_summary);
+        let max_split_idx = self.messages.len().saturating_sub(min_keep_recent);
+        if max_split_idx <= start {
+            return 0;
+        }
+
+        let mut suffix_tokens = vec![0usize; self.messages.len() + 1];
+        for index in (0..self.messages.len()).rev() {
+            suffix_tokens[index] = suffix_tokens[index + 1] + message_tokens[index];
+        }
+        let preserved_tokens = if preserve_summary {
+            message_tokens[0]
+        } else {
+            0
+        };
+
+        let drop_end = ((start + 1)..=max_split_idx)
+            .filter(|&index| self.messages[index].role == crate::types::Role::User)
+            .min_by_key(|&index| {
+                let resulting_tokens =
+                    non_conversation_tokens + preserved_tokens + suffix_tokens[index];
+                resulting_tokens.abs_diff(target_tokens)
+            });
+
+        drop_end
+            .map(|index| self.chunked_drop(self.messages.len() - index))
+            .unwrap_or(0)
     }
 
     pub fn should_auto_compact(&self) -> bool {
@@ -1396,6 +1450,52 @@ mod tests {
     }
 
     #[test]
+    fn chunked_drop_to_target_keeps_the_largest_recent_window_that_fits() {
+        let mut engine = ContextEngine::new("identity", 20_000);
+        for i in 0..20 {
+            engine.add(Message::user(&format!("task {i} {}", "u".repeat(1_000))));
+            engine.add(Message::assistant(&format!(
+                "answer {i} {}",
+                "a".repeat(1_000)
+            )));
+        }
+
+        let before = engine.current_token_count();
+        let removed = engine.chunked_drop_to_target(4_000, 6);
+        let after = engine.current_token_count();
+
+        assert!(removed > 0);
+        assert!(
+            engine.len() > 6,
+            "target selection must not collapse every long session to the fixed six-message floor"
+        );
+        assert!(after < before);
+    }
+
+    #[test]
+    fn chunked_drop_to_target_accepts_the_closest_boundary_above_soft_target() {
+        let mut engine = ContextEngine::new(&"system ".repeat(2_000), 20_000);
+        for i in 0..8 {
+            engine.add(Message::user(&format!("task {i} {}", "u".repeat(500))));
+            engine.add(Message::assistant(&format!(
+                "answer {i} {}",
+                "a".repeat(500)
+            )));
+        }
+
+        let removed = engine.chunked_drop_to_target(1_000, 4);
+
+        assert!(
+            removed > 0,
+            "a soft target must not prevent a valid turn cut"
+        );
+        assert!(
+            engine.current_token_count() > 1_000,
+            "fixed context alone exceeds the advisory target in this fixture"
+        );
+    }
+
+    #[test]
     fn usage_snapshot_counts_thinking_in_content_tags() {
         let mut engine = ContextEngine::new("Bot", 128_000);
         let visible = Message::assistant("short answer");
@@ -1455,9 +1555,7 @@ mod tests {
 
         engine = ContextEngine::new("Bot", 128_000);
         engine.add(Message::user("q"));
-        engine.add(
-            Message::assistant(&content).with_reasoning(ReasoningState::from_text(think)),
-        );
+        engine.add(Message::assistant(&content).with_reasoning(ReasoningState::from_text(think)));
         let tags_and_field = engine.usage_snapshot().conversation_tokens;
 
         assert_eq!(

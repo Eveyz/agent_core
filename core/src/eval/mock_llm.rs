@@ -280,8 +280,9 @@ mod tests {
             }],
         };
         let server = start_mock_server(script).await.unwrap();
+        let client = Client::builder().no_proxy().build().unwrap();
         let url = format!("{}/chat/completions", server.base_url);
-        let resp = Client::new()
+        let resp = client
             .post(&url)
             .bearer_auth("sk-test")
             .json(&serde_json::json!({
@@ -292,8 +293,12 @@ mod tests {
             .send()
             .await
             .unwrap();
-        assert!(resp.status().is_success());
+        let status = resp.status();
         let body = resp.text().await.unwrap();
+        assert!(
+            status.is_success(),
+            "mock server returned {status}: {body}"
+        );
         assert!(body.contains("hello"));
         assert!(body.contains("[DONE]"));
         server.shutdown().await;

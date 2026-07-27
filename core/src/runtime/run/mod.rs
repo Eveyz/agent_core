@@ -192,10 +192,18 @@ pub struct Run {
     /// Written after each assistant message to prevent data loss on disconnect.
     session_snapshot_path: Option<std::path::PathBuf>,
 
+    /// Session persistence used to durably checkpoint the compacted model
+    /// window at the moment compaction succeeds.
+    session_manager: Option<Arc<crate::session::SessionManager>>,
+
     /// Monotonic generation for background snapshot writes. A newer save
     /// bumps this so an in-flight older write can skip its disk I/O and
     /// avoid clobbering a fresher snapshot.
     session_snapshot_gen: Arc<AtomicU64>,
+    /// Serializes snapshot-file rename with live canonical/checkpoint commits.
+    /// Generation invalidation alone cannot stop a writer that has already
+    /// passed its final check.
+    session_snapshot_lock: Arc<std::sync::Mutex<()>>,
 
     /// Shared, read-only **full** transcript snapshot for persistence and
     /// side-channel `/btw` queries. Always the uncompressed conversation —
@@ -206,6 +214,10 @@ pub struct Run {
     /// Shared context usage breakdown for the Context Usage popover.
     /// Tracks the live **model window** (`context`), which may be compacted.
     usage_snapshot: Arc<RwLock<ContextUsageSnapshot>>,
+
+    /// Shared compactable model window persisted independently from the full
+    /// transcript so a later Run does not re-expand a compacted session.
+    model_window_snapshot: Arc<RwLock<Vec<Message>>>,
 
     /// Immutable (w.r.t. compaction) full conversation transcript.
     /// Every real user/assistant/tool/(injected system) message is appended
@@ -231,9 +243,11 @@ impl Run {
         seq: Arc<AtomicU64>,
         working_dir: Option<String>,
         history: Vec<crate::types::Message>,
+        model_history: Vec<crate::types::Message>,
         mode: AgentMode,
         context_snapshot: Arc<RwLock<Vec<Message>>>,
         usage_snapshot: Arc<RwLock<ContextUsageSnapshot>>,
+        model_window_snapshot: Arc<RwLock<Vec<Message>>>,
         initial_goal: Option<String>,
         initial_goal_completed: bool,
         session_manager: Option<Arc<crate::session::SessionManager>>,
@@ -257,15 +271,11 @@ impl Run {
 
         // Skill discovery follows a stable workspace-scoped manager rather
         // than mutating the desktop process' global path precedence.
-        let skill_manager = brain.skill_manager_for_workspace(
-            working_dir.as_deref().map(std::path::Path::new),
-        )?;
+        let skill_manager =
+            brain.skill_manager_for_workspace(working_dir.as_deref().map(std::path::Path::new))?;
 
-        let mut registry = brain.build_tool_registry_for(
-            mode,
-            session_id.as_deref(),
-            prompt_id.as_deref(),
-        );
+        let mut registry =
+            brain.build_tool_registry_for(mode, session_id.as_deref(), prompt_id.as_deref());
         if let Some(ref manager) = skill_manager {
             registry.remove_all(&[
                 "skill_search",
@@ -303,7 +313,7 @@ impl Run {
                 &mut registry,
                 model_config.clone(),
                 available_tools,
-                session_manager,
+                session_manager.clone(),
                 brain.permission_config().clone(),
                 Some(supervisor.clone()),
                 Some(cancel_token.clone()),
@@ -313,9 +323,8 @@ impl Run {
                 Some(brain.todo_lists.clone()),
             );
         }
-        let required_tool = scoped_tool_factory.and_then(|factory| {
-            factory(&mut registry, cancel_token.clone(), id.clone())
-        });
+        let required_tool = scoped_tool_factory
+            .and_then(|factory| factory(&mut registry, cancel_token.clone(), id.clone()));
         if let Some(ref name) = required_tool {
             anyhow::ensure!(
                 registry.has(name),
@@ -358,9 +367,9 @@ impl Run {
         let recovery_ctx = RecoveryContext::new(&model_config.model_id, max_context_tokens);
         let hooks = brain.build_hooks();
 
-        // Seed both tracks from session history (full archive + model window).
-        let full_transcript = history.clone();
-        for msg in history {
+        // Seed the canonical archive and compactable model window independently.
+        let full_transcript = history;
+        for msg in model_history {
             context.add(msg);
         }
 
@@ -368,8 +377,9 @@ impl Run {
         let last_prefix_fingerprint = context.stable_prefix_fingerprint();
 
         // Per-session context snapshot for mid-turn persistence.
-        let session_snapshot_path =
-            session_id.as_ref().map(|sid| crate::paths::session_messages_snapshot_path(sid));
+        let session_snapshot_path = session_id
+            .as_ref()
+            .map(|sid| crate::paths::session_messages_snapshot_path(sid));
 
         crate::runtime::approval::register_run_resolver(&id, approval_resolver.clone());
 
@@ -377,6 +387,7 @@ impl Run {
         // Persistence snapshot = full transcript; usage = live model window.
         *context_snapshot.write() = full_transcript.clone();
         *usage_snapshot.write() = context.usage_snapshot();
+        *model_window_snapshot.write() = context.raw_messages().to_vec();
 
         Ok(Self {
             id,
@@ -415,9 +426,12 @@ impl Run {
             tool_catalog_cache: None,
             registered_script_tools: Vec::new(),
             session_snapshot_path,
+            session_manager,
             session_snapshot_gen: Arc::new(AtomicU64::new(0)),
+            session_snapshot_lock: Arc::new(std::sync::Mutex::new(())),
             context_snapshot,
             usage_snapshot,
+            model_window_snapshot,
             full_transcript,
             pending_user_images: Vec::new(),
             goal: initial_goal,
@@ -474,6 +488,7 @@ impl Run {
     pub(crate) fn refresh_context_snapshot(&self) {
         *self.context_snapshot.write() = self.full_transcript.clone();
         *self.usage_snapshot.write() = self.context.usage_snapshot();
+        *self.model_window_snapshot.write() = self.context.raw_messages().to_vec();
     }
 
     /// Todo / plan store for this Run's session.
@@ -492,10 +507,7 @@ impl Run {
 
     /// Emit TodoUpdated from the current plans snapshot.
     pub(crate) fn emit_plans_updated(&mut self) {
-        let snap = self
-            .brain
-            .todo_lists
-            .snapshot(self.session_id.as_deref());
+        let snap = self.brain.todo_lists.snapshot(self.session_id.as_deref());
         let items: Vec<crate::runtime::event::TodoItemPayload> = snap
             .items
             .iter()

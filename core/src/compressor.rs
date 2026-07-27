@@ -377,7 +377,7 @@ impl Default for Compressor {
         Self {
             tool_result_budget: crate::hygiene::policy::INCIDENTAL_MAX_CHARS,
             auto_compact_threshold: 0.8,
-            target_ratio: 0.6,
+            target_ratio: 0.2,
             gradient_keep_recent: 6,
             gradient_snip_range: 6,
             max_tool_catalog_tokens: 2000,

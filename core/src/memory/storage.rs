@@ -368,6 +368,15 @@ impl Storage {
                 UNIQUE(session_id, msg_index)
             );
 
+            CREATE TABLE IF NOT EXISTS session_model_windows (
+                session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+                source_message_count INTEGER NOT NULL,
+                source_prefix_sha256 TEXT NOT NULL,
+                model_id TEXT NOT NULL DEFAULT '',
+                messages_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_session_msgs ON session_messages(session_id);
 
             CREATE TABLE IF NOT EXISTS session_plans (
