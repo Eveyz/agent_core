@@ -70,7 +70,11 @@ function ProgressNarration({
   if (isStreaming || !isLong || expanded) {
     return (
       <div>
-        <MarkdownContent content={text} className="assistant-msg" />
+        <MarkdownContent
+          content={text}
+          className="assistant-msg"
+          isStreaming={isStreaming}
+        />
         {isLong && !isStreaming && (
           <button
             type="button"
@@ -398,6 +402,7 @@ export const AgentTurnUI = memo(function AgentTurnUI({
                   <MarkdownContent
                     content={item.data.text}
                     className="assistant-msg"
+                    isStreaming={!!item.data.isStreaming}
                   />
                 ) : (
                   <ProgressNarration

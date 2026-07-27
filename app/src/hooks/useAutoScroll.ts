@@ -9,7 +9,7 @@ import {
 interface UseAutoScrollOptions {
   /** When these change, pin to bottom if stick-to-bottom is enabled (new message, session switch). */
   deps: unknown[];
-  /** While true, rAF loop keeps the view pinned during streaming. */
+  /** Used to distinguish content growth from intentional user scrolling. */
   isProcessing: boolean;
 }
 
@@ -52,6 +52,8 @@ export function useAutoScroll<
   /** Suppress scroll-listener side effects while we pin programmatically. */
   const programmaticScroll = useRef(false);
   const clearProgrammaticRaf = useRef<number | null>(null);
+  /** Coalesce ResizeObserver bursts into one pin before the next paint. */
+  const resizePinRaf = useRef<number | null>(null);
 
   const markProgrammatic = useCallback(() => {
     programmaticScroll.current = true;
@@ -137,38 +139,39 @@ export function useAutoScroll<
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, isProcessing]);
 
-  // Streaming: pin every frame while the user hasn't scrolled away.
-  useEffect(() => {
-    if (!isProcessing) return;
-
-    let id = 0;
-    const tick = () => {
-      applyPin();
-      id = requestAnimationFrame(tick);
-    };
-
-    id = requestAnimationFrame(tick);
-    return () => {
-      cancelAnimationFrame(id);
-      if (clearProgrammaticRaf.current != null) {
-        cancelAnimationFrame(clearProgrammaticRaf.current);
-        clearProgrammaticRaf.current = null;
-      }
-    };
-  }, [isProcessing, applyPin]);
-
   // Content height can shrink after markdown/code remounts (often right as
-  // streaming ends) without a scroll event — ResizeObserver catches that and
-  // corrects overshoot so the viewport doesn't go blank.
+  // streaming ends) without a scroll event. ResizeObserver catches real layout
+  // changes and coalesces them into one pre-paint pin instead of polling every
+  // animation frame for the full duration of a run.
   useEffect(() => {
     const content = contentRef.current;
     if (!content || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(() => applyPin());
+    const schedulePin = () => {
+      if (resizePinRaf.current != null) return;
+      resizePinRaf.current = requestAnimationFrame(() => {
+        resizePinRaf.current = null;
+        applyPin();
+      });
+    };
+    const ro = new ResizeObserver(schedulePin);
     ro.observe(content);
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      if (resizePinRaf.current != null) {
+        cancelAnimationFrame(resizePinRaf.current);
+        resizePinRaf.current = null;
+      }
+    };
     // Re-attach when the chat pane remounts (EmptyState → ChatArea / session switch).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [applyPin, ...deps]);
+
+  useEffect(() => () => {
+    if (clearProgrammaticRaf.current != null) {
+      cancelAnimationFrame(clearProgrammaticRaf.current);
+      clearProgrammaticRaf.current = null;
+    }
+  }, []);
 
   // User intent + near-bottom tracking.
   // Re-bind when processing/deps change so the listener attaches after EmptyState → ChatArea.
