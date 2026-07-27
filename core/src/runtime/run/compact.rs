@@ -25,6 +25,15 @@ fn compact_decision(
     Some(keep)
 }
 
+fn compaction_stage_strategy(chunked: bool, trimmed: bool) -> Option<&'static str> {
+    match (chunked, trimmed) {
+        (true, true) => Some("chunked_drop+trim_to_fit"),
+        (true, false) => Some("chunked_drop"),
+        (false, true) => Some("trim_to_fit"),
+        (false, false) => None,
+    }
+}
+
 impl Run {
     /// Compact strategy (Stage: Compact).
     ///
@@ -61,7 +70,8 @@ impl Run {
         }
 
         // Tier 1: Chunked drop — zero-cost, cache-friendly bulk removal.
-        if self.context.chunked_drop(keep) > 0 {
+        let chunked = self.context.chunked_drop(keep) > 0;
+        if chunked {
             // Dropped turns are gone; strip thinking from what remains so old
             // CoT does not linger across the compaction boundary.
             self.context.strip_thinking_after_compact();
@@ -71,42 +81,49 @@ impl Run {
                 self.context
                     .upsert_ledger_into_rolling_summary(&self.file_ledger);
             }
-            let tokens_after = self.context.current_token_count();
-            tracing::info!(
-                compact = "chunked_drop",
-                tokens_before = current,
-                tokens_after,
-                "Chunked drop compact applied"
-            );
-            self.emit_context_compacted(
-                "chunked_drop",
-                current,
-                tokens_after,
-            );
             // Check if this brought us below the threshold.
             let threshold = (max_tokens as f64 * 0.80) as usize;
             if self.context.current_token_count() < threshold {
+                let tokens_after = self.context.current_token_count();
+                tracing::info!(
+                    compact = "chunked_drop",
+                    tokens_before = current,
+                    tokens_after,
+                    "Chunked drop compact applied"
+                );
+                self.emit_context_compacted("chunked_drop", current, tokens_after);
                 debug_assert_eq!(
                     self.full_transcript.len(),
                     full_len_before,
                     "compaction must not mutate full_transcript"
                 );
-                self.refresh_usage_snapshot_only();
                 return;
             }
         }
 
         // Also run trim_to_fit for snip/dedup/chunk compression.
+        let tokens_before_trim = self.context.current_token_count();
         let _result = self.context.trim_to_fit();
+        let tokens_after_trim = self.context.current_token_count();
+        let trimmed = tokens_after_trim < tokens_before_trim;
+
+        if let Some(strategy) = compaction_stage_strategy(chunked, trimmed) {
+            tracing::info!(
+                compact = strategy,
+                tokens_before = current,
+                tokens_after = tokens_after_trim,
+                "Deterministic context compact applied"
+            );
+            self.emit_context_compacted(strategy, current, tokens_after_trim);
+        }
 
         let threshold = (max_tokens as f64 * 0.80) as usize;
-        if self.context.current_token_count() < threshold {
+        if tokens_after_trim < threshold {
             debug_assert_eq!(
                 self.full_transcript.len(),
                 full_len_before,
                 "compaction must not mutate full_transcript"
             );
-            self.refresh_usage_snapshot_only();
             return;
         }
 
@@ -156,7 +173,6 @@ impl Run {
             full_len_before,
             "compaction must not mutate full_transcript"
         );
-        self.refresh_usage_snapshot_only();
     }
 
     /// Force an LLM compaction of the oldest turns regardless of current token
@@ -207,7 +223,6 @@ impl Run {
             self.context.current_token_count(),
         );
         debug_assert_eq!(self.full_transcript.len(), full_len_before);
-        self.refresh_usage_snapshot_only();
     }
 
     fn fallback_micro_compact(
@@ -231,10 +246,16 @@ impl Run {
     }
 
     fn emit_context_compacted(&mut self, strategy: &str, tokens_before: usize, tokens_after: usize) {
+        // Publish the new snapshot before the event. The frontend refreshes
+        // usage as soon as it receives ContextCompacted.
+        self.refresh_usage_snapshot_only();
         self.emit(crate::runtime::event::RunEvent::ContextCompacted {
             summary: format!(
                 "{strategy}: {tokens_before} → {tokens_after} tokens (model window only; full transcript unchanged)"
             ),
+            strategy: Some(strategy.to_string()),
+            tokens_before: Some(tokens_before),
+            tokens_after: Some(tokens_after),
         });
     }
 
@@ -302,6 +323,22 @@ mod tests {
         // 5 turns → keep = max(5/2, 4) = max(2, 4) = 4
         let keep = compact_decision(10_000, 9_000, 5, 6).unwrap();
         assert_eq!(keep, 4);
+    }
+
+    #[test]
+    fn compaction_stage_reports_trim_only_with_final_count() {
+        assert_eq!(
+            compaction_stage_strategy(false, true),
+            Some("trim_to_fit")
+        );
+    }
+
+    #[test]
+    fn compaction_stage_reports_chunked_then_trim_as_one_final_stage() {
+        assert_eq!(
+            compaction_stage_strategy(true, true),
+            Some("chunked_drop+trim_to_fit")
+        );
     }
 
     /// Dual-track invariant: chunked_drop + apply_summary shrink the model

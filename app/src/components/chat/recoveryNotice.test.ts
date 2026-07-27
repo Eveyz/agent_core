@@ -60,6 +60,17 @@ describe('translateRecoveryMessage i18n', () => {
     );
   });
 
+  it('translates completed proactive compaction with token counts', () => {
+    const summary = 'chunked_drop: 299142 → 30429 tokens (model window only)';
+    const details = { tokens_before: 299142, tokens_after: 30429 };
+    expect(translateRecoveryMessage(summary, tFor('en'), 'context_compacted', details)).toBe(
+      'Context compacted · 299,142 → 30,429 tokens',
+    );
+    expect(translateRecoveryMessage(summary, tFor('zh'), 'context_compacted', details)).toBe(
+      '上下文已压缩 · 299,142 → 30,429 个 Token',
+    );
+  });
+
   it('keeps en/zh recovery key sets aligned', () => {
     const enKeys = Object.keys(en.chat.recovery).sort();
     const zhKeys = Object.keys(zh.chat.recovery).sort();

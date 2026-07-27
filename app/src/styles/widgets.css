@@ -999,6 +999,12 @@
     recovery-notice-pulse 2.2s ease-in-out infinite;
 }
 
+.recovery-notice--info {
+  color: var(--accent);
+  background: var(--accent-subtle);
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
 .recovery-notice-icon {
   flex-shrink: 0;
   margin-top: 2px;

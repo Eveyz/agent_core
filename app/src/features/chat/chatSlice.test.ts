@@ -696,6 +696,42 @@ describe('runtime notice and error events', () => {
     expect(turn?.blocks?.some((b) => b.type === 'notice')).toBe(false);
   });
 
+  it('surfaces context compaction and requests an immediate usage refresh', async () => {
+    const { reducer, userMessageSent, runIdSet, agentEventsBatch } = await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, userMessageSent({ text: 'hello', model: 'm1', sessionId: 's1' }));
+    state = reducer(state, runIdSet({ runId: 'run-1', sessionId: 's1' }));
+
+    state = reducer(
+      state,
+      agentEventsBatch([
+        { event: 'turn_started', run_id: 'run-1', turn_id: 'turn-1', index: 0 },
+        {
+          event: 'context_compacted',
+          run_id: 'run-1',
+          turn_id: 'turn-1',
+          summary: 'chunked_drop: 299142 → 30429 tokens (model window only)',
+          strategy: 'chunked_drop',
+          tokens_before: 299142,
+          tokens_after: 30429,
+        },
+      ]),
+    );
+
+    const turn = state.entries.s1.find((entry) => entry.type === 'turn');
+    expect(turn?.blocks?.find((block) => block.type === 'notice')).toMatchObject({
+      type: 'notice',
+      code: 'context_compacted',
+      text: 'chunked_drop: 299142 → 30429 tokens (model window only)',
+      recoverable: false,
+      strategy: 'chunked_drop',
+      tokens_before: 299142,
+      tokens_after: 30429,
+    });
+    expect(state.contextUsageRevision.s1).toBe(1);
+    expect(state.lastRunId.s1).toBe('run-1');
+  });
+
   it('clears recoverable retry notice when the user aborts', async () => {
     const { reducer, userMessageSent, runIdSet, agentEventsBatch, agentAborted } =
       await loadModules();

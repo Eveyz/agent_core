@@ -83,6 +83,8 @@
     "recovery": {
       "compacting": "上下文过长；重试前将压缩至 {{percentage}}%",
       "compactingGeneric": "上下文过长；重试前正在压缩…",
+      "compacted": "上下文已压缩 · {{before}} → {{after}} 个 Token",
+      "compactedGeneric": "上下文已压缩",
       "escalating": "正在将 max_tokens 提升至 {{maxTokens}}",
       "escalatingGeneric": "正在提升 max_tokens…",
       "retryingDelay": "将在 {{delay}} 毫秒后重试模型调用",

@@ -151,6 +151,12 @@ pub enum RunEvent {
     // ── Context ────────────────────────────────────────────────────
     ContextCompacted {
         summary: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strategy: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tokens_before: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tokens_after: Option<usize>,
     },
     Error {
         message: String,
@@ -755,5 +761,29 @@ mod tests {
         assert_eq!(json["subagent_id"], "sa-1");
         assert_eq!(json["delta"]["Text"], "hi");
         assert_eq!(json["turn_id"], "turn-1");
+    }
+
+    #[test]
+    fn legacy_context_compacted_envelope_deserializes_without_structured_fields() {
+        let json = r#"{
+            "seq": 4,
+            "event_id": "event-4",
+            "run_id": "run-1",
+            "session_id": "session-1",
+            "ts": "2026-07-27T05:27:38Z",
+            "event": "context_compacted",
+            "summary": "chunked_drop: 100 → 20 tokens"
+        }"#;
+
+        let envelope: Envelope = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            envelope.event,
+            RunEvent::ContextCompacted {
+                strategy: None,
+                tokens_before: None,
+                tokens_after: None,
+                ..
+            }
+        ));
     }
 }

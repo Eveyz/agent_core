@@ -957,7 +957,7 @@ impl AppState {
             }
             RunEvent::InputResolved { .. } => {}
 
-            RunEvent::ContextCompacted { summary } => {
+            RunEvent::ContextCompacted { summary, .. } => {
                 self.push_notice(format!("🗜 Context compacted: {summary}"));
             }
             RunEvent::Error { message } => {

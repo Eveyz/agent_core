@@ -10,6 +10,7 @@ import type {
   PlanDetail,
   ClarificationQuestion,
   ClarificationAnswers,
+  NoticeBlock,
 } from './types';
 import {
   closeStreamingBlock,
@@ -558,6 +559,7 @@ export function handleNotice(
   code?: string,
   severity?: string,
   recoverable?: boolean,
+  details?: Pick<NoticeBlock, 'strategy' | 'tokens_before' | 'tokens_after'>,
 ): void {
   const turn = getActiveTurn(state, sessionId);
   if (turn && turn.type === 'turn' && turn.blocks) {
@@ -604,12 +606,12 @@ export function handleNotice(
       for (let i = turn.blocks.length - 1; i >= 0; i--) {
         const block = turn.blocks[i];
         if (block.type === 'notice' && block.code === code) {
-          turn.blocks[i] = { type: 'notice', text: message, code, severity, recoverable };
+          turn.blocks[i] = { type: 'notice', text: message, code, severity, recoverable, ...details };
           return;
         }
       }
     }
-    turn.blocks.push({ type: 'notice', text: message, code, severity, recoverable });
+    turn.blocks.push({ type: 'notice', text: message, code, severity, recoverable, ...details });
   }
 }
 
@@ -812,6 +814,7 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
     if (ev.session_id) {
       (state.runIdToSessionId ??= {})[ev.run_id] = ev.session_id;
       state.runId[ev.session_id] = ev.run_id;
+      (state.lastRunId ??= {})[ev.session_id] = ev.run_id;
     }
   }
 
@@ -835,7 +838,9 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
   (state.steerQueue ??= {})[sessionId] ??= [];
   (state.processing ??= {})[sessionId] ??= false;
   (state.runId ??= {})[sessionId] ??= null;
+  (state.lastRunId ??= {})[sessionId] ??= ev.run_id;
   (state.runState ??= {})[sessionId] ??= null;
+  (state.contextUsageRevision ??= {})[sessionId] ??= 0;
   (state.goal ??= {})[sessionId] ??= null;
   (state.goalCompleted ??= {})[sessionId] ??= false;
   (state.viewingSubagentPath ??= {})[sessionId] ??= [];
@@ -1013,6 +1018,23 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
       resolveClarificationBlock(state, sessionId, ev.prompt_id ?? '', normalized);
       break;
     }
+    case 'context_compacted':
+      handleNotice(
+        state,
+        sessionId,
+        ev.summary ?? '',
+        'context_compacted',
+        'info',
+        false,
+        {
+          strategy: ev.strategy,
+          tokens_before: ev.tokens_before,
+          tokens_after: ev.tokens_after,
+        },
+      );
+      state.contextUsageRevision[sessionId] += 1;
+      state.lastRunId[sessionId] = ev.run_id;
+      break;
     case 'error':
       handleError(state, sessionId, ((ev as unknown as Record<string, unknown>).message as string | undefined) ?? 'unknown error');
       break;

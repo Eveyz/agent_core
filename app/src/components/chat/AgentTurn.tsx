@@ -32,19 +32,33 @@ interface FileChangeItem {
  *  content, collapse it so the timeline stays scannable. */
 const PROGRESS_COLLAPSE_CHARS = 160;
 
-function RecoveryNotice({ text, code }: { text: string; code?: string }) {
+function RecoveryNotice({
+  text,
+  code,
+  tokensBefore,
+  tokensAfter,
+}: {
+  text: string;
+  code?: string;
+  tokensBefore?: number;
+  tokensAfter?: number;
+}) {
   const { t } = useTranslation();
   const isActiveRetry = isActiveRecoveryNotice(text, code);
+  const isCompletedCompaction = code === 'context_compacted';
   const label = translateRecoveryMessage(
     text,
     t as (key: string, opts?: Record<string, unknown>) => string,
     code,
+    { tokens_before: tokensBefore, tokens_after: tokensAfter },
   );
 
   return (
-    <div className={`recovery-notice${isActiveRetry ? ' recovery-notice--active' : ''}`}>
+    <div className={`recovery-notice${isActiveRetry ? ' recovery-notice--active' : ''}${isCompletedCompaction ? ' recovery-notice--info' : ''}`}>
       {isActiveRetry ? (
         <RefreshCwIcon size={14} className="recovery-notice-icon" />
+      ) : isCompletedCompaction ? (
+        <RefreshCwIcon size={15} className="recovery-notice-icon-static" />
       ) : (
         <AlertTriangleIcon size={16} className="recovery-notice-icon-static" />
       )}
@@ -412,7 +426,12 @@ export const AgentTurnUI = memo(function AgentTurnUI({
                 )
               )
             ) : item.type === 'notice' ? (
-              <RecoveryNotice text={item.data.text} code={item.data.code} />
+              <RecoveryNotice
+                text={item.data.text}
+                code={item.data.code}
+                tokensBefore={item.data.tokens_before}
+                tokensAfter={item.data.tokens_after}
+              />
             ) : item.type === 'error' ? (
               (() => {
                 const text = item.data.text;

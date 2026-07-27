@@ -34,7 +34,9 @@ function ensureSession(state: ChatState, sessionId: string) {
   if (state._thinkBuffers[sessionId] === undefined) state._thinkBuffers[sessionId] = {};
   if (state.processing[sessionId] === undefined) state.processing[sessionId] = false;
   if (state.runId[sessionId] === undefined) state.runId[sessionId] = null;
+  if (state.lastRunId[sessionId] === undefined) state.lastRunId[sessionId] = null;
   if (state.runState[sessionId] === undefined) state.runState[sessionId] = null;
+  if (state.contextUsageRevision[sessionId] === undefined) state.contextUsageRevision[sessionId] = 0;
   if (state.todo[sessionId] === undefined) state.todo[sessionId] = [];
   if (state.parkedPlans[sessionId] === undefined) state.parkedPlans[sessionId] = [];
   if (state.plans[sessionId] === undefined) state.plans[sessionId] = [];
@@ -90,7 +92,9 @@ const initialState: ChatState = {
   processing: {},
   subagents: {},
   runId: {},
+  lastRunId: {},
   runState: {},
+  contextUsageRevision: {},
   todo: {},
   parkedPlans: {},
   plans: {},
@@ -491,6 +495,7 @@ export const chatSlice = createSlice({
       ensureSession(state, sid);
 
       state.runId[sid] = runId;
+      state.lastRunId[sid] = runId;
       state.runIdToSessionId[runId] = sid;
       state.runState[sid] = 'running';
 
@@ -653,6 +658,8 @@ export const chatSlice = createSlice({
       state.viewingSubagentPath[sid] = [];
       state.btwEntries[sid] = [];
       state.isResuming[sid] = false;
+      state.lastRunId[sid] = null;
+      state.contextUsageRevision[sid] = 0;
       state._pendingTurnId[sid] = undefined;
     },
     plansHydrated: (
@@ -868,7 +875,9 @@ export const chatSlice = createSlice({
       delete state.processing[sessionId];
       delete state.subagents[sessionId];
       delete state.runId[sessionId];
+      delete state.lastRunId[sessionId];
       delete state.runState[sessionId];
+      delete state.contextUsageRevision[sessionId];
       delete state.todo[sessionId];
       delete state.parkedPlans[sessionId];
       delete state.plans[sessionId];

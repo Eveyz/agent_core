@@ -83,6 +83,8 @@
     "recovery": {
       "compacting": "Context too long; compacting to {{percentage}}% before retry",
       "compactingGeneric": "Context too long; compacting before retry…",
+      "compacted": "Context compacted · {{before}} → {{after}} tokens",
+      "compactedGeneric": "Context compacted",
       "escalating": "Escalating max_tokens to {{maxTokens}}",
       "escalatingGeneric": "Escalating max_tokens…",
       "retryingDelay": "Retrying model call after {{delay}}ms",

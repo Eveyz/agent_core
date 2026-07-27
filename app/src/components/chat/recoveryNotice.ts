@@ -20,7 +20,21 @@ export function translateRecoveryMessage(
   text: string,
   t: (key: string, opts?: Record<string, unknown>) => string,
   code?: string,
+  details?: { tokens_before?: number; tokens_after?: number },
 ): string {
+  if (code === 'context_compacted') {
+    const legacyCounts = text.match(/(\d+)\s*→\s*(\d+)\s*tokens/i);
+    const before = details?.tokens_before ?? (legacyCounts ? Number(legacyCounts[1]) : undefined);
+    const after = details?.tokens_after ?? (legacyCounts ? Number(legacyCounts[2]) : undefined);
+    if (before !== undefined && after !== undefined) {
+      return t('chat.recovery.compacted', {
+        before: before.toLocaleString('en-US'),
+        after: after.toLocaleString('en-US'),
+      });
+    }
+    return t('chat.recovery.compactedGeneric');
+  }
+
   // Connection retries: calm line, with attempt/delay when the backend includes them.
   if (isRemoteConnectionRetry(text, code)) {
     const detail = text.match(REMOTE_RETRY_RE);

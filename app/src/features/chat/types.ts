@@ -78,6 +78,17 @@ export interface ClarificationQuestion {
 
 export type ClarificationAnswers = Record<string, string[]>;
 
+export interface NoticeBlock {
+  type: 'notice';
+  text: string;
+  code?: string;
+  severity?: string;
+  recoverable?: boolean;
+  strategy?: string;
+  tokens_before?: number;
+  tokens_after?: number;
+}
+
 export type TurnBlock =
   | { type: 'assistant'; text: string; isStreaming: boolean; message_id?: string }
   | { type: 'thinking'; text: string; isStreaming: boolean; message_id?: string; startTime?: number; endTime?: number }
@@ -92,7 +103,7 @@ export type TurnBlock =
       answers?: ClarificationAnswers;
     }
   | { type: 'error'; text: string }
-  | { type: 'notice'; text: string; code?: string; severity?: string; recoverable?: boolean }
+  | NoticeBlock
   | { type: 'subagent_ref'; subagent_id: string; parent_call_id?: string };
 
 /** Same shape as TurnBlock, minus nested `subagent_ref` (subagents don't spawn further). */
@@ -110,7 +121,7 @@ export type SubagentBlock =
       answers?: ClarificationAnswers;
     }
   | { type: 'error'; text: string }
-  | { type: 'notice'; text: string; code?: string; severity?: string; recoverable?: boolean };
+  | NoticeBlock;
 
 export interface SubagentEntry {
   id: string;
@@ -185,7 +196,11 @@ export interface ChatState {
   processing: Record<string, boolean>;
   subagents: Record<string, Record<string, SubagentEntry>>;
   runId: Record<string, string | null>;
+  /** Most recent run, retained after completion for exact context-usage queries. */
+  lastRunId: Record<string, string | null>;
   runState: Record<string, RunState | null>;
+  /** Incremented when the model window is compacted so usage UI refreshes immediately. */
+  contextUsageRevision: Record<string, number>;
   todo: Record<string, TodoItem[]>;
   parkedPlans: Record<string, ParkedPlan[]>;
   /** Full plan history (active/parked/finished/cancelled) for Overview. */
@@ -296,6 +311,10 @@ export interface RunEventPayload {
   answers?: ClarificationAnswers;
   question?: string;
   error?: string;
+  summary?: string;
+  strategy?: string;
+  tokens_before?: number;
+  tokens_after?: number;
   code?: string;
   severity?: string;
   recoverable?: boolean;

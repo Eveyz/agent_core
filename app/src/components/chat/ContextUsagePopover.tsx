@@ -66,7 +66,13 @@ export function ContextUsagePopover() {
   );
   const activeRunId = useSelector((state: RootState) => {
     const sid = state.project.activeSessionId;
-    return sid ? state.chat.runId[sid] ?? undefined : undefined;
+    return sid
+      ? state.chat.runId[sid] ?? state.chat.lastRunId[sid] ?? undefined
+      : undefined;
+  });
+  const contextUsageRevision = useSelector((state: RootState) => {
+    const sid = state.project.activeSessionId;
+    return sid ? state.chat.contextUsageRevision[sid] ?? 0 : 0;
   });
   const isProcessing = useSelector((state: RootState) => {
     const sid = state.project.activeSessionId;
@@ -81,6 +87,7 @@ export function ContextUsagePopover() {
   const [snapshot, setSnapshot] = useState<ContextUsageSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const usageRequestIdRef = useRef(0);
 
   const resolvedMax = (() => {
     if (!config || !defaultModel) return 128_000;
@@ -97,24 +104,31 @@ export function ContextUsagePopover() {
   })();
 
   const fetchUsage = useCallback(async () => {
+    const requestId = ++usageRequestIdRef.current;
     setLoading(true);
     try {
       const snap = await invoke<ContextUsageSnapshot>('get_context_usage', {
         sessionId: activeSessionId ?? null,
         runId: activeRunId ?? null,
       });
-      setSnapshot(snap);
+      if (requestId === usageRequestIdRef.current) {
+        setSnapshot(snap);
+      }
     } catch (e) {
       console.warn('get_context_usage failed:', e);
-      setSnapshot(emptySnapshot(resolvedMax));
+      if (requestId === usageRequestIdRef.current) {
+        setSnapshot(emptySnapshot(resolvedMax));
+      }
     } finally {
-      setLoading(false);
+      if (requestId === usageRequestIdRef.current) {
+        setLoading(false);
+      }
     }
   }, [activeSessionId, activeRunId, resolvedMax]);
 
   useEffect(() => {
     void fetchUsage();
-  }, [fetchUsage]);
+  }, [fetchUsage, contextUsageRevision]);
 
   // Track prior processing so we can force a final refresh when a run ends
   // (interval alone can miss the post-completion snapshot by up to ~4s, and
