@@ -12,6 +12,37 @@ export function isRemoteConnectionRetry(text: string, code?: string): boolean {
   return REMOTE_RETRY_RE.test(text) || /Failed to connect to remote model/i.test(text);
 }
 
+/** Pick i18n keys for a compaction strategy (with / without token counts). */
+export function compactStrategyI18nKeys(strategy?: string): {
+  withCounts: string;
+  generic: string;
+} {
+  const normalized = (strategy ?? '').split('+')[0];
+  switch (normalized) {
+    case 'chunked_drop':
+    case 'trim_to_fit':
+      return {
+        withCounts: 'chat.recovery.compactedDrop',
+        generic: 'chat.recovery.compactedDropGeneric',
+      };
+    case 'llm_summary':
+      return {
+        withCounts: 'chat.recovery.compactedSummary',
+        generic: 'chat.recovery.compactedSummaryGeneric',
+      };
+    case 'micro_compact':
+      return {
+        withCounts: 'chat.recovery.compactedMicro',
+        generic: 'chat.recovery.compactedMicroGeneric',
+      };
+    default:
+      return {
+        withCounts: 'chat.recovery.compacted',
+        generic: 'chat.recovery.compactedGeneric',
+      };
+  }
+}
+
 /**
  * Map runtime notice text/code → locale key. Prefer `code` so display does not
  * depend on the backend's English phrasing.
@@ -20,19 +51,20 @@ export function translateRecoveryMessage(
   text: string,
   t: (key: string, opts?: Record<string, unknown>) => string,
   code?: string,
-  details?: { tokens_before?: number; tokens_after?: number },
+  details?: { tokens_before?: number; tokens_after?: number; strategy?: string },
 ): string {
   if (code === 'context_compacted') {
     const legacyCounts = text.match(/(\d+)\s*→\s*(\d+)\s*tokens/i);
     const before = details?.tokens_before ?? (legacyCounts ? Number(legacyCounts[1]) : undefined);
     const after = details?.tokens_after ?? (legacyCounts ? Number(legacyCounts[2]) : undefined);
+    const keys = compactStrategyI18nKeys(details?.strategy);
     if (before !== undefined && after !== undefined) {
-      return t('chat.recovery.compacted', {
+      return t(keys.withCounts, {
         before: before.toLocaleString('en-US'),
         after: after.toLocaleString('en-US'),
       });
     }
-    return t('chat.recovery.compactedGeneric');
+    return t(keys.generic);
   }
 
   // Connection retries: calm line, with attempt/delay when the backend includes them.

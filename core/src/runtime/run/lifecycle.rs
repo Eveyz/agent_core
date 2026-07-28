@@ -394,6 +394,7 @@ impl Run {
 
             // ── Poll commands (non-blocking) ───────────────────────
             self.poll_commands()?;
+            self.inject_next_steer()?;
 
             if self.cancel.is_cancelled() {
                 return Err(RunError::Cancelled);
@@ -406,6 +407,7 @@ impl Run {
                 }
             }
 
+            self.steering.begin_turn();
             let turn_id = uuid::Uuid::new_v4().to_string();
             self.current_turn_id = Some(turn_id.clone());
             self.emit(RunEvent::TurnStarted { index: turn_index });
@@ -504,9 +506,7 @@ impl Run {
                     self.enqueue_steer(steer_id, message);
                 }
                 RunCommand::CancelSteer { steer_id } => {
-                    let before = self.steering_queue.len();
-                    self.steering_queue.retain(|e| e.id != steer_id);
-                    if self.steering_queue.len() < before {
+                    if self.steering.cancel_pending(&steer_id) {
                         self.emit(RunEvent::SteerCancelled {
                             steer_id,
                             reason: "Cancelled by user".to_string(),
@@ -541,7 +541,7 @@ impl Run {
                     self.follow_up_queue.push_back(Message::user(&message));
                 }
                 RunCommand::ClearQueues => {
-                    self.steering_queue.clear();
+                    self.steering.clear();
                     self.follow_up_queue.clear();
                 }
                 _ => {}
@@ -561,16 +561,11 @@ impl Run {
                 .unwrap_or_default()
                 .as_millis() as u64,
         };
-        self.steering_queue.push_back(entry);
-        let depth = self.steering_queue.len();
-        self.emit(RunEvent::SteerQueued {
-            steer_id,
-            message,
-            queue_depth: depth,
-        });
+        let _ = self.steering.enqueue(entry);
     }
 
-    /// Drain pending commands, then inject at most one steer into context.
+    /// Drain pending commands, then inject every steer accepted before the
+    /// next model request.
     ///
     /// Called at turn boundaries so a steer that arrived mid-turn (still sitting
     /// in `cmd_rx`) is available for injection before the next LLM call —
@@ -579,7 +574,14 @@ impl Run {
     /// Returns `true` if a steer was injected.
     pub(super) fn inject_next_steer(&mut self) -> Result<bool, RunError> {
         self.poll_commands()?;
-        if let Some(entry) = self.steering_queue.pop_front() {
+        let entries = self.steering.drain();
+        let total = entries.len();
+        for (index, entry) in entries.into_iter().enumerate() {
+            self.emit(RunEvent::SteerQueued {
+                steer_id: entry.id.clone(),
+                message: entry.raw_text.clone(),
+                queue_depth: total.saturating_sub(index),
+            });
             self.emit(RunEvent::SteerInjected {
                 steer_id: entry.id.clone(),
                 message: entry.raw_text.clone(),
@@ -603,9 +605,8 @@ impl Run {
                 });
             }
             self.append_conversation(entry.message);
-            return Ok(true);
         }
-        Ok(false)
+        Ok(total > 0)
     }
 
     /// Block until Resume or Cancel is received.
@@ -625,9 +626,7 @@ impl Run {
                     self.enqueue_steer(steer_id, message);
                 }
                 Some(RunCommand::CancelSteer { steer_id }) => {
-                    let before = self.steering_queue.len();
-                    self.steering_queue.retain(|e| e.id != steer_id);
-                    if self.steering_queue.len() < before {
+                    if self.steering.cancel_pending(&steer_id) {
                         self.emit(RunEvent::SteerCancelled {
                             steer_id,
                             reason: "Cancelled by user".to_string(),
@@ -661,7 +660,7 @@ impl Run {
                     self.follow_up_queue.push_back(Message::user(&message));
                 }
                 Some(RunCommand::ClearQueues) => {
-                    self.steering_queue.clear();
+                    self.steering.clear();
                     self.follow_up_queue.clear();
                 }
                 _ => {}

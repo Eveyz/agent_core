@@ -12,7 +12,9 @@ use crate::runtime::event::{Envelope, RunEvent};
 use crate::runtime::guard::EventGuard;
 use crate::types::{CacheUsage, Message, MessageDelta, ReasoningState, StreamEvent, ToolCall};
 
-use super::{RecoveryOutcome, Run, RunError, TurnOutcome, CACHE_IDLE_WARN_SECS};
+use super::{
+    CACHE_IDLE_WARN_SECS, ModelTurnFailure, RecoveryOutcome, Run, RunError, TurnOutcome,
+};
 
 /// Gap between consecutive SSE events that warrants a live warn (ms).
 const LATENCY_GAP_WARN_MS: u64 = 2_000;
@@ -33,6 +35,7 @@ pub(super) struct ModelTurnResult {
 pub(super) struct StreamPartial {
     pub text: String,
     pub thinking: String,
+    pub message_id: Option<String>,
 }
 
 impl StreamPartial {
@@ -43,6 +46,9 @@ impl StreamPartial {
         }
         if attempt.thinking.len() > self.thinking.len() {
             self.thinking.clone_from(&attempt.thinking);
+        }
+        if attempt.message_id.is_some() {
+            self.message_id.clone_from(&attempt.message_id);
         }
     }
 }
@@ -77,6 +83,9 @@ impl Run {
 
         // Stage: Refresh
         self.refresh_context_segments();
+        // Segments changed — publish usage/model-window so the ring matches
+        // the context the model is about to see (before maybe_compact).
+        self.refresh_context_snapshot();
 
         // Stage: Verify stable prefix hasn't drifted
         let current_fp = self.context.stable_prefix_fingerprint();
@@ -113,10 +122,39 @@ impl Run {
                 );
                 r
             }
-            Err(e) => {
-                if self.cancel.is_cancelled() {
-                    return Err(RunError::Cancelled);
+            Err(ModelTurnFailure::Cancelled) => return Err(RunError::Cancelled),
+            Err(ModelTurnFailure::Interrupted(partial)) => {
+                let message_id = partial
+                    .message_id
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                let partial_message =
+                    if partial.text.trim().is_empty() && partial.thinking.trim().is_empty() {
+                        None
+                    } else {
+                        let content = crate::hygiene::wrap_thinking(
+                            &partial.thinking,
+                            &format!(
+                                "{}\n\n[Interrupted by user steer]",
+                                partial.text.trim_end()
+                            ),
+                        );
+                        Some(Message::assistant(&content))
+                    };
+                if let Some(message) = partial_message.clone() {
+                    self.append_conversation(message);
+                    self.save_session_snapshot();
                 }
+                self.emit(RunEvent::MessageInterrupted {
+                    message_id,
+                    reason: "user_steer".to_string(),
+                    partial_message,
+                });
+                self.emit(RunEvent::TurnEnded { index: turn_index });
+                self.hook_registry.lock().fire_turn_end(turn_index);
+                self.inject_next_steer()?;
+                return Ok(TurnOutcome::Continue);
+            }
+            Err(ModelTurnFailure::Failed(e)) => {
                 tracing::warn!(
                     error = %e,
                     elapsed_ms = model_turn_started.elapsed().as_millis() as u64,
@@ -565,16 +603,20 @@ impl Run {
 
     // ── Model interaction ────────────────────────────────────────
 
-    pub(super) async fn model_turn(&mut self) -> Result<ModelTurnResult, String> {
+    pub(super) async fn model_turn(&mut self) -> Result<ModelTurnResult, ModelTurnFailure> {
         const MAX_RECOVERY_ATTEMPTS: u32 = 3;
         /// How many times we restart a dropped SSE stream before escalating to recovery.
         const MAX_STREAM_RETRIES: u32 = 5;
         const MAX_RETRY_DELAY_MS: u64 = 30_000;
 
+        let turn_cancel = self.steering.turn_token();
         for _attempt in 0..MAX_RECOVERY_ATTEMPTS {
             tracing::info!(attempt = _attempt, "TURN: model_turn recovery attempt");
             if self.cancel.is_cancelled() {
-                return Err("aborted".to_string());
+                return Err(ModelTurnFailure::Cancelled);
+            }
+            if turn_cancel.is_cancelled() {
+                return Err(ModelTurnFailure::Interrupted(StreamPartial::default()));
             }
 
             let mut base_messages = self.build_messages();
@@ -627,7 +669,10 @@ impl Run {
 
             let stream_result = 'stream_loop: loop {
                 if self.cancel.is_cancelled() {
-                    return Err("aborted".to_string());
+                    return Err(ModelTurnFailure::Cancelled);
+                }
+                if turn_cancel.is_cancelled() {
+                    return Err(ModelTurnFailure::Interrupted(retry_checkpoint));
                 }
 
                 let mut attempt_messages = base_messages.clone();
@@ -641,7 +686,11 @@ impl Run {
 
                 let step_res = {
                     let stream_res = tokio::select! {
-                        _ = self.cancel.cancelled() => return Err("aborted".to_string()),
+                        biased;
+                        _ = self.cancel.cancelled() => return Err(ModelTurnFailure::Cancelled),
+                        _ = turn_cancel.cancelled() => {
+                            return Err(ModelTurnFailure::Interrupted(attempt_partial));
+                        }
                         result = self.client.chat_completion_stream_with_hint_and_required_tool(
                             &attempt_messages,
                             &tools,
@@ -662,7 +711,12 @@ impl Run {
                             // so we don't conflict with the stream borrow.
                             let _ = event_tx.send(self.wrap(RunEvent::ModelCallStarted));
                             let res = self
-                                .collect_stream(s, &event_tx, &mut attempt_partial)
+                                .collect_stream(
+                                    s,
+                                    &event_tx,
+                                    &mut attempt_partial,
+                                    &turn_cancel,
+                                )
                                 .await;
                             match res {
                                 Ok(r) => {
@@ -672,7 +726,12 @@ impl Run {
                                         Ok(r)
                                     }
                                 }
-                                Err(e) if cancel.is_cancelled() => return Err("aborted".to_string()),
+                                Err(_) if cancel.is_cancelled() => {
+                                    return Err(ModelTurnFailure::Cancelled);
+                                }
+                                Err(_) if turn_cancel.is_cancelled() => {
+                                    return Err(ModelTurnFailure::Interrupted(attempt_partial));
+                                }
                                 Err(e) => Err(format!("Stream error: {e}")),
                             }
                         }
@@ -702,7 +761,13 @@ impl Run {
                                 ),
                             });
                             tokio::select! {
-                                _ = self.cancel.cancelled() => return Err("aborted".to_string()),
+                                biased;
+                                _ = self.cancel.cancelled() => {
+                                    return Err(ModelTurnFailure::Cancelled);
+                                }
+                                _ = turn_cancel.cancelled() => {
+                                    return Err(ModelTurnFailure::Interrupted(retry_checkpoint));
+                                }
                                 _ = tokio::time::sleep(std::time::Duration::from_millis(delay_ms)) => {}
                             }
                             stream_attempt += 1;
@@ -717,13 +782,18 @@ impl Run {
             let r = match stream_result {
                 Ok(res_val) => res_val,
                 Err(msg) => {
+                    if turn_cancel.is_cancelled() {
+                        return Err(ModelTurnFailure::Interrupted(retry_checkpoint));
+                    }
                     self.recovery_ctx.record_error(&msg);
                     match self.try_recover(&msg).await {
                         RecoveryOutcome::Retry => {
                             tracing::info!("recovery engine retrying after stream errors");
                             continue;
                         }
-                        RecoveryOutcome::GiveUp => return Err(msg),
+                        RecoveryOutcome::GiveUp => {
+                            return Err(ModelTurnFailure::Failed(msg));
+                        }
                     }
                 }
             };
@@ -733,7 +803,9 @@ impl Run {
             return Ok(r);
         }
 
-        Err("exhausted recovery attempts".to_string())
+        Err(ModelTurnFailure::Failed(
+            "exhausted recovery attempts".to_string(),
+        ))
     }
 
     pub(super) async fn collect_stream(
@@ -741,6 +813,7 @@ impl Run {
         stream: impl futures::Stream<Item = Result<StreamEvent>>,
         event_tx: &tokio::sync::mpsc::UnboundedSender<Envelope>,
         partial: &mut StreamPartial,
+        turn_cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<ModelTurnResult> {
         tracing::debug!("LATENCY: collect_stream start");
         let stream_t0 = Instant::now();
@@ -755,6 +828,7 @@ impl Run {
         // Stable id for this model response; carried on every streaming delta
         // so the frontend routes by identity instead of position.
         let message_id = uuid::Uuid::new_v4().to_string();
+        partial.message_id = Some(message_id.clone());
 
         // ── Latency milestones (ms since stream_t0) ─────────────────
         // Level policy (keep forever; tune RUST_LOG in prod):
@@ -812,7 +886,9 @@ impl Run {
         loop {
             let flush_delay = tokens.pending_flush_delay();
             let event = tokio::select! {
+                biased;
                 _ = self.cancel.cancelled() => anyhow::bail!("aborted"),
+                _ = turn_cancel.cancelled() => anyhow::bail!("interrupted by user steer"),
                 // Interval flush even when the upstream SSE pauses mid-burst.
                 _ = tokio::time::sleep(flush_delay.unwrap_or(std::time::Duration::ZERO)),
                     if flush_delay.is_some() => {
@@ -1143,11 +1219,14 @@ impl Run {
     /// pool. Serialization + disk I/O never stall the turn loop (e.g. before
     /// emitting `ApprovalRequired`). A generation counter drops superseded
     /// in-flight writes so an older snapshot cannot overwrite a newer one.
+    ///
+    /// Always refreshes the shared in-memory snapshots first so live
+    /// `get_context_usage` / model-window readers stay current, and queues a
+    /// durable `session_model_windows` checkpoint alongside the crash-safe
+    /// transcript file when a session is attached.
     pub(super) fn save_session_snapshot(&mut self) {
-        let Some(path) = self.session_snapshot_path.clone() else {
-            return;
-        };
-        let messages = crate::session::messages_for_snapshot(self.full_transcript());
+        self.refresh_context_snapshot();
+
         let generation = self
             .session_snapshot_gen
             .fetch_add(1, Ordering::Relaxed)
@@ -1155,24 +1234,75 @@ impl Run {
         let gen_arc = self.session_snapshot_gen.clone();
         let snapshot_lock = self.session_snapshot_lock.clone();
 
+        if let Some(path) = self.session_snapshot_path.clone() {
+            let messages = crate::session::messages_for_snapshot(self.full_transcript());
+            let gen_for_file = gen_arc.clone();
+            let lock_for_file = snapshot_lock.clone();
+            self.join_set.spawn(async move {
+                let write_result = tokio::task::spawn_blocking(move || {
+                    write_snapshot_if_current(
+                        &path,
+                        &messages,
+                        generation,
+                        &gen_for_file,
+                        &lock_for_file,
+                    )
+                })
+                .await;
+
+                match write_result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        tracing::warn!(error = %e, "failed to write session snapshot");
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "session snapshot task panicked or cancelled");
+                    }
+                }
+            });
+        }
+
+        self.queue_model_window_checkpoint(generation);
+    }
+
+    /// Persist the live model window under the same generation/lock as the
+    /// crash snapshot so idle usage and the next Run see an up-to-date window.
+    fn queue_model_window_checkpoint(&mut self, generation: u64) {
+        let (Some(session_manager), Some(session_id)) =
+            (self.session_manager.clone(), self.session_id.clone())
+        else {
+            return;
+        };
+        let model_id = self.client.model.model_id.clone();
+        let full_transcript = self.full_transcript.clone();
+        let model_window = self.context.raw_messages().to_vec();
+        let gen_arc = self.session_snapshot_gen.clone();
+        let snapshot_lock = self.session_snapshot_lock.clone();
+
         self.join_set.spawn(async move {
             let write_result = tokio::task::spawn_blocking(move || {
-                write_snapshot_if_current(
-                    &path,
-                    &messages,
-                    generation,
-                    &gen_arc,
-                    &snapshot_lock,
+                let _guard = snapshot_lock
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if gen_arc.load(Ordering::Relaxed) != generation {
+                    return Ok(());
+                }
+                session_manager.save_model_window_checkpoint(
+                    &session_id,
+                    &model_id,
+                    &full_transcript,
+                    &model_window,
                 )
-            }).await;
+            })
+            .await;
 
             match write_result {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
-                    tracing::warn!(error = %e, "failed to write session snapshot");
+                    tracing::warn!(error = %e, "failed to persist model-window checkpoint");
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "session snapshot task panicked or cancelled");
+                    tracing::warn!(error = %e, "model-window checkpoint task panicked or cancelled");
                 }
             }
         });

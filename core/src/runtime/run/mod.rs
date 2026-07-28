@@ -57,11 +57,12 @@ use crate::mode::AgentMode;
 use crate::permission::PermissionPolicy;
 use crate::runtime::approval::ApprovalResolver;
 use crate::runtime::brain::Brain;
-use crate::runtime::command::{RunCommand, SteerEntry};
+use crate::runtime::command::RunCommand;
 use crate::runtime::event::{CacheMetrics, Envelope, RunEvent, RunId};
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::input::InputResolver;
 use crate::runtime::state::RunState;
+use crate::runtime::steering::SteeringController;
 use crate::runtime::supervisor::ProcessSupervisor;
 use crate::skills::SkillManager;
 use crate::tools::ToolRegistry;
@@ -82,6 +83,12 @@ enum TurnOutcome {
 enum RecoveryOutcome {
     Retry,
     GiveUp,
+}
+
+enum ModelTurnFailure {
+    Cancelled,
+    Interrupted(StreamPartial),
+    Failed(String),
 }
 
 /// Error type for the run loop.
@@ -138,7 +145,7 @@ pub struct Run {
     join_set: JoinSet<()>,
 
     // ── Queues for mid-run injection ──────────────────────────────
-    steering_queue: VecDeque<SteerEntry>,
+    steering: SteeringController,
     /// Queued follow-up messages — injected as user messages after the Run completes.
     follow_up_queue: VecDeque<Message>,
 
@@ -267,6 +274,7 @@ impl Run {
         let supervisor = Arc::new(Mutex::new(ProcessSupervisor::new()));
         let working_dir_for_tool = working_dir.clone();
         let cancel_token = CancellationToken::new();
+        let steering = SteeringController::new(cancel_token.clone());
         let approval_resolver = ApprovalResolver::new();
 
         // Skill discovery follows a stable workspace-scoped manager rather
@@ -413,7 +421,7 @@ impl Run {
             cancel: cancel_token,
             supervisor,
             join_set: JoinSet::new(),
-            steering_queue: VecDeque::new(),
+            steering,
             follow_up_queue: VecDeque::new(),
             approval_resolver,
             input_resolver: InputResolver::new(),
@@ -459,6 +467,10 @@ impl Run {
 
     pub fn cancel_token(&self) -> CancellationToken {
         self.cancel.clone()
+    }
+
+    pub fn steering_controller(&self) -> SteeringController {
+        self.steering.clone()
     }
 
     pub fn context_messages(&self) -> Vec<Message> {

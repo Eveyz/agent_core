@@ -43,6 +43,7 @@ pub mod manager;
 pub mod platform_shell;
 pub mod run;
 pub mod state;
+pub mod steering;
 pub mod supervisor;
 pub mod tool_orchestrator;
 pub mod tool_scheduler;
@@ -62,5 +63,6 @@ pub use input::{
 pub use manager::{CreateRunResult, RunHandle, RunManager};
 pub use run::Run;
 pub use state::RunState;
+pub use steering::SteeringController;
 pub use platform_shell::{is_shell_tool, shell_command, shell_label, shell_program};
 pub use supervisor::{ProcessSupervisor, SupervisedChild};

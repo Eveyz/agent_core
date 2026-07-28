@@ -37,11 +37,13 @@ function RecoveryNotice({
   code,
   tokensBefore,
   tokensAfter,
+  strategy,
 }: {
   text: string;
   code?: string;
   tokensBefore?: number;
   tokensAfter?: number;
+  strategy?: string;
 }) {
   const { t } = useTranslation();
   const isActiveRetry = isActiveRecoveryNotice(text, code);
@@ -50,7 +52,7 @@ function RecoveryNotice({
     text,
     t as (key: string, opts?: Record<string, unknown>) => string,
     code,
-    { tokens_before: tokensBefore, tokens_after: tokensAfter },
+    { tokens_before: tokensBefore, tokens_after: tokensAfter, strategy },
   );
 
   return (
@@ -431,6 +433,7 @@ export const AgentTurnUI = memo(function AgentTurnUI({
                 code={item.data.code}
                 tokensBefore={item.data.tokens_before}
                 tokensAfter={item.data.tokens_after}
+                strategy={item.data.strategy}
               />
             ) : item.type === 'error' ? (
               (() => {

@@ -26,6 +26,12 @@ pub enum MockStep {
         #[serde(default)]
         cache_miss: u64,
     },
+    /// Delay the HTTP response so tests can deterministically interrupt an
+    /// in-flight model request before any SSE event arrives.
+    DelayedText {
+        text: String,
+        delay_ms: u64,
+    },
     ToolCalls {
         tools: Vec<MockToolCall>,
         #[serde(default)]
@@ -182,6 +188,19 @@ async fn handle_connection(
             );
             socket.write_all(resp.as_bytes()).await?;
         }
+        MockStep::DelayedText { text, delay_ms } => {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            let sse = render_sse(&MockStep::Text {
+                text,
+                cache_hit: 0,
+                cache_miss: 0,
+            });
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse}",
+                sse.len()
+            );
+            socket.write_all(resp.as_bytes()).await?;
+        }
         other => {
             let sse = render_sse(&other);
             let resp = format!(
@@ -259,6 +278,9 @@ fn render_sse(step: &MockStep) -> String {
         }
         MockStep::Empty => {
             out.push_str("data: [DONE]\n\n");
+        }
+        MockStep::DelayedText { .. } => {
+            unreachable!("delayed text is rendered through the delayed response path")
         }
         MockStep::Error { .. } => unreachable!(),
     }

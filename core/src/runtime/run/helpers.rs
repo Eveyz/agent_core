@@ -2,7 +2,6 @@
 
 use parking_lot::MutexGuard;
 
-use crate::runtime::command::SteerEntry;
 use crate::runtime::event::RunEvent;
 use crate::runtime::supervisor::ProcessSupervisor;
 
@@ -94,7 +93,7 @@ The active project is determined ONLY by the Working Directory (and Project Inst
         self.input_resolver.clear();
 
         // 5. Cancel all remaining steering messages (notify frontend)
-        let cancelled: Vec<SteerEntry> = self.steering_queue.drain(..).collect();
+        let cancelled = self.steering.close();
         for entry in cancelled {
             self.emit(RunEvent::SteerCancelled {
                 steer_id: entry.id,
@@ -121,7 +120,7 @@ The active project is determined ONLY by the Working Directory (and Project Inst
         // Cancel any remaining steering messages (normal completion path
         // where steer messages were queued but the run hit max iterations
         // or otherwise stopped before injecting them).
-        let cancelled: Vec<SteerEntry> = self.steering_queue.drain(..).collect();
+        let cancelled = self.steering.close();
         for entry in cancelled {
             self.emit(RunEvent::SteerCancelled {
                 steer_id: entry.id,

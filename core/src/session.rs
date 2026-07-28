@@ -485,6 +485,34 @@ impl SessionManager {
         Ok(Some(model_window))
     }
 
+    /// Messages the next Run would seed into the model window: compacted
+    /// checkpoint when valid, otherwise the canonical transcript. Used by
+    /// idle context-usage estimates so the ring matches create_run restore.
+    pub fn model_context_messages_for_usage(
+        &self,
+        session_id: &str,
+        active_model_id: &str,
+    ) -> Vec<Message> {
+        let full = self
+            .resume(session_id)
+            .ok()
+            .flatten()
+            .map(|session| session.messages)
+            .unwrap_or_default();
+        match self.load_model_window_checkpoint(session_id, &full, active_model_id) {
+            Ok(Some(window)) => window,
+            Ok(None) => full,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    session_id,
+                    "failed to load model-window for idle usage"
+                );
+                full
+            }
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn model_window_checkpoint_shape(
         &self,

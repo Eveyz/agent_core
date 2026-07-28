@@ -62,12 +62,27 @@ describe('translateRecoveryMessage i18n', () => {
 
   it('translates completed proactive compaction with token counts', () => {
     const summary = 'chunked_drop: 299142 → 30429 tokens (model window only)';
-    const details = { tokens_before: 299142, tokens_after: 30429 };
+    const details = {
+      tokens_before: 299142,
+      tokens_after: 30429,
+      strategy: 'chunked_drop',
+    };
     expect(translateRecoveryMessage(summary, tFor('en'), 'context_compacted', details)).toBe(
-      'Context compacted · 299,142 → 30,429 tokens',
+      'Cleared older turns · 299,142 → 30,429 tokens',
     );
     expect(translateRecoveryMessage(summary, tFor('zh'), 'context_compacted', details)).toBe(
-      '上下文已压缩 · 299,142 → 30,429 个 Token',
+      '已清理旧对话 · 299,142 → 30,429 个 Token',
+    );
+  });
+
+  it('uses summary copy for llm_summary strategy', () => {
+    const details = {
+      tokens_before: 100000,
+      tokens_after: 20000,
+      strategy: 'llm_summary',
+    };
+    expect(translateRecoveryMessage('', tFor('en'), 'context_compacted', details)).toBe(
+      'Summarized older turns · 100,000 → 20,000 tokens',
     );
   });
 

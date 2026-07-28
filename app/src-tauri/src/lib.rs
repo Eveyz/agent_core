@@ -1276,17 +1276,18 @@ async fn get_context_usage(
         }
     }
 
-    // Idle / old session: no in-memory Run — rebuild from persisted history
-    // so the ring reflects prior messages (including thinking) instead of 0%.
+    // Idle / old session: no in-memory Run — prefer the compacted model
+    // window checkpoint (same restore path as create_run), falling back to
+    // the canonical transcript so the ring is not stuck at 0%.
     let sid = session_id.ok_or_else(|| "session_id required".to_string())?;
     let sm = state.session_manager.clone();
     let sid_owned = sid.clone();
+    let active_model_id = {
+        let manager = state.run_manager.lock().await;
+        manager.current_model_id()
+    };
     let messages = tokio::task::spawn_blocking(move || {
-        sm.resume(&sid_owned)
-            .ok()
-            .flatten()
-            .map(|s| s.messages)
-            .unwrap_or_default()
+        sm.model_context_messages_for_usage(&sid_owned, &active_model_id)
     })
     .await
     .map_err(|e| format!("session resume task failed: {e}"))?;

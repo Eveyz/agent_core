@@ -90,6 +90,12 @@ pub enum RunEvent {
         message_id: String,
         message: Message,
     },
+    /// A model response was cut short by a non-terminal user steer.
+    MessageInterrupted {
+        message_id: String,
+        reason: String,
+        partial_message: Option<Message>,
+    },
 
     // ── Tool execution ─────────────────────────────────────────────
     /// Model is still streaming tool-call arguments (pre-`tool_started`).

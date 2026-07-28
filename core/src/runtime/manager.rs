@@ -28,12 +28,13 @@ use crate::permission::ApprovalChoice;
 use crate::reflector::Reflector;
 use crate::runtime::approval::ApprovalResolver;
 use crate::runtime::brain::Brain;
-use crate::runtime::command::RunCommand;
+use crate::runtime::command::{RunCommand, SteerEntry};
 use crate::runtime::event::{Envelope, RunEvent, RunId};
 use crate::runtime::event_log::EventLog;
 use crate::runtime::input::{ClarificationAnswers, InputResolver};
 use crate::runtime::run::{Run, default_runs_dir};
 use crate::runtime::state::RunState;
+use crate::runtime::steering::SteeringController;
 use crate::session::SessionManager;
 use crate::types::Message;
 use crate::worktree::WorktreeManager;
@@ -78,6 +79,8 @@ pub struct RunHandle {
     /// hot-path checks in collect_stream() and ToolOrchestrator respond
     /// without waiting for the next poll_commands() turn boundary.
     pub cancel_token: CancellationToken,
+    /// Wakeable mailbox used to interrupt a turn without ending the Run.
+    pub steering: SteeringController,
     /// Shared context snapshot (refreshed by the Run at turn boundaries).
     context_snapshot: Arc<RwLock<Vec<Message>>>,
     /// Shared context usage breakdown (refreshed with context_snapshot).
@@ -254,6 +257,32 @@ impl RunManager {
             ctx.add(msg.clone());
         }
         ctx.usage_snapshot()
+    }
+
+    /// Idle / cold-session usage estimate using the same restore path as
+    /// [`Self::create_run`]: prefer the compacted model-window checkpoint,
+    /// falling back to the canonical transcript when none is valid.
+    pub fn estimate_usage_for_persisted_session(
+        &self,
+        session_manager: &SessionManager,
+        session_id: &str,
+    ) -> ContextUsageSnapshot {
+        let active_model_id = self
+            .brain()
+            .current_model_config()
+            .map(|model| model.model_id)
+            .unwrap_or_else(|_| "unknown".to_string());
+        let messages =
+            session_manager.model_context_messages_for_usage(session_id, &active_model_id);
+        self.estimate_usage_from_messages(&messages)
+    }
+
+    /// Active model id used when restoring idle session usage / checkpoints.
+    pub fn current_model_id(&self) -> String {
+        self.brain()
+            .current_model_config()
+            .map(|model| model.model_id)
+            .unwrap_or_else(|_| "unknown".to_string())
     }
 
     /// Resolved max context for the current default model (registry-aware).
@@ -468,6 +497,7 @@ impl RunManager {
         // Clone the cancel token so cancel_run() can trigger immediate
         // cancellation without waiting for the next poll_commands() cycle.
         let cancel_token = run.cancel_token();
+        let steering = run.steering_controller();
 
         let writer_run_id = run_id.clone();
         let writer_broadcast = event_tx.clone();
@@ -714,6 +744,7 @@ impl RunManager {
             approval_resolver,
             input_resolver,
             cancel_token,
+            steering,
             context_snapshot,
             usage_snapshot,
             model_window_snapshot,
@@ -730,7 +761,48 @@ impl RunManager {
         let handle = runs
             .get(run_id)
             .with_context(|| format!("run '{run_id}' not found"))?;
-        handle.command(cmd)
+        match cmd {
+            RunCommand::Steer { steer_id, message } => {
+                Self::enqueue_steer(handle, steer_id, message)
+            }
+            other => handle.command(other),
+        }
+    }
+
+    /// Interrupt the active turn, inject a user steer, and continue the same Run.
+    pub async fn steer_run(
+        &self,
+        run_id: &str,
+        steer_id: String,
+        message: String,
+    ) -> Result<()> {
+        let runs = self.runs.lock().await;
+        let handle = runs
+            .get(run_id)
+            .with_context(|| format!("run '{run_id}' not found"))?;
+        Self::enqueue_steer(handle, steer_id, message)
+    }
+
+    fn enqueue_steer(handle: &RunHandle, steer_id: String, message: String) -> Result<()> {
+        anyhow::ensure!(
+            !handle.state().is_terminal(),
+            "run '{}' is already terminal",
+            handle.id
+        );
+        let entry = SteerEntry {
+            id: steer_id,
+            message: RunCommand::steer_message(&message),
+            raw_text: message,
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+        };
+        handle
+            .steering
+            .enqueue(entry)
+            .map(|_| ())
+            .map_err(|_| anyhow::anyhow!("run '{}' no longer accepts steers", handle.id))
     }
 
     /// Subscribe to a Run's event stream.
@@ -1024,6 +1096,91 @@ default = {{ model_id = "mock", max_context_tokens = 100000 }}
         );
     }
 
+    #[test]
+    fn idle_usage_estimate_prefers_compacted_model_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = crate::memory::storage::Storage::new(
+            dir.path().join("memory.db").to_string_lossy().as_ref(),
+        )
+        .unwrap();
+        let session_manager = SessionManager::new(storage);
+        let payload = "w ".repeat(5_000);
+        let old_user = format!("old {payload}");
+        let old_assistant = format!("old reply {payload}");
+        let full = vec![
+            Message::user(&old_user),
+            Message::assistant(&old_assistant),
+            Message::user("recent user"),
+            Message::assistant("recent assistant"),
+        ];
+        let session_id = session_manager.save(None, &full, "/tmp", "mock").unwrap();
+        session_manager
+            .save_model_window_checkpoint(&session_id, "mock", &full, &full[2..])
+            .unwrap();
+
+        let brain = Brain::from_config(test_config()).unwrap();
+        let manager = RunManager::new(brain);
+
+        let full_estimate = manager.estimate_usage_from_messages(&full);
+        let idle_estimate =
+            manager.estimate_usage_for_persisted_session(&session_manager, &session_id);
+
+        assert!(
+            idle_estimate.used_tokens < full_estimate.used_tokens,
+            "idle usage must track the compacted window, not the full transcript \
+             (idle={}, full={})",
+            idle_estimate.used_tokens,
+            full_estimate.used_tokens
+        );
+        assert!(
+            idle_estimate.conversation_tokens < full_estimate.conversation_tokens,
+            "conversation bucket should shrink with the model window"
+        );
+    }
+
+    #[test]
+    fn idle_usage_includes_messages_appended_after_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = crate::memory::storage::Storage::new(
+            dir.path().join("memory.db").to_string_lossy().as_ref(),
+        )
+        .unwrap();
+        let session_manager = SessionManager::new(storage);
+        let full = vec![
+            Message::user("old user"),
+            Message::assistant("old assistant"),
+            Message::user("recent user"),
+            Message::assistant("recent assistant"),
+        ];
+        let session_id = session_manager.save(None, &full, "/tmp", "mock").unwrap();
+        session_manager
+            .save_model_window_checkpoint(&session_id, "mock", &full, &full[2..])
+            .unwrap();
+
+        let follow_up = "brand-new follow-up after compact";
+        let mut extended = full.clone();
+        extended.push(Message::user(follow_up));
+        session_manager
+            .save_canonical_transcript(&session_id, &extended)
+            .unwrap();
+
+        let brain = Brain::from_config(test_config()).unwrap();
+        let manager = RunManager::new(brain);
+        let messages =
+            session_manager.model_context_messages_for_usage(&session_id, "mock");
+
+        assert_eq!(messages.len(), 3, "compacted window + post-checkpoint message");
+        assert_eq!(messages[0].content.as_deref(), Some("recent user"));
+        assert_eq!(messages[2].content.as_deref(), Some(follow_up));
+
+        let idle = manager.estimate_usage_for_persisted_session(&session_manager, &session_id);
+        let window_only = manager.estimate_usage_from_messages(&full[2..]);
+        assert!(
+            idle.conversation_tokens > window_only.conversation_tokens,
+            "idle usage must include turns appended after the checkpoint"
+        );
+    }
+
     #[tokio::test]
     async fn compaction_checkpoint_is_durable_before_terminal_and_prevents_next_run_reexpansion() {
         use crate::eval::mock_llm::{start_mock_server, MockScript, MockStep};
@@ -1201,6 +1358,82 @@ default = {{ model_id = "mock", max_context_tokens = 100000 }}
             .run_id;
         // Cancel before start should work
         manager.cancel_run(&run_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn steer_interrupts_an_in_flight_model_request_and_continues_same_run() {
+        use crate::eval::mock_llm::{start_mock_server, MockScript, MockStep};
+
+        let mock = start_mock_server(MockScript {
+            steps: vec![
+                MockStep::DelayedText {
+                    text: "obsolete answer".into(),
+                    delay_ms: 2_000,
+                },
+                MockStep::Text {
+                    text: "steered answer".into(),
+                    cache_hit: 0,
+                    cache_miss: 0,
+                },
+            ],
+        })
+        .await
+        .unwrap();
+        let brain = Brain::from_config(test_config_with_base_url(&mock.base_url)).unwrap();
+        let manager = RunManager::new(brain);
+        let run_id = manager
+            .create_run("original request", None, vec![])
+            .await
+            .unwrap()
+            .run_id;
+        let mut events = manager.subscribe(&run_id).await.unwrap();
+        manager
+            .command(&run_id, RunCommand::Start)
+            .await
+            .unwrap();
+
+        loop {
+            if matches!(
+                events.recv().await.unwrap().event,
+                RunEvent::TurnStarted { .. }
+            ) {
+                break;
+            }
+        }
+
+        let started = std::time::Instant::now();
+        manager
+            .steer_run(&run_id, "steer-1".into(), "new direction".into())
+            .await
+            .unwrap();
+
+        let mut saw_queued = false;
+        let mut saw_interrupted = false;
+        let final_text = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                match events.recv().await.unwrap().event {
+                    RunEvent::SteerQueued { steer_id, .. } => {
+                        assert_eq!(steer_id, "steer-1");
+                        saw_queued = true;
+                    }
+                    RunEvent::MessageInterrupted { reason, .. } => {
+                        assert_eq!(reason, "user_steer");
+                        saw_interrupted = true;
+                    }
+                    RunEvent::RunCompleted { final_text } => break final_text,
+                    RunEvent::RunFailed { error } => panic!("run failed: {error}"),
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("steer should interrupt without waiting for the delayed response");
+
+        assert!(saw_queued);
+        assert!(saw_interrupted);
+        assert_eq!(final_text, "steered answer");
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        mock.shutdown().await;
     }
 
     #[tokio::test]

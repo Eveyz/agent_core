@@ -238,20 +238,116 @@ fn truncate_str(s: &str, max: usize) -> String {
     format!("{}…", &s[..end])
 }
 
-/// Very light parse of `to_context_string` output (for re-reading our own messages).
+/// Parse `to_context_string` output so a persisted RollingSummary round-trips
+/// into structured fields (files / decisions / facts / …). Without this,
+/// the next compact re-merge would drop structured file lists into freeform
+/// notes and lose ledger continuity across runs.
 fn parse_context_string(body: &str) -> TurnSummary {
-    // Prefer structured re-parse only for goal line; keep body as notes if dense.
-    // Callers normally keep the in-memory summary; this is a recovery path.
+    #[derive(Clone, Copy)]
+    enum Section {
+        Decisions,
+        Files,
+        Errors,
+        Facts,
+        Notes,
+    }
+
     let mut summary = TurnSummary::default();
-    for line in body.lines() {
-        if let Some(g) = line.strip_prefix("Goal: ") {
-            summary.goal = Some(g.trim().to_string());
+    let mut section: Option<Section> = None;
+
+    for raw in body.lines() {
+        let line = raw.trim_end();
+        if let Some(goal) = line.strip_prefix("Goal: ") {
+            let goal = goal.trim();
+            if !goal.is_empty() {
+                summary.goal = Some(goal.to_string());
+            }
+            section = None;
+            continue;
+        }
+        match line {
+            "Decisions:" => {
+                section = Some(Section::Decisions);
+                continue;
+            }
+            "Files:" => {
+                section = Some(Section::Files);
+                continue;
+            }
+            "Open errors:" => {
+                section = Some(Section::Errors);
+                continue;
+            }
+            "Key facts:" => {
+                section = Some(Section::Facts);
+                continue;
+            }
+            "Notes:" => {
+                section = Some(Section::Notes);
+                continue;
+            }
+            _ => {}
+        }
+
+        match section {
+            Some(Section::Decisions) => {
+                if let Some(item) = strip_bullet(line) {
+                    summary.decisions.push(item);
+                }
+            }
+            Some(Section::Files) => parse_file_bucket_line(line, &mut summary.files),
+            Some(Section::Errors) => {
+                if let Some(item) = strip_bullet(line) {
+                    summary.errors_open.push(item);
+                }
+            }
+            Some(Section::Facts) => {
+                if let Some(item) = strip_bullet(line) {
+                    summary.facts.push(item);
+                }
+            }
+            Some(Section::Notes) => {
+                if let Some(item) = strip_bullet(line) {
+                    summary.notes.push(item);
+                }
+            }
+            None => {}
         }
     }
-    if summary.goal.is_none() && !body.trim().is_empty() {
-        summary.notes.push(truncate_str(body.trim(), 800));
-    }
+
     summary
+}
+
+fn strip_bullet(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    let item = trimmed
+        .strip_prefix('•')
+        .or_else(|| trimmed.strip_prefix("- "))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
+    Some(item.to_string())
+}
+
+fn parse_file_bucket_line(line: &str, files: &mut SummaryFiles) {
+    let trimmed = line.trim();
+    let (bucket, rest) = if let Some(rest) = trimmed.strip_prefix("wrote:") {
+        (&mut files.wrote, rest)
+    } else if let Some(rest) = trimmed.strip_prefix("read:") {
+        (&mut files.read, rest)
+    } else if let Some(rest) = trimmed.strip_prefix("deleted:") {
+        (&mut files.deleted, rest)
+    } else {
+        return;
+    };
+    for path in rest.split(',') {
+        let path = path.trim();
+        if path.is_empty() {
+            continue;
+        }
+        if !bucket.iter().any(|p| p == path) {
+            bucket.push(path.to_string());
+        }
+    }
 }
 
 /// Merge prior rolling summary + LLM delta + deterministic file ledger.
@@ -1046,6 +1142,53 @@ mod tests {
         assert!(prompt.contains("hello"));
         assert!(prompt.contains("JSON"));
         assert!(prompt.contains("Do NOT invent Done/In Progress"));
+    }
+
+    #[test]
+    fn rolling_summary_round_trips_structured_fields() {
+        let original = TurnSummary {
+            goal: Some("ship compact fixes".into()),
+            decisions: vec!["prefer chunked_drop".into(), "clamp max_output".into()],
+            files: SummaryFiles {
+                read: vec!["a.rs".into(), "b.rs".into()],
+                wrote: vec!["compact.rs".into()],
+                deleted: vec!["tmp.log".into()],
+            },
+            errors_open: vec!["flaky test".into()],
+            facts: vec!["threshold uses usable budget".into()],
+            notes: vec!["keep summary parse honest".into()],
+        };
+        let rendered = original.to_message_content();
+        let parsed = TurnSummary::parse_from_message(&rendered).expect("parse");
+        assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn upsert_after_parse_keeps_prior_files_when_ledger_emptyish() {
+        // Simulate restore: only the rendered message exists; re-parse then
+        // merge a new ledger write without wiping prior structured files.
+        let prior = TurnSummary {
+            files: SummaryFiles {
+                wrote: vec!["old.rs".into()],
+                read: vec!["docs.md".into()],
+                ..Default::default()
+            },
+            decisions: vec!["keep dual-track".into()],
+            ..Default::default()
+        };
+        let content = prior.to_message_content();
+        let mut messages = vec![Message::assistant(&content)];
+        let mut ledger = crate::runtime::FileLedger::new();
+        ledger.record_wrote("new.rs");
+        Compressor::upsert_ledger_into_rolling_summary(&mut messages, &ledger);
+        let merged = TurnSummary::parse_from_message(
+            messages[0].content.as_deref().expect("content"),
+        )
+        .expect("parse");
+        assert!(merged.files.wrote.iter().any(|p| p == "old.rs"));
+        assert!(merged.files.wrote.iter().any(|p| p == "new.rs"));
+        assert!(merged.files.read.iter().any(|p| p == "docs.md"));
+        assert!(merged.decisions.iter().any(|d| d == "keep dual-track"));
     }
 
     #[test]
