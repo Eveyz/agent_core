@@ -75,6 +75,7 @@ pub fn collect_ledger(envelopes: &[Envelope], opts: CollectOpts) -> RunLedger {
 
     let mut pending_approvals: HashSet<String> = HashSet::new();
     let mut queued_steers: HashSet<String> = HashSet::new();
+    let mut queued_steer_ts: HashMap<String, DateTime<Utc>> = HashMap::new();
     let mut injected_or_cancelled_steers: HashSet<String> = HashSet::new();
 
     let mut last_seq: Option<u64> = None;
@@ -170,14 +171,27 @@ pub fn collect_ledger(envelopes: &[Envelope], opts: CollectOpts) -> RunLedger {
             }
             RunEvent::SteerQueued { steer_id, .. } => {
                 queued_steers.insert(steer_id.clone());
+                queued_steer_ts.insert(steer_id.clone(), env.ts);
                 metrics.steers += 1;
             }
-            RunEvent::SteerInjected { steer_id, .. }
-            | RunEvent::SteerCancelled { steer_id, .. }
-            | RunEvent::SteerFailed { steer_id, .. } => {
+            RunEvent::SteerInjected { steer_id, .. } => {
+                if let Some(queued_at) = queued_steer_ts.remove(steer_id) {
+                    metrics.steer_interrupt_latency_ms = metrics
+                        .steer_interrupt_latency_ms
+                        .max(ms_between(queued_at, env.ts));
+                }
                 injected_or_cancelled_steers.insert(steer_id.clone());
                 queued_steers.remove(steer_id);
-                if terminals.len() > 0 {
+                if !terminals.is_empty() {
+                    push_tag(&mut fail_tags, "steer_after_terminal");
+                }
+            }
+            RunEvent::SteerCancelled { steer_id, .. }
+            | RunEvent::SteerFailed { steer_id, .. } => {
+                queued_steer_ts.remove(steer_id);
+                injected_or_cancelled_steers.insert(steer_id.clone());
+                queued_steers.remove(steer_id);
+                if !terminals.is_empty() {
                     push_tag(&mut fail_tags, "steer_after_terminal");
                 }
             }
@@ -505,6 +519,46 @@ mod tests {
         ];
         let ledger = collect_ledger(&events, CollectOpts::default());
         assert!(ledger.result.fail_tags.iter().any(|t| t == "seq_gap"));
+    }
+
+    #[test]
+    fn measures_steer_acceptance_to_injection_latency() {
+        let mut queued = env(
+            1,
+            1,
+            RunEvent::SteerQueued {
+                steer_id: "s1".into(),
+                message: "change course".into(),
+                queue_depth: 1,
+            },
+        );
+        queued.ts += chrono::Duration::milliseconds(100);
+        let mut injected = env(
+            2,
+            1,
+            RunEvent::SteerInjected {
+                steer_id: "s1".into(),
+                message: "change course".into(),
+            },
+        );
+        injected.ts += chrono::Duration::milliseconds(135);
+        let events = vec![
+            env(0, 1, RunEvent::RunStarted),
+            queued,
+            injected,
+            env(
+                3,
+                2,
+                RunEvent::RunCompleted {
+                    final_text: "done".into(),
+                },
+            ),
+        ];
+
+        let ledger = collect_ledger(&events, CollectOpts::default());
+
+        assert_eq!(ledger.metrics.steer_interrupt_latency_ms, 35);
+        assert_eq!(ledger.metrics.steers, 1);
     }
 
     #[test]

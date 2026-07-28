@@ -864,6 +864,11 @@ impl AppState {
                 self.apply_delta(subagent_id.as_deref(), delta);
             }
             RunEvent::MessageStart { .. } | RunEvent::MessageEnd { .. } => {}
+            RunEvent::MessageInterrupted { .. } => {
+                self.flush_streaming();
+                self.push_notice("↪ Response interrupted by steer.".to_string());
+                self.mark_dirty_force();
+            }
 
             RunEvent::ToolPreparing { .. } => {}
             RunEvent::ToolStarted { subagent_id, call_id, name, args } => {

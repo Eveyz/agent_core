@@ -1,13 +1,13 @@
 id = "S1_steer_inject"
 bucket = "steer"
-prompt = "Read a file then continue."
+prompt = "Run a long command then continue."
 driver = "run"
 approval = "yolo"
 max_iterations = 6
 timeout_secs = 90
 
 [actions]
-steer_after_event = "turn_ended"
+steer_after_event = "tool_started"
 steer_message = "Stop after this and say steered."
 action_delay_ms = 20
 

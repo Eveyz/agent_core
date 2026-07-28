@@ -347,6 +347,7 @@ pub fn tool_result_is_error(result: &str) -> bool {
         || result.starts_with("Permission denied")
         || result.starts_with("Hook vetoed")
         || result.starts_with("Aborted")
+        || result.starts_with("Interrupted by user steer")
         || result.contains("aborted (guard cleanup)")
     {
         return true;
@@ -363,7 +364,10 @@ pub fn parse_exit_code(result: &str) -> Option<i32> {
 
 /// Parse tool success into a short artifact fact (best-effort).
 pub fn artifact_from_tool(name: &str, args_json: &str, result: &str, is_error: bool) -> Option<String> {
-    if is_error || result.starts_with("Aborted") {
+    if is_error
+        || result.starts_with("Aborted")
+        || result.starts_with("Interrupted by user steer")
+    {
         return None;
     }
     match name {

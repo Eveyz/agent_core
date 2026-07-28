@@ -258,7 +258,7 @@ export type RunEventType =
   | 'state_changed'
   | 'turn_started' | 'turn_ended'
   | 'model_call_started' | 'model_streaming' | 'model_call_ended'
-  | 'message_start' | 'message_update' | 'message_end'
+  | 'message_start' | 'message_update' | 'message_end' | 'message_interrupted'
   | 'tool_preparing' | 'tool_started' | 'tool_update' | 'tool_ended'
   | 'approval_required' | 'approval_resolved' | 'input_requested' | 'input_resolved'
   | 'context_compacted' | 'error'
@@ -294,6 +294,7 @@ export interface RunEventPayload {
   text?: string;
   tool_count?: number;
   message?: { role: string; content?: string } | string;
+  partial_message?: { role: string; content?: string } | null;
   call_id?: string;
   name?: string;
   args?: unknown;

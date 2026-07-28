@@ -789,6 +789,62 @@ describe('runtime notice and error events', () => {
 });
 
 describe('steer two-segment timeline', () => {
+  it('marks the active turn interrupted while preserving its streamed response', async () => {
+    const { reducer, userMessageSent, runIdSet, agentEventsBatch } = await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, userMessageSent({ text: 'original', model: 'm1', sessionId: 's1' }));
+    state = reducer(state, runIdSet({ runId: 'run-1', sessionId: 's1' }));
+    state = reducer(
+      state,
+      agentEventsBatch([
+        { event: 'turn_started', run_id: 'run-1', turn_id: 'turn-1', index: 0 },
+        {
+          event: 'model_streaming',
+          run_id: 'run-1',
+          turn_id: 'turn-1',
+          message_id: 'msg-1',
+          delta: { Thinking: 'private' },
+        },
+        {
+          event: 'model_streaming',
+          run_id: 'run-1',
+          turn_id: 'turn-1',
+          message_id: 'msg-1',
+          delta: { Text: 'partial answer' },
+        },
+        {
+          event: 'message_interrupted',
+          run_id: 'run-1',
+          turn_id: 'turn-1',
+          message_id: 'msg-1',
+          reason: 'user_steer',
+          partial_message: {
+            role: 'assistant',
+            content: '<think>private thought</think>\n\npartial answer plus tail',
+          },
+        },
+      ]),
+    );
+
+    const turn = state.entries.s1.find((entry) => entry.type === 'turn');
+    expect(turn?.interrupted).toBe(true);
+    expect(
+      turn?.blocks?.some(
+        (block) => block.type === 'assistant' && block.text === 'partial answer plus tail',
+      ),
+    ).toBe(true);
+    expect(
+      turn?.blocks?.some(
+        (block) => block.type === 'thinking' && block.text === 'private thought',
+      ),
+    ).toBe(true);
+    expect(
+      turn?.blocks?.some(
+        (block) => block.type === 'assistant' && block.text.includes('<think>'),
+      ),
+    ).toBe(false);
+  });
+
   it('merges turn_started into the open turn when a pending steer card is last', async () => {
     const { reducer, userMessageSent, runIdSet, agentEventsBatch, steerMessageQueued } =
       await loadModules();

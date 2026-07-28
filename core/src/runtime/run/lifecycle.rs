@@ -350,6 +350,10 @@ impl Run {
                     });
                 }
 
+                // Close steering before publishing the terminal state. This
+                // makes post-terminal rejection independent of the lagging
+                // RunHandle state mirror.
+                self.cleanup_on_exit();
                 self.transition(RunState::Completed);
                 self.emit(RunEvent::RunCompleted { final_text: text });
             }
@@ -361,6 +365,7 @@ impl Run {
                 });
             }
             Err(RunError::Failed(e)) => {
+                self.cleanup_on_exit();
                 self.transition(RunState::Failed);
                 self.emit(RunEvent::RunFailed { error: e });
             }
@@ -561,7 +566,21 @@ impl Run {
                 .unwrap_or_default()
                 .as_millis() as u64,
         };
-        let _ = self.steering.enqueue(entry);
+        let steering = self.steering.clone();
+        match steering.accept(entry, |queue_depth| {
+            self.emit(RunEvent::SteerQueued {
+                steer_id: steer_id.clone(),
+                message: message.clone(),
+                queue_depth,
+            });
+            Ok::<(), std::convert::Infallible>(())
+        }) {
+            Ok(_) => {}
+            Err(_) => self.emit(RunEvent::SteerFailed {
+                steer_id,
+                error: "run no longer accepts steers".to_string(),
+            }),
+        }
     }
 
     /// Drain pending commands, then inject every steer accepted before the
@@ -575,13 +594,8 @@ impl Run {
     pub(super) fn inject_next_steer(&mut self) -> Result<bool, RunError> {
         self.poll_commands()?;
         let entries = self.steering.drain();
-        let total = entries.len();
-        for (index, entry) in entries.into_iter().enumerate() {
-            self.emit(RunEvent::SteerQueued {
-                steer_id: entry.id.clone(),
-                message: entry.raw_text.clone(),
-                queue_depth: total.saturating_sub(index),
-            });
+        let injected = !entries.is_empty();
+        for entry in entries {
             self.emit(RunEvent::SteerInjected {
                 steer_id: entry.id.clone(),
                 message: entry.raw_text.clone(),
@@ -606,7 +620,7 @@ impl Run {
             }
             self.append_conversation(entry.message);
         }
-        Ok(total > 0)
+        Ok(injected)
     }
 
     /// Block until Resume or Cancel is received.

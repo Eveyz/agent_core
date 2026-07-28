@@ -133,15 +133,15 @@ impl Run {
                     } else {
                         let content = crate::hygiene::wrap_thinking(
                             &partial.thinking,
-                            &format!(
-                                "{}\n\n[Interrupted by user steer]",
-                                partial.text.trim_end()
-                            ),
+                            partial.text.trim_end(),
                         );
                         Some(Message::assistant(&content))
                     };
-                if let Some(message) = partial_message.clone() {
-                    self.append_conversation(message);
+                if let Some(message) = partial_message.as_ref() {
+                    let visible = message.content.as_deref().unwrap_or_default();
+                    self.append_conversation(Message::assistant(&format!(
+                        "{visible}\n\n[Interrupted by user steer]"
+                    )));
                     self.save_session_snapshot();
                 }
                 self.emit(RunEvent::MessageInterrupted {
@@ -314,9 +314,9 @@ impl Run {
                 }
             }
 
-            // Process steering messages — inject one per turn boundary
-            // to avoid overwhelming the LLM with multiple instructions at once.
-            // Poll cmd_rx first so mid-turn steers are not deferred an extra turn.
+            // Process all steering messages accepted before this boundary.
+            // Poll cmd_rx first so legacy command-channel steers are not
+            // deferred an extra turn.
             if self.inject_next_steer()? {
                 return Ok(TurnOutcome::Continue);
             }
@@ -413,7 +413,8 @@ impl Run {
                 permission_policy: &mut self.permission_policy,
                 hook_registry: self.hook_registry.clone(),
                 tool_execution_mode: self.tool_execution_mode,
-                cancel_token: self.cancel.clone(),
+                cancel_token: self.steering.turn_token(),
+                lifetime_cancel: Some(self.cancel.clone()),
                 approval_resolver: Some(approval_resolver),
                 input_resolver: Some(input_resolver),
                 session_id: self.session_id.clone(),
@@ -446,6 +447,12 @@ impl Run {
         if self.cancel.is_cancelled() {
             return Err(RunError::Cancelled);
         }
+        if self.steering.turn_token().is_cancelled() {
+            // Dropping a supervised shell/repl future is not enough to reap
+            // the child process; kill the active turn's processes before the
+            // next model request starts.
+            self.supervisor.lock().kill_all();
+        }
 
         // Stage: Observe
         let mut saw_abort = false;
@@ -457,6 +464,7 @@ impl Run {
         for (call, result) in tool_calls.iter().zip(&tool_results) {
             let is_error = crate::runtime::execution::tool_result_is_error(result);
             let aborted = result.starts_with("Aborted")
+                || result.starts_with("Interrupted by user steer")
                 || result.contains("aborted (guard cleanup)");
 
             if aborted {
@@ -587,10 +595,9 @@ impl Run {
         self.emit(RunEvent::TurnEnded { index: turn_index });
         self.hook_registry.lock().fire_turn_end(turn_index);
 
-        // Process steering messages (injected before next LLM call).
-        // Inject one per turn boundary — remaining messages will be
-        // processed on subsequent turn boundaries. Poll cmd_rx first so
-        // mid-turn steers land before the next model request.
+        // Process all steering messages accepted before the next model call.
+        // Poll cmd_rx first so legacy command-channel steers land before the
+        // next model request.
         self.inject_next_steer()?;
 
         if turn_index == self.max_iterations - 1 {
@@ -689,7 +696,8 @@ impl Run {
                         biased;
                         _ = self.cancel.cancelled() => return Err(ModelTurnFailure::Cancelled),
                         _ = turn_cancel.cancelled() => {
-                            return Err(ModelTurnFailure::Interrupted(attempt_partial));
+                            retry_checkpoint.merge_attempt(&attempt_partial);
+                            return Err(ModelTurnFailure::Interrupted(retry_checkpoint));
                         }
                         result = self.client.chat_completion_stream_with_hint_and_required_tool(
                             &attempt_messages,
@@ -730,7 +738,8 @@ impl Run {
                                     return Err(ModelTurnFailure::Cancelled);
                                 }
                                 Err(_) if turn_cancel.is_cancelled() => {
-                                    return Err(ModelTurnFailure::Interrupted(attempt_partial));
+                                    retry_checkpoint.merge_attempt(&attempt_partial);
+                                    return Err(ModelTurnFailure::Interrupted(retry_checkpoint));
                                 }
                                 Err(e) => Err(format!("Stream error: {e}")),
                             }

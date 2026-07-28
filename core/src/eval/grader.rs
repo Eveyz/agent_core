@@ -91,6 +91,7 @@ fn event_tag(ev: &RunEvent) -> &'static str {
         RunEvent::MessageStart { .. } => "message_start",
         RunEvent::MessageUpdate { .. } => "message_update",
         RunEvent::MessageEnd { .. } => "message_end",
+        RunEvent::MessageInterrupted { .. } => "message_interrupted",
         RunEvent::ToolPreparing { .. } => "tool_preparing",
         RunEvent::ToolStarted { .. } => "tool_started",
         RunEvent::ToolUpdate { .. } => "tool_update",

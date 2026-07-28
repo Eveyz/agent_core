@@ -32,6 +32,12 @@ pub enum MockStep {
         text: String,
         delay_ms: u64,
     },
+    /// Send one text delta, pause, then finish the response.
+    StreamingText {
+        first: String,
+        rest: String,
+        delay_ms: u64,
+    },
     ToolCalls {
         tools: Vec<MockToolCall>,
         #[serde(default)]
@@ -201,6 +207,37 @@ async fn handle_connection(
             );
             socket.write_all(resp.as_bytes()).await?;
         }
+        MockStep::StreamingText {
+            first,
+            rest,
+            delay_ms,
+        } => {
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+                )
+                .await?;
+            let first_chunk = serde_json::json!({
+                "choices": [{
+                    "index": 0,
+                    "delta": { "role": "assistant", "content": first }
+                }]
+            });
+            socket
+                .write_all(format!("data: {first_chunk}\n\n").as_bytes())
+                .await?;
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            socket
+                .write_all(
+                    render_sse(&MockStep::Text {
+                        text: rest,
+                        cache_hit: 0,
+                        cache_miss: 0,
+                    })
+                    .as_bytes(),
+                )
+                .await?;
+        }
         other => {
             let sse = render_sse(&other);
             let resp = format!(
@@ -279,8 +316,8 @@ fn render_sse(step: &MockStep) -> String {
         MockStep::Empty => {
             out.push_str("data: [DONE]\n\n");
         }
-        MockStep::DelayedText { .. } => {
-            unreachable!("delayed text is rendered through the delayed response path")
+        MockStep::DelayedText { .. } | MockStep::StreamingText { .. } => {
+            unreachable!("streamed text is rendered through a dedicated response path")
         }
         MockStep::Error { .. } => unreachable!(),
     }

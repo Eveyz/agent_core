@@ -76,6 +76,9 @@ pub struct RunMetrics {
     pub unique_tools: Vec<String>,
     pub approvals: u64,
     pub steers: u64,
+    /// Longest observed delay from steer acceptance to context injection.
+    #[serde(default)]
+    pub steer_interrupt_latency_ms: u64,
     pub compactions: u64,
     pub retries: u64,
     pub tokens_in: u64,

@@ -620,6 +620,7 @@ impl Subagent {
                     hook_registry: self.hook_registry.clone(),
                     tool_execution_mode: crate::types::ToolExecutionMode::Sequential,
                     cancel_token: cancel,
+                    lifetime_cancel: None,
                     approval_resolver: self.approval_resolver.clone(),
                     input_resolver: None, // ask_user only on main Run (v1)
                     session_id: self.session_id.clone(),

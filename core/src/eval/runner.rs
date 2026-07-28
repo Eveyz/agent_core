@@ -496,6 +496,7 @@ fn event_tag_name(ev: &RunEvent) -> &'static str {
         RunEvent::TurnStarted { .. } => "turn_started",
         RunEvent::TurnEnded { .. } => "turn_ended",
         RunEvent::ModelCallStarted => "model_call_started",
+        RunEvent::MessageInterrupted { .. } => "message_interrupted",
         RunEvent::ApprovalRequired { .. } => "approval_required",
         RunEvent::SteerQueued { .. } => "steer_queued",
         RunEvent::RunCompleted { .. } => "run_completed",
@@ -727,4 +728,3 @@ max_context_tokens = 65536
         assert!(m.base_url.contains("deepseek.com"));
     }
 }
-

@@ -1,6 +1,6 @@
 [[steps]]
 type = "tool_calls"
-tools = [{ name = "read_file", arguments = { path = "x.txt" } }]
+tools = [{ name = "shell", arguments = { command = "sleep 2; echo obsolete" } }]
 
 [[steps]]
 type = "text"

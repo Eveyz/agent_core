@@ -966,6 +966,52 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
       if (ev.subagent_id) handleSubagentMessageEnd(state, sessionId, ev.subagent_id, ev.message_id);
       else handleMessageEnd(state, sessionId, ev.message_id);
       break;
+    case 'message_interrupted': {
+      const turn = findOpenTurn(state.entries[sessionId]);
+      if (turn?.type === 'turn') {
+        const content =
+          ev.partial_message && typeof ev.partial_message === 'object'
+            ? ev.partial_message.content ?? ''
+            : '';
+        const thinkMatch = content.match(/<think>([\s\S]*?)<\/think>/);
+        const thinking = thinkMatch?.[1] ?? '';
+        const visible = content.replace(/<think>[\s\S]*?<\/think>/, '').trim();
+        const existingThinking = turn.blocks?.find(
+          (block) => block.type === 'thinking' && block.message_id === ev.message_id,
+        );
+        if (
+          existingThinking?.type === 'thinking' &&
+          thinking.length > existingThinking.text.length
+        ) {
+          existingThinking.text = thinking;
+        } else if (!existingThinking && thinking) {
+          turn.blocks?.push({
+            type: 'thinking',
+            text: thinking,
+            isStreaming: false,
+            message_id: ev.message_id,
+            startTime: Date.now(),
+            endTime: Date.now(),
+          });
+        }
+        const existing = turn.blocks?.find(
+          (block) => block.type === 'assistant' && block.message_id === ev.message_id,
+        );
+        if (existing?.type === 'assistant' && visible.length > existing.text.length) {
+          existing.text = visible;
+        } else if (!existing && visible) {
+          turn.blocks?.push({
+            type: 'assistant',
+            text: visible,
+            isStreaming: false,
+            message_id: ev.message_id,
+          });
+        }
+        turn.interrupted = true;
+      }
+      handleMessageEnd(state, sessionId, ev.message_id);
+      break;
+    }
     case 'tool_preparing':
       handleToolPreparing(
         state,

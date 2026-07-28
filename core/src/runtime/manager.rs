@@ -34,7 +34,7 @@ use crate::runtime::event_log::EventLog;
 use crate::runtime::input::{ClarificationAnswers, InputResolver};
 use crate::runtime::run::{Run, default_runs_dir};
 use crate::runtime::state::RunState;
-use crate::runtime::steering::SteeringController;
+use crate::runtime::steering::{SteerAcceptError, SteeringController};
 use crate::session::SessionManager;
 use crate::types::Message;
 use crate::worktree::WorktreeManager;
@@ -66,6 +66,9 @@ pub struct RunHandle {
     cmd_tx: mpsc::Sender<RunCommand>,
     /// Broadcast sender for events. Subscribers call `.subscribe()` on this.
     pub event_tx: broadcast::Sender<Envelope>,
+    /// Single durable event mailbox. Steers publish acceptance here immediately
+    /// instead of waiting for the interrupted turn to unwind.
+    producer_tx: mpsc::UnboundedSender<Envelope>,
     /// The tokio task running the Run's loop.
     join_handle: Option<JoinHandle<()>>,
     /// Shared state for querying (read-only, updated by the Run task).
@@ -739,6 +742,7 @@ impl RunManager {
             prompt_id: prompt_id.clone(),
             cmd_tx,
             event_tx,
+            producer_tx,
             join_handle: Some(join_handle),
             state: shared_state,
             approval_resolver,
@@ -790,19 +794,38 @@ impl RunManager {
             handle.id
         );
         let entry = SteerEntry {
-            id: steer_id,
+            id: steer_id.clone(),
             message: RunCommand::steer_message(&message),
-            raw_text: message,
+            raw_text: message.clone(),
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64,
         };
-        handle
-            .steering
-            .enqueue(entry)
-            .map(|_| ())
-            .map_err(|_| anyhow::anyhow!("run '{}' no longer accepts steers", handle.id))
+        match handle.steering.accept(entry, |queue_depth| {
+            handle.producer_tx.send(Envelope {
+                seq: 0,
+                event_id: uuid::Uuid::new_v4().to_string(),
+                run_id: handle.id.clone(),
+                session_id: handle.session_id.clone(),
+                turn_id: None,
+                parent_call_id: None,
+                ts: chrono::Utc::now(),
+                event: RunEvent::SteerQueued {
+                    steer_id,
+                    message,
+                    queue_depth,
+                },
+            })
+        }) {
+            Ok(_) => Ok(()),
+            Err(SteerAcceptError::Closed) => {
+                anyhow::bail!("run '{}' no longer accepts steers", handle.id)
+            }
+            Err(SteerAcceptError::Publish(_)) => {
+                anyhow::bail!("run '{}' event mailbox is closed", handle.id)
+            }
+        }
     }
 
     /// Subscribe to a Run's event stream.
@@ -1400,8 +1423,14 @@ default = {{ model_id = "mock", max_context_tokens = 100000 }}
                 break;
             }
         }
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while mock.call_count() == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first model request should be in flight");
 
-        let started = std::time::Instant::now();
         manager
             .steer_run(&run_id, "steer-1".into(), "new direction".into())
             .await
@@ -1418,6 +1447,7 @@ default = {{ model_id = "mock", max_context_tokens = 100000 }}
                     }
                     RunEvent::MessageInterrupted { reason, .. } => {
                         assert_eq!(reason, "user_steer");
+                        assert!(saw_queued, "acceptance must precede interruption");
                         saw_interrupted = true;
                     }
                     RunEvent::RunCompleted { final_text } => break final_text,
@@ -1432,7 +1462,201 @@ default = {{ model_id = "mock", max_context_tokens = 100000 }}
         assert!(saw_queued);
         assert!(saw_interrupted);
         assert_eq!(final_text, "steered answer");
-        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn steer_interrupts_an_in_flight_tool_and_pairs_its_terminal_event() {
+        use crate::eval::mock_llm::{
+            MockScript, MockStep, MockToolCall, start_mock_server,
+        };
+
+        let mock = start_mock_server(MockScript {
+            steps: vec![
+                MockStep::ToolCalls {
+                    tools: vec![MockToolCall {
+                        name: "shell".into(),
+                        arguments: serde_json::json!({
+                            "command": "sleep 2; echo obsolete"
+                        }),
+                    }],
+                    cache_hit: 0,
+                    cache_miss: 0,
+                },
+                MockStep::Text {
+                    text: "continued after tool interrupt".into(),
+                    cache_hit: 0,
+                    cache_miss: 0,
+                },
+            ],
+        })
+        .await
+        .unwrap();
+        let mut config = test_config_with_base_url(&mock.base_url);
+        config.permissions.mode = crate::permission::PermissionMode::Yolo;
+        let brain = Brain::from_config(config).unwrap();
+        let manager = RunManager::new(brain);
+        let run_id = manager
+            .create_run("run the command", None, vec![])
+            .await
+            .unwrap()
+            .run_id;
+        let mut events = manager.subscribe(&run_id).await.unwrap();
+        manager
+            .command(&run_id, RunCommand::Start)
+            .await
+            .unwrap();
+
+        loop {
+            if matches!(
+                events.recv().await.unwrap().event,
+                RunEvent::ToolStarted { .. }
+            ) {
+                break;
+            }
+        }
+        manager
+            .steer_run(&run_id, "steer-tool".into(), "stop that command".into())
+            .await
+            .unwrap();
+
+        let mut interrupted_tool = false;
+        let final_text = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                match events.recv().await.unwrap().event {
+                    RunEvent::ToolEnded {
+                        result, is_error, ..
+                    } if is_error => {
+                        assert!(result.to_ascii_lowercase().contains("interrupt"));
+                        interrupted_tool = true;
+                    }
+                    RunEvent::RunCompleted { final_text } => break final_text,
+                    RunEvent::RunFailed { error } => panic!("run failed: {error}"),
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("steer should not wait for the long-running tool");
+
+        assert!(interrupted_tool);
+        assert_eq!(final_text, "continued after tool interrupt");
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn steer_preserves_partial_model_text_when_interrupting_a_stream() {
+        use crate::eval::mock_llm::{MockScript, MockStep, start_mock_server};
+
+        let mock = start_mock_server(MockScript {
+            steps: vec![
+                MockStep::StreamingText {
+                    first: "useful partial".into(),
+                    rest: " obsolete tail".into(),
+                    delay_ms: 2_000,
+                },
+                MockStep::Text {
+                    text: "replacement answer".into(),
+                    cache_hit: 0,
+                    cache_miss: 0,
+                },
+            ],
+        })
+        .await
+        .unwrap();
+        let brain = Brain::from_config(test_config_with_base_url(&mock.base_url)).unwrap();
+        let manager = RunManager::new(brain);
+        let run_id = manager
+            .create_run("original request", None, vec![])
+            .await
+            .unwrap()
+            .run_id;
+        let mut events = manager.subscribe(&run_id).await.unwrap();
+        manager
+            .command(&run_id, RunCommand::Start)
+            .await
+            .unwrap();
+
+        loop {
+            if matches!(
+                events.recv().await.unwrap().event,
+                RunEvent::ModelStreaming { .. }
+            ) {
+                break;
+            }
+        }
+        manager
+            .steer_run(&run_id, "steer-partial".into(), "replace it".into())
+            .await
+            .unwrap();
+
+        let partial = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if let RunEvent::MessageInterrupted {
+                    partial_message, ..
+                } = events.recv().await.unwrap().event
+                {
+                    break partial_message;
+                }
+            }
+        })
+        .await
+        .expect("stream should be interrupted promptly")
+        .expect("visible partial output should be retained");
+        assert!(
+            partial
+                .content
+                .as_deref()
+                .is_some_and(|text| text.contains("useful partial"))
+        );
+        assert!(
+            !partial
+                .content
+                .as_deref()
+                .unwrap_or_default()
+                .contains("obsolete tail")
+        );
+        mock.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn steer_is_rejected_after_terminal_event_even_if_state_mirror_lags() {
+        use crate::eval::mock_llm::{MockScript, MockStep, start_mock_server};
+
+        let mock = start_mock_server(MockScript {
+            steps: vec![MockStep::Text {
+                text: "done".into(),
+                cache_hit: 0,
+                cache_miss: 0,
+            }],
+        })
+        .await
+        .unwrap();
+        let brain = Brain::from_config(test_config_with_base_url(&mock.base_url)).unwrap();
+        let manager = RunManager::new(brain);
+        let run_id = manager
+            .create_run("finish", None, vec![])
+            .await
+            .unwrap()
+            .run_id;
+        let mut events = manager.subscribe(&run_id).await.unwrap();
+        manager
+            .command(&run_id, RunCommand::Start)
+            .await
+            .unwrap();
+        loop {
+            if matches!(
+                events.recv().await.unwrap().event,
+                RunEvent::RunCompleted { .. }
+            ) {
+                break;
+            }
+        }
+
+        manager
+            .steer_run(&run_id, "late-steer".into(), "too late".into())
+            .await
+            .expect_err("terminal runs must reject steers");
         mock.shutdown().await;
     }
 

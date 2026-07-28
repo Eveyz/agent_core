@@ -131,7 +131,7 @@ pub async fn send_steer(cli: &Arc<TokioMutex<CliState>>, message: String) -> Opt
     );
     match state
         .run_manager
-        .command(&run_id, RunCommand::Steer { steer_id, message })
+        .steer_run(&run_id, steer_id, message)
         .await
     {
         Ok(()) => None,

@@ -25,6 +25,9 @@ pub struct ToolOrchestrator<'a> {
     pub hook_registry: Arc<Mutex<HookRegistry>>,
     pub tool_execution_mode: ToolExecutionMode,
     pub cancel_token: CancellationToken,
+    /// Distinguishes whole-Run cancellation from a turn-only steer.
+    /// Callers without that distinction retain generic abort wording.
+    pub lifetime_cancel: Option<CancellationToken>,
     /// Per-Run approval resolver. If `None`, falls back to the global map
     /// (for backward compat with the old Agent path).
     pub approval_resolver: Option<ApprovalResolver>,
@@ -37,6 +40,14 @@ pub struct ToolOrchestrator<'a> {
 }
 
 impl<'a> ToolOrchestrator<'a> {
+    fn cancellation_message(&self) -> &'static str {
+        match self.lifetime_cancel.as_ref() {
+            Some(token) if token.is_cancelled() => "Aborted",
+            Some(_) => "Interrupted by user steer",
+            None => "Aborted",
+        }
+    }
+
     #[tracing::instrument(skip_all, fields(tool_count = calls.len()))]
     pub async fn execute_tools<F>(&mut self, calls: &[ToolCall], on_event: &F) -> Vec<String>
     where
@@ -286,7 +297,7 @@ impl<'a> ToolOrchestrator<'a> {
                                 ));
                             }
                             if self.cancel_token.is_cancelled() {
-                                results[i] = Some("Aborted".to_string());
+                                results[i] = Some(self.cancellation_message().to_string());
                             } else {
                                 results[i] = Some(format!(
                                     "Approval cancelled for tool '{}'",
@@ -414,7 +425,7 @@ impl<'a> ToolOrchestrator<'a> {
         // Seed: launch every node with indegree 0.
         for (node_idx, node) in nodes.iter().enumerate() {
             if self.cancel_token.is_cancelled() {
-                results[node.idx] = Some("Aborted".to_string());
+                results[node.idx] = Some(self.cancellation_message().to_string());
                 indegree[node_idx] = usize::MAX; // mark so we never launch
             } else if indegree[node_idx] == 0 {
                 in_flight.push(self.run_node(node_idx, node, on_event));
@@ -450,7 +461,7 @@ impl<'a> ToolOrchestrator<'a> {
         // Use `is_none()` — empty `Some("")` is a valid successful result.
         for node in nodes.iter() {
             if results[node.idx].is_none() {
-                results[node.idx] = Some("Aborted".to_string());
+                results[node.idx] = Some(self.cancellation_message().to_string());
             }
         }
 
@@ -539,7 +550,7 @@ impl<'a> ToolOrchestrator<'a> {
             },
             Err(_) => {
                 if self.cancel_token.is_cancelled() {
-                    "Aborted".to_string()
+                    self.cancellation_message().to_string()
                 } else {
                     "Error: clarification cancelled — no answers received from the user."
                         .to_string()
@@ -557,6 +568,8 @@ impl<'a> ToolOrchestrator<'a> {
     {
         let cancel = self.cancel_token.clone();
         let out = tokio::select! {
+            biased;
+            _ = self.cancel_token.cancelled() => self.cancellation_message().to_string(),
             res = self.execute_single_tool(
                 &node.tool_name,
                 &node.tool_call_id,
@@ -564,7 +577,6 @@ impl<'a> ToolOrchestrator<'a> {
                 cancel,
                 on_event,
             ) => res,
-            _ = self.cancel_token.cancelled() => "Aborted".to_string(),
         };
         (node_idx, out)
     }
@@ -708,7 +720,7 @@ impl<'a> ToolOrchestrator<'a> {
 }
 
 /// Convert optional result slots to concrete strings. Remaining `None` slots
-/// (should not happen after the unfinished-abort pass) become `"Aborted"`.
+/// (should not happen after the unfinished-abort pass) become a generic abort.
 fn finalize_tool_results(results: Vec<Option<String>>) -> Vec<String> {
     results
         .into_iter()
@@ -864,6 +876,7 @@ mod empty_success_tests {
 
     /// Tool that succeeds with an empty string — same shape as `mkdir` / `true`.
     struct SilentOkTool;
+    struct SlowTool;
 
     #[async_trait]
     impl Tool for SilentOkTool {
@@ -884,6 +897,26 @@ mod empty_success_tests {
         }
     }
 
+    #[async_trait]
+    impl Tool for SlowTool {
+        fn name(&self) -> &str {
+            "slow"
+        }
+
+        fn description(&self) -> &str {
+            "waits until cancelled"
+        }
+
+        fn parameters_schema(&self) -> Value {
+            json!({"type": "object", "properties": {}})
+        }
+
+        async fn execute(&self, _args: Value) -> anyhow::Result<String> {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            Ok("finished".to_string())
+        }
+    }
+
     #[tokio::test]
     async fn empty_successful_tool_result_is_not_marked_aborted() {
         let mut registry = ToolRegistry::new();
@@ -896,6 +929,7 @@ mod empty_success_tests {
             hook_registry: Arc::new(Mutex::new(HookRegistry::new())),
             tool_execution_mode: ToolExecutionMode::Parallel,
             cancel_token: CancellationToken::new(),
+            lifetime_cancel: None,
             approval_resolver: None,
             input_resolver: None,
             session_id: None,
@@ -940,6 +974,7 @@ mod empty_success_tests {
             hook_registry: Arc::new(Mutex::new(HookRegistry::new())),
             tool_execution_mode: ToolExecutionMode::Parallel,
             cancel_token: cancel,
+            lifetime_cancel: None,
             approval_resolver: None,
             input_resolver: None,
             session_id: None,
@@ -958,6 +993,47 @@ mod empty_success_tests {
         }];
 
         let results = orchestrator.execute_tools(&calls, &|_, _| {}).await;
+        assert_eq!(results, vec!["Aborted".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn in_flight_generic_cancel_is_not_mislabeled_as_a_steer() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(SlowTool));
+
+        let cancel = CancellationToken::new();
+        let cancel_soon = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            cancel_soon.cancel();
+        });
+
+        let mut policy = PermissionPolicy::with_builtin_defaults().with_mode(PermissionMode::Yolo);
+        let mut orchestrator = ToolOrchestrator {
+            registry: &registry,
+            permission_policy: &mut policy,
+            hook_registry: Arc::new(Mutex::new(HookRegistry::new())),
+            tool_execution_mode: ToolExecutionMode::Parallel,
+            cancel_token: cancel,
+            lifetime_cancel: None,
+            approval_resolver: None,
+            input_resolver: None,
+            session_id: None,
+            prompt_id: None,
+            run_id: None,
+            working_dir: None,
+        };
+        let calls = vec![ToolCall {
+            id: "call-slow".into(),
+            call_type: "function".into(),
+            function: FunctionCall {
+                name: "slow".into(),
+                arguments: "{}".into(),
+            },
+        }];
+
+        let results = orchestrator.execute_tools(&calls, &|_, _| {}).await;
+
         assert_eq!(results, vec!["Aborted".to_string()]);
     }
 }

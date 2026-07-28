@@ -87,7 +87,7 @@ enum RecoveryOutcome {
 
 enum ModelTurnFailure {
     Cancelled,
-    Interrupted(StreamPartial),
+    Interrupted(turn::StreamPartial),
     Failed(String),
 }
 

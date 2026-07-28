@@ -786,7 +786,7 @@ async fn steer_run(
 ) -> Result<(), String> {
     let manager = state.run_manager.lock().await;
     manager
-        .command(&run_id, RunCommand::Steer { steer_id, message })
+        .steer_run(&run_id, steer_id, message)
         .await
         .map_err(|e| e.to_string())
 }
