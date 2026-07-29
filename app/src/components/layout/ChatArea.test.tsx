@@ -109,6 +109,8 @@ describe('ChatArea prepend transaction', () => {
 
   beforeEach(() => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    mocks.state.chat.allPrompts.s1 = [{}, {}, {}, {}];
+    mocks.state.chat.visiblePromptsCount.s1 = 2;
     mocks.ready.clear();
     ResizeObserverStub.instances = [];
     frames = [];
@@ -157,6 +159,8 @@ describe('ChatArea prepend transaction', () => {
 
     scroll.scrollTop = 0;
     act(() => scroll.dispatchEvent(new Event('scroll', { bubbles: true })));
+    expect(container.querySelector('[data-entry-id="old-user"]')).toBeNull();
+    act(() => scroll.dispatchEvent(new Event('scrollend')));
     expect(anchor.getBoundingClientRect().top).toBe(0);
 
     // The controller-level test separately advances beyond the old one-second
@@ -179,5 +183,96 @@ describe('ChatArea prepend transaction', () => {
     act(() => ResizeObserverStub.instances[0].emit());
     flushFrames();
     expect(scroll.scrollTop).toBe(settledScrollTop);
+  });
+
+  it('waits for scroll inactivity before prepending older entries', () => {
+    vi.useFakeTimers();
+    let scroll!: HTMLDivElement;
+    let prependCount = 0;
+    act(() => {
+      root.render(
+        <Harness
+          onRefs={(nextScroll) => { scroll = nextScroll; }}
+          onPrepend={() => { prependCount += 1; }}
+        />,
+      );
+    });
+
+    scroll.scrollTop = 600;
+    act(() => scroll.dispatchEvent(new Event('scroll', { bubbles: true })));
+    expect(prependCount).toBe(0);
+
+    act(() => vi.advanceTimersByTime(100));
+    scroll.scrollTop = 500;
+    act(() => scroll.dispatchEvent(new Event('scroll', { bubbles: true })));
+    act(() => vi.advanceTimersByTime(119));
+    expect(prependCount).toBe(0);
+
+    act(() => vi.advanceTimersByTime(1));
+    expect(prependCount).toBe(1);
+  });
+
+  it('cancels a queued prepend after scrolling away from the top region', () => {
+    vi.useFakeTimers();
+    let scroll!: HTMLDivElement;
+    let prependCount = 0;
+    act(() => {
+      root.render(
+        <Harness
+          onRefs={(nextScroll) => { scroll = nextScroll; }}
+          onPrepend={() => { prependCount += 1; }}
+        />,
+      );
+    });
+
+    scroll.scrollTop = 600;
+    act(() => scroll.dispatchEvent(new Event('scroll', { bubbles: true })));
+    scroll.scrollTop = 1_200;
+    act(() => scroll.dispatchEvent(new Event('scroll', { bubbles: true })));
+    act(() => vi.advanceTimersByTime(200));
+
+    expect(prependCount).toBe(0);
+  });
+
+  it('still loads at the hard top when wheel intent produces no scroll event', () => {
+    vi.useFakeTimers();
+    let scroll!: HTMLDivElement;
+    let prependCount = 0;
+    act(() => {
+      root.render(
+        <Harness
+          onRefs={(nextScroll) => { scroll = nextScroll; }}
+          onPrepend={() => { prependCount += 1; }}
+        />,
+      );
+    });
+
+    scroll.scrollTop = 0;
+    act(() => scroll.dispatchEvent(new WheelEvent('wheel', { bubbles: true })));
+    act(() => vi.advanceTimersByTime(120));
+
+    expect(prependCount).toBe(1);
+  });
+
+  it('does not run a queued prepend with stale list state', () => {
+    vi.useFakeTimers();
+    let scroll!: HTMLDivElement;
+    let prependCount = 0;
+    const render = () => (
+      <Harness
+        onRefs={(nextScroll) => { scroll = nextScroll; }}
+        onPrepend={() => { prependCount += 1; }}
+      />
+    );
+    act(() => root.render(render()));
+
+    scroll.scrollTop = 600;
+    act(() => scroll.dispatchEvent(new Event('scroll', { bubbles: true })));
+
+    mocks.state.chat.allPrompts.s1 = [{}, {}];
+    act(() => root.render(render()));
+    act(() => vi.advanceTimersByTime(120));
+
+    expect(prependCount).toBe(0);
   });
 });

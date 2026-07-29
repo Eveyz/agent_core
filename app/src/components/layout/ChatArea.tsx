@@ -10,6 +10,9 @@ import {
   PrependScrollAnchor,
 } from './prependScrollAnchor';
 
+const PREPEND_PREPARE_THRESHOLD_PX = 800;
+const SCROLL_IDLE_FALLBACK_MS = 120;
+
 interface ChatAreaProps {
   entryIds: string[];
   defaultModel: string;
@@ -46,6 +49,8 @@ export const ChatArea = memo(function ChatArea({
   const entryHeightLedgerRef = useRef(new Map<string, number>());
   const settleFramesRef = useRef<number[]>([]);
   const layoutRevisionRef = useRef(0);
+  const pendingPrependRef = useRef(false);
+  const scrollIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const restoreAnchor = useCallback(() => {
     const scrollEl = scrollRef.current;
@@ -56,6 +61,14 @@ export const ChatArea = memo(function ChatArea({
   const cancelSettleFrames = useCallback(() => {
     for (const frame of settleFramesRef.current) cancelAnimationFrame(frame);
     settleFramesRef.current = [];
+  }, []);
+
+  const cancelPendingPrepend = useCallback(() => {
+    pendingPrependRef.current = false;
+    if (scrollIdleTimerRef.current !== null) {
+      clearTimeout(scrollIdleTimerRef.current);
+      scrollIdleTimerRef.current = null;
+    }
   }, []);
 
   const finishInitialPrependLayout = useCallback(() => {
@@ -151,9 +164,10 @@ export const ChatArea = memo(function ChatArea({
     seenPrependedEntriesRef.current.clear();
     pendingReadyEntriesRef.current = null;
     entryHeightLedgerRef.current.clear();
+    cancelPendingPrepend();
     cancelSettleFrames();
     setIsLoadingOlder(false);
-  }, [activeSessionId, cancelSettleFrames]);
+  }, [activeSessionId, cancelPendingPrepend, cancelSettleFrames]);
 
   const forceMountIds = useMemo(
     () => isLoadingOlder
@@ -172,40 +186,113 @@ export const ChatArea = memo(function ChatArea({
   }, [cancelSettleFrames]);
 
   useEffect(() => {
-    if (isProcessing) cancelPrependPreservation();
-  }, [cancelPrependPreservation, isProcessing]);
+    if (isProcessing) {
+      cancelPendingPrepend();
+      cancelPrependPreservation();
+    }
+  }, [cancelPendingPrepend, cancelPrependPreservation, isProcessing]);
+
+  const canPrepend = useCallback((target: HTMLDivElement) => (
+    target.scrollTop <= PREPEND_PREPARE_THRESHOLD_PX &&
+    visiblePromptsCount < allPrompts.length &&
+    !isLoadingOlder &&
+    !isProcessing &&
+    Boolean(activeSessionId) &&
+    entryIds.length > 0
+  ), [
+    activeSessionId,
+    allPrompts.length,
+    entryIds.length,
+    isLoadingOlder,
+    isProcessing,
+    visiblePromptsCount,
+  ]);
+
+  const commitPendingPrepend = useCallback(() => {
+    if (!pendingPrependRef.current) return;
+    const target = scrollRef.current;
+    cancelPendingPrepend();
+    if (!target || !canPrepend(target) || !activeSessionId) return;
+
+    const anchorId = entryIds[0];
+    if (!prependAnchorRef.current.capture(target, anchorId)) return;
+    entriesBeforePrependRef.current = new Set(entryIds);
+    pendingReadyEntriesRef.current = null;
+    cancelSettleFrames();
+    setIsLoadingOlder(true);
+    dispatch(loadMorePrompts({ sessionId: activeSessionId }));
+  }, [
+    activeSessionId,
+    cancelPendingPrepend,
+    cancelSettleFrames,
+    canPrepend,
+    dispatch,
+    entryIds,
+    scrollRef,
+  ]);
+
+  const schedulePendingPrepend = useCallback(() => {
+    pendingPrependRef.current = true;
+    if (scrollIdleTimerRef.current !== null) {
+      clearTimeout(scrollIdleTimerRef.current);
+    }
+    scrollIdleTimerRef.current = setTimeout(() => {
+      scrollIdleTimerRef.current = null;
+      commitPendingPrepend();
+    }, SCROLL_IDLE_FALLBACK_MS);
+  }, [commitPendingPrepend]);
+
+  useEffect(() => {
+    const target = scrollRef.current;
+    if (!target) return;
+    const handleScrollEnd = () => commitPendingPrepend();
+    target.addEventListener('scrollend', handleScrollEnd);
+    return () => {
+      target.removeEventListener('scrollend', handleScrollEnd);
+      // A changed callback means its captured session/list state is stale.
+      cancelPendingPrepend();
+    };
+  }, [cancelPendingPrepend, commitPendingPrepend, scrollRef]);
+
+  useEffect(() => () => cancelPendingPrepend(), [cancelPendingPrepend]);
 
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const target = e.currentTarget;
-    if (
-      target.scrollTop < 30 &&
-      visiblePromptsCount < allPrompts.length &&
-      !isLoadingOlder &&
-      !isProcessing &&
-      activeSessionId &&
-      entryIds.length > 0
-    ) {
-      const anchorId = entryIds[0];
-      if (!prependAnchorRef.current.capture(target, anchorId)) return;
-      entriesBeforePrependRef.current = new Set(entryIds);
-      pendingReadyEntriesRef.current = null;
-      cancelSettleFrames();
-      setIsLoadingOlder(true);
-      dispatch(loadMorePrompts({ sessionId: activeSessionId }));
+    if (!canPrepend(target)) {
+      cancelPendingPrepend();
+      return;
+    }
+    schedulePendingPrepend();
+  };
+
+  const handleMovingScrollIntent = () => {
+    cancelPrependPreservation();
+    const target = scrollRef.current;
+    if (target && canPrepend(target)) {
+      schedulePendingPrepend();
+    } else {
+      cancelPendingPrepend();
     }
   };
 
+  const handlePointerDown = () => {
+    cancelPendingPrepend();
+    cancelPrependPreservation();
+  };
+
   const handleScrollKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if ([
-      'ArrowUp',
-      'ArrowDown',
-      'PageUp',
-      'PageDown',
-      'Home',
-      'End',
-      ' ',
-    ].includes(event.key)) {
-      cancelPrependPreservation();
+    if (
+      [
+        'ArrowUp',
+        'ArrowDown',
+        'PageUp',
+        'PageDown',
+        'Home',
+        'End',
+        ' ',
+      ].includes(event.key)
+    ) {
+      handleMovingScrollIntent();
     }
   };
 
@@ -215,9 +302,9 @@ export const ChatArea = memo(function ChatArea({
         className="chat-history"
         ref={scrollRef}
         onScroll={handleScroll}
-        onWheel={cancelPrependPreservation}
-        onTouchMove={cancelPrependPreservation}
-        onPointerDown={cancelPrependPreservation}
+        onWheel={handleMovingScrollIntent}
+        onTouchMove={handleMovingScrollIntent}
+        onPointerDown={handlePointerDown}
         onKeyDown={handleScrollKeyDown}
       >
         {isLoadingOlder && (
