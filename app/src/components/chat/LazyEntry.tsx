@@ -7,10 +7,15 @@ interface LazyEntryProps {
   handleRetry: (id: string, text?: string) => void;
   isProcessing: boolean;
   scrollRef: RefObject<HTMLElement | null>;
-  /** Always render these last N entries (the active/streaming ones at the
-   * bottom) without waiting for the IntersectionObserver, so streaming
-   * output mounts instantly. */
+  /** Render without waiting for IntersectionObserver (active bottom entries
+   * and the full range participating in an older-history prepend). */
   forceVisible: boolean;
+  /** Last measured height for this entry, retained by the owning chat pane. */
+  estimatedHeight?: number;
+  /** Reports real layout height without forcing a parent re-render. */
+  onHeightChange?: (entryId: string, height: number) => void;
+  /** Fires once code highlighting and images in this mounted entry are ready. */
+  onReady?: (entryId: string) => void;
   onSend?: (msg: string | { text: string }) => void;
 }
 
@@ -41,19 +46,15 @@ export const LazyEntry = memo(function LazyEntry({
   isProcessing,
   scrollRef,
   forceVisible,
+  estimatedHeight,
+  onHeightChange,
+  onReady,
   onSend,
 }: LazyEntryProps) {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
-  const measuredHeight = useRef(PLACEHOLDER_MIN_HEIGHT);
+  const measuredHeight = useRef(estimatedHeight ?? PLACEHOLDER_MIN_HEIGHT);
   const [nearViewport, setNearViewport] = useState(forceVisible);
   const visible = forceVisible || nearViewport;
-
-  // When a parent briefly force-mounts (e.g. prepended older prompts), keep the
-  // entry marked near-viewport so clearing forceVisible does not collapse it
-  // back to a placeholder and shift scroll.
-  useEffect(() => {
-    if (forceVisible) setNearViewport(true);
-  }, [forceVisible]);
 
   useEffect(() => {
     const el = wrapperRef.current;
@@ -73,12 +74,43 @@ export const LazyEntry = memo(function LazyEntry({
 
   useEffect(() => {
     if (!visible || !wrapperRef.current) return;
+    const wrapper = wrapperRef.current;
     const observer = new ResizeObserver(([entry]) => {
-      if (entry.contentRect.height > 0) measuredHeight.current = entry.contentRect.height;
+      if (entry.contentRect.height > 0) {
+        measuredHeight.current = entry.contentRect.height;
+        onHeightChange?.(entryId, entry.contentRect.height);
+      }
     });
-    observer.observe(wrapperRef.current);
-    return () => observer.disconnect();
-  }, [visible]);
+    observer.observe(wrapper);
+
+    let ready = false;
+    const checkReady = () => {
+      if (ready) return;
+      const highlighting = wrapper.querySelector('[data-highlight-loading="true"]');
+      const images = Array.from(wrapper.querySelectorAll('img'));
+      if (!highlighting && images.every((image) => image.complete)) {
+        ready = true;
+        onReady?.(entryId);
+      }
+    };
+    const mutations = new MutationObserver(checkReady);
+    mutations.observe(wrapper, {
+      attributes: true,
+      attributeFilter: ['data-highlight-loading', 'src'],
+      childList: true,
+      subtree: true,
+    });
+    wrapper.addEventListener('load', checkReady, true);
+    wrapper.addEventListener('error', checkReady, true);
+    checkReady();
+
+    return () => {
+      observer.disconnect();
+      mutations.disconnect();
+      wrapper.removeEventListener('load', checkReady, true);
+      wrapper.removeEventListener('error', checkReady, true);
+    };
+  }, [entryId, onHeightChange, onReady, visible]);
 
   return (
     <div

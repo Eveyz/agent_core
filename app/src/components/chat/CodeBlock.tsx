@@ -222,7 +222,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({ code, language, className 
 
   if (loading) {
     return (
-      <div className={`code-block-wrapper ${className}`}>
+      <div className={`code-block-wrapper ${className}`} data-highlight-loading="true">
         <div className="code-block-header">
           <span className="code-block-language">{displayName}</span>
           <button className="code-block-copy-btn" onClick={handleCopy}>
@@ -237,7 +237,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({ code, language, className 
   }
 
   return (
-    <div className={`code-block-wrapper ${className}`}>
+    <div className={`code-block-wrapper ${className}`} data-highlight-loading="false">
       <div className="code-block-header">
         <span className="code-block-language">{displayName}</span>
         <button className="code-block-copy-btn" onClick={handleCopy}>

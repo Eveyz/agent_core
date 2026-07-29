@@ -1,10 +1,14 @@
-import { RefObject, useState, memo, useRef, useLayoutEffect, useEffect, useCallback } from 'react';
+import { RefObject, useState, memo, useRef, useLayoutEffect, useEffect, useCallback, useMemo } from 'react';
 import { useSelector, shallowEqual } from 'react-redux';
 import { RootState } from '../../store';
 import ChevronDownIcon from 'lucide-react/dist/esm/icons/chevron-down.mjs';
 import { LazyEntry } from '../chat/LazyEntry';
 import { loadMorePrompts, selectActiveBtwEntries } from '../../features/chat/chatSlice';
 import { useAppDispatch } from '../../hooks/useAppDispatch';
+import {
+  entriesThroughAnchor,
+  PrependScrollAnchor,
+} from './prependScrollAnchor';
 
 interface ChatAreaProps {
   entryIds: string[];
@@ -16,34 +20,6 @@ interface ChatAreaProps {
   scrollToBottom: (behavior?: ScrollBehavior) => void;
   handleRetry: (id: string, text?: string) => void;
   onSend: (msg: string | { text: string }) => void;
-}
-
-/** loadMorePrompts adds 2 prompts → typically 4 entries (user + turn each). */
-const PREPEND_FORCE_MOUNT = 4;
-/** Stop preserving after this long even if height keeps changing. */
-const PRESERVE_MAX_MS = 1000;
-/** Consider layout settled after this quiet period with no resize. */
-const PRESERVE_SETTLE_MS = 150;
-
-interface ScrollPreserveState {
-  /** Entry that should stay visually fixed while older content prepends. */
-  anchorId: string;
-  /** Desired viewport Y of the anchor (from getBoundingClientRect().top). */
-  anchorTop: number;
-}
-
-function restoreScrollAnchor(
-  scrollEl: HTMLElement,
-  preserve: ScrollPreserveState,
-): void {
-  const anchorEl = scrollEl.querySelector(
-    `[data-entry-id="${CSS.escape(preserve.anchorId)}"]`,
-  ) as HTMLElement | null;
-  if (!anchorEl) return;
-  const delta = anchorEl.getBoundingClientRect().top - preserve.anchorTop;
-  if (Math.abs(delta) > 0.5) {
-    scrollEl.scrollTop += delta;
-  }
 }
 
 export const ChatArea = memo(function ChatArea({
@@ -63,68 +39,141 @@ export const ChatArea = memo(function ChatArea({
   const allPrompts = useSelector((state: RootState) => state.chat.allPrompts[activeSessionId ?? '']);
   const visiblePromptsCount = useSelector((state: RootState) => state.chat.visiblePromptsCount[activeSessionId ?? '']);
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
-  /** Force-mount newly prepended rows so placeholder→real height doesn't fight the anchor. */
-  const [forceMountTopCount, setForceMountTopCount] = useState(0);
-  const preserveRef = useRef<ScrollPreserveState | null>(null);
+  const prependAnchorRef = useRef(new PrependScrollAnchor());
+  const entriesBeforePrependRef = useRef<Set<string> | null>(null);
+  const seenPrependedEntriesRef = useRef(new Set<string>());
+  const pendingReadyEntriesRef = useRef<Set<string> | null>(null);
+  const entryHeightLedgerRef = useRef(new Map<string, number>());
+  const settleFramesRef = useRef<number[]>([]);
+  const layoutRevisionRef = useRef(0);
 
   const restoreAnchor = useCallback(() => {
-    const preserve = preserveRef.current;
     const scrollEl = scrollRef.current;
-    if (!preserve || !scrollEl) return;
-    restoreScrollAnchor(scrollEl, preserve);
+    if (!scrollEl) return;
+    prependAnchorRef.current.restore(scrollEl);
   }, [scrollRef]);
+
+  const cancelSettleFrames = useCallback(() => {
+    for (const frame of settleFramesRef.current) cancelAnimationFrame(frame);
+    settleFramesRef.current = [];
+  }, []);
+
+  const finishInitialPrependLayout = useCallback(() => {
+    cancelSettleFrames();
+    const expectedRevision = layoutRevisionRef.current;
+    const first = requestAnimationFrame(() => {
+      if (layoutRevisionRef.current !== expectedRevision) {
+        finishInitialPrependLayout();
+        return;
+      }
+      restoreAnchor();
+      const second = requestAnimationFrame(() => {
+        if (layoutRevisionRef.current !== expectedRevision) {
+          finishInitialPrependLayout();
+          return;
+        }
+        restoreAnchor();
+        settleFramesRef.current = [];
+        pendingReadyEntriesRef.current = null;
+        entriesBeforePrependRef.current = null;
+        seenPrependedEntriesRef.current.clear();
+        prependAnchorRef.current.cancel();
+        setIsLoadingOlder(false);
+      });
+      settleFramesRef.current = [second];
+    });
+    settleFramesRef.current = [first];
+  }, [cancelSettleFrames, restoreAnchor]);
+
+  const scheduleInitialPrependSettle = useCallback(() => {
+    if (!isLoadingOlder || pendingReadyEntriesRef.current?.size !== 0) return;
+    finishInitialPrependLayout();
+  }, [finishInitialPrependLayout, isLoadingOlder]);
+
+  const handleEntryHeightChange = useCallback((entryId: string, height: number) => {
+    entryHeightLedgerRef.current.set(entryId, height);
+  }, []);
+
+  const handleEntryReady = useCallback((entryId: string) => {
+    const pending = pendingReadyEntriesRef.current;
+    if (!pending?.delete(entryId) || pending.size !== 0) return;
+    scheduleInitialPrependSettle();
+  }, [scheduleInitialPrependSettle]);
 
   // Correct before paint whenever prepended entries land in the DOM.
   useLayoutEffect(() => {
-    if (!preserveRef.current) return;
-    restoreAnchor();
-  }, [entryIds, restoreAnchor]);
-
-  // Keep correcting while LazyEntry / markdown / code blocks settle their heights.
-  useEffect(() => {
-    if (!isLoadingOlder) return;
-    const content = contentRef.current;
-
-    let settled = false;
-    let settleTimer: number | null = null;
-    let maxTimer: number | null = null;
-    let ro: ResizeObserver | null = null;
-
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      if (settleTimer != null) clearTimeout(settleTimer);
-      if (maxTimer != null) clearTimeout(maxTimer);
-      ro?.disconnect();
-      preserveRef.current = null;
-      setForceMountTopCount(0);
-      setIsLoadingOlder(false);
-    };
-
-    const scheduleSettle = () => {
-      if (settleTimer != null) clearTimeout(settleTimer);
-      settleTimer = window.setTimeout(finish, PRESERVE_SETTLE_MS);
-    };
-
-    if (content && typeof ResizeObserver !== 'undefined') {
-      ro = new ResizeObserver(() => {
-        restoreAnchor();
-        scheduleSettle();
-      });
-      ro.observe(content);
+    if (!prependAnchorRef.current.isActive()) return;
+    if (isLoadingOlder) {
+      const before = entriesBeforePrependRef.current ?? new Set<string>();
+      const pending = pendingReadyEntriesRef.current ?? new Set<string>();
+      for (const entryId of entryIds) {
+        if (!before.has(entryId) && !seenPrependedEntriesRef.current.has(entryId)) {
+          seenPrependedEntriesRef.current.add(entryId);
+          pending.add(entryId);
+        }
+      }
+      if (pending.size > 0) pendingReadyEntriesRef.current = pending;
     }
+    restoreAnchor();
+    if (pendingReadyEntriesRef.current !== null) {
+      scheduleInitialPrependSettle();
+    }
+  }, [entryIds, isLoadingOlder, restoreAnchor, scheduleInitialPrependSettle]);
 
-    // Kick the settle clock even if height doesn't change further.
-    scheduleSettle();
-    maxTimer = window.setTimeout(finish, PRESERVE_MAX_MS);
+  // Keep correcting while the user is idle at the prepend boundary. There is
+  // intentionally no timeout: syntax highlighting and images can resolve well
+  // after one second. Explicit wheel/touch/pointer intent cancels preservation.
+  useEffect(() => {
+    const content = contentRef.current;
+    if (!content || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => {
+      if (!prependAnchorRef.current.isActive()) return;
+      layoutRevisionRef.current += 1;
+      // ResizeObserver is delivered after layout and before paint. Correcting
+      // here prevents a displaced frame from ever becoming visible.
+      restoreAnchor();
+      if (pendingReadyEntriesRef.current?.size === 0) {
+        scheduleInitialPrependSettle();
+      }
+    });
+    ro.observe(content);
 
     return () => {
-      settled = true;
-      if (settleTimer != null) clearTimeout(settleTimer);
-      if (maxTimer != null) clearTimeout(maxTimer);
-      ro?.disconnect();
+      ro.disconnect();
     };
-  }, [isLoadingOlder, contentRef, restoreAnchor]);
+  }, [contentRef, restoreAnchor, scheduleInitialPrependSettle]);
+
+  useEffect(() => () => cancelSettleFrames(), [cancelSettleFrames]);
+
+  useEffect(() => {
+    prependAnchorRef.current.cancel();
+    entriesBeforePrependRef.current = null;
+    seenPrependedEntriesRef.current.clear();
+    pendingReadyEntriesRef.current = null;
+    entryHeightLedgerRef.current.clear();
+    cancelSettleFrames();
+    setIsLoadingOlder(false);
+  }, [activeSessionId, cancelSettleFrames]);
+
+  const forceMountIds = useMemo(
+    () => isLoadingOlder
+      ? entriesThroughAnchor(entryIds, prependAnchorRef.current.anchorId())
+      : new Set<string>(),
+    [entryIds, isLoadingOlder],
+  );
+
+  const cancelPrependPreservation = useCallback(() => {
+    prependAnchorRef.current.cancel();
+    entriesBeforePrependRef.current = null;
+    seenPrependedEntriesRef.current.clear();
+    pendingReadyEntriesRef.current = null;
+    cancelSettleFrames();
+    setIsLoadingOlder(false);
+  }, [cancelSettleFrames]);
+
+  useEffect(() => {
+    if (isProcessing) cancelPrependPreservation();
+  }, [cancelPrependPreservation, isProcessing]);
 
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const target = e.currentTarget;
@@ -137,24 +186,40 @@ export const ChatArea = memo(function ChatArea({
       entryIds.length > 0
     ) {
       const anchorId = entryIds[0];
-      const anchorEl = target.querySelector(
-        `[data-entry-id="${CSS.escape(anchorId)}"]`,
-      ) as HTMLElement | null;
-      if (!anchorEl) return;
-
-      preserveRef.current = {
-        anchorId,
-        anchorTop: anchorEl.getBoundingClientRect().top,
-      };
-      setForceMountTopCount(PREPEND_FORCE_MOUNT);
+      if (!prependAnchorRef.current.capture(target, anchorId)) return;
+      entriesBeforePrependRef.current = new Set(entryIds);
+      pendingReadyEntriesRef.current = null;
+      cancelSettleFrames();
       setIsLoadingOlder(true);
       dispatch(loadMorePrompts({ sessionId: activeSessionId }));
     }
   };
 
+  const handleScrollKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if ([
+      'ArrowUp',
+      'ArrowDown',
+      'PageUp',
+      'PageDown',
+      'Home',
+      'End',
+      ' ',
+    ].includes(event.key)) {
+      cancelPrependPreservation();
+    }
+  };
+
   return (
     <div className="chat-container">
-      <div className="chat-history" ref={scrollRef} onScroll={handleScroll}>
+      <div
+        className="chat-history"
+        ref={scrollRef}
+        onScroll={handleScroll}
+        onWheel={cancelPrependPreservation}
+        onTouchMove={cancelPrependPreservation}
+        onPointerDown={cancelPrependPreservation}
+        onKeyDown={handleScrollKeyDown}
+      >
         {isLoadingOlder && (
           <div className="chat-history-load-older" aria-hidden>
             <div className="loader-spinner" />
@@ -169,7 +234,10 @@ export const ChatArea = memo(function ChatArea({
               handleRetry={handleRetry}
               isProcessing={isProcessing}
               scrollRef={scrollRef}
-              forceVisible={index < forceMountTopCount || index >= entryIds.length - 3}
+              forceVisible={forceMountIds.has(id) || index >= entryIds.length - 3}
+              estimatedHeight={entryHeightLedgerRef.current.get(id)}
+              onHeightChange={handleEntryHeightChange}
+              onReady={handleEntryReady}
               onSend={onSend}
             />
           ))}
@@ -191,7 +259,14 @@ export const ChatArea = memo(function ChatArea({
         </div>
       </div>
       {!isAtBottom && (
-        <button className="scroll-to-bottom-btn" onClick={() => scrollToBottom('auto')} title="Scroll to latest">
+        <button
+          className="scroll-to-bottom-btn"
+          onClick={() => {
+            cancelPrependPreservation();
+            scrollToBottom('auto');
+          }}
+          title="Scroll to latest"
+        >
           <ChevronDownIcon size={18} />
         </button>
       )}
