@@ -149,14 +149,12 @@ line-numbered view). Refuses files larger than 1 MB and detects binary files."
             collected += 1;
         }
 
-        if collected == 0 && line_num == 0 {
-            bail!("File is empty: {path}");
-        }
-
-        let start = offset;
+        let start = if line_num == 0 { 0 } else { offset };
         // last_emitted is the actual last line written; fall back to start when
         // the file had exactly one matching line (or hit a cap after one line).
-        let end = if last_emitted >= start {
+        let end = if line_num == 0 {
+            0
+        } else if last_emitted >= start {
             last_emitted
         } else {
             start
@@ -302,10 +300,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn empty_file_errors() {
+    async fn empty_file_succeeds_like_other_text_files() {
         let p = write_tmp("empty.txt", "");
-        let res = ReadFileTool.execute(json!({"path": p.to_string_lossy()})).await;
-        assert!(res.is_err());
+        let out = ReadFileTool
+            .execute(json!({"path": p.to_string_lossy()}))
+            .await
+            .unwrap();
+        assert_eq!(
+            out,
+            format!("[Lines 0-0 in '{}']\n", p.to_string_lossy())
+        );
     }
 
     #[tokio::test]
