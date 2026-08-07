@@ -5,7 +5,7 @@ import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
 import CopyIcon from 'lucide-react/dist/esm/icons/copy.mjs';
 import WrapTextIcon from 'lucide-react/dist/esm/icons/wrap-text.mjs';
 import { getToolIcon } from './toolIcons';
-import { highlightCode } from './CodeBlock';
+import { highlightCode } from './codeHighlighting';
 
 function cleanTerminalOutput(text: string): string {
   if (!text) return '';

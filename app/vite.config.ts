@@ -19,7 +19,9 @@ export default defineConfig(async () => ({
           if (!id.includes('node_modules')) return undefined;
           if (id.includes('/react/') || id.includes('/react-dom/')) return 'react-vendor';
           if (id.includes('/@reduxjs/') || id.includes('/react-redux/')) return 'state-vendor';
-          if (id.includes('/react-markdown/') || id.includes('/remark-') || id.includes('/rehype-')) return 'markdown-vendor';
+          if (id.includes('/streamdown/node_modules/marked/')) return 'streamdown-marked';
+          if (id.includes('/react-markdown/') || id.includes('/marked/')) return 'markdown-vendor';
+          if (id.includes('/katex/')) return 'katex-vendor';
           return undefined;
         },
       },

@@ -10,7 +10,7 @@ import FileCheckIcon from 'lucide-react/dist/esm/icons/file-check.mjs';
 import type { ChatEntry, TurnBlock } from '../../features/chat/chatSlice';
 import type { RootState } from '../../store';
 import { formatTime } from '../../utils/format';
-import { MarkdownContent } from './MarkdownContent';
+import { AssistantMarkdownContent } from './AssistantMarkdownContent';
 import ProcessingTimer from './ProcessingTimer';
 import TurnIterationUI from './TurnIterationUI';
 import TurnFooter from './TurnFooter';
@@ -86,7 +86,7 @@ function ProgressNarration({
   if (isStreaming || !isLong || expanded) {
     return (
       <div>
-        <MarkdownContent
+        <AssistantMarkdownContent
           content={text}
           className="assistant-msg"
           isStreaming={isStreaming}
@@ -415,7 +415,7 @@ export const AgentTurnUI = memo(function AgentTurnUI({
             {item.type === 'assistant' ? (
               showAssistant && (
                 isFinalAssistant ? (
-                  <MarkdownContent
+                  <AssistantMarkdownContent
                     content={item.data.text}
                     className="assistant-msg"
                     isStreaming={!!item.data.isStreaming}

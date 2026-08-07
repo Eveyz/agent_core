@@ -1,0 +1,87 @@
+/* Streamdown emits Tailwind-oriented chrome. This adapter maps the B variant
+   onto Agverse's existing assistant-message tokens without enabling controls. */
+.streamdown-assistant [data-streamdown='strong'] {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.streamdown-assistant [data-streamdown='inline-code'] {
+  border-radius: var(--radius-xs);
+  background: var(--bg-hover);
+  padding: 2px 4px;
+}
+
+.streamdown-assistant [data-streamdown='link'] {
+  color: var(--accent);
+  overflow-wrap: anywhere;
+  text-decoration: none;
+}
+
+.streamdown-assistant [data-streamdown='link']:hover {
+  text-decoration: underline;
+}
+
+.streamdown-assistant [data-streamdown='table-wrapper'] {
+  margin: 14px 0;
+  overflow-x: auto;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+}
+
+.streamdown-assistant [data-streamdown='table'] {
+  width: 100%;
+  margin: 0;
+  border: 0;
+  border-collapse: collapse;
+}
+
+.streamdown-assistant [data-streamdown='code-block'] {
+  display: flex;
+  max-width: 100%;
+  flex-direction: column;
+  overflow: hidden;
+  margin: 12px 0;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  background: var(--code-bg);
+}
+
+.streamdown-assistant [data-streamdown='code-block-header'] {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-default);
+  color: var(--code-lang-color);
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.streamdown-assistant [data-streamdown='code-block-body'] {
+  max-height: 60vh;
+  overflow: auto;
+  padding: 12px;
+  background: var(--code-bg);
+}
+
+.streamdown-assistant [data-streamdown='code-block-body'] pre,
+.streamdown-assistant [data-streamdown='code-block-body'] code {
+  margin: 0;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  white-space: pre;
+}
+
+.streamdown-assistant [data-streamdown='code-block-body'] span[style*='--sdm-c'] {
+  color: var(--shiki-dark, var(--sdm-c, var(--code-text)));
+}
+
+[data-theme='light'] .streamdown-assistant [data-streamdown='code-block-body'] span[style*='--sdm-c'] {
+  color: var(--shiki-light, var(--sdm-c, var(--code-text)));
+}

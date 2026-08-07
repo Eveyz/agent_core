@@ -1,0 +1,310 @@
+:root {
+  color-scheme: dark;
+  background: #0b0d10;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background:
+    radial-gradient(circle at 15% 0%, rgba(73, 104, 176, 0.15), transparent 34rem),
+    #0b0d10;
+  color: #e8ebf0;
+  font-family: 'Geist Sans', system-ui, sans-serif;
+}
+
+button,
+select,
+input {
+  font: inherit;
+}
+
+.streamdown-prototype {
+  width: min(1040px, calc(100% - 40px));
+  margin: 0 auto;
+  padding: 42px 0 110px;
+}
+
+.prototype-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 28px;
+  margin-bottom: 20px;
+}
+
+.prototype-kicker {
+  color: #78a6ff;
+  font: 600 11px/1 'Geist Mono', monospace;
+  letter-spacing: 0.14em;
+}
+
+.prototype-header h1 {
+  margin: 9px 0 6px;
+  font-size: clamp(26px, 4vw, 42px);
+  letter-spacing: -0.04em;
+}
+
+.prototype-header p {
+  margin: 0;
+  color: #9299a7;
+}
+
+.prototype-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.prototype-actions button,
+.prototype-switcher button {
+  border: 1px solid #303641;
+  border-radius: 9px;
+  background: #15191f;
+  color: #e8ebf0;
+  cursor: pointer;
+  padding: 8px 13px;
+}
+
+.prototype-actions .prototype-primary {
+  border-color: #527fd3;
+  background: #315fae;
+}
+
+.prototype-controls {
+  display: flex;
+  gap: 28px;
+  padding: 14px 16px;
+  border: 1px solid #252a33;
+  border-radius: 12px 12px 0 0;
+  background: #111419;
+}
+
+.prototype-controls label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #aeb4bf;
+  font-size: 12px;
+}
+
+.prototype-controls label:first-child {
+  flex: 1;
+}
+
+.prototype-controls input[type='range'] {
+  width: 100%;
+}
+
+.prototype-controls select {
+  border: 1px solid #303641;
+  border-radius: 7px;
+  background: #181c23;
+  color: #e8ebf0;
+  padding: 4px 7px;
+}
+
+.prototype-metrics {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  border-right: 1px solid #252a33;
+  border-left: 1px solid #252a33;
+  background: #0f1217;
+}
+
+.prototype-metrics div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px 16px;
+  border-right: 1px solid #252a33;
+}
+
+.prototype-metrics div:last-child {
+  border-right: 0;
+}
+
+.prototype-metrics strong {
+  font: 600 15px/1.2 'Geist Mono', monospace;
+  color: #dbe7ff;
+}
+
+.prototype-metrics span {
+  color: #737b89;
+  font-size: 10px;
+}
+
+.prototype-stage {
+  min-height: 580px;
+  border: 1px solid #252a33;
+  border-radius: 0 0 12px 12px;
+  background: rgba(17, 20, 25, 0.92);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
+}
+
+.prototype-stage-label {
+  display: flex;
+  justify-content: space-between;
+  padding: 12px 18px;
+  border-bottom: 1px solid #252a33;
+  color: #9299a7;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.prototype-stage-label .is-streaming {
+  color: #f4b860;
+}
+
+.prototype-stage-label .is-complete {
+  color: #65c98d;
+}
+
+.prototype-render-surface {
+  min-height: 510px;
+  padding: 28px 34px 56px;
+  contain: layout style;
+}
+
+.prototype-render-surface .assistant-msg {
+  max-width: 790px;
+  margin: 0;
+}
+
+/* Streamdown ships behavior CSS but expects Tailwind/shadcn for its chrome.
+   This adapter intentionally uses the app's prose styles and supplies only the
+   minimal missing control layout needed for a fair non-Tailwind comparison. */
+.streamdown-shell [data-streamdown] {
+  color: inherit;
+}
+
+.streamdown-shell [data-streamdown='strong'] {
+  font-weight: 650;
+}
+
+.streamdown-shell [data-streamdown='inline-code'] {
+  border: 1px solid #2f3540;
+  border-radius: 5px;
+  background: #1b2027;
+  padding: 1px 5px;
+}
+
+.streamdown-shell [data-streamdown='link'] {
+  color: #88afff;
+  font-weight: 500;
+  text-decoration: underline;
+  overflow-wrap: anywhere;
+}
+
+.streamdown-shell [data-streamdown='table-wrapper'] {
+  overflow-x: auto;
+  margin: 14px 0;
+  border: 1px solid #303641;
+  border-radius: 9px;
+}
+
+.streamdown-shell [data-streamdown='table'] {
+  width: 100%;
+  margin: 0;
+  border: 0;
+}
+
+.streamdown-shell [data-streamdown='code-block'] {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  overflow: hidden;
+  margin: 14px 0;
+  border: 1px solid #303641;
+  border-radius: 9px;
+  background: #0f1318;
+}
+
+.streamdown-shell [data-streamdown='code-block-header'] {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px;
+  border-bottom: 1px solid #292f38;
+  color: #9099a8;
+  font: 11px/1 'Geist Mono', monospace;
+}
+
+.streamdown-shell [data-streamdown='code-block-body'] {
+  overflow-x: auto;
+  padding: 14px;
+  background: #0c1014;
+}
+
+.streamdown-shell [data-streamdown='code-block-body'] pre,
+.streamdown-shell [data-streamdown='code-block-body'] code {
+  margin: 0;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  white-space: pre;
+}
+
+.streamdown-shell [data-streamdown='code-block-body'] span[style*='--sdm-c'] {
+  color: var(--shiki-dark, var(--sdm-c, inherit));
+}
+
+.streamdown-shell button {
+  border: 1px solid #343a46;
+  border-radius: 7px;
+  background: #181c23;
+  color: #c9cfda;
+  cursor: pointer;
+}
+
+.streamdown-shell pre {
+  overflow-x: auto;
+}
+
+.streamdown-shell svg {
+  display: block;
+}
+
+.prototype-switcher {
+  position: fixed;
+  z-index: 1000;
+  bottom: 24px;
+  left: 50%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px;
+  border: 1px solid #3c4554;
+  border-radius: 14px;
+  background: rgba(18, 22, 28, 0.94);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  transform: translateX(-50%);
+  backdrop-filter: blur(14px);
+}
+
+.prototype-switcher span {
+  min-width: 190px;
+  text-align: center;
+  font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .prototype-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .prototype-controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .prototype-metrics {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .prototype-render-surface {
+    padding: 20px 18px 52px;
+  }
+}
