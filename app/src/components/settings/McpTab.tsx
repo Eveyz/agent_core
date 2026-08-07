@@ -16,7 +16,7 @@ import PencilIcon from 'lucide-react/dist/esm/icons/pencil.mjs';
 import TrashIcon from 'lucide-react/dist/esm/icons/trash.mjs';
 import XIcon from 'lucide-react/dist/esm/icons/x.mjs';
 
-interface EnvRow {
+interface KvRow {
   key: string;
   value: string;
 }
@@ -27,7 +27,8 @@ interface McpFormData {
   command: string;
   argsText: string;
   url: string;
-  envRows: EnvRow[];
+  envRows: KvRow[];
+  headerRows: KvRow[];
   enabled: boolean;
 }
 
@@ -38,6 +39,7 @@ const EMPTY_FORM: McpFormData = {
   argsText: '',
   url: '',
   envRows: [],
+  headerRows: [],
   enabled: true,
 };
 
@@ -78,19 +80,41 @@ const PRESETS: { label: string; build: () => McpFormData }[] = [
   },
   {
     label: 'Custom URL',
-    build: () => ({ ...EMPTY_FORM, name: '', transport: 'http', url: '' }),
+    build: () => ({
+      ...EMPTY_FORM,
+      name: '',
+      transport: 'http',
+      url: '',
+      headerRows: [{ key: 'Authorization', value: 'Bearer ' }],
+    }),
   },
 ];
+
+function rowsToRecord(rows: KvRow[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  rows.forEach((r) => {
+    if (r.key.trim()) out[r.key.trim()] = r.value;
+  });
+  return out;
+}
+
+/** Mask bearer tokens / secrets in the server list card. */
+function maskSecret(value: string): string {
+  const bearer = value.match(/^(Bearer\s+)(.+)$/i);
+  if (bearer) {
+    const token = bearer[2];
+    if (token.length <= 8) return `${bearer[1]}••••`;
+    return `${bearer[1]}${token.slice(0, 4)}••••${token.slice(-4)}`;
+  }
+  if (value.length <= 8) return '••••';
+  return `${value.slice(0, 4)}••••${value.slice(-4)}`;
+}
 
 function formToServer(form: McpFormData): McpServerConfig {
   const args = form.argsText
     .split('\n')
     .map((s) => s.trim())
     .filter(Boolean);
-  const env: Record<string, string> = {};
-  form.envRows.forEach((r) => {
-    if (r.key.trim()) env[r.key.trim()] = r.value;
-  });
 
   const server: McpServerConfig = {
     name: form.name.trim(),
@@ -100,10 +124,13 @@ function formToServer(form: McpFormData): McpServerConfig {
   if (form.transport === 'stdio') {
     server.command = form.command;
     if (args.length) server.args = args;
+    const env = rowsToRecord(form.envRows);
+    if (Object.keys(env).length) server.env = env;
   } else {
     server.url = form.url;
+    const headers = rowsToRecord(form.headerRows);
+    if (Object.keys(headers).length) server.headers = headers;
   }
-  if (Object.keys(env).length) server.env = env;
   return server;
 }
 
@@ -132,6 +159,9 @@ function McpServerForm({
           argsText: (s.args || []).join('\n'),
           url: s.url || '',
           envRows: s.env ? Object.entries(s.env).map(([k, v]) => ({ key: k, value: v })) : [],
+          headerRows: s.headers
+            ? Object.entries(s.headers).map(([k, v]) => ({ key: k, value: v }))
+            : [],
           enabled: s.enabled !== false,
         });
         return;
@@ -156,16 +186,21 @@ function McpServerForm({
     }
   };
 
-  const updateEnvRow = (index: number, patch: Partial<EnvRow>) => {
+  const updateKvRow = (
+    field: 'envRows' | 'headerRows',
+    index: number,
+    patch: Partial<KvRow>,
+  ) => {
     setForm((prev) => ({
       ...prev,
-      envRows: prev.envRows.map((r, i) => (i === index ? { ...r, ...patch } : r)),
+      [field]: prev[field].map((r, i) => (i === index ? { ...r, ...patch } : r)),
     }));
   };
 
-  const addEnvRow = () => setForm((prev) => ({ ...prev, envRows: [...prev.envRows, { key: '', value: '' }] }));
-  const removeEnvRow = (index: number) =>
-    setForm((prev) => ({ ...prev, envRows: prev.envRows.filter((_, i) => i !== index) }));
+  const addKvRow = (field: 'envRows' | 'headerRows') =>
+    setForm((prev) => ({ ...prev, [field]: [...prev[field], { key: '', value: '' }] }));
+  const removeKvRow = (field: 'envRows' | 'headerRows', index: number) =>
+    setForm((prev) => ({ ...prev, [field]: prev[field].filter((_, i) => i !== index) }));
 
   const validate = (): boolean => {
     const next: Record<string, string> = {};
@@ -173,7 +208,7 @@ function McpServerForm({
     if (form.transport === 'stdio') {
       if (!form.command.trim()) next.command = 'Command is required for stdio servers';
     } else {
-      if (!form.url.trim()) next.url = 'URL is required for SSE servers';
+      if (!form.url.trim()) next.url = 'URL is required for remote servers';
     }
     setErrors(next);
     return Object.keys(next).length === 0;
@@ -256,53 +291,97 @@ function McpServerForm({
                 rows={3}
               />
             </div>
-          </>
-        ) : (
-          <div className="model-form-field model-form-field-full">
-            <label className="model-form-label">URL <span className="required">*</span></label>
-            <input
-              className={inputClass('url')}
-              value={form.url}
-              onChange={(e) => updateField('url', e.target.value)}
-              placeholder="https://example.com/mcp/sse"
-            />
-            {errors.url && <span className="field-error">{errors.url}</span>}
-          </div>
-        )}
 
-        <div className="model-form-field model-form-field-full">
-          <label className="model-form-label">Environment Variables</label>
-          <div className="mcp-env-editor">
-            {form.envRows.map((row, index) => (
-              <div key={index} className="mcp-env-row">
-                <input
-                  className="settings-input"
-                  value={row.key}
-                  onChange={(e) => updateEnvRow(index, { key: e.target.value })}
-                  placeholder="KEY"
-                />
-                <span className="mcp-env-eq">=</span>
-                <input
-                  className="settings-input"
-                  value={row.value}
-                  onChange={(e) => updateEnvRow(index, { value: e.target.value })}
-                  placeholder="value"
-                />
-                <button
-                  type="button"
-                  className="model-row-delete"
-                  title="Remove variable"
-                  onClick={() => removeEnvRow(index)}
-                >
-                  <TrashIcon size={14} />
+            <div className="model-form-field model-form-field-full">
+              <label className="model-form-label">Environment Variables</label>
+              <p className="mcp-field-hint">Passed to the local MCP process (e.g. API tokens).</p>
+              <div className="mcp-env-editor">
+                {form.envRows.map((row, index) => (
+                  <div key={index} className="mcp-env-row">
+                    <input
+                      className="settings-input"
+                      value={row.key}
+                      onChange={(e) => updateKvRow('envRows', index, { key: e.target.value })}
+                      placeholder="KEY"
+                    />
+                    <span className="mcp-env-eq">=</span>
+                    <input
+                      className="settings-input"
+                      value={row.value}
+                      onChange={(e) => updateKvRow('envRows', index, { value: e.target.value })}
+                      placeholder="value"
+                    />
+                    <button
+                      type="button"
+                      className="model-row-delete"
+                      title="Remove variable"
+                      onClick={() => removeKvRow('envRows', index)}
+                    >
+                      <TrashIcon size={14} />
+                    </button>
+                  </div>
+                ))}
+                <button type="button" className="btn-add-model" onClick={() => addKvRow('envRows')}>
+                  <PlusIcon size={14} /> Add Variable
                 </button>
               </div>
-            ))}
-            <button type="button" className="btn-add-model" onClick={addEnvRow}>
-              <PlusIcon size={14} /> Add Variable
-            </button>
-          </div>
-        </div>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="model-form-field model-form-field-full">
+              <label className="model-form-label">URL <span className="required">*</span></label>
+              <input
+                className={inputClass('url')}
+                value={form.url}
+                onChange={(e) => updateField('url', e.target.value)}
+                placeholder="https://example.com/mcp"
+              />
+              {errors.url && <span className="field-error">{errors.url}</span>}
+            </div>
+
+            <div className="model-form-field model-form-field-full">
+              <label className="model-form-label">Headers</label>
+              <p className="mcp-field-hint">
+                Sent on every HTTP request (e.g. Authorization: Bearer …).
+              </p>
+              <div className="mcp-env-editor">
+                {form.headerRows.map((row, index) => (
+                  <div key={index} className="mcp-env-row">
+                    <input
+                      className="settings-input"
+                      value={row.key}
+                      onChange={(e) => updateKvRow('headerRows', index, { key: e.target.value })}
+                      placeholder="Authorization"
+                    />
+                    <span className="mcp-env-eq">:</span>
+                    <input
+                      className="settings-input"
+                      value={row.value}
+                      onChange={(e) => updateKvRow('headerRows', index, { value: e.target.value })}
+                      placeholder="Bearer YOUR_API_KEY"
+                    />
+                    <button
+                      type="button"
+                      className="model-row-delete"
+                      title="Remove header"
+                      onClick={() => removeKvRow('headerRows', index)}
+                    >
+                      <TrashIcon size={14} />
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  className="btn-add-model"
+                  onClick={() => addKvRow('headerRows')}
+                >
+                  <PlusIcon size={14} /> Add Header
+                </button>
+              </div>
+            </div>
+          </>
+        )}
       </div>
 
       <div className="model-form-actions">
@@ -478,6 +557,21 @@ export default function McpTab() {
                       {Object.entries(server.env).map(([k, v]) => (
                         <div key={k} className="mcp-env-item">
                           <code>{k}</code> = <code className="mcp-env-value">{v}</code>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {server.headers && Object.keys(server.headers).length > 0 && (
+                  <div className="mcp-field mcp-field-full">
+                    <span className="mcp-field-label">Headers</span>
+                    <div className="mcp-env-list">
+                      {Object.entries(server.headers).map(([k, v]) => (
+                        <div key={k} className="mcp-env-item">
+                          <code>{k}</code>:{' '}
+                          <code className="mcp-env-value">
+                            {k.toLowerCase() === 'authorization' ? maskSecret(v) : v}
+                          </code>
                         </div>
                       ))}
                     </div>

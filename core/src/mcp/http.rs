@@ -6,12 +6,33 @@
 //! plain JSON body *or* an SSE stream carrying the response; both are handled.
 //! The `Mcp-Session-Id` header (if returned) is captured and reused.
 
+use std::collections::HashMap;
+
 use anyhow::{Context, Result};
-use reqwest::header::CONTENT_TYPE;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
 use super::protocol::{JsonRpcRequest, JsonRpcResponse};
+
+/// Build a reqwest client with optional default headers (e.g. Authorization).
+pub(crate) fn client_with_headers(headers: &HashMap<String, String>) -> Result<reqwest::Client> {
+    if headers.is_empty() {
+        return Ok(reqwest::Client::new());
+    }
+    let mut map = HeaderMap::new();
+    for (k, v) in headers {
+        let name = HeaderName::try_from(k.as_str())
+            .with_context(|| format!("Invalid MCP header name: {k}"))?;
+        let value = HeaderValue::try_from(v.as_str())
+            .with_context(|| format!("Invalid MCP header value for {k}"))?;
+        map.insert(name, value);
+    }
+    reqwest::Client::builder()
+        .default_headers(map)
+        .build()
+        .context("Failed to build MCP HTTP client")
+}
 
 /// Streamable HTTP transport for remote MCP servers.
 pub struct StreamableHttpTransport {
@@ -24,14 +45,15 @@ pub struct StreamableHttpTransport {
 
 impl StreamableHttpTransport {
     /// Create a Streamable HTTP transport targeting the given endpoint URL.
-    pub fn new(url: &str) -> Self {
-        Self {
+    /// `headers` are sent on every request (Authorization, custom API keys, etc.).
+    pub fn new(url: &str, headers: &HashMap<String, String>) -> Result<Self> {
+        Ok(Self {
             url: url.trim().to_string(),
-            client: reqwest::Client::new(),
+            client: client_with_headers(headers)?,
             next_id: Mutex::new(1),
             session_id: Mutex::new(None),
             connected: Mutex::new(false),
-        }
+        })
     }
 
     /// Mark connected. Streamable HTTP has no separate handshake endpoint —
@@ -211,5 +233,30 @@ mod tests {
     #[test]
     fn test_parse_sse_data_empty() {
         assert_eq!(parse_sse_data("event: ping\n"), None);
+    }
+
+    #[test]
+    fn test_client_with_headers_accepts_authorization() {
+        let mut headers = HashMap::new();
+        headers.insert(
+            "Authorization".to_string(),
+            "Bearer YOUR_API_KEY".to_string(),
+        );
+        assert!(client_with_headers(&headers).is_ok());
+    }
+
+    #[test]
+    fn test_client_with_headers_rejects_invalid_name() {
+        let mut headers = HashMap::new();
+        headers.insert("Bad Header Name".to_string(), "x".to_string());
+        assert!(client_with_headers(&headers).is_err());
+    }
+
+    #[test]
+    fn test_http_transport_new_with_headers() {
+        let mut headers = HashMap::new();
+        headers.insert("Authorization".to_string(), "Bearer sk".to_string());
+        let t = StreamableHttpTransport::new("https://mcp.example.com/mcp", &headers).unwrap();
+        assert_eq!(t.url, "https://mcp.example.com/mcp");
     }
 }

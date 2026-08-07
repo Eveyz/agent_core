@@ -553,6 +553,13 @@
   gap: 6px;
 }
 
+.mcp-field-hint {
+  margin: 0 0 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+
 .mcp-env-list {
   display: flex;
   flex-direction: column;

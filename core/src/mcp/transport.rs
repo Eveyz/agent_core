@@ -2,6 +2,8 @@
 //!
 //! MCP over stdio sends each JSON-RPC message as a single line terminated by `\n`.
 
+use std::collections::HashMap;
+
 use anyhow::{Context, Result};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
@@ -19,13 +21,23 @@ pub struct StdioTransport {
 
 impl StdioTransport {
     /// Spawn the process and set up stdio pipes.
-    pub async fn spawn(command: &str, args: &[String]) -> Result<Self> {
-        let mut child = Command::new(command)
-            .args(args)
+    /// `env` is merged into the child process environment (stdio auth tokens, etc.).
+    pub async fn spawn(
+        command: &str,
+        args: &[String],
+        env: &HashMap<String, String>,
+    ) -> Result<Self> {
+        let mut cmd = Command::new(command);
+        cmd.args(args)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit())
-            .kill_on_drop(true)
+            .kill_on_drop(true);
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+
+        let mut child = cmd
             .spawn()
             .with_context(|| format!("Failed to spawn MCP server: {} {:?}", command, args))?;
 

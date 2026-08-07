@@ -6,10 +6,13 @@
 //!
 //! The endpoint URL is discovered from the first SSE event.
 
+use std::collections::HashMap;
+
 use anyhow::{Context, Result};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
+use super::http::client_with_headers;
 use super::protocol::{JsonRpcRequest, JsonRpcResponse};
 
 /// SSE transport for remote MCP servers.
@@ -25,13 +28,14 @@ impl SseTransport {
     /// Create an SSE transport targeting the given base URL.
     /// The base URL should be like `http://localhost:8000`.
     /// The `/sse` endpoint will be used for the SSE stream.
-    pub fn new(base_url: &str) -> Self {
-        Self {
+    /// `headers` are sent on every request (Authorization, custom API keys, etc.).
+    pub fn new(base_url: &str, headers: &HashMap<String, String>) -> Result<Self> {
+        Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             post_url: Mutex::new(None),
             next_id: Mutex::new(1),
-            client: reqwest::Client::new(),
-        }
+            client: client_with_headers(headers)?,
+        })
     }
 
     /// Initialize: connect to the SSE endpoint, discover the POST URL.

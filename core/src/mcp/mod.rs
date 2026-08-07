@@ -71,7 +71,7 @@ impl Default for McpConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerConfig {
     pub name: String,
-    /// Transport: "stdio" or "sse". Defaults to "stdio".
+    /// Transport: "stdio", "sse", or "http". Defaults to "stdio".
     #[serde(default = "default_transport")]
     pub transport: String,
     /// For stdio: the command to spawn.
@@ -80,12 +80,15 @@ pub struct McpServerConfig {
     /// For stdio: command-line arguments.
     #[serde(default)]
     pub args: Vec<String>,
-    /// For sse: the base URL of the MCP server.
+    /// For sse/http: the base URL of the MCP server.
     #[serde(default)]
     pub url: String,
     /// Environment variables to pass to the server process (stdio only).
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// HTTP headers for remote transports (sse/http), e.g. Authorization.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
 }
@@ -205,17 +208,18 @@ impl McpClientManager {
     async fn connect_one(config: &McpServerConfig) -> Result<McpConnection> {
         let transport = match config.transport.as_str() {
             "sse" => {
-                let sse = SseTransport::new(&config.url);
+                let sse = SseTransport::new(&config.url, &config.headers)?;
                 sse.connect().await?;
                 Transport::Sse(sse)
             }
             "http" | "https" | "streamable" | "streamable-http" | "streamable_http" => {
-                let http = StreamableHttpTransport::new(&config.url);
+                let http = StreamableHttpTransport::new(&config.url, &config.headers)?;
                 http.connect().await?;
                 Transport::Http(http)
             }
             _ => {
-                let stdio = StdioTransport::spawn(&config.command, &config.args).await?;
+                let stdio =
+                    StdioTransport::spawn(&config.command, &config.args, &config.env).await?;
                 Transport::Stdio(stdio)
             }
         };
@@ -476,8 +480,37 @@ mod tests {
             args: vec!["hello".to_string()],
             url: String::new(),
             env: HashMap::new(),
+            headers: HashMap::new(),
             enabled: true,
         });
         assert_eq!(mgr.server_count(), 1);
+    }
+
+    #[test]
+    fn test_server_config_deserializes_headers() {
+        let json = r#"{
+            "name": "tikhub",
+            "transport": "http",
+            "url": "https://mcp.tikhub.io/xiaohongshu/mcp",
+            "headers": {
+                "Authorization": "Bearer sk-test"
+            }
+        }"#;
+        let cfg: McpServerConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.name, "tikhub");
+        assert_eq!(cfg.transport, "http");
+        assert_eq!(
+            cfg.headers.get("Authorization").map(String::as_str),
+            Some("Bearer sk-test")
+        );
+        assert!(cfg.env.is_empty());
+        assert!(cfg.enabled);
+    }
+
+    #[test]
+    fn test_server_config_headers_default_empty() {
+        let json = r#"{"name":"plain","transport":"http","url":"https://example.com/mcp"}"#;
+        let cfg: McpServerConfig = serde_json::from_str(json).unwrap();
+        assert!(cfg.headers.is_empty());
     }
 }
