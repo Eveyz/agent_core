@@ -14,6 +14,8 @@
 | AI-NOTE | 3 | AI Analysis Notes |
 | META | 1 | Process Documentation |
 
+**Start here for newcomers:** root [`README.md`](../README.md) (quick start) · [`DESIGN.md`](DESIGN.md) (architecture deep dive).
+
 ---
 
 ## ADR (Architecture Decision Records)
