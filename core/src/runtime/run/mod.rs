@@ -499,8 +499,21 @@ impl Run {
     /// written back as conversation history.
     pub(crate) fn refresh_context_snapshot(&self) {
         *self.context_snapshot.write() = self.full_transcript.clone();
+        self.refresh_model_window_snapshot();
+    }
+
+    /// Refresh the compactable model-window views without cloning the full
+    /// canonical transcript.
+    pub(crate) fn refresh_model_window_snapshot(&self) {
         *self.usage_snapshot.write() = self.context.usage_snapshot();
         *self.model_window_snapshot.write() = self.context.raw_messages().to_vec();
+    }
+
+    /// Refresh only the usage breakdown after dynamic segments change.
+    /// Raw conversation messages are unchanged at that point, so copying the
+    /// potentially large model window would add latency without new data.
+    pub(crate) fn refresh_context_usage_snapshot(&self) {
+        *self.usage_snapshot.write() = self.context.usage_snapshot();
     }
 
     /// Todo / plan store for this Run's session.

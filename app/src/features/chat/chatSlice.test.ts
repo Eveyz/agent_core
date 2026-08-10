@@ -388,6 +388,112 @@ describe('chat reducer session routing', () => {
     expect(tools[1].type === 'tool' && tools[1].result).toBe('B');
   });
 
+  it('keeps an injected mid-run steer between the work before and after it when rebuilding', async () => {
+    const { reducer, loadMorePrompts } = await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = structuredClone(state);
+    state.allPrompts.s1 = [{
+      id: 'p1', session_id: 's1', turn_index: 0, model: 'm', status: 'completed',
+      token_usage: {}, started_at: null, ended_at: null, created_at: '',
+      messages: [
+        { role: 'user', content: 'update the model configuration' },
+        { role: 'assistant', content: 'I will inspect the current setup.' },
+        {
+          role: 'user',
+          content: '[USER STEER MID-RUN]\nUse .ageverse/config.toml as the source of truth.',
+        },
+        { role: 'assistant', content: 'I found and applied the config.' },
+      ],
+    }];
+    state.visiblePromptsCount.s1 = 1;
+    state.entries.s1 = [
+      { id: 'user-p1', type: 'user', promptId: 'p1', text: 'update the model configuration' },
+      {
+        id: 'turn-p1-before',
+        type: 'turn',
+        promptId: 'p1',
+        blocks: [{ type: 'assistant', text: 'I will inspect the current setup.', isStreaming: false }],
+      },
+      {
+        id: 'steer-steer-1',
+        type: 'user',
+        text: 'Use .ageverse/config.toml as the source of truth.',
+        isSteer: true,
+        steerId: 'steer-1',
+        steerStatus: 'injected',
+      },
+      {
+        id: 'turn-p1-after',
+        type: 'turn',
+        promptId: 'p1',
+        blocks: [{ type: 'assistant', text: 'I found and applied the config.', isStreaming: false }],
+      },
+    ];
+
+    // Rebuilding is what happens when persisted prompt history replaces the
+    // live event projection after leaving and returning to a session.
+    state = reducer(state, loadMorePrompts({ sessionId: 's1' }));
+
+    const steerIndex = state.entries.s1.findIndex((entry) => entry.isSteer);
+    const postSteerTurnIndex = state.entries.s1.findIndex(
+      (entry) =>
+        entry.type === 'turn' &&
+        entry.blocks?.some(
+          (block) =>
+            block.type === 'assistant' &&
+            block.text === 'I found and applied the config.',
+        ),
+    );
+    expect(steerIndex).toBeGreaterThan(-1);
+    expect(postSteerTurnIndex).toBeGreaterThan(steerIndex);
+  });
+
+  it('restores a persisted mid-run steer as an injected card with only the user text', async () => {
+    const { reducer } = await loadModules();
+    let state = reducer(undefined, { type: '@@INIT' });
+    state = reducer(state, {
+      type: 'project/resumeSession/fulfilled',
+      payload: {
+        meta: { id: 's1' },
+        messages: [],
+        prompts: [{
+          id: 'p1', session_id: 's1', turn_index: 0, model: 'm', status: 'completed',
+          token_usage: {}, started_at: null, ended_at: null, created_at: '',
+          messages: [
+            { role: 'user', content: 'update the model configuration' },
+            { role: 'assistant', content: 'I will inspect the current setup.' },
+            {
+              role: 'user',
+              content:
+                '[USER STEER MID-RUN]\nThe user injected a mid-run follow-up. Adjust the current step.\n\n你可以找到我们的config.toml文件 在 .ageverse/config.toml',
+            },
+            { role: 'assistant', content: 'I found and applied the config.' },
+          ],
+        }],
+      },
+      meta: { arg: 's1' },
+    });
+
+    const timeline = state.entries.s1.map((entry) => {
+      if (entry.isSteer) return `steer:${entry.text}`;
+      if (entry.type === 'user') return `user:${entry.text}`;
+      return `turn:${entry.blocks
+        ?.filter((block) => block.type === 'assistant')
+        .map((block) => block.text)
+        .join('')}`;
+    });
+    expect(timeline).toEqual([
+      'user:update the model configuration',
+      'turn:I will inspect the current setup.',
+      'steer:你可以找到我们的config.toml文件 在 .ageverse/config.toml',
+      'turn:I found and applied the config.',
+    ]);
+    expect(state.entries.s1[2]).toMatchObject({
+      isSteer: true,
+      steerStatus: 'injected',
+    });
+  });
+
   it('hydrates Overview subagents from spawn tool args after resume', async () => {
     const { reducer } = await loadModules();
     let state = reducer(undefined, { type: '@@INIT' });

@@ -187,6 +187,11 @@ pub enum StreamEvent {
         arguments_delta: Option<String>,
     },
     Done,
+    /// Usage statistics observed before the stream's terminal event.
+    CacheUsage {
+        prompt_cache_hit_tokens: Option<u64>,
+        prompt_cache_miss_tokens: Option<u64>,
+    },
     /// Stream has completed with usage statistics attached.
     /// Usage info is from the final SSE chunk.
     CompleteWithUsage {

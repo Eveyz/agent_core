@@ -2,6 +2,8 @@ import { useMemo, memo } from 'react';
 import DOMPurify from 'dompurify';
 import { Marked, type Links, type Token, type TokensList } from 'marked';
 import { CodeBlock } from './CodeBlock';
+import { extractMath, restoreMath } from './markdownMath';
+import 'katex/dist/katex.min.css';
 
 // ── Marked configuration ──────────────────────────────────────────────
 const markedInstance = new Marked({
@@ -27,14 +29,15 @@ const PURIFY_CONFIG = {
 };
 
 export function parseMarkdown(raw: string): { __html: string } {
-  const html = markedInstance.parse(raw);
+  const { text, htmls } = extractMath(raw);
+  const html = markedInstance.parse(text);
   const htmlStr = typeof html === 'string' ? html : '';
-  return sanitizeMarkdownHtml(htmlStr);
+  return sanitizeMarkdownHtml(htmlStr, htmls);
 }
 
-function sanitizeMarkdownHtml(html: string): { __html: string } {
+function sanitizeMarkdownHtml(html: string, mathHtmls: string[] = []): { __html: string } {
   const sanitized = DOMPurify.sanitize(html, PURIFY_CONFIG);
-  return { __html: enhanceMarkdownTables(sanitized) };
+  return { __html: enhanceMarkdownTables(restoreMath(sanitized, mathHtmls)) };
 }
 
 /** Wrap tables for scroll/frame, and softly tint signed % cells. */
@@ -78,11 +81,36 @@ interface StreamingBlockProps {
   index: number;
 }
 
+function formatLinkDefinitions(links: Links): string {
+  return Object.entries(links)
+    .map(([label, def]) => {
+      if (!def?.href) return null;
+      const title = def.title ? ` "${def.title.replace(/"/g, '\\"')}"` : '';
+      return `[${label}]: ${def.href}${title}`;
+    })
+    .filter((line): line is string => Boolean(line))
+    .join('\n');
+}
+
 function parseMarkdownToken(token: Token, links: Links): { __html: string } {
-  const tokens = [token] as TokensList;
-  tokens.links = links;
-  const html = markedInstance.parser(tokens);
-  return sanitizeMarkdownHtml(typeof html === 'string' ? html : '');
+  const { text, htmls } = extractMath(token.raw);
+
+  // No math: keep the original token so streaming memoization stays stable and
+  // reference links already resolved on the full-document lex are preserved.
+  if (htmls.length === 0) {
+    const tokens = [token] as TokensList;
+    tokens.links = links;
+    const html = markedInstance.parser(tokens);
+    return sanitizeMarkdownHtml(typeof html === 'string' ? html : '');
+  }
+
+  // Marked resolves reference links at lex time. Re-lex the math-substituted
+  // fragment together with document-level definitions so [text][ref] still works.
+  const defs = formatLinkDefinitions(links);
+  const synthetic = defs ? `${text}\n\n${defs}` : text;
+  const lexed = markedInstance.lexer(synthetic);
+  const html = markedInstance.parser(lexed);
+  return sanitizeMarkdownHtml(typeof html === 'string' ? html : '', htmls);
 }
 
 function StreamingPlainBlock({ text }: { text: string }) {

@@ -168,7 +168,7 @@
     },
     "stats": {
       "turns": "{{count}} 轮",
-      "cacheHit": "缓存命中: {{pct}}%"
+      "cacheHit": "缓存命中: {{pct}}"
     },
     "tools": {
       "input": "输入参数",

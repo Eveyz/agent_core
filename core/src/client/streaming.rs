@@ -3,6 +3,7 @@ use anyhow::Result;
 use futures::stream::{self, Stream};
 use reqwest::Response;
 use serde_json::Value;
+use std::collections::VecDeque;
 use tracing::debug;
 
 pub struct SseParser;
@@ -10,8 +11,11 @@ pub struct SseParser;
 impl SseParser {
     pub fn parse_stream(response: Response) -> impl Stream<Item = Result<StreamEvent>> {
         stream::unfold(
-            (response, String::new(), false),
-            |(mut resp, mut buffer, mut done)| async move {
+            (response, String::new(), false, VecDeque::new()),
+            |(mut resp, mut buffer, mut done, mut pending)| async move {
+                if let Some(event) = pending.pop_front() {
+                    return Some((Ok(event), (resp, buffer, done, pending)));
+                }
                 if done {
                     return None;
                 }
@@ -28,7 +32,10 @@ impl SseParser {
                         if let Some(data) = line.strip_prefix("data: ") {
                             if data == "[DONE]" {
                                 done = true;
-                                return Some((Ok(StreamEvent::Done), (resp, buffer, done)));
+                                return Some((
+                                    Ok(StreamEvent::Done),
+                                    (resp, buffer, done, pending),
+                                ));
                             }
 
                             if data.len() < 300 {
@@ -38,8 +45,11 @@ impl SseParser {
                             }
 
                             match parse_sse_data(data) {
-                                Ok(event) => {
-                                    return Some((Ok(event), (resp, buffer, done)));
+                                Ok(events) => {
+                                    pending.extend(events);
+                                    if let Some(event) = pending.pop_front() {
+                                        return Some((Ok(event), (resp, buffer, done, pending)));
+                                    }
                                 }
                                 Err(e) => {
                                     debug!(error = %e, %data, "SSE parse error");
@@ -60,30 +70,34 @@ impl SseParser {
                             }
                             buffer.push_str(&text);
                         }
-                    Ok(None) => {
-                        if !buffer.trim().is_empty() {
-                            let trimmed = buffer.trim();
-                            if trimmed.starts_with('{') {
-                                debug!(body = %trimmed, "SSE stream ended with non-SSE JSON (likely an API error)");
-                                done = true;
-                                return Some((
-                                    Err(anyhow::anyhow!(
-                                        "API returned non-SSE response: {}",
-                                        if trimmed.len() > 300 { &trimmed[..300] } else { trimmed }
-                                    )),
-                                    (resp, buffer, done),
-                                ));
+                        Ok(None) => {
+                            if !buffer.trim().is_empty() {
+                                let trimmed = buffer.trim();
+                                if trimmed.starts_with('{') {
+                                    debug!(body = %trimmed, "SSE stream ended with non-SSE JSON (likely an API error)");
+                                    done = true;
+                                    return Some((
+                                        Err(anyhow::anyhow!(
+                                            "API returned non-SSE response: {}",
+                                            if trimmed.len() > 300 {
+                                                &trimmed[..300]
+                                            } else {
+                                                trimmed
+                                            }
+                                        )),
+                                        (resp, buffer, done, pending),
+                                    ));
+                                }
+                                debug!(remaining = %trimmed, "SSE stream ended with unparsed data");
                             }
-                            debug!(remaining = %trimmed, "SSE stream ended with unparsed data");
+                            done = true;
+                            return Some((Ok(StreamEvent::Done), (resp, buffer, done, pending)));
                         }
-                        done = true;
-                        return Some((Ok(StreamEvent::Done), (resp, buffer, done)));
-                    }
                         Err(e) => {
                             done = true;
                             return Some((
                                 Err(anyhow::anyhow!("stream error: {e}")),
-                                (resp, buffer, done),
+                                (resp, buffer, done, pending),
                             ));
                         }
                     }
@@ -93,7 +107,7 @@ impl SseParser {
     }
 }
 
-fn parse_sse_data(data: &str) -> Result<StreamEvent> {
+fn parse_sse_data(data: &str) -> Result<Vec<StreamEvent>> {
     let v: Value = serde_json::from_str(data)?;
 
     // ── OpenAI Responses API events ────────────────────────────────
@@ -101,38 +115,40 @@ fn parse_sse_data(data: &str) -> Result<StreamEvent> {
         match event_type {
             "response.reasoning_summary_text.delta" => {
                 if let Some(delta) = v["delta"].as_str() {
-                    return Ok(StreamEvent::ThinkingDelta(delta.to_string()));
+                    return Ok(vec![StreamEvent::ThinkingDelta(delta.to_string())]);
                 }
             }
             "response.output_text.delta" => {
                 if let Some(delta) = v["delta"].as_str() {
-                    return Ok(StreamEvent::TextDelta(delta.to_string()));
+                    return Ok(vec![StreamEvent::TextDelta(delta.to_string())]);
                 }
             }
             "response.output_item.done" => {
                 let item = &v["item"];
                 if item["type"].as_str() == Some("reasoning") {
-                    return Ok(StreamEvent::ReasoningBlob {
-                        encrypted_content: item["encrypted_content"].as_str().map(|s| s.to_string()),
+                    return Ok(vec![StreamEvent::ReasoningBlob {
+                        encrypted_content: item["encrypted_content"]
+                            .as_str()
+                            .map(|s| s.to_string()),
                         signature: None,
                         summary: item["summary"]
                             .as_array()
                             .and_then(|a| a.first())
                             .and_then(|s| s["text"].as_str())
                             .map(|s| s.to_string()),
-                    });
+                    }]);
                 }
                 if item["type"].as_str() == Some("function_call") {
-                    return Ok(StreamEvent::ToolCallDelta {
+                    return Ok(vec![StreamEvent::ToolCallDelta {
                         index: 0,
                         id: item["call_id"].as_str().map(|s| s.to_string()),
                         function_name: item["name"].as_str().map(|s| s.to_string()),
                         arguments_delta: item["arguments"].as_str().map(|s| s.to_string()),
-                    });
+                    }]);
                 }
             }
             "response.completed" | "response.done" => {
-                return Ok(StreamEvent::Done);
+                return Ok(vec![cache_usage_event(&v).unwrap_or(StreamEvent::Done)]);
             }
             _ => {}
         }
@@ -143,31 +159,31 @@ fn parse_sse_data(data: &str) -> Result<StreamEvent> {
         match delta_type {
             "thinking_delta" => {
                 if let Some(t) = v["delta"]["thinking"].as_str() {
-                    return Ok(StreamEvent::ThinkingDelta(t.to_string()));
+                    return Ok(vec![StreamEvent::ThinkingDelta(t.to_string())]);
                 }
             }
             "signature_delta" => {
                 if let Some(sig) = v["delta"]["signature"].as_str() {
-                    return Ok(StreamEvent::ReasoningBlob {
+                    return Ok(vec![StreamEvent::ReasoningBlob {
                         encrypted_content: None,
                         signature: Some(sig.to_string()),
                         summary: None,
-                    });
+                    }]);
                 }
             }
             "text_delta" => {
                 if let Some(t) = v["delta"]["text"].as_str() {
-                    return Ok(StreamEvent::TextDelta(t.to_string()));
+                    return Ok(vec![StreamEvent::TextDelta(t.to_string())]);
                 }
             }
             "input_json_delta" => {
                 if let Some(partial) = v["delta"]["partial_json"].as_str() {
-                    return Ok(StreamEvent::ToolCallDelta {
+                    return Ok(vec![StreamEvent::ToolCallDelta {
                         index: v["index"].as_u64().unwrap_or(0) as usize,
                         id: None,
                         function_name: None,
                         arguments_delta: Some(partial.to_string()),
-                    });
+                    }]);
                 }
             }
             _ => {}
@@ -176,20 +192,28 @@ fn parse_sse_data(data: &str) -> Result<StreamEvent> {
     if v["type"].as_str() == Some("content_block_start") {
         let block = &v["content_block"];
         if block["type"].as_str() == Some("tool_use") {
-            return Ok(StreamEvent::ToolCallDelta {
+            return Ok(vec![StreamEvent::ToolCallDelta {
                 index: v["index"].as_u64().unwrap_or(0) as usize,
                 id: block["id"].as_str().map(|s| s.to_string()),
                 function_name: block["name"].as_str().map(|s| s.to_string()),
                 arguments_delta: Some(String::new()),
-            });
+            }]);
         }
         if block["type"].as_str() == Some("thinking") {
             // thinking block start — signature may arrive later via signature_delta
-            return Ok(StreamEvent::TextDelta(String::new()));
+            return Ok(vec![StreamEvent::TextDelta(String::new())]);
         }
     }
+    if v["type"].as_str() == Some("message_start") {
+        return Ok(vec![
+            cache_usage_snapshot_event(&v).unwrap_or_else(|| StreamEvent::TextDelta(String::new())),
+        ]);
+    }
+    if v["type"].as_str() == Some("message_delta") {
+        return Ok(vec![cache_usage_event(&v).unwrap_or(StreamEvent::Done)]);
+    }
     if v["type"].as_str() == Some("message_stop") {
-        return Ok(StreamEvent::Done);
+        return Ok(vec![StreamEvent::Done]);
     }
 
     // ── Chat Completions (OpenAI-compat / DeepSeek) ────────────────
@@ -197,28 +221,26 @@ fn parse_sse_data(data: &str) -> Result<StreamEvent> {
         Some(c) => c,
         None => {
             // Unknown shape — ignore quietly rather than fail the stream.
-            return Ok(StreamEvent::TextDelta(String::new()));
+            return Ok(vec![StreamEvent::TextDelta(String::new())]);
         }
     };
 
     if choices.is_empty() {
-        return Ok(StreamEvent::Done);
+        return Ok(vec![cache_usage_event(&v).unwrap_or(StreamEvent::Done)]);
     }
 
     let choice = &choices[0];
     let delta = &choice["delta"];
 
-    // ── Tool calls MUST be processed before finish_reason.  ────────
-    // NVIDIA's DeepSeek Flash gateway sometimes packs the last
-    // tool-call fragment and `finish_reason: "tool_calls"` into a
-    // single SSE chunk.  If we short-circuit on finish_reason first,
-    // the trailing argument delta is dropped and the accumulator
-    // builds a broken partial call → crash.
+    let mut events = Vec::new();
+
+    // Providers may combine their final delta, finish_reason, and usage in a
+    // single SSE object. Collect every meaningful event from that object.
     if let Some(tool_calls) = delta["tool_calls"].as_array()
         && let Some(tc) = tool_calls.first()
     {
         let index = tc["index"].as_u64().unwrap_or(0) as usize;
-        return Ok(StreamEvent::ToolCallDelta {
+        events.push(StreamEvent::ToolCallDelta {
             index,
             id: tc["id"].as_str().map(|s| s.to_string()),
             function_name: tc["function"]["name"].as_str().map(|s| s.to_string()),
@@ -226,38 +248,77 @@ fn parse_sse_data(data: &str) -> Result<StreamEvent> {
         });
     }
 
-    // Text/thinking BEFORE finish_reason — NVIDIA's DeepSeek gateway (and
-    // some other OpenAI-compat providers) pack the last content delta and
-    // `finish_reason: "stop"` into a single SSE chunk.  If we short-circuit
-    // on finish_reason first the final answer is silently dropped, which is
-    // why subagents (and main-agent turns) can end after a tool call with
-    // no visible final response.
     if let Some(thinking) = delta["reasoning_content"].as_str()
         && !thinking.is_empty()
     {
-        return Ok(StreamEvent::ThinkingDelta(thinking.to_string()));
+        events.push(StreamEvent::ThinkingDelta(thinking.to_string()));
     }
 
     if let Some(content) = delta["content"].as_str()
         && !content.is_empty()
     {
-        return Ok(StreamEvent::TextDelta(content.to_string()));
+        events.push(StreamEvent::TextDelta(content.to_string()));
     }
 
-    // finish_reason AFTER tool_calls and content — when they share a chunk
-    // the tool/text delta above takes priority.  Usage info is best-effort.
     if let Some(finish_reason) = choice["finish_reason"].as_str()
         && (finish_reason == "stop" || finish_reason == "tool_calls")
     {
-        let hit = v["usage"]["prompt_cache_hit_tokens"].as_u64();
-        let miss = v["usage"]["prompt_cache_miss_tokens"].as_u64();
-        return Ok(StreamEvent::CompleteWithUsage {
-            prompt_cache_hit_tokens: hit,
-            prompt_cache_miss_tokens: miss,
-        });
+        events.push(cache_usage_event(&v).unwrap_or(StreamEvent::Done));
     }
 
-    Ok(StreamEvent::TextDelta(String::new()))
+    if events.is_empty() {
+        events.push(StreamEvent::TextDelta(String::new()));
+    }
+    Ok(events)
+}
+
+/// Normalize cache usage across DeepSeek/OpenAI-compatible, OpenAI Responses,
+/// and Anthropic response shapes.
+fn cache_usage_tokens(v: &Value) -> Option<(u64, u64)> {
+    let usage = v
+        .get("usage")
+        .or_else(|| v.get("response").and_then(|response| response.get("usage")))
+        .or_else(|| v.get("message").and_then(|message| message.get("usage")))?;
+
+    let deepseek_hit = usage["prompt_cache_hit_tokens"].as_u64();
+    let deepseek_miss = usage["prompt_cache_miss_tokens"].as_u64();
+    if deepseek_hit.is_some() || deepseek_miss.is_some() {
+        return Some((deepseek_hit.unwrap_or(0), deepseek_miss.unwrap_or(0)));
+    }
+
+    let anthropic_hit = usage["cache_read_input_tokens"].as_u64();
+    let anthropic_created = usage["cache_creation_input_tokens"].as_u64();
+    if anthropic_hit.is_some() || anthropic_created.is_some() {
+        let miss = usage["input_tokens"].as_u64().unwrap_or(0) + anthropic_created.unwrap_or(0);
+        return Some((anthropic_hit.unwrap_or(0), miss));
+    }
+
+    let total = usage["prompt_tokens"]
+        .as_u64()
+        .or_else(|| usage["input_tokens"].as_u64());
+    let cached = usage["prompt_tokens_details"]["cached_tokens"]
+        .as_u64()
+        .or_else(|| usage["input_tokens_details"]["cached_tokens"].as_u64());
+    if total.is_some() || cached.is_some() {
+        let hit = cached.unwrap_or(0);
+        return Some((hit, total.unwrap_or(hit).saturating_sub(hit)));
+    }
+
+    None
+}
+
+fn cache_usage_event(v: &Value) -> Option<StreamEvent> {
+    cache_usage_tokens(v).map(|(hit, miss)| StreamEvent::CompleteWithUsage {
+        prompt_cache_hit_tokens: Some(hit),
+        prompt_cache_miss_tokens: Some(miss),
+    })
+}
+
+fn cache_usage_snapshot_event(v: &Value) -> Option<StreamEvent> {
+    cache_usage_tokens(v).map(|(hit, miss)| StreamEvent::CacheUsage {
+        prompt_cache_hit_tokens: Some(hit),
+        prompt_cache_miss_tokens: Some(miss),
+    })
 }
 
 pub struct ToolCallAccumulator {
@@ -524,29 +585,87 @@ mod parse_sse_tests {
     use super::*;
 
     #[test]
-    fn finish_reason_stop_with_content_returns_text_not_usage() {
+    fn finish_reason_stop_without_usage_preserves_content() {
         let data = r#"{"choices":[{"index":0,"delta":{"content":"Shenzhen is 28°C."},"finish_reason":"stop"}]}"#;
-        let ev = parse_sse_data(data).unwrap();
-        assert!(matches!(ev, StreamEvent::TextDelta(ref s) if s == "Shenzhen is 28°C."));
+        let events = parse_sse_data(data).unwrap();
+        assert!(
+            matches!(events.first(), Some(StreamEvent::TextDelta(s)) if s == "Shenzhen is 28°C.")
+        );
     }
 
     #[test]
-    fn finish_reason_stop_with_reasoning_returns_thinking_not_usage() {
+    fn final_content_chunk_does_not_drop_cache_usage() {
+        let data = r#"{"choices":[{"index":0,"delta":{"content":"done"},"finish_reason":"stop"}],"usage":{"prompt_cache_hit_tokens":10,"prompt_cache_miss_tokens":5}}"#;
+        let events = parse_sse_data(data).unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events.first(), Some(StreamEvent::TextDelta(s)) if s == "done"));
+        assert!(matches!(
+            events.get(1),
+            Some(StreamEvent::CompleteWithUsage {
+                prompt_cache_hit_tokens: Some(10),
+                prompt_cache_miss_tokens: Some(5),
+            })
+        ));
+    }
+
+    #[test]
+    fn finish_reason_stop_without_usage_preserves_reasoning() {
         let data = r#"{"choices":[{"index":0,"delta":{"reasoning_content":"Let me summarize."},"finish_reason":"stop"}]}"#;
-        let ev = parse_sse_data(data).unwrap();
-        assert!(matches!(ev, StreamEvent::ThinkingDelta(ref s) if s == "Let me summarize."));
+        let events = parse_sse_data(data).unwrap();
+        assert!(
+            matches!(events.first(), Some(StreamEvent::ThinkingDelta(s)) if s == "Let me summarize.")
+        );
     }
 
     #[test]
     fn finish_reason_alone_returns_complete_with_usage() {
         let data = r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_cache_hit_tokens":10,"prompt_cache_miss_tokens":5}}"#;
-        let ev = parse_sse_data(data).unwrap();
+        let events = parse_sse_data(data).unwrap();
         assert!(matches!(
-            ev,
-            StreamEvent::CompleteWithUsage {
+            events.first(),
+            Some(StreamEvent::CompleteWithUsage {
                 prompt_cache_hit_tokens: Some(10),
                 prompt_cache_miss_tokens: Some(5),
-            }
+            })
+        ));
+    }
+
+    #[test]
+    fn usage_only_chunk_with_empty_choices_is_not_dropped() {
+        let data = r#"{"choices":[],"usage":{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":75}}}"#;
+        let events = parse_sse_data(data).unwrap();
+        assert!(matches!(
+            events.first(),
+            Some(StreamEvent::CompleteWithUsage {
+                prompt_cache_hit_tokens: Some(75),
+                prompt_cache_miss_tokens: Some(25),
+            })
+        ));
+    }
+
+    #[test]
+    fn anthropic_cache_usage_is_normalized() {
+        let data = r#"{"type":"message_start","message":{"usage":{"input_tokens":20,"cache_creation_input_tokens":10,"cache_read_input_tokens":70}}}"#;
+        let events = parse_sse_data(data).unwrap();
+        assert!(matches!(
+            events.first(),
+            Some(StreamEvent::CacheUsage {
+                prompt_cache_hit_tokens: Some(70),
+                prompt_cache_miss_tokens: Some(30),
+            })
+        ));
+    }
+
+    #[test]
+    fn openai_responses_cache_usage_is_read_from_completed_response() {
+        let data = r#"{"type":"response.completed","response":{"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":80}}}}"#;
+        let events = parse_sse_data(data).unwrap();
+        assert!(matches!(
+            events.first(),
+            Some(StreamEvent::CompleteWithUsage {
+                prompt_cache_hit_tokens: Some(80),
+                prompt_cache_miss_tokens: Some(20),
+            })
         ));
     }
 }

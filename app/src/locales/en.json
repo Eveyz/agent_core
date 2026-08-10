@@ -168,7 +168,7 @@
     },
     "stats": {
       "turns": "{{count}} turns",
-      "cacheHit": "Cache hit: {{pct}}%"
+      "cacheHit": "Cache hit: {{pct}}"
     },
     "tools": {
       "input": "INPUT",

@@ -141,6 +141,12 @@ fn build_chat_completions_body(
         "messages": api_messages,
         "stream": stream,
     });
+    if stream {
+        // OpenAI-compatible providers only include the final usage chunk when
+        // explicitly requested. Without this, cache telemetry never reaches
+        // the runtime even when the provider tracks prompt-cache tokens.
+        body["stream_options"] = json!({ "include_usage": true });
+    }
     if let Some(temp) = temperature {
         body["temperature"] = json!(temp);
     }
@@ -702,6 +708,21 @@ mod tests {
         let ser = serde_json::to_string(&body["messages"][0]).unwrap();
         assert!(!ser.contains("encrypted_content"));
         assert!(ser.contains("<think>"));
+    }
+
+    #[test]
+    fn streaming_chat_completions_requests_usage() {
+        let body = build_chat_completions_body(
+            "chat-model",
+            &[Message::user("hello")],
+            &[],
+            true,
+            None,
+            None,
+            false,
+        );
+
+        assert_eq!(body["stream_options"]["include_usage"], true);
     }
 
     #[test]

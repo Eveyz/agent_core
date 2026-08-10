@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { parseMentions, findMentionBoundaries } from '../utils/mentions';
 import { useSkills } from './useSkills';
@@ -85,11 +85,12 @@ export function useAutocomplete(
     token: string;
   }) => void,
 ) {
-  const { skills } = useSkills();
+  const { skills, refreshFromDisk } = useSkills();
   const [showAutocomplete, setShowAutocomplete] = useState(false);
   const [autocompleteItems, setAutocompleteItems] = useState<AutocompleteItem[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [triggerInfo, setTriggerInfo] = useState<{ start: number; end: number; type: '@' | '/' } | null>(null);
+  const refreshedForAtSessionRef = useRef(false);
 
   const fetchDirectoryEntries = useCallback(async (query: string) => {
     const q = query.toLowerCase();
@@ -170,10 +171,21 @@ export function useAutocomplete(
     }
   }, [projectPath, projectId, skills, isChatMode, agents]);
 
+  // After a disk rescan updates `skills`, refresh the open @ dropdown in place.
+  useEffect(() => {
+    if (!showAutocomplete || triggerInfo?.type !== '@' || !textareaRef.current) return;
+    const cursorPos = textareaRef.current.selectionStart ?? triggerInfo.end;
+    const query = input.slice(triggerInfo.start + 1, cursorPos);
+    void fetchDirectoryEntries(query);
+    // Only re-filter when the skills list itself changes (post-rescan).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [skills]);
+
   const closeAutocomplete = useCallback(() => {
     setShowAutocomplete(false);
     setAutocompleteItems([]);
     setTriggerInfo(null);
+    refreshedForAtSessionRef.current = false;
   }, []);
 
   const insertAutocompleteItem = useCallback(
@@ -314,8 +326,14 @@ export function useAutocomplete(
         setShowAutocomplete(true);
 
         if (triggerType === '@') {
+          // One rescan per @ session so newly added skills show up without restart.
+          if (!refreshedForAtSessionRef.current) {
+            refreshedForAtSessionRef.current = true;
+            void refreshFromDisk();
+          }
           fetchDirectoryEntries(query);
         } else if (triggerType === '/') {
+          refreshedForAtSessionRef.current = false;
           const filtered = COMMANDS.filter((c) => c.label.toLowerCase().includes(query.toLowerCase()));
           setAutocompleteItems(filtered);
           setSelectedIndex(0);
@@ -324,7 +342,7 @@ export function useAutocomplete(
         closeAutocomplete();
       }
     },
-    [fetchDirectoryEntries, closeAutocomplete]
+    [fetchDirectoryEntries, closeAutocomplete, refreshFromDisk]
   );
 
   const highlightedHTML = useMemo(() => {

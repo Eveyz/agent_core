@@ -57,7 +57,7 @@ impl Run {
     pub(super) async fn run_turn(&mut self, turn_index: usize) -> Result<TurnOutcome, RunError> {
         tracing::info!(
             turn = turn_index,
-            context_msgs = self.context.messages().len(),
+            context_msgs = self.context.len(),
             "TURN: entering"
         );
 
@@ -83,9 +83,10 @@ impl Run {
 
         // Stage: Refresh
         self.refresh_context_segments();
-        // Segments changed — publish usage/model-window so the ring matches
-        // the context the model is about to see (before maybe_compact).
-        self.refresh_context_snapshot();
+        // Segments changed — publish usage so the ring matches the context the
+        // model is about to see (before maybe_compact). Conversation messages
+        // themselves are unchanged, so the model-window snapshot stays valid.
+        self.refresh_context_usage_snapshot();
 
         // Stage: Verify stable prefix hasn't drifted
         let current_fp = self.context.stable_prefix_fingerprint();
@@ -648,9 +649,19 @@ impl Run {
                 }
             };
 
-            // BeforeModel hook: SkipModel short-circuit
-            let snapshot = self.snapshot_messages_for_hook(&base_messages);
-            if let Some(preset) = self.hook_registry.lock().fire_before_model(&snapshot) {
+            // BeforeModel hook: SkipModel short-circuit. The default registry
+            // is empty, so avoid constructing a JSON preview of the complete
+            // history unless a hook can actually consume it.
+            let preset = {
+                let hooks = self.hook_registry.lock();
+                if hooks.is_empty() {
+                    None
+                } else {
+                    let snapshot = self.snapshot_messages_for_hook(&base_messages);
+                    hooks.fire_before_model(&snapshot)
+                }
+            };
+            if let Some(preset) = preset {
                 self.recovery_ctx.record_success();
                 self.hook_registry.lock().fire_after_model(&preset, 0);
                 return Ok(ModelTurnResult {
@@ -1122,6 +1133,12 @@ impl Run {
                         &mut max_gap_to,
                     );
                     break;
+                }
+                StreamEvent::CacheUsage { prompt_cache_hit_tokens, prompt_cache_miss_tokens } => {
+                    cache_usage = CacheUsage {
+                        hit_tokens: prompt_cache_hit_tokens.unwrap_or(0),
+                        miss_tokens: prompt_cache_miss_tokens.unwrap_or(0),
+                    };
                 }
                 StreamEvent::CompleteWithUsage { prompt_cache_hit_tokens, prompt_cache_miss_tokens } => {
                     stamp(

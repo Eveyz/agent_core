@@ -1155,6 +1155,31 @@
   color: var(--danger);
 }
 
+/* KaTeX math */
+.assistant-msg .katex {
+  font-size: 1.05em;
+  color: inherit;
+}
+
+.assistant-msg .md-math-display {
+  display: block;
+  margin: 12px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  text-align: center;
+  -webkit-overflow-scrolling: touch;
+}
+
+.assistant-msg .md-math-display .katex-display {
+  margin: 0;
+}
+
+.assistant-msg .md-math-error code {
+  color: var(--danger);
+  background: transparent;
+  padding: 0;
+}
+
 /* Error Message */
 .error-msg {
   color: var(--danger);

@@ -54,7 +54,10 @@ impl Tool for SkillSearchTool {
         if query.is_empty() {
             anyhow::bail!("query must not be empty");
         }
-        let mgr = self.manager.lock();
+        // Rescan so newly added SKILL.md files are discoverable without an
+        // explicit skill_reload / process restart.
+        let mut mgr = self.manager.lock();
+        let _ = mgr.reload_preserving_active()?;
         let mut matches = Vec::new();
         for (skill, source) in mgr.list_with_sources() {
             let matched = skill.name.to_lowercase().contains(&query)
@@ -218,7 +221,8 @@ Use when the compact Skill Catalog is truncated or you need full discovery befor
 
     async fn execute(&self, args: Value) -> Result<String> {
         let sid = session_scope(&args);
-        let mgr = self.manager.lock();
+        let mut mgr = self.manager.lock();
+        let _ = mgr.reload_preserving_active()?;
         let skills = mgr.list_with_sources();
         if skills.is_empty() {
             return Ok(
@@ -480,5 +484,30 @@ mod tests {
             .unwrap();
         assert!(output.contains("docs"));
         assert!(!manager.lock().is_active("docs"));
+    }
+
+    #[tokio::test]
+    async fn search_picks_up_skill_added_after_initial_scan() {
+        let (dir, manager) = resource_manager();
+        let tool = SkillSearchTool::new(manager.clone());
+        let before = tool
+            .execute(serde_json::json!({"query": "fresh"}))
+            .await
+            .unwrap();
+        assert!(before.contains("No skills matched"));
+
+        let skill = dir.path().join("fresh");
+        fs::create_dir_all(&skill).unwrap();
+        fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: fresh\ndescription: brand new skill\n---\nBody\n",
+        )
+        .unwrap();
+
+        let after = tool
+            .execute(serde_json::json!({"query": "fresh"}))
+            .await
+            .unwrap();
+        assert!(after.contains("fresh"), "expected rescan to find new skill, got: {after}");
     }
 }

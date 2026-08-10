@@ -4,7 +4,7 @@ import { resolveSkillScope, type SkillScopeProjectState } from './skillScope';
 import { resumeSession, deleteSession } from '../project/projectSlice';
 
 import type {
-  TurnBlock, SubagentEntry, ChatState, RunState, ChatEntry, FrontendPrompt,
+  TurnBlock, SubagentEntry, ChatState, RunState, ChatEntry, FrontendMessage, FrontendPrompt,
   TodoItem, ParkedPlan, PlanDetail,
 } from './types';
 import { processSingleEvent, stopDanglingSubagents, clearRecoverableNotices } from './eventHandlers';
@@ -85,6 +85,71 @@ function isTerminalPayload(payload: string | Record<string, unknown>): boolean {
   return event === 'run_completed' || event === 'run_cancelled' || event === 'run_failed';
 }
 
+const PERSISTED_STEER_MARKER = '[USER STEER MID-RUN]';
+
+/** Recover the user-visible text from the framing stored in model context. */
+function persistedSteerText(content: string): string | null {
+  if (!content.startsWith(PERSISTED_STEER_MARKER)) return null;
+  const framedBody = content.slice(PERSISTED_STEER_MARKER.length).trimStart();
+  const instructionBoundary = framedBody.indexOf('\n\n');
+  return (instructionBoundary >= 0
+    ? framedBody.slice(instructionBoundary + 2)
+    : framedBody
+  ).trim();
+}
+
+function canonicalBlocks(messages: FrontendMessage[]): TurnBlock[] {
+  const blocks: TurnBlock[] = [];
+  const toolBlocks = new Map<string, Extract<TurnBlock, { type: 'tool' }>>();
+
+  for (const message of messages) {
+    if (message.role === 'assistant') {
+      if (message.content) {
+        const hasThinkTag = message.content.match(/<think>([\s\S]*?)<\/think>/);
+        if (hasThinkTag) {
+          blocks.push({ type: 'thinking', text: hasThinkTag[1], isStreaming: false });
+          const visible = message.content.replace(/<think>[\s\S]*?<\/think>/, '').trim();
+          if (visible) blocks.push({ type: 'assistant', text: visible, isStreaming: false });
+        } else {
+          blocks.push({ type: 'assistant', text: message.content, isStreaming: false });
+        }
+      }
+      for (const tc of message.tool_calls ?? []) {
+        let args: unknown = tc.function.arguments;
+        try { args = JSON.parse(tc.function.arguments); } catch { /* retain raw args */ }
+        const toolBlock: Extract<TurnBlock, { type: 'tool' }> = {
+          type: 'tool',
+          call_id: tc.id,
+          name: tc.function.name,
+          args,
+          result: '',
+          active: false,
+          is_error: false,
+        };
+        toolBlocks.set(tc.id, toolBlock);
+        blocks.push(toolBlock);
+      }
+    } else if (message.role === 'tool' && message.tool_call_id) {
+      const toolBlock = toolBlocks.get(message.tool_call_id);
+      if (toolBlock) {
+        toolBlock.result = message.content ?? '';
+        if (message.name) toolBlock.name = message.name;
+      } else {
+        blocks.push({
+          type: 'tool',
+          call_id: message.tool_call_id,
+          name: message.name ?? 'tool',
+          result: message.content ?? '',
+          active: false,
+          is_error: false,
+        });
+      }
+    }
+  }
+
+  return blocks;
+}
+
 // ── Initial state ────────────────────────────────────────────────────
 
 const initialState: ChatState = {
@@ -155,14 +220,24 @@ export const resyncRun = createAsyncThunk<
 
 export const fetchSkills = createAsyncThunk(
   'chat/fetchSkills',
-  async (_, { getState, dispatch }) => {
+  async (arg: { force?: boolean } | undefined, { getState, dispatch }) => {
+    const force = arg?.force === true;
     const state = getState() as { chat: ChatState; project?: SkillScopeProjectState };
     const { sessionId, workspace, scopeKey } = resolveSkillScope(state.project);
     const cached = state.chat.skillsCache;
-    if (cached && cached.scopeKey === scopeKey && Date.now() - cached.loadedAt < 25000) {
+    if (
+      !force
+      && cached
+      && cached.scopeKey === scopeKey
+      && Date.now() - cached.loadedAt < 25000
+    ) {
       return cached.skills;
     }
-    const skills = await invoke<import('./types').SkillManifest[]>('get_skills', { sessionId, workspace });
+    const skills = await invoke<import('./types').SkillManifest[]>('get_skills', {
+      sessionId,
+      workspace,
+      force,
+    });
     dispatch(cacheSkills({ skills, scopeKey }));
     return skills;
   }
@@ -211,9 +286,113 @@ function rebuildEntries(state: ChatState, sessionId: string) {
   const newEntries: ChatEntry[] = [];
 
   for (const prompt of visiblePrompts) {
+    const userMessageCount = prompt.messages.filter((message) => message.role === 'user').length;
+
+    // A mid-run steer is a real user message in the canonical transcript. The
+    // backend can keep it under the lifecycle prompt that was already running,
+    // so one persisted prompt may contain several user boundaries. Preserve
+    // those boundaries instead of flattening all work into one turn.
+    if (userMessageCount > 1) {
+      const segments: { user: FrontendMessage; messages: FrontendMessage[] }[] = [];
+      let currentSegment: { user: FrontendMessage; messages: FrontendMessage[] } | undefined;
+      for (const message of prompt.messages) {
+        if (message.role === 'user') {
+          if (currentSegment) segments.push(currentSegment);
+          currentSegment = { user: message, messages: [] };
+        } else if (currentSegment) {
+          currentSegment.messages.push(message);
+        }
+      }
+      if (currentSegment) segments.push(currentSegment);
+
+      let promptStartTime: number | undefined;
+      if (prompt.started_at) {
+        const parsed = new Date(prompt.started_at).getTime();
+        if (!isNaN(parsed)) promptStartTime = parsed;
+      }
+      let promptEndTime: number | undefined;
+      if (prompt.ended_at) {
+        const parsed = new Date(prompt.ended_at).getTime();
+        if (!isNaN(parsed)) promptEndTime = parsed;
+      }
+      const isCompletedStatus =
+        prompt.status === 'completed' ||
+        prompt.status === 'cancelled' ||
+        prompt.status === 'failed' ||
+        prompt.status === 'interrupted';
+      if (isCompletedStatus && !promptEndTime) {
+        promptEndTime = promptStartTime ? promptStartTime + 5000 : Date.now();
+      }
+
+      for (const [segmentIndex, segment] of segments.entries()) {
+        const restoredSteerText = persistedSteerText(segment.user.content || '');
+        const isSteer = restoredSteerText !== null;
+        const metaImages = segment.user.metadata?._images as
+          | { path?: string; mime_type?: string; url?: string; sha256?: string; previewUrl?: string }[]
+          | undefined;
+        const rawImages = metaImages ?? segment.user.images?.map((img) => ({
+          path: img.path,
+          mime_type: img.mime_type,
+          url: img.url,
+          sha256: img.sha256,
+          previewUrl: undefined as string | undefined,
+        }));
+        const images = rawImages?.map((img, imageIndex) => ({
+          id: `${prompt.id}-${segmentIndex}-img-${imageIndex}`,
+          previewUrl: img.previewUrl ?? '',
+          mimeType: img.mime_type ?? 'image/png',
+          path: img.path,
+          url: img.url,
+          sha256: img.sha256,
+        })).filter((img) => img.previewUrl || img.path || img.url);
+
+        newEntries.push({
+          id: isSteer
+            ? `steer-restored-${prompt.id}-${segmentIndex}`
+            : segmentIndex === 0
+              ? `user-${prompt.id}`
+              : `user-${prompt.id}-${segmentIndex}`,
+          type: 'user',
+          promptId: prompt.id,
+          text: restoredSteerText ?? segment.user.content ?? '',
+          model: prompt.model,
+          images: images?.length ? images : undefined,
+          isSteer: isSteer || undefined,
+          steerId: isSteer ? `restored-${prompt.id}-${segmentIndex}` : undefined,
+          steerStatus: isSteer ? 'injected' : undefined,
+        });
+
+        const segmentAssistant = segment.messages.find((message) => message.role === 'assistant');
+        const segmentMetadata = segmentAssistant?.metadata;
+        let blocks = Array.isArray(segmentMetadata?.blocks)
+          ? [...segmentMetadata.blocks] as TurnBlock[]
+          : canonicalBlocks(segment.messages);
+        const hydrated = hydrateSubagentsFromBlocks(blocks, state.subagents[sessionId]);
+        blocks = hydrated.blocks;
+        newEntries.push({
+          id: segmentIndex === 0
+            ? `turn-${prompt.id}`
+            : `turn-${prompt.id}-${segmentIndex}`,
+          type: 'turn',
+          promptId: prompt.id,
+          turnIndex: prompt.turn_index,
+          blocks,
+          subagentIds: hydrated.subagentIds.length > 0 ? hydrated.subagentIds : undefined,
+          startTime: segmentMetadata?.startTime ?? promptStartTime,
+          endTime: segmentMetadata?.endTime ?? (isCompletedStatus ? promptEndTime : undefined),
+          cacheHitRate: segmentMetadata?.cacheHitRate,
+          turnIds: segmentMetadata?.turnIds,
+          interrupted: prompt.status === 'interrupted' || prompt.status === 'cancelled',
+        });
+      }
+      continue;
+    }
+
     // Find user message text from prompt messages
     const userMsgObj = prompt.messages.find((m) => m.role === 'user');
-    const userMsg = userMsgObj?.content || '';
+    const restoredSteerText = persistedSteerText(userMsgObj?.content || '');
+    const isSteer = restoredSteerText !== null;
+    const userMsg = restoredSteerText ?? userMsgObj?.content ?? '';
     const metaImages = userMsgObj?.metadata?._images as
       | { path?: string; mime_type?: string; url?: string; sha256?: string; previewUrl?: string }[]
       | undefined;
@@ -235,12 +414,15 @@ function rebuildEntries(state: ChatState, sessionId: string) {
 
     // A. Push the user entry
     newEntries.push({
-      id: `user-${prompt.id}`,
+      id: isSteer ? `steer-restored-${prompt.id}` : `user-${prompt.id}`,
       type: 'user',
       promptId: prompt.id,
       text: userMsg,
       model: prompt.model,
       images: images?.length ? images : undefined,
+      isSteer: isSteer || undefined,
+      steerId: isSteer ? `restored-${prompt.id}` : undefined,
+      steerStatus: isSteer ? 'injected' : undefined,
     });
 
     // B. Reconstruct the turn entry
@@ -268,51 +450,7 @@ function rebuildEntries(state: ChatState, sessionId: string) {
     // contain several assistant(tool_calls) -> tool -> assistant iterations;
     // restoring only the first assistant silently hid most of the conversation.
     if (blocks.length === 0) {
-      const toolBlocks = new Map<string, Extract<TurnBlock, { type: 'tool' }>>();
-      for (const message of prompt.messages) {
-        if (message.role === 'assistant') {
-          if (message.content) {
-            const hasThinkTag = message.content.match(/<think>([\s\S]*?)<\/think>/);
-            if (hasThinkTag) {
-              blocks.push({ type: 'thinking', text: hasThinkTag[1], isStreaming: false });
-              const visible = message.content.replace(/<think>[\s\S]*?<\/think>/, '').trim();
-              if (visible) blocks.push({ type: 'assistant', text: visible, isStreaming: false });
-            } else {
-              blocks.push({ type: 'assistant', text: message.content, isStreaming: false });
-            }
-          }
-          for (const tc of message.tool_calls ?? []) {
-            let args: unknown = tc.function.arguments;
-            try { args = JSON.parse(tc.function.arguments); } catch { /* retain raw args */ }
-            const toolBlock: Extract<TurnBlock, { type: 'tool' }> = {
-              type: 'tool',
-              call_id: tc.id,
-              name: tc.function.name,
-              args,
-              result: '',
-              active: false,
-              is_error: false,
-            };
-            toolBlocks.set(tc.id, toolBlock);
-            blocks.push(toolBlock);
-          }
-        } else if (message.role === 'tool' && message.tool_call_id) {
-          const toolBlock = toolBlocks.get(message.tool_call_id);
-          if (toolBlock) {
-            toolBlock.result = message.content ?? '';
-            if (message.name) toolBlock.name = message.name;
-          } else {
-            blocks.push({
-              type: 'tool',
-              call_id: message.tool_call_id,
-              name: message.name ?? 'tool',
-              result: message.content ?? '',
-              active: false,
-              is_error: false,
-            });
-          }
-        }
-      }
+      blocks = canonicalBlocks(prompt.messages);
     }
 
     // Fallback timing
@@ -361,32 +499,56 @@ function rebuildEntries(state: ChatState, sessionId: string) {
   }
 
   const existingEntries = state.entries[sessionId] ?? [];
-  const existingByKey = new Map<string, ChatEntry>();
-  for (const e of existingEntries) {
-    existingByKey.set(`${e.type}:${e.promptId ?? e.id}`, e);
-  }
-
+  const consumedExistingIndexes = new Set<number>();
   const mergedEntries = newEntries.map((entry) => {
-    if (!entry.promptId) return entry;
-    const existing = existingByKey.get(`${entry.type}:${entry.promptId}`);
-    if (!existing) return entry;
+    let existingIndex = existingEntries.findIndex(
+      (candidate, index) =>
+        !consumedExistingIndexes.has(index) && candidate.id === entry.id,
+    );
+    if (existingIndex < 0 && entry.isSteer) {
+      existingIndex = existingEntries.findIndex(
+        (candidate, index) =>
+          !consumedExistingIndexes.has(index) &&
+          candidate.type === 'user' &&
+          candidate.isSteer &&
+          candidate.text === entry.text,
+      );
+    }
+    if (existingIndex < 0) return entry;
+
+    consumedExistingIndexes.add(existingIndex);
+    const existing = existingEntries[existingIndex];
     if (entry.type === 'turn' && existing.type === 'turn') {
       const existingBlocks = existing.blocks?.length ?? 0;
       const rebuiltBlocks = entry.blocks?.length ?? 0;
       return existingBlocks >= rebuiltBlocks ? existing : entry;
     }
     if (entry.type === 'user' && existing.type === 'user') {
+      if (entry.isSteer) {
+        return {
+          ...entry,
+          id: existing.id,
+          steerId: existing.steerId ?? entry.steerId,
+          steerStatus: 'injected' as const,
+        };
+      }
       return existing.text ? existing : entry;
     }
     return entry;
   });
 
-  const rebuiltKeys = new Set(mergedEntries.map((e) => `${e.type}:${e.promptId ?? e.id}`));
-  for (const existing of existingEntries) {
-    const key = `${existing.type}:${existing.promptId ?? existing.id}`;
-    if (!rebuiltKeys.has(key)) {
-      mergedEntries.push(existing);
-    }
+  const rebuiltPromptIds = new Set(visiblePrompts.map((prompt) => prompt.id));
+  for (const [index, existing] of existingEntries.entries()) {
+    if (consumedExistingIndexes.has(index)) continue;
+    // Canonical history is authoritative for prompts in the rebuilt window.
+    // Keeping unmatched live segments for those prompts duplicates work and
+    // used to push an injected steer card to the end.
+    if (existing.promptId && rebuiltPromptIds.has(existing.promptId)) continue;
+    if (
+      existing.isSteer &&
+      mergedEntries.some((entry) => entry.isSteer && entry.text === existing.text)
+    ) continue;
+    mergedEntries.push(existing);
   }
 
   state.entries[sessionId] = mergedEntries;

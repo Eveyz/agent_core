@@ -611,16 +611,18 @@ export const ChatInput = memo(function ChatInput({
   );
 });
 
-const ChatStats = memo(function ChatStats() {
+export const ChatStats = memo(function ChatStats() {
   const { t } = useTranslation();
   const turnCount = useTurnCount();
   const cacheHitRate = useCacheHitRate();
   return (
     <>
       <span>{t('chat.stats.turns', { count: turnCount })}</span>
-      {cacheHitRate !== null && (
-        <span>{t('chat.stats.cacheHit', { pct: Math.round(cacheHitRate * 100) })}</span>
-      )}
+      <span>
+        {t('chat.stats.cacheHit', {
+          pct: cacheHitRate === null ? '--' : `${Math.round(cacheHitRate * 100)}%`,
+        })}
+      </span>
     </>
   );
 });

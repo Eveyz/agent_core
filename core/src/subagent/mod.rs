@@ -923,6 +923,7 @@ impl Subagent {
                     accumulator.push(event);
                 }
                 StreamEvent::Done => break,
+                StreamEvent::CacheUsage { .. } => {}
                 StreamEvent::CompleteWithUsage { .. } => break,
             }
         }

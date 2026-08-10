@@ -21,7 +21,15 @@ export function useSkills() {
     skills: scopedCache?.skills ?? [],
     loadedAt: scopedCache?.loadedAt ?? null,
     loading: !scopedCache,
-    refresh: useCallback(() => dispatch(fetchSkills()), [dispatch]),
+    refresh: useCallback(
+      (opts?: { force?: boolean }) => dispatch(fetchSkills(opts?.force ? { force: true } : undefined)),
+      [dispatch],
+    ),
+    /** Drop caches and rescan disk — use when opening skill pickers / @ mentions. */
+    refreshFromDisk: useCallback(async () => {
+      await dispatch(invalidateSkillsCache());
+      await dispatch(fetchSkills({ force: true }));
+    }, [dispatch]),
     invalidate: useCallback(() => dispatch(invalidateSkillsCache()), [dispatch]),
   };
 }

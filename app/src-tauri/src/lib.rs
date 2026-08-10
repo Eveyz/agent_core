@@ -1760,12 +1760,21 @@ static SKILL_CACHE: std::sync::LazyLock<
 > = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 const SKILL_CACHE_TTL: u64 = 30; // seconds
 
+fn skill_cache_is_fresh(scope_key: &str) -> bool {
+    SKILL_CACHE
+        .lock()
+        .get(scope_key)
+        .is_some_and(|(cached_at, _)| cached_at.elapsed().as_secs() < SKILL_CACHE_TTL)
+}
+
 #[tauri::command]
 async fn get_skills(
     state: State<'_, AppState>,
     session_id: Option<String>,
     workspace: Option<String>,
+    force: Option<bool>,
 ) -> Result<Vec<agent_core::skills::manifest::SkillManifest>, String> {
+    let force = force.unwrap_or(false);
     let workspace = if let Some(session_id) = session_id {
         let session_manager = state.session_manager.clone();
         tokio::task::spawn_blocking(move || session_manager.resume(&session_id))
@@ -1785,9 +1794,9 @@ async fn get_skills(
         .map(|path| path.to_string_lossy().into_owned())
         .unwrap_or_else(|| "__global__".to_string());
 
-    // Prefer the exact workspace manager used by Runs. Listing an already
-    // scanned manager is cheap and avoids returning a stale TTL entry after a
-    // runtime `skill_reload`.
+    // Prefer the exact workspace manager used by Runs so UI listing and runtime
+    // activation share one source of truth. Rescan when forced or TTL expired —
+    // otherwise newly added SKILL.md files stay invisible until process restart.
     {
         let run_manager = state.run_manager.lock().await;
         if let Some(sm) = run_manager
@@ -1795,7 +1804,12 @@ async fn get_skills(
             .skill_manager_for_workspace(workspace.as_deref())
             .map_err(|e| e.to_string())?
         {
-            let mgr = sm.lock();
+            let mut mgr = sm.lock();
+            if force || !skill_cache_is_fresh(&scope_key) {
+                let _ = mgr
+                    .reload_preserving_active()
+                    .map_err(|e| e.to_string())?;
+            }
             let skills: Vec<_> = mgr.list().into_iter().cloned().collect();
             SKILL_CACHE
                 .lock()
@@ -1805,9 +1819,11 @@ async fn get_skills(
     }
 
     // Fallback: independent scan (Brain has no skill_manager).
-    if let Some((cached_at, cached)) = SKILL_CACHE.lock().get(&scope_key) {
-        if cached_at.elapsed().as_secs() < SKILL_CACHE_TTL {
-            return Ok(cached.clone());
+    if !force {
+        if let Some((cached_at, cached)) = SKILL_CACHE.lock().get(&scope_key) {
+            if cached_at.elapsed().as_secs() < SKILL_CACHE_TTL {
+                return Ok(cached.clone());
+            }
         }
     }
     let mut manager = if workspace.is_some() {

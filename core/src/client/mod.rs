@@ -296,9 +296,12 @@ impl OpenAIClient {
         cache_hint: Option<ClientCacheHint>,
         required_tool: Option<&str>,
     ) -> Result<impl futures::Stream<Item = Result<StreamEvent>>> {
-        let http_t0 = std::time::Instant::now();
+        let request_t0 = std::time::Instant::now();
         let body = self.build_request_body(messages, tools, true, cache_hint, required_tool);
+        let request_build_ms = request_t0.elapsed().as_millis() as u64;
+        let network_t0 = std::time::Instant::now();
         let resp = self.send_with_retry(&body).await?;
+        let network_ms = network_t0.elapsed().as_millis() as u64;
         let status = resp.status();
         let ct = resp
             .headers()
@@ -309,7 +312,9 @@ impl OpenAIClient {
         tracing::info!(
             %status,
             content_type = %ct,
-            http_ms = http_t0.elapsed().as_millis() as u64,
+            request_build_ms,
+            network_ms,
+            http_ms = request_t0.elapsed().as_millis() as u64,
             model = %self.model.model_id,
             "LATENCY: LLM stream HTTP ready"
         );

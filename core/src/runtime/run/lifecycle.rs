@@ -65,7 +65,8 @@ impl Run {
             Message::user_with_model(&display_input, &self.client.model.model_id)
                 .with_images(user_images),
         );
-        self.refresh_context_snapshot();
+        // save_session_snapshot refreshes the shared snapshots before it queues
+        // persistence; avoid cloning and recounting the full transcript twice.
         self.save_session_snapshot();
 
         // /learn: inject system instruction prompting the agent to extract and save lessons
@@ -110,33 +111,39 @@ impl Run {
             self.append_conversation(Message::system(&learn_prompt));
         }
 
-        // Store in memory if enabled
-        let mut reflected_session_id = self.session_id.clone();
+        // Store the user turn in long-term memory off the request-critical path.
+        // The live model already has this message in its ContextEngine, and the
+        // memory write is best-effort, so local embedding/SQLite work must not
+        // delay the first provider request.
         if let Some(ref mem) = self.brain.memory {
             if self.brain.memory_mode() != crate::config::MemoryMode::Stateless {
-                // Compute the embedding OUTSIDE the memory lock so other
-                // memory operations are not blocked for the 10-50ms the
-                // embedding model takes. The lock is then only held for
-                // the lightweight I/O + index update.
-                let model = { mem.lock().embedding_model().cloned() };
-                let embedding = model
-                    .map(|model| model.embed_single(user_input).unwrap_or_default());
-                let m = mem.lock();
-                let memory_session_id = self.session_id.as_deref().unwrap_or_else(|| m.session_id());
-                reflected_session_id = Some(memory_session_id.to_string());
-                let _ = m.store_conversation_for_session_precomputed(
-                    memory_session_id,
-                    "user",
-                    user_input,
-                    embedding.as_deref(),
-                );
-            }
-        }
+                let mem = mem.clone();
+                let user_input = user_input.to_string();
+                let session_id = self.session_id.clone();
+                let reflection_daemon = self.brain.reflection_daemon.clone();
+                let _memory_write = tokio::task::spawn_blocking(move || {
+                    // Clone the model under the lock, then run inference without
+                    // holding the shared MemoryManager lock.
+                    let model = { mem.lock().embedding_model().cloned() };
+                    let embedding =
+                        model.map(|model| model.embed_single(&user_input).unwrap_or_default());
+                    let m = mem.lock();
+                    let memory_session_id = session_id.as_deref().unwrap_or_else(|| m.session_id());
+                    let stored = m.store_conversation_for_session_precomputed(
+                        memory_session_id,
+                        "user",
+                        &user_input,
+                        embedding.as_deref(),
+                    );
+                    let reflected_session_id = memory_session_id.to_string();
+                    drop(m);
 
-        // Feed to reflection daemon (non-blocking, Deep mode only)
-        if let Some(ref daemon) = self.brain.reflection_daemon {
-            if let Some(session_id) = reflected_session_id.as_deref() {
-                daemon.notify_session(session_id);
+                    if stored.is_ok() {
+                        if let Some(daemon) = reflection_daemon {
+                            daemon.notify_session(&reflected_session_id);
+                        }
+                    }
+                });
             }
         }
 
@@ -416,7 +423,6 @@ impl Run {
             let turn_id = uuid::Uuid::new_v4().to_string();
             self.current_turn_id = Some(turn_id.clone());
             self.emit(RunEvent::TurnStarted { index: turn_index });
-            self.refresh_context_snapshot();
             self.hook_registry.lock().fire_turn_start(turn_index);
 
             match self.run_turn(turn_index).await {

@@ -20,7 +20,7 @@ interface SkillSelectorProps {
 
 export function SkillSelector({ onSelect, externalOpen, onExternalOpenChange }: SkillSelectorProps) {
   const dispatch = useAppDispatch();
-  const { skills, loading, refresh, invalidate } = useSkills();
+  const { skills, loading, refreshFromDisk } = useSkills();
   const [internalOpen, setInternalOpen] = useState(false);
   const open = externalOpen ?? internalOpen;
   const setOpen = onExternalOpenChange ?? setInternalOpen;
@@ -71,12 +71,14 @@ export function SkillSelector({ onSelect, externalOpen, onExternalOpenChange }: 
     return () => document.removeEventListener('mousedown', handler);
   }, [open]);
 
-  // Auto-focus search on open
+  // Auto-focus search on open, and rescan disk so newly added skills appear.
   useEffect(() => {
-    if (open && searchInputRef.current) {
+    if (!open) return;
+    void refreshFromDisk();
+    if (searchInputRef.current) {
       searchInputRef.current.focus();
     }
-  }, [open]);
+  }, [open, refreshFromDisk]);
 
   // Reset selected index when search changes
   useEffect(() => {
@@ -170,9 +172,8 @@ export function SkillSelector({ onSelect, externalOpen, onExternalOpenChange }: 
   );
 
   const handleRefresh = useCallback(async () => {
-    await invalidate();
-    await refresh();
-  }, [invalidate, refresh]);
+    await refreshFromDisk();
+  }, [refreshFromDisk]);
 
   const handleOpenSkillSettings = useCallback(() => {
     setOpen(false);

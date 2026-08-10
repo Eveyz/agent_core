@@ -138,4 +138,17 @@ describe('MarkdownContent streaming rendering', () => {
     expect(image?.hasAttribute('onerror')).toBe(false);
     expect(container.querySelector('a')?.hasAttribute('href')).toBe(false);
   });
+
+  it('renders inline and display KaTeX while streaming', () => {
+    render('Mean $\\mu$ stays.\n\n$$\\sigma^2$$\n\nTail');
+    expect(container.querySelector('.katex')).not.toBeNull();
+    expect(container.querySelector('.md-math-display')).not.toBeNull();
+    expect(container.textContent).toContain('μ');
+  });
+
+  it('keeps reference links working in blocks that also contain math', () => {
+    render('See [docs][site] for $\\alpha$.\n\n[site]: https://example.com\n\nTail');
+    expect(container.querySelector('a')?.getAttribute('href')).toBe('https://example.com');
+    expect(container.querySelector('.katex')).not.toBeNull();
+  });
 });
