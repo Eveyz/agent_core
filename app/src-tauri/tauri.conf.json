@@ -24,7 +24,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost; worker-src 'self' blob:; frame-src http://127.0.0.1:* http://localhost:*; object-src 'none'; base-uri 'self'; form-action 'none'"
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: blob: https://*.tile.openstreetmap.org https://tile.openstreetmap.org https://staticmap.openstreetmap.de https://*.google.com https://*.gstatic.com https://*.googleapis.com https://*.amap.com https://www.google.com/s2/; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https://ipc.localhost https://*.tile.openstreetmap.org https://tile.openstreetmap.org https://staticmap.openstreetmap.de; worker-src 'self' blob:; frame-src http://127.0.0.1:* http://localhost:* https://www.openstreetmap.org https://www.google.com https://maps.google.com https://uri.amap.com https://www.amap.com; object-src 'none'; base-uri 'self'; form-action 'none'"
     }
   },
   "bundle": {

@@ -21,6 +21,7 @@ import {
   stringifyResult,
 } from './utils';
 import type { AnyBlock } from './utils';
+import { compactMapToolResult, isMapToolName } from '../../components/chat/mapSources';
 
 // ── Block-level helpers (shared between main agent + subagent) ───────
 
@@ -202,7 +203,9 @@ function applyToolEnd(blocks: AnyBlock[], callId: string, result: unknown, isErr
     block.active = false;
     block.is_error = isError;
     block.endTime = Date.now();
-    block.result = truncateResult(stringifyResult(result));
+    const raw = stringifyResult(result);
+    const prepared = isMapToolName(block.name) ? compactMapToolResult(block.name, raw) : raw;
+    block.result = truncateResult(prepared);
   }
 }
 
