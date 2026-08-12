@@ -105,6 +105,47 @@ struct AgentConversationSendResult {
     deliveries: Vec<agent_core::DeliveryReceipt>,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum AgentConversationDirection {
+    OutboundRequest,
+    Inbound,
+    InboundReply,
+}
+
+#[derive(serde::Serialize)]
+struct AgentConversationMessageMetadata<'a> {
+    direction: AgentConversationDirection,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reply_to: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    from_agent_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    from_display_name: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    to_agent_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    to_display_name: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_content: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<agent_core::MessageKind>,
+    #[serde(skip_serializing_if = "is_false")]
+    relay_only: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn agent_conversation_metadata(
+    metadata: AgentConversationMessageMetadata<'_>,
+) -> serde_json::Value {
+    serde_json::json!({ "agent_messaging": metadata })
+}
+
 /// Result of starting a user message run.
 ///
 /// `prompt_id` is the canonical session prompt row id (source of truth for
@@ -2474,26 +2515,15 @@ async fn send_agent_conversation_message(
     let mention = &mentions[0];
     let recipient = agent_core::agent_registry::get(&state.storage, &mention.agent_id)
         .map_err(|error| error.to_string())?;
+    if recipient.id == source.agent_id {
+        return Err("an agent cannot message itself".to_string());
+    }
     if !mention.revision_id.is_empty() && mention.revision_id != recipient.updated_at {
         return Err(format!(
             "mentioned agent '{}' changed after selection; select it again",
             recipient.name
         ));
     }
-
-    append_agent_conversation_user_message(
-        state.session_manager.clone(),
-        &source,
-        input.clone(),
-        serde_json::json!({
-            "agent_messaging": {
-                "direction": "outbound_request",
-                "to_agent_id": recipient.id,
-                "to_display_name": recipient.name,
-            }
-        }),
-    )
-    .await?;
 
     let request = {
         let messaging = messaging.clone();
@@ -2517,6 +2547,33 @@ async fn send_agent_conversation_message(
         .map_err(|error| format!("send agent message task failed: {error}"))?
         .map_err(|error| error.to_string())?
     };
+    if let Err(error) = append_agent_conversation_user_message(
+        state.session_manager.clone(),
+        &source,
+        input.clone(),
+        agent_conversation_metadata(AgentConversationMessageMetadata {
+            direction: AgentConversationDirection::OutboundRequest,
+            message_id: Some(&request.message.id),
+            reply_to: None,
+            from_agent_id: None,
+            from_display_name: None,
+            to_agent_id: Some(&request.message.to_agent_id),
+            to_display_name: Some(&request.message.to_display_name),
+            display_content: None,
+            kind: Some(agent_core::MessageKind::Request),
+            relay_only: false,
+        }),
+    )
+    .await
+    {
+        let _ = messaging.command(
+            &request.task.id,
+            agent_core::AgentTaskCommand::Fail {
+                error: error.clone(),
+            },
+        );
+        return Err(error);
+    }
     messaging
         .command(&request.task.id, agent_core::AgentTaskCommand::Start)
         .map_err(|error| error.to_string())?;
@@ -2525,20 +2582,23 @@ async fn send_agent_conversation_message(
         "Message from {}:\n\n{}\n\nRespond directly to {} with your findings.",
         request.message.from_display_name, input, request.message.from_display_name
     );
+    let inbound_metadata = agent_conversation_metadata(AgentConversationMessageMetadata {
+        direction: AgentConversationDirection::Inbound,
+        message_id: Some(&request.message.id),
+        reply_to: None,
+        from_agent_id: Some(&request.message.from_agent_id),
+        from_display_name: Some(&request.message.from_display_name),
+        to_agent_id: None,
+        to_display_name: None,
+        display_content: Some(&input),
+        kind: Some(agent_core::MessageKind::Request),
+        relay_only: false,
+    });
     let recipient_result = match run_agent_conversation_turn(
         &state,
         &request.target_conversation,
         recipient_input.clone(),
-        Some(serde_json::json!({
-            "agent_messaging": {
-                "direction": "inbound",
-                "message_id": request.message.id,
-                "from_agent_id": request.message.from_agent_id,
-                "from_display_name": request.message.from_display_name,
-                "display_content": input,
-                "kind": "request",
-            }
-        })),
+        Some(inbound_metadata.clone()),
         "agent_message",
     )
     .await
@@ -2555,16 +2615,7 @@ async fn send_agent_conversation_message(
                 state.session_manager.clone(),
                 &request.target_conversation,
                 recipient_input,
-                serde_json::json!({
-                    "agent_messaging": {
-                        "direction": "inbound",
-                        "message_id": request.message.id,
-                        "from_agent_id": request.message.from_agent_id,
-                        "from_display_name": request.message.from_display_name,
-                        "display_content": input,
-                        "kind": "request",
-                    }
-                }),
+                inbound_metadata,
             )
             .await;
             return Err(error);
@@ -2602,22 +2653,23 @@ async fn send_agent_conversation_message(
         "Message from {}:\n\n{}\n\nRelay this response to the user faithfully and concisely. Do not send another agent message.",
         reply.message.from_display_name, recipient_result.output
     );
+    let reply_metadata = agent_conversation_metadata(AgentConversationMessageMetadata {
+        direction: AgentConversationDirection::InboundReply,
+        message_id: Some(&reply.message.id),
+        reply_to: Some(&request.message.id),
+        from_agent_id: Some(&reply.message.from_agent_id),
+        from_display_name: Some(&reply.message.from_display_name),
+        to_agent_id: None,
+        to_display_name: None,
+        display_content: Some(&recipient_result.output),
+        kind: Some(agent_core::MessageKind::Reply),
+        relay_only: true,
+    });
     let relay_result = run_agent_conversation_turn(
         &state,
         &source,
         relay_input.clone(),
-        Some(serde_json::json!({
-            "agent_messaging": {
-                "direction": "inbound_reply",
-                "message_id": reply.message.id,
-                "reply_to": request.message.id,
-                "from_agent_id": reply.message.from_agent_id,
-                "from_display_name": reply.message.from_display_name,
-                "display_content": recipient_result.output,
-                "kind": "reply",
-                "relay_only": true,
-            }
-        })),
+        Some(reply_metadata.clone()),
         "agent_message_relay",
     )
     .await;
@@ -2643,18 +2695,7 @@ async fn send_agent_conversation_message(
                 state.session_manager.clone(),
                 &source,
                 relay_input,
-                serde_json::json!({
-                    "agent_messaging": {
-                        "direction": "inbound_reply",
-                        "message_id": reply.message.id,
-                        "reply_to": request.message.id,
-                        "from_agent_id": reply.message.from_agent_id,
-                        "from_display_name": reply.message.from_display_name,
-                        "display_content": recipient_result.output,
-                        "kind": "reply",
-                        "relay_only": true,
-                    }
-                }),
+                reply_metadata,
             )
             .await;
             return Err(error);

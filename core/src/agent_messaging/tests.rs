@@ -187,4 +187,23 @@ fn task_state_machine_and_hop_limit_stop_unbounded_agent_chains() {
             .to_string()
             .contains("hop_count")
     );
+
+    let self_message = SendAgentMessage {
+        source_conversation_id: source.id,
+        to_agent_id: coder.id,
+        kind: MessageKind::Request,
+        parts: vec![MessagePart::text("loop")],
+        context_id: None,
+        correlation_id: None,
+        reply_to: None,
+        idempotency_key: "self-message".into(),
+        hop_count: 1,
+    };
+    assert!(
+        messaging
+            .send(self_message)
+            .expect_err("self message")
+            .to_string()
+            .contains("cannot message itself")
+    );
 }
