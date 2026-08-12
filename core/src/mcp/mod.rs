@@ -300,9 +300,12 @@ impl McpClientManager {
         }
 
         let conn = self.connections.get(server).unwrap();
+        // Orchestrator injects `_parent_run_id` / `_session_id` / etc. for native
+        // tools. Strict remote MCP schemas (e.g. Google Maps) reject unknown fields.
+        let arguments = strip_internal_tool_args(args);
         let params = serde_json::to_value(ToolCallParams {
             name: tool_name.to_string(),
-            arguments: args,
+            arguments,
         })?;
 
         let response = transport_request(&conn.transport, "tools/call", params).await?;
@@ -439,6 +442,18 @@ async fn transport_shutdown(transport: Transport) -> Result<()> {
     }
 }
 
+/// Remove runtime-injected keys (`_parent_call_id`, `_session_id`, …) before
+/// forwarding arguments to a remote MCP server.
+pub(crate) fn strip_internal_tool_args(args: Value) -> Value {
+    match args {
+        Value::Object(mut map) => {
+            map.retain(|k, _| !k.starts_with('_'));
+            Value::Object(map)
+        }
+        other => other,
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -512,5 +527,25 @@ mod tests {
         let json = r#"{"name":"plain","transport":"http","url":"https://example.com/mcp"}"#;
         let cfg: McpServerConfig = serde_json::from_str(json).unwrap();
         assert!(cfg.headers.is_empty());
+    }
+
+    #[test]
+    fn test_strip_internal_tool_args_removes_underscore_keys() {
+        let args = serde_json::json!({
+            "origin": { "address": "Googleplex" },
+            "destination": { "address": "SFO" },
+            "travel_mode": "DRIVE",
+            "_parent_call_id": "call-1",
+            "_parent_run_id": "run-1",
+            "_session_id": "sess",
+            "_prompt_id": "p1",
+            "_working_dir": "/tmp"
+        });
+        let cleaned = strip_internal_tool_args(args);
+        let obj = cleaned.as_object().unwrap();
+        assert!(obj.contains_key("origin"));
+        assert!(obj.contains_key("destination"));
+        assert!(obj.contains_key("travel_mode"));
+        assert!(!obj.keys().any(|k| k.starts_with('_')));
     }
 }
