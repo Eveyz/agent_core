@@ -140,6 +140,37 @@ describe('parseMapFeaturesFromJson', () => {
     }
   });
 
+  it('ignores branding attribution and uses summary bold name', () => {
+    const payload = JSON.stringify({
+      summary:
+        '**6-8 Mercury Street** in Tin Hau, Hong Kong, is currently operational during its open hours [0].',
+      places: [
+        {
+          id: 'ChIJBUVgzAEBBDQRBpw9Bk7GsXc',
+          name: '- Google Maps',
+          googleMapsLinks: {
+            placeUrl:
+              'https://www.google.com/maps/place//data=!4m2!3m1!1s0x34040101cc604505:0x77b1c64e063d9c06',
+          },
+          attribution: { title: ' - Google Maps' },
+        },
+      ],
+    });
+    const features = parseMapFeaturesFromJson(
+      payload,
+      'mcp__google-map__search_places',
+      'g2',
+      { textQuery: '6-8 Mercury Street Tin Hau Hong Kong' },
+    );
+    expect(features).toHaveLength(1);
+    expect(features[0].kind).toBe('place');
+    if (features[0].kind === 'place') {
+      expect(features[0].name).toBe('6-8 Mercury Street');
+      expect(features[0].mapUrl).toContain('google.com/maps');
+      expect(features[0].lat).toBeUndefined();
+    }
+  });
+
   it('parses Amap pois', () => {
     const features = parseMapFeaturesFromJson(
       AMAP_POIS,

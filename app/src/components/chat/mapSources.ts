@@ -249,22 +249,41 @@ function routeMapUrl(
   return googleDirectionsUrl(opts);
 }
 
+function isUsefulPlaceName(name: string): boolean {
+  const trimmed = name.trim();
+  if (!trimmed) return false;
+  // Grounding Lite often returns attribution.title like " - Google Maps".
+  if (/^-?\s*google\s*maps\s*$/i.test(trimmed)) return false;
+  if (/^maps?$/i.test(trimmed)) return false;
+  return true;
+}
+
+/** Pull bolded place labels from a Grounding Lite summary, in citation order. */
+export function placeNamesFromSummary(summary: string | undefined): string[] {
+  if (!summary) return [];
+  const bold = [...summary.matchAll(/\*\*([^*]+)\*\*/g)].map((m) => m[1].trim());
+  return bold.filter(isUsefulPlaceName);
+}
+
 function displayNameFromRow(row: Record<string, unknown>): string {
   const displayName = row.displayName;
-  if (typeof displayName === 'string' && displayName.trim()) return displayName.trim();
+  if (typeof displayName === 'string' && isUsefulPlaceName(displayName)) {
+    return displayName.trim();
+  }
   if (displayName && typeof displayName === 'object') {
     const text = (displayName as { text?: unknown }).text;
-    if (typeof text === 'string' && text.trim()) return text.trim();
+    if (typeof text === 'string' && isUsefulPlaceName(text)) return text.trim();
   }
   for (const key of ['name', 'title', 'place_name', 'poi_name'] as const) {
     const v = row[key];
-    if (typeof v === 'string' && v.trim()) return v.trim();
+    if (typeof v === 'string' && isUsefulPlaceName(v)) return v.trim();
   }
-  // Google Maps Grounding Lite PlaceView uses attribution.title
+  // Google Maps Grounding Lite PlaceView uses attribution.title — but often
+  // just " - Google Maps", which is branding, not a place name.
   const attribution = row.attribution;
   if (attribution && typeof attribution === 'object') {
     const title = (attribution as { title?: unknown }).title;
-    if (typeof title === 'string' && title.trim()) return title.trim();
+    if (typeof title === 'string' && isUsefulPlaceName(title)) return title.trim();
   }
   return '';
 }
@@ -314,17 +333,25 @@ function makePlace(
   callId: string,
   index: number,
   provider: MapProvider,
+  fallbackName?: string,
 ): MapPlace | null {
-  const name = displayNameFromRow(row);
+  const name =
+    displayNameFromRow(row) ||
+    (fallbackName && isUsefulPlaceName(fallbackName) ? fallbackName.trim() : '') ||
+    addressFromRow(row) ||
+    '';
   const coords = coordsFromRow(row);
   const placeUrl = googleMapsPlaceUrlFromRow(row);
   if (!name && !coords && !placeUrl) return null;
 
-  const label = name || addressFromRow(row) || (coords ? `${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)}` : 'Place');
+  const label =
+    name ||
+    (coords ? `${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)}` : '') ||
+    (typeof row.id === 'string' && row.id ? `Place ${row.id.slice(0, 8)}` : 'Place');
   const mapUrl = placeMapUrl(provider, {
     lat: coords?.lat,
     lng: coords?.lng,
-    name: label,
+    name: isUsefulPlaceName(label) ? label : undefined,
     placeUrl,
   });
 
@@ -731,15 +758,41 @@ export function parseMapFeaturesFromJson(
 
   if (parsed !== null) {
     const places = collectPlaceArrays(parsed);
+    const summaryNames = placeNamesFromSummary(
+      typeof rootObj?.summary === 'string' ? rootObj.summary : undefined,
+    );
+    const queryFallback =
+      (typeof argsObj?.textQuery === 'string' && argsObj.textQuery) ||
+      (typeof argsObj?.text_query === 'string' && argsObj.text_query) ||
+      undefined;
+
     places.forEach((item, i) => {
       if (!item || typeof item !== 'object') return;
-      const place = makePlace(item as Record<string, unknown>, toolName, callId, i, provider);
+      const place = makePlace(
+        item as Record<string, unknown>,
+        toolName,
+        callId,
+        i,
+        provider,
+        summaryNames[i] || (places.length === 1 ? queryFallback : undefined),
+      );
       if (place) out.push(place);
     });
 
     // Single place object
-    if (out.length === 0 && rootObj && (rootObj.location || rootObj.latitude || rootObj.name || rootObj.attribution)) {
-      const place = makePlace(rootObj, toolName, callId, 0, provider);
+    if (
+      out.length === 0 &&
+      rootObj &&
+      (rootObj.location || rootObj.latitude || rootObj.name || rootObj.attribution || rootObj.googleMapsLinks)
+    ) {
+      const place = makePlace(
+        rootObj,
+        toolName,
+        callId,
+        0,
+        provider,
+        summaryNames[0] || queryFallback,
+      );
       if (place) out.push(place);
     }
   }
@@ -753,22 +806,30 @@ export function compactMapToolResult(toolName: string, result: string): string {
   const parsed = extractJsonValue(result);
   if (parsed === null || typeof parsed !== 'object') return result;
 
-  const compactPlace = (item: unknown): Record<string, unknown> | null => {
+  const root = parsed as Record<string, unknown>;
+  const summaryNames = placeNamesFromSummary(
+    typeof root.summary === 'string' ? root.summary : undefined,
+  );
+
+  const compactPlace = (item: unknown, index: number): Record<string, unknown> | null => {
     if (!item || typeof item !== 'object') return null;
     const row = item as Record<string, unknown>;
     const coords = coordsFromRow(row);
-    const name = displayNameFromRow(row);
+    const name = displayNameFromRow(row) || summaryNames[index] || '';
     const address = addressFromRow(row);
     const placeUrl = googleMapsPlaceUrlFromRow(row);
     const out: Record<string, unknown> = {};
     if (typeof row.id === 'string') out.id = row.id;
-    if (name) out.name = name;
+    if (name && isUsefulPlaceName(name)) out.name = name;
     if (address) out.address = address;
     if (coords) out.location = { latitude: coords.lat, longitude: coords.lng };
     if (placeUrl) out.googleMapsLinks = { placeUrl };
+    // Keep real attribution titles only; skip " - Google Maps" branding.
     if (row.attribution && typeof row.attribution === 'object') {
       const title = (row.attribution as { title?: unknown }).title;
-      if (typeof title === 'string') out.attribution = { title };
+      if (typeof title === 'string' && isUsefulPlaceName(title)) {
+        out.attribution = { title: title.trim() };
+      }
     }
     return Object.keys(out).length ? out : null;
   };
@@ -792,7 +853,6 @@ export function compactMapToolResult(toolName: string, result: string): string {
     return Object.keys(out).length ? out : null;
   };
 
-  const root = parsed as Record<string, unknown>;
   const compacted: Record<string, unknown> = {};
 
   if (typeof root.summary === 'string') {

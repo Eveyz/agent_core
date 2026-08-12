@@ -302,7 +302,7 @@ impl McpClientManager {
         let conn = self.connections.get(server).unwrap();
         // Orchestrator injects `_parent_run_id` / `_session_id` / etc. for native
         // tools. Strict remote MCP schemas (e.g. Google Maps) reject unknown fields.
-        let arguments = strip_internal_tool_args(args);
+        let arguments = normalize_mcp_tool_args(tool_name, args);
         let params = serde_json::to_value(ToolCallParams {
             name: tool_name.to_string(),
             arguments,
@@ -454,6 +454,55 @@ pub(crate) fn strip_internal_tool_args(args: Value) -> Value {
     }
 }
 
+/// Strip internal keys and coerce known Google Maps MCP argument shapes the
+/// model often gets wrong (e.g. `resolve_names` queries as bare strings).
+pub(crate) fn normalize_mcp_tool_args(tool_name: &str, args: Value) -> Value {
+    let mut args = strip_internal_tool_args(args);
+    if tool_name == "resolve_names" || tool_name.ends_with("__resolve_names") {
+        if let Some(obj) = args.as_object_mut() {
+            if let Some(queries) = obj.get_mut("queries") {
+                *queries = normalize_resolve_names_queries(queries.take());
+            }
+        }
+    }
+    // Grounding Lite SearchTextRequest uses camelCase `textQuery`.
+    if tool_name == "search_places" || tool_name.ends_with("__search_places") {
+        if let Some(obj) = args.as_object_mut() {
+            if !obj.contains_key("textQuery") {
+                if let Some(Value::String(q)) = obj.remove("text_query") {
+                    obj.insert("textQuery".to_string(), Value::String(q));
+                }
+            }
+        }
+    }
+    args
+}
+
+fn normalize_resolve_names_queries(queries: Value) -> Value {
+    let Value::Array(items) = queries else {
+        return queries;
+    };
+    let mapped: Vec<Value> = items
+        .into_iter()
+        .map(|item| match item {
+            Value::String(text) => serde_json::json!({ "text": text }),
+            Value::Object(mut map) => {
+                if map.contains_key("text") {
+                    Value::Object(map)
+                } else if let Some(Value::String(q)) = map.remove("query").or_else(|| map.remove("name"))
+                {
+                    map.insert("text".to_string(), Value::String(q));
+                    Value::Object(map)
+                } else {
+                    Value::Object(map)
+                }
+            }
+            other => other,
+        })
+        .collect();
+    Value::Array(mapped)
+}
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -547,5 +596,39 @@ mod tests {
         assert!(obj.contains_key("destination"));
         assert!(obj.contains_key("travel_mode"));
         assert!(!obj.keys().any(|k| k.starts_with('_')));
+    }
+
+    #[test]
+    fn test_normalize_resolve_names_wraps_string_queries() {
+        let args = serde_json::json!({
+            "queries": [
+                "Tin Hau MTR Station Hong Kong",
+                { "text": "already ok" },
+                { "query": "from query key" }
+            ],
+            "_parent_call_id": "x"
+        });
+        let cleaned = normalize_mcp_tool_args("resolve_names", args);
+        assert_eq!(
+            cleaned["queries"],
+            serde_json::json!([
+                { "text": "Tin Hau MTR Station Hong Kong" },
+                { "text": "already ok" },
+                { "text": "from query key" }
+            ])
+        );
+        assert!(cleaned.get("_parent_call_id").is_none());
+    }
+
+    #[test]
+    fn test_normalize_search_places_text_query_alias() {
+        let args = serde_json::json!({
+            "text_query": "coffee in SF",
+            "_session_id": "s"
+        });
+        let cleaned = normalize_mcp_tool_args("search_places", args);
+        assert_eq!(cleaned["textQuery"], "coffee in SF");
+        assert!(cleaned.get("text_query").is_none());
+        assert!(cleaned.get("_session_id").is_none());
     }
 }
