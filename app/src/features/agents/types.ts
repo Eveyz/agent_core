@@ -50,6 +50,58 @@ export interface AgentMemoryRecord {
   created_at: string;
 }
 
+export interface AgentConversation {
+  id: string;
+  agent_id: string;
+  project_id: string;
+  session_id: string;
+  unread_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentConversationMessage {
+  role: string;
+  content: string;
+  model?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface AgentConversationView {
+  conversation: AgentConversation;
+  session: {
+    meta: { id: string; title: string; model_used: string };
+    messages: AgentConversationMessage[];
+  };
+  messaging: {
+    next_sequence: number;
+    events: AgentMessageEvent[];
+  };
+}
+
+export interface AgentMessageEvent {
+  sequence: number;
+  conversation_id: string;
+  event_type: string;
+  message_id?: string;
+  task_id?: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface AgentConversationSendResult {
+  view: AgentConversationView;
+  deliveries: Array<{
+    message: {
+      id: string;
+      from_display_name: string;
+      to_display_name: string;
+      kind: 'request' | 'reply' | 'notification';
+    };
+    replayed: boolean;
+  }>;
+}
+
 export const PERMISSION_MODES = [
   'paranoid',
   'standard',

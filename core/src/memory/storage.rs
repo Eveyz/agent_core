@@ -34,11 +34,13 @@ impl Storage {
         // Older databases may lack the prompt/model/metadata columns on
         // session_messages. Migrate in place; never drop user session tables
         // during startup.
-        let table_exists: bool = conn.query_row(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_messages'",
-            [],
-            |_| Ok(true),
-        ).unwrap_or(false);
+        let table_exists: bool = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='session_messages'",
+                [],
+                |_| Ok(true),
+            )
+            .unwrap_or(false);
 
         if table_exists {
             let mut stmt = conn.prepare("PRAGMA table_info(session_messages)")?;
@@ -495,6 +497,78 @@ impl Storage {
             CREATE INDEX IF NOT EXISTS idx_agent_history_agent ON agent_history(agent_id);
             CREATE INDEX IF NOT EXISTS idx_agent_history_workflow ON agent_history(workflow_run_id);
 
+            -- Local, A2A-inspired agent messaging. Agent ids and display names
+            -- are deliberately snapshotted instead of foreign-keyed so deleting
+            -- an agent definition does not erase the audit trail.
+            CREATE TABLE IF NOT EXISTS agent_conversations (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                project_id TEXT NOT NULL DEFAULT '',
+                session_id TEXT NOT NULL UNIQUE REFERENCES sessions(id) ON DELETE CASCADE,
+                unread_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(agent_id, project_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agent_conversations_agent
+                ON agent_conversations(agent_id, updated_at);
+
+            CREATE TABLE IF NOT EXISTS agent_messages (
+                id TEXT PRIMARY KEY,
+                schema_version TEXT NOT NULL,
+                context_id TEXT NOT NULL,
+                from_agent_id TEXT NOT NULL,
+                from_revision_id TEXT NOT NULL,
+                from_display_name TEXT NOT NULL,
+                to_agent_id TEXT NOT NULL,
+                to_revision_id TEXT NOT NULL,
+                to_display_name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                parts TEXT NOT NULL,
+                correlation_id TEXT NOT NULL,
+                reply_to TEXT,
+                source_conversation_id TEXT NOT NULL REFERENCES agent_conversations(id),
+                target_conversation_id TEXT NOT NULL REFERENCES agent_conversations(id),
+                project_id TEXT NOT NULL DEFAULT '',
+                idempotency_key TEXT NOT NULL UNIQUE,
+                hop_count INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agent_messages_context
+                ON agent_messages(context_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_agent_messages_target
+                ON agent_messages(target_conversation_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS agent_message_tasks (
+                id TEXT PRIMARY KEY,
+                message_id TEXT NOT NULL UNIQUE REFERENCES agent_messages(id),
+                recipient_agent_id TEXT NOT NULL,
+                recipient_conversation_id TEXT NOT NULL REFERENCES agent_conversations(id),
+                status TEXT NOT NULL,
+                output_message_id TEXT REFERENCES agent_messages(id),
+                error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agent_message_tasks_status
+                ON agent_message_tasks(status, updated_at);
+
+            CREATE TABLE IF NOT EXISTS agent_message_events (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id TEXT NOT NULL REFERENCES agent_conversations(id) ON DELETE CASCADE,
+                event_type TEXT NOT NULL,
+                message_id TEXT,
+                task_id TEXT,
+                payload TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agent_message_events_conversation
+                ON agent_message_events(conversation_id, sequence);
+
             CREATE TABLE IF NOT EXISTS workflows (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -662,7 +736,13 @@ impl Storage {
                  FROM reflection_file_operations ORDER BY created_at",
             )?;
             stmt.query_map([], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?
         };
@@ -677,7 +757,8 @@ impl Storage {
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
-                let temp = path.with_extension(format!("reflection-recovery-{}.tmp", uuid::Uuid::new_v4()));
+                let temp = path
+                    .with_extension(format!("reflection-recovery-{}.tmp", uuid::Uuid::new_v4()));
                 std::fs::write(&temp, content)?;
                 std::fs::rename(temp, &path)?;
             } else if let Err(e) = std::fs::remove_file(&path)
@@ -685,10 +766,9 @@ impl Storage {
             {
                 return Err(e.into());
             }
-            self.db.lock().execute(
-                "DELETE FROM reflection_file_operations WHERE id = ?1",
-                [id],
-            )?;
+            self.db
+                .lock()
+                .execute("DELETE FROM reflection_file_operations WHERE id = ?1", [id])?;
         }
         Ok(())
     }
@@ -715,9 +795,7 @@ impl Storage {
                 &format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, definition),
                 [],
             )
-            .with_context(|| {
-                format!("failed to add column {} to table {}", column, table)
-            })?;
+            .with_context(|| format!("failed to add column {} to table {}", column, table))?;
         }
         Ok(())
     }

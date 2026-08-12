@@ -6,13 +6,15 @@ import { deleteAgent, setSelectedAgent } from "../../features/agents/agentSlice"
 import { useConfirmDialog } from "../ui/DialogManager";
 import BotIcon from "lucide-react/dist/esm/icons/bot.mjs";
 import TrashIcon from "lucide-react/dist/esm/icons/trash.mjs";
+import MessageSquareIcon from "lucide-react/dist/esm/icons/message-square.mjs";
 import "./AgentDashboard.css";
 
 interface AgentDashboardProps {
   agent: AgentDef;
+  onBackToChat?: () => void;
 }
 
-export function AgentDashboard({ agent }: AgentDashboardProps) {
+export function AgentDashboard({ agent, onBackToChat }: AgentDashboardProps) {
   const dispatch = useAppDispatch();
   const { confirm, dialogElement } = useConfirmDialog();
   const [activeTab, setActiveTab] = useState<"config" | "memory" | "skills" | "history">("config");
@@ -47,6 +49,11 @@ export function AgentDashboard({ agent }: AgentDashboardProps) {
             </div>
           </div>
           <div className="agent-header-actions">
+            {onBackToChat && (
+              <button className="btn-secondary" onClick={onBackToChat}>
+                <MessageSquareIcon size={15} /> Chat
+              </button>
+            )}
             <button className="btn-secondary icon-btn-danger" onClick={handleDelete} title="Delete Agent">
               <TrashIcon size={16} />
             </button>

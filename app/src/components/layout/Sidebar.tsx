@@ -43,6 +43,9 @@ import ClockIcon from "lucide-react/dist/esm/icons/clock.mjs";
 import PinIcon from "lucide-react/dist/esm/icons/pin.mjs";
 import PinOffIcon from "lucide-react/dist/esm/icons/pin-off.mjs";
 import { CronjobModal } from "../ui/CronjobModal";
+import { NewAgentModal } from "../ui/NewAgentModal";
+import { fetchAgents, setSelectedAgent } from "../../features/agents/agentSlice";
+import type { AgentConversation } from "../../features/agents/types";
 
 // ── Context menu hook ────────────────────────────────────────────────
 
@@ -172,6 +175,8 @@ export const Sidebar = memo(function Sidebar({
   const dispatch = useAppDispatch();
   const projects = useSelector((state: RootState) => state.project.projects);
   const sessions = useSelector((state: RootState) => state.project.sessions);
+  const agents = useSelector((state: RootState) => state.agents.agents);
+  const selectedAgentId = useSelector((state: RootState) => state.agents.selectedAgentId);
   const activeProjectId = useSelector(
     (state: RootState) => state.project.activeProjectId,
   );
@@ -190,11 +195,32 @@ export const Sidebar = memo(function Sidebar({
   const [projectsCollapsed, setProjectsCollapsed] = useState(false);
   const [pinnedCollapsed, setPinnedCollapsed] = useState(false);
   const [chatCollapsed, setChatCollapsed] = useState(false);
+  const [agentsCollapsed, setAgentsCollapsed] = useState(false);
+  const [newAgentOpen, setNewAgentOpen] = useState(false);
+  const [agentConversations, setAgentConversations] = useState<AgentConversation[]>([]);
   const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
   const addMenuRef = useRef<HTMLDivElement>(null);
   const { confirm, prompt, dialogElement } = useConfirmDialog();
+
+  const refreshAgentConversations = useCallback(async () => {
+    try {
+      const conversations = await invoke<AgentConversation[]>("list_agent_conversations", {
+        projectId: activeProjectId ?? "__adhoc_chat__",
+      });
+      setAgentConversations(conversations);
+    } catch {
+      setAgentConversations([]);
+    }
+  }, [activeProjectId]);
+
+  useEffect(() => {
+    void refreshAgentConversations();
+    const refresh = () => void refreshAgentConversations();
+    window.addEventListener("agent-conversations-changed", refresh);
+    return () => window.removeEventListener("agent-conversations-changed", refresh);
+  }, [refreshAgentConversations]);
 
   useEffect(() => {
     if (!addMenuOpen) return;
@@ -502,12 +528,6 @@ export const Sidebar = memo(function Sidebar({
       {/* Quick actions */}
       <div className="sidebar-nav" style={{ marginBottom: "4px" }}>
         <div
-          className={`nav-item ${activeView === "agents" ? "active" : ""}`}
-          onClick={() => onNavigate?.("agents")}
-        >
-          <BotIcon size={14} /> {t("sidebar.agents")}
-        </div>
-        <div
           className={`nav-item ${activeView === "workflows" ? "active" : ""}`}
           onClick={() => onNavigate?.("workflows")}
         >
@@ -529,6 +549,75 @@ export const Sidebar = memo(function Sidebar({
       </div>
 
       <div className="sidebar-scrollable">
+        {/* Agent contacts */}
+        <div className={`projects-section ${agentsCollapsed ? "section-collapsed" : ""}`}>
+          <div
+            className="projects-header"
+            role="button"
+            tabIndex={0}
+            aria-expanded={!agentsCollapsed}
+            onClick={() => setAgentsCollapsed((value) => !value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                setAgentsCollapsed((value) => !value);
+              }
+            }}
+          >
+            <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              {agentsCollapsed ? (
+                <ChevronRightIcon size={12} style={{ opacity: 0.7 }} />
+              ) : (
+                <ChevronDownIcon size={12} style={{ opacity: 0.7 }} />
+              )}
+              {t("sidebar.agents")}
+            </span>
+            <button
+              className="icon-btn"
+              onClick={(event) => {
+                event.stopPropagation();
+                setNewAgentOpen(true);
+              }}
+              title="New agent"
+            >
+              <PlusIcon size={13} />
+            </button>
+          </div>
+          {!agentsCollapsed && (
+            <div className="projects-list">
+              {agents.length === 0 && (
+                <div style={{ padding: "12px 20px", color: "var(--text-tertiary)", fontSize: "12px" }}>
+                  No custom agents
+                </div>
+              )}
+              {agents.map((agent) => (
+                <button
+                  key={agent.id}
+                  className={`sidebar-agent-contact ${
+                    activeView === "agents" && selectedAgentId === agent.id ? "active" : ""
+                  }`}
+                  onClick={() => {
+                    dispatch(setSelectedAgent(agent.id));
+                    onNavigate?.("agents");
+                  }}
+                >
+                  <span className="sidebar-agent-contact-icon">
+                    <BotIcon size={14} color={agent.color || "var(--accent)"} />
+                  </span>
+                  <span className="sidebar-agent-contact-name">{agent.name}</span>
+                  {(agentConversations.find((conversation) => conversation.agent_id === agent.id)
+                    ?.unread_count ?? 0) > 0 && (
+                    <span className="sidebar-agent-unread">
+                      {agentConversations.find((conversation) => conversation.agent_id === agent.id)
+                        ?.unread_count}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
         {/* Pinned section */}
         {pinnedItems.length > 0 && (
           <div className={`projects-section ${pinnedCollapsed ? "section-collapsed" : ""}`}>
@@ -773,6 +862,15 @@ export const Sidebar = memo(function Sidebar({
       </div>
 
       <CronjobModal isOpen={isCronModalOpen} onClose={() => setIsCronModalOpen(false)} />
+      <NewAgentModal
+        isOpen={newAgentOpen}
+        onClose={() => setNewAgentOpen(false)}
+        editingAgent={null}
+        onSaved={() => {
+          dispatch(fetchAgents());
+          onNavigate?.("agents");
+        }}
+      />
       <NewProjectDialog
         open={newProjectOpen}
         onClose={() => setNewProjectOpen(false)}

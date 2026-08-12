@@ -2,15 +2,14 @@
 mod preview;
 
 use agent_core::{
-    AgentMode, Brain, RunCommand, RunEvent, RunManager, RunState,
-    permission::ApprovalChoice,
-    McpClientManager, McpTool,
+    permission::ApprovalChoice, AgentMode, Brain, McpClientManager, McpTool, RunCommand, RunEvent,
+    RunManager, RunState,
 };
-use tauri::{AppHandle, Emitter, Listener, Manager, State};
-use std::sync::Arc;
 use parking_lot::Mutex;
-use tokio::sync::Mutex as AsyncMutex;
+use std::sync::Arc;
 use std::time::Instant;
+use tauri::{AppHandle, Emitter, Listener, Manager, State};
+use tokio::sync::Mutex as AsyncMutex;
 
 struct AppState {
     /// The RunManager owns the Brain and tracks all active Runs.
@@ -21,6 +20,8 @@ struct AppState {
     storage: agent_core::memory::storage::Storage,
     /// PLAN-0009: custom agent registry (CRUD over the `agents` table).
     agent_registry: agent_core::agent_registry::AgentRegistry,
+    /// Durable local inboxes and task state for agent-to-agent messages.
+    agent_messaging: agent_core::AgentMessaging,
     /// Durable orchestration kernel shared by mentions and saved workflows.
     workflow_runtime: Arc<
         agent_core::workflow::runtime::DurableWorkflowRuntime<
@@ -91,6 +92,19 @@ struct FrontendSession {
     prompts: Vec<agent_core::Prompt>,
 }
 
+#[derive(serde::Serialize)]
+struct AgentConversationView {
+    conversation: agent_core::AgentConversation,
+    session: FrontendSession,
+    messaging: agent_core::MessageObservation,
+}
+
+#[derive(serde::Serialize)]
+struct AgentConversationSendResult {
+    view: AgentConversationView,
+    deliveries: Vec<agent_core::DeliveryReceipt>,
+}
+
 /// Result of starting a user message run.
 ///
 /// `prompt_id` is the canonical session prompt row id (source of truth for
@@ -111,6 +125,48 @@ fn to_frontend_image(img: &agent_core::ImageAttachment) -> FrontendImageAttachme
         mime_type: img.mime_type.clone(),
         sha256: img.sha256.clone(),
         url: img.url.clone(),
+    }
+}
+
+fn to_frontend_session(mut session: agent_core::Session) -> FrontendSession {
+    embed_images_for_frontend(&mut session.messages);
+    for prompt in &mut session.prompts {
+        embed_images_for_frontend(&mut prompt.messages);
+    }
+    let messages = session
+        .messages
+        .iter()
+        .map(|message| FrontendMessage {
+            role: message.role.to_string(),
+            content: message.content.clone().unwrap_or_default(),
+            model: message.model.clone(),
+            tool_calls: message
+                .tool_calls
+                .as_ref()
+                .and_then(|calls| serde_json::to_value(calls).ok()),
+            tool_call_id: message.tool_call_id.clone(),
+            name: message.name.clone(),
+            metadata: message.metadata.clone(),
+            images: message
+                .metadata
+                .as_ref()
+                .and_then(|metadata| {
+                    metadata.get("_images").and_then(|value| {
+                        serde_json::from_value::<Vec<FrontendImageAttachment>>(value.clone()).ok()
+                    })
+                })
+                .or_else(|| {
+                    message
+                        .images
+                        .as_ref()
+                        .map(|images| images.iter().map(to_frontend_image).collect())
+                }),
+        })
+        .collect();
+    FrontendSession {
+        meta: session.meta,
+        messages,
+        prompts: session.prompts,
     }
 }
 
@@ -207,12 +263,13 @@ async fn send_message(
     message: String,
     session_id: Option<String>,
     model: Option<String>,
-    #[allow(non_snake_case)]
-    images: Option<Vec<IncomingImagePayload>>,
-    #[allow(non_snake_case)]
-    agent_mentions: Option<Vec<agent_core::workflow::runtime::AgentMention>>,
-    #[allow(non_snake_case)]
-    workflow_mentions: Option<Vec<agent_core::workflow::runtime::WorkflowMention>>,
+    #[allow(non_snake_case)] images: Option<Vec<IncomingImagePayload>>,
+    #[allow(non_snake_case)] agent_mentions: Option<
+        Vec<agent_core::workflow::runtime::AgentMention>,
+    >,
+    #[allow(non_snake_case)] workflow_mentions: Option<
+        Vec<agent_core::workflow::runtime::WorkflowMention>,
+    >,
 ) -> Result<SendMessageResult, String> {
     // Load history + session-level pinned goal
     let mut history = vec![];
@@ -260,10 +317,9 @@ async fn send_message(
             .filter(|s| !s.is_empty())
         {
             let goal_for_db = g.clone();
-            let _ = tokio::task::spawn_blocking(move || {
-                sm.set_pinned_goal(&sid_owned, &goal_for_db)
-            })
-            .await;
+            let _ =
+                tokio::task::spawn_blocking(move || sm.set_pinned_goal(&sid_owned, &goal_for_db))
+                    .await;
             initial_goal = Some(g);
             initial_goal_completed = false;
         }
@@ -414,26 +470,26 @@ async fn send_message(
                      with depends_on and pass upstream handoffs through explicit inputs. \
                      After the tool returns, synthesize its result for the user."
                     );
-                    Arc::new(move |
-                        registry: &mut agent_core::ToolRegistry,
-                        cancel_token,
-                        parent_run_id,
-                    | {
-                        let mut bound_scope = scope.clone();
-                        bound_scope.parent_run_id = parent_run_id;
-                        registry.register(Box::new(
-                            agent_core::workflow::runtime::MentionWorkflowTool::new(
-                                runtime.clone(),
-                                compiler.clone(),
-                                manifest.clone(),
-                                caller_permission.clone(),
-                                bound_scope,
-                                cancel_token,
-                                description.clone(),
-                            ),
-                        ));
-                        Some("run_mentioned_agents".to_string())
-                    }) as agent_core::runtime::run::ScopedToolFactory
+                    Arc::new(
+                        move |registry: &mut agent_core::ToolRegistry,
+                              cancel_token,
+                              parent_run_id| {
+                            let mut bound_scope = scope.clone();
+                            bound_scope.parent_run_id = parent_run_id;
+                            registry.register(Box::new(
+                                agent_core::workflow::runtime::MentionWorkflowTool::new(
+                                    runtime.clone(),
+                                    compiler.clone(),
+                                    manifest.clone(),
+                                    caller_permission.clone(),
+                                    bound_scope,
+                                    cancel_token,
+                                    description.clone(),
+                                ),
+                            ));
+                            Some("run_mentioned_agents".to_string())
+                        },
+                    ) as agent_core::runtime::run::ScopedToolFactory
                 })
         };
 
@@ -587,11 +643,9 @@ async fn persist_failed_user_message(
     let mut messages = history.to_vec();
     messages.push(agent_core::Message::user(message));
     let bound = prompt_id.map(|p| p.to_string());
-    let _ = tokio::task::spawn_blocking(move || {
-        match bound.as_deref() {
-            Some(pid) => sm.save_canonical_transcript_for_prompt(&session_id, &messages, pid),
-            None => sm.save_canonical_transcript(&session_id, &messages),
-        }
+    let _ = tokio::task::spawn_blocking(move || match bound.as_deref() {
+        Some(pid) => sm.save_canonical_transcript_for_prompt(&session_id, &messages, pid),
+        None => sm.save_canonical_transcript(&session_id, &messages),
     })
     .await;
 }
@@ -605,8 +659,6 @@ struct BtwEvent {
     event_type: &'static str,
     text: String,
 }
-
-
 
 /// Render a read-only context snapshot as a compact transcript for `/btw`.
 fn render_context_snapshot(messages: &[agent_core::Message]) -> String {
@@ -722,8 +774,6 @@ async fn btw_query(
     Ok(return_id)
 }
 
-
-
 /// Replay events from a Run's persisted log that the frontend missed (resync).
 /// Returns envelopes with seq > from_seq, serialized as JSON strings.
 #[tauri::command]
@@ -733,7 +783,9 @@ async fn replay_since(
     from_seq: u64,
 ) -> Result<Vec<String>, String> {
     let manager = state.run_manager.lock().await;
-    let envelopes = manager.replay_since(&run_id, from_seq).map_err(|e| e.to_string())?;
+    let envelopes = manager
+        .replay_since(&run_id, from_seq)
+        .map_err(|e| e.to_string())?;
     Ok(envelopes
         .into_iter()
         .map(|env| serde_json::to_string(&env).unwrap_or_default())
@@ -886,9 +938,8 @@ async fn answer_input(
 ) -> Result<(), String> {
     let answers: agent_core::ClarificationAnswers = serde_json::from_str(&answer)
         .or_else(|_| {
-            serde_json::from_str::<std::collections::HashMap<String, Vec<String>>>(&answer).map(
-                |map| agent_core::ClarificationAnswers { answers: map },
-            )
+            serde_json::from_str::<std::collections::HashMap<String, Vec<String>>>(&answer)
+                .map(|map| agent_core::ClarificationAnswers { answers: map })
         })
         .map_err(|e| format!("invalid clarification answer JSON: {e}"))?;
 
@@ -916,10 +967,7 @@ async fn answer_input(
 
 /// Clear the session-level pinned goal (banner ×). Does not start a Run.
 #[tauri::command]
-async fn clear_session_goal(
-    state: State<'_, AppState>,
-    session_id: String,
-) -> Result<(), String> {
+async fn clear_session_goal(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
     let sm = state.session_manager.clone();
     let sid = session_id.clone();
     tokio::task::spawn_blocking(move || sm.clear_pinned_goal(&sid))
@@ -1038,17 +1086,13 @@ async fn resume_session_plan(
     let manager = state.run_manager.lock().await;
     let store = manager.brain().todo_lists.as_ref();
     if let Some(id) = plan_id.filter(|s| !s.is_empty()) {
-        store
-            .activate(Some(&session_id), &id)
-            .map_err(|e| e)?;
+        store.activate(Some(&session_id), &id).map_err(|e| e)?;
     } else {
         match store.resolve_continue(Some(&session_id)) {
             agent_core::ContinueResolution::Activated { .. }
             | agent_core::ContinueResolution::NothingParked => {}
             agent_core::ContinueResolution::Choose(_) => {
-                return Err(
-                    "Multiple parked plans — pass plan_id to resume a specific one".into(),
-                );
+                return Err("Multiple parked plans — pass plan_id to resume a specific one".into());
             }
         }
     }
@@ -1088,10 +1132,7 @@ async fn clear_session_plans(
 
 /// Get the state of a Run.
 #[tauri::command]
-async fn get_run_state(
-    state: State<'_, AppState>,
-    run_id: String,
-) -> Result<RunState, String> {
+async fn get_run_state(state: State<'_, AppState>, run_id: String) -> Result<RunState, String> {
     let manager = state.run_manager.lock().await;
     manager.run_state(&run_id).await.map_err(|e| e.to_string())
 }
@@ -1099,7 +1140,9 @@ async fn get_run_state(
 // ── Filesystem commands ──────────────────────────────────────────────
 
 #[tauri::command]
-async fn list_directory(path: Option<String>) -> Result<Vec<std::collections::HashMap<String, String>>, String> {
+async fn list_directory(
+    path: Option<String>,
+) -> Result<Vec<std::collections::HashMap<String, String>>, String> {
     tokio::task::spawn_blocking(move || {
         let target_path = match path {
             Some(p) => std::path::PathBuf::from(p),
@@ -1113,8 +1156,18 @@ async fn list_directory(path: Option<String>) -> Result<Vec<std::collections::Ha
             let entry = entry.map_err(|e| e.to_string())?;
             let metadata = entry.metadata().map_err(|e| e.to_string())?;
             let mut info = std::collections::HashMap::new();
-            info.insert("name".to_string(), entry.file_name().to_string_lossy().to_string());
-            info.insert("type".to_string(), if metadata.is_dir() { "dir".to_string() } else { "file".to_string() });
+            info.insert(
+                "name".to_string(),
+                entry.file_name().to_string_lossy().to_string(),
+            );
+            info.insert(
+                "type".to_string(),
+                if metadata.is_dir() {
+                    "dir".to_string()
+                } else {
+                    "file".to_string()
+                },
+            );
             info.insert("size".to_string(), metadata.len().to_string());
             entries.push(info);
         }
@@ -1136,7 +1189,10 @@ async fn list_directory(path: Option<String>) -> Result<Vec<std::collections::Ha
 }
 
 #[tauri::command]
-async fn search_files(query: String, path: Option<String>) -> Result<Vec<std::collections::HashMap<String, String>>, String> {
+async fn search_files(
+    query: String,
+    path: Option<String>,
+) -> Result<Vec<std::collections::HashMap<String, String>>, String> {
     tokio::task::spawn_blocking(move || {
         let target_path = match path {
             Some(p) => std::path::PathBuf::from(p),
@@ -1146,9 +1202,16 @@ async fn search_files(query: String, path: Option<String>) -> Result<Vec<std::co
         let mut entries = Vec::new();
         let mut stack = vec![target_path.clone()];
         let query_lower = query.to_lowercase();
-        
+
         let ignore_dirs = vec![
-            ".git", "node_modules", "target", "dist", "build", ".svelte-kit", ".next", ".vscode"
+            ".git",
+            "node_modules",
+            "target",
+            "dist",
+            "build",
+            ".svelte-kit",
+            ".next",
+            ".vscode",
         ];
 
         while let Some(current) = stack.pop() {
@@ -1159,11 +1222,14 @@ async fn search_files(query: String, path: Option<String>) -> Result<Vec<std::co
             if let Ok(dir_entries) = std::fs::read_dir(&current) {
                 for entry in dir_entries.flatten() {
                     let file_name = entry.file_name().to_string_lossy().to_string();
-                    
+
                     if let Ok(metadata) = entry.metadata() {
                         let is_dir = metadata.is_dir();
-                        
-                        if is_dir && (file_name.starts_with('.') && file_name != ".agverse" || ignore_dirs.contains(&file_name.as_str())) {
+
+                        if is_dir
+                            && (file_name.starts_with('.') && file_name != ".agverse"
+                                || ignore_dirs.contains(&file_name.as_str()))
+                        {
                             continue;
                         }
 
@@ -1171,16 +1237,28 @@ async fn search_files(query: String, path: Option<String>) -> Result<Vec<std::co
                             continue;
                         }
 
-                        let rel_path = entry.path().strip_prefix(&target_path)
+                        let rel_path = entry
+                            .path()
+                            .strip_prefix(&target_path)
                             .map(|p| p.to_string_lossy().to_string())
                             .unwrap_or(file_name.clone());
 
-                        if query.is_empty() || file_name.to_lowercase().contains(&query_lower) || rel_path.to_lowercase().contains(&query_lower) {
+                        if query.is_empty()
+                            || file_name.to_lowercase().contains(&query_lower)
+                            || rel_path.to_lowercase().contains(&query_lower)
+                        {
                             let mut info = std::collections::HashMap::new();
                             info.insert("name".to_string(), rel_path);
-                            info.insert("type".to_string(), if is_dir { "dir".to_string() } else { "file".to_string() });
+                            info.insert(
+                                "type".to_string(),
+                                if is_dir {
+                                    "dir".to_string()
+                                } else {
+                                    "file".to_string()
+                                },
+                            );
                             entries.push(info);
-                            
+
                             if entries.len() >= 50 {
                                 break;
                             }
@@ -1219,10 +1297,15 @@ async fn get_config(state: State<'_, AppState>) -> Result<agent_core::config::Co
 }
 
 #[tauri::command]
-async fn save_config(state: State<'_, AppState>, mut config: agent_core::config::Config) -> Result<(), String> {
+async fn save_config(
+    state: State<'_, AppState>,
+    mut config: agent_core::config::Config,
+) -> Result<(), String> {
     config.rebuild_models();
     let mut manager = state.run_manager.lock().await;
-    manager.update_config(config.clone()).map_err(|e| e.to_string())?;
+    manager
+        .update_config(config.clone())
+        .map_err(|e| e.to_string())?;
 
     // Reconnect MCP servers with the new config (if MCP servers changed).
     // Tools from the old manager are still in-flight; new Runs will pick
@@ -1323,7 +1406,10 @@ async fn get_mode(state: State<'_, AppState>) -> Result<String, String> {
 // ── Session commands ─────────────────────────────────────────────────
 
 #[tauri::command]
-async fn create_session(state: State<'_, AppState>, project_id: String) -> Result<agent_core::SessionMeta, String> {
+async fn create_session(
+    state: State<'_, AppState>,
+    project_id: String,
+) -> Result<agent_core::SessionMeta, String> {
     let model = {
         let manager = state.run_manager.lock().await;
         manager.brain().current_model_name().to_string()
@@ -1348,7 +1434,13 @@ async fn create_session(state: State<'_, AppState>, project_id: String) -> Resul
             project.path.clone()
         };
         let _ = sm
-            .save_with_project(Some(&session_id), &messages, &cwd, &model, Some(&project_id))
+            .save_with_project(
+                Some(&session_id),
+                &messages,
+                &cwd,
+                &model,
+                Some(&project_id),
+            )
             .map_err(|e| e.to_string())?;
         let _ = sm.rename(&session_id, "New Session");
         let meta = sm
@@ -1378,11 +1470,9 @@ async fn delete_session(state: State<'_, AppState>, session_id: String) -> Resul
     .await
     .map_err(|error| format!("workflow cleanup task failed: {error}"))??;
     let sm = state.session_manager.clone();
-    tokio::task::spawn_blocking(move || {
-        sm.delete(&session_id).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("delete_session task failed: {e}"))?
+    tokio::task::spawn_blocking(move || sm.delete(&session_id).map_err(|e| e.to_string()))
+        .await
+        .map_err(|e| format!("delete_session task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -1393,7 +1483,8 @@ async fn rename_session(
 ) -> Result<bool, String> {
     let sm = state.session_manager.clone();
     tokio::task::spawn_blocking(move || {
-        sm.rename(&session_id, &new_title).map_err(|e| e.to_string())
+        sm.rename(&session_id, &new_title)
+            .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("rename_session task failed: {e}"))?
@@ -1413,7 +1504,10 @@ async fn retry_session_from_prompt(
 }
 
 #[tauri::command]
-async fn resume_session(state: State<'_, AppState>, session_id: String) -> Result<FrontendSession, String> {
+async fn resume_session(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<FrontendSession, String> {
     let sm = state.session_manager.clone();
     let session = tokio::task::spawn_blocking(move || {
         sm.resume(&session_id)
@@ -1423,36 +1517,7 @@ async fn resume_session(state: State<'_, AppState>, session_id: String) -> Resul
     .await
     .map_err(|e| format!("resume_session task failed: {e}"))??;
 
-    let mut session = session;
-    embed_images_for_frontend(&mut session.messages);
-    for prompt in &mut session.prompts {
-        embed_images_for_frontend(&mut prompt.messages);
-    }
-
-    let messages: Vec<FrontendMessage> = session
-        .messages
-        .iter()
-        .map(|m| FrontendMessage {
-            role: m.role.to_string(),
-            content: m.content.clone().unwrap_or_default(),
-            model: m.model.clone(),
-            tool_calls: m.tool_calls.as_ref().and_then(|v| serde_json::to_value(v).ok()),
-            tool_call_id: m.tool_call_id.clone(),
-            name: m.name.clone(),
-            metadata: m.metadata.clone(),
-            images: m.metadata.as_ref().and_then(|meta| {
-                meta.get("_images")
-                    .and_then(|v| serde_json::from_value::<Vec<FrontendImageAttachment>>(v.clone()).ok())
-            }).or_else(|| {
-                m.images.as_ref().map(|imgs| imgs.iter().map(to_frontend_image).collect())
-            }),
-        })
-        .collect();
-    Ok(FrontendSession {
-        meta: session.meta,
-        messages,
-        prompts: session.prompts,
-    })
+    Ok(to_frontend_session(session))
 }
 
 // ── Project commands ─────────────────────────────────────────────────
@@ -1469,7 +1534,10 @@ async fn list_projects(state: State<'_, AppState>) -> Result<Vec<agent_core::Pro
 }
 
 #[tauri::command]
-async fn create_project(state: State<'_, AppState>, path: String) -> Result<agent_core::Project, String> {
+async fn create_project(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<agent_core::Project, String> {
     let pm = state.project_manager.clone();
     tokio::task::spawn_blocking(move || {
         let pm = pm.lock();
@@ -1515,7 +1583,8 @@ async fn set_project_pinned(
     let pm = state.project_manager.clone();
     tokio::task::spawn_blocking(move || {
         let pm = pm.lock();
-        pm.set_pinned(&project_id, pinned).map_err(|e| e.to_string())
+        pm.set_pinned(&project_id, pinned)
+            .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("set_project_pinned task failed: {e}"))?
@@ -1529,7 +1598,8 @@ async fn set_session_pinned(
 ) -> Result<bool, String> {
     let sm = state.session_manager.clone();
     tokio::task::spawn_blocking(move || {
-        sm.set_pinned(&session_id, pinned).map_err(|e| e.to_string())
+        sm.set_pinned(&session_id, pinned)
+            .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("set_session_pinned task failed: {e}"))?
@@ -1606,8 +1676,7 @@ async fn resolve_page_image(url: String) -> Result<Option<String>, String> {
     let html = String::from_utf8_lossy(slice);
 
     Ok(agent_core::tools::webfetch::resolve_og_image(
-        &html,
-        &final_url,
+        &html, &final_url,
     ))
 }
 
@@ -1626,14 +1695,19 @@ async fn list_git_branches(path: String) -> Result<GitBranchInfo, String> {
             .output()
             .map_err(|e| format!("Failed to run git branch: {}", e))?;
         if !output.status.success() {
-            return Err(format!("git branch failed: {}", String::from_utf8_lossy(&output.stderr)));
+            return Err(format!(
+                "git branch failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut branches = Vec::new();
         let mut active = String::new();
         for line in stdout.lines() {
             let line = line.trim();
-            if line.is_empty() { continue; }
+            if line.is_empty() {
+                continue;
+            }
             if let Some(b) = line.strip_prefix("* ") {
                 let name = b.to_string();
                 active = name.clone();
@@ -1657,7 +1731,10 @@ async fn switch_git_branch(path: String, branch: String) -> Result<(), String> {
             .output()
             .map_err(|e| format!("Failed to run git checkout: {}", e))?;
         if !output.status.success() {
-            return Err(format!("git checkout failed: {}", String::from_utf8_lossy(&output.stderr)));
+            return Err(format!(
+                "git checkout failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
         }
         Ok(())
     })
@@ -1689,8 +1766,7 @@ async fn get_agverse_md() -> Result<String, String> {
 async fn clear_agverse_pending_notes() -> Result<usize, String> {
     let path = agent_core::paths::get_global_agverse_md_path();
     tokio::task::spawn_blocking(move || {
-        agent_core::memory::agverse_md::clear_pending_notes_file(&path)
-            .map_err(|e| e.to_string())
+        agent_core::memory::agverse_md::clear_pending_notes_file(&path).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("clear pending task failed: {e}"))?
@@ -1700,8 +1776,7 @@ async fn clear_agverse_pending_notes() -> Result<usize, String> {
 async fn promote_agverse_pending_notes() -> Result<usize, String> {
     let path = agent_core::paths::get_global_agverse_md_path();
     tokio::task::spawn_blocking(move || {
-        agent_core::memory::agverse_md::promote_pending_notes_file(&path)
-            .map_err(|e| e.to_string())
+        agent_core::memory::agverse_md::promote_pending_notes_file(&path).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("promote pending task failed: {e}"))?
@@ -1758,7 +1833,11 @@ async fn read_attachment_data_url(path: String) -> Result<String, String> {
         }
         let bytes =
             std::fs::read(&resolved).map_err(|e| format!("failed to read attachment: {e}"))?;
-        let mime = match resolved.extension().and_then(|e| e.to_str()).unwrap_or("png") {
+        let mime = match resolved
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("png")
+        {
             "jpg" | "jpeg" => "image/jpeg",
             "webp" => "image/webp",
             "gif" => "image/gif",
@@ -1801,7 +1880,12 @@ fn embed_images_for_frontend(messages: &mut [agent_core::Message]) {
 // ── Skills cache ───────────────────────────────────────────────────────
 
 static SKILL_CACHE: std::sync::LazyLock<
-    Mutex<std::collections::HashMap<String, (Instant, Vec<agent_core::skills::manifest::SkillManifest>)>>,
+    Mutex<
+        std::collections::HashMap<
+            String,
+            (Instant, Vec<agent_core::skills::manifest::SkillManifest>),
+        >,
+    >,
 > = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 const SKILL_CACHE_TTL: u64 = 30; // seconds
 
@@ -1851,9 +1935,7 @@ async fn get_skills(
         {
             let mut mgr = sm.lock();
             if force || !skill_cache_is_fresh(&scope_key) {
-                let _ = mgr
-                    .reload_preserving_active()
-                    .map_err(|e| e.to_string())?;
+                let _ = mgr.reload_preserving_active().map_err(|e| e.to_string())?;
             }
             let skills: Vec<_> = mgr.list().into_iter().cloned().collect();
             SKILL_CACHE
@@ -1880,7 +1962,8 @@ async fn get_skills(
         manager.add_workspace_root(workspace);
     }
     manager.scan().map_err(|e| e.to_string())?;
-    let skills: Vec<agent_core::skills::manifest::SkillManifest> = manager.list().into_iter().cloned().collect();
+    let skills: Vec<agent_core::skills::manifest::SkillManifest> =
+        manager.list().into_iter().cloned().collect();
     SKILL_CACHE
         .lock()
         .insert(scope_key, (Instant::now(), skills.clone()));
@@ -1950,7 +2033,7 @@ async fn create_cronjob(
     })
     .await
     .map_err(|e| format!("create_cronjob task failed: {e}"))??;
-    
+
     Ok(job)
 }
 
@@ -1980,7 +2063,11 @@ async fn delete_cronjob(state: State<'_, AppState>, id: String) -> Result<(), St
 }
 
 #[tauri::command]
-async fn toggle_cronjob(state: State<'_, AppState>, id: String, enabled: bool) -> Result<(), String> {
+async fn toggle_cronjob(
+    state: State<'_, AppState>,
+    id: String,
+    enabled: bool,
+) -> Result<(), String> {
     let storage = state.storage.clone();
     tokio::task::spawn_blocking(move || {
         let conn = storage.conn();
@@ -2024,7 +2111,11 @@ async fn list_available_tools(state: State<'_, AppState>) -> Result<Vec<String>,
     let brain = run_manager.brain().clone();
     drop(run_manager);
     let registry = brain.build_tool_registry(agent_core::AgentMode::Build);
-    Ok(registry.list_names().iter().map(|s| s.to_string()).collect())
+    Ok(registry
+        .list_names()
+        .iter()
+        .map(|s| s.to_string())
+        .collect())
 }
 
 #[tauri::command]
@@ -2074,7 +2165,9 @@ async fn create_agent(
 }
 
 #[tauri::command]
-async fn list_agents(state: State<'_, AppState>) -> Result<Vec<agent_core::agent_registry::AgentDef>, String> {
+async fn list_agents(
+    state: State<'_, AppState>,
+) -> Result<Vec<agent_core::agent_registry::AgentDef>, String> {
     let storage = state.storage.clone();
     tokio::task::spawn_blocking(move || {
         agent_core::agent_registry::list(&storage).map_err(|e| e.to_string())
@@ -2084,7 +2177,10 @@ async fn list_agents(state: State<'_, AppState>) -> Result<Vec<agent_core::agent
 }
 
 #[tauri::command]
-async fn get_agent(state: State<'_, AppState>, id: String) -> Result<agent_core::agent_registry::AgentDef, String> {
+async fn get_agent(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<agent_core::agent_registry::AgentDef, String> {
     let storage = state.storage.clone();
     tokio::task::spawn_blocking(move || {
         agent_core::agent_registry::get(&storage, &id).map_err(|e| e.to_string())
@@ -2169,17 +2265,21 @@ async fn search_agent_memory(
     let store = build_agent_memory_store(&brain, storage);
     let top_k = top_k.unwrap_or(5);
     tokio::task::spawn_blocking(move || {
-        let records = store.search(&memory_key, &query, top_k).map_err(|e| e.to_string())?;
+        let records = store
+            .search(&memory_key, &query, top_k)
+            .map_err(|e| e.to_string())?;
         Ok(records
             .into_iter()
-            .map(|r| serde_json::json!({
-                "id": r.id,
-                "role": r.role,
-                "content": r.content,
-                "importance": r.importance,
-                "category": format!("{:?}", r.category),
-                "created_at": r.created_at,
-            }))
+            .map(|r| {
+                serde_json::json!({
+                    "id": r.id,
+                    "role": r.role,
+                    "content": r.content,
+                    "importance": r.importance,
+                    "category": format!("{:?}", r.category),
+                    "created_at": r.created_at,
+                })
+            })
             .collect::<Vec<_>>())
     })
     .await
@@ -2195,10 +2295,378 @@ async fn get_agent_history(
     let storage = state.storage.clone();
     let limit = limit.unwrap_or(50);
     tokio::task::spawn_blocking(move || {
-        agent_core::agent_registry::history::list(&storage, &agent_id, limit).map_err(|e| e.to_string())
+        agent_core::agent_registry::history::list(&storage, &agent_id, limit)
+            .map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("get_agent_history task failed: {e}"))?
+}
+
+async fn load_agent_conversation_view(
+    messaging: agent_core::AgentMessaging,
+    session_manager: Arc<agent_core::SessionManager>,
+    conversation: agent_core::AgentConversation,
+) -> Result<AgentConversationView, String> {
+    let conversation_id = conversation.id.clone();
+    let session_id = conversation.session_id.clone();
+    tokio::task::spawn_blocking(move || {
+        messaging
+            .mark_read(&conversation_id)
+            .map_err(|error| error.to_string())?;
+        let messaging = messaging
+            .observe(&conversation_id, 0)
+            .map_err(|error| error.to_string())?;
+        let session = session_manager
+            .resume(&session_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("agent conversation session '{session_id}' not found"))?;
+        Ok(AgentConversationView {
+            conversation,
+            session: to_frontend_session(session),
+            messaging,
+        })
+    })
+    .await
+    .map_err(|error| format!("load agent conversation task failed: {error}"))?
+}
+
+async fn run_agent_conversation_turn(
+    state: &State<'_, AppState>,
+    conversation: &agent_core::AgentConversation,
+    input: String,
+    input_metadata: Option<serde_json::Value>,
+    trigger: &str,
+) -> Result<agent_core::agent_registry::CustomAgentRunResult, String> {
+    let brain = {
+        let run_manager = state.run_manager.lock().await;
+        run_manager.brain().clone()
+    };
+    let storage = state.storage.clone();
+    let agent_id = conversation.agent_id.clone();
+    let agent = tokio::task::spawn_blocking({
+        let storage = storage.clone();
+        move || agent_core::agent_registry::get(&storage, &agent_id)
+    })
+    .await
+    .map_err(|error| format!("load custom agent task failed: {error}"))?
+    .map_err(|error| error.to_string())?;
+    let permission_config =
+        agent_core::agent_registry::build_permission_config(&agent, &brain.config.permissions);
+    let runner = agent_core::agent_registry::CustomAgentRunner::new(
+        storage,
+        brain,
+        state.session_manager.clone(),
+    );
+    runner
+        .run(agent_core::agent_registry::CustomAgentInvocation {
+            agent,
+            input,
+            session_id: conversation.session_id.clone(),
+            working_dir: None,
+            workflow_run_id: None,
+            trigger: trigger.to_string(),
+            permission_config,
+            approval_resolver: None,
+            cancel_token: agent_core::CancellationToken::new(),
+            event_tx: None,
+            subagent_depth: 0,
+            context_mode: agent_core::agent_registry::CustomAgentContextMode::ResumeSession,
+            input_metadata,
+            record_history: true,
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn append_agent_conversation_user_message(
+    session_manager: Arc<agent_core::SessionManager>,
+    conversation: &agent_core::AgentConversation,
+    text: String,
+    metadata: serde_json::Value,
+) -> Result<(), String> {
+    let session_id = conversation.session_id.clone();
+    tokio::task::spawn_blocking(move || {
+        let session = session_manager
+            .resume(&session_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("agent conversation session '{session_id}' not found"))?;
+        let mut messages = session.messages;
+        let mut message = agent_core::Message::user(&text);
+        message.metadata = Some(metadata);
+        messages.push(message);
+        session_manager
+            .save(
+                Some(&session_id),
+                &messages,
+                &session.meta.cwd,
+                &session.meta.model_used,
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("append agent conversation task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn open_agent_conversation(
+    state: State<'_, AppState>,
+    agent_id: String,
+    project_id: Option<String>,
+) -> Result<AgentConversationView, String> {
+    let messaging = state.agent_messaging.clone();
+    let conversation = tokio::task::spawn_blocking({
+        let messaging = messaging.clone();
+        move || messaging.open_conversation(&agent_id, project_id.as_deref())
+    })
+    .await
+    .map_err(|error| format!("open agent conversation task failed: {error}"))?
+    .map_err(|error| error.to_string())?;
+    load_agent_conversation_view(messaging, state.session_manager.clone(), conversation).await
+}
+
+#[tauri::command]
+async fn list_agent_conversations(
+    state: State<'_, AppState>,
+    project_id: Option<String>,
+) -> Result<Vec<agent_core::AgentConversation>, String> {
+    let messaging = state.agent_messaging.clone();
+    tokio::task::spawn_blocking(move || {
+        messaging.list_conversations(project_id.as_deref().unwrap_or("__adhoc_chat__"))
+    })
+    .await
+    .map_err(|error| format!("list agent conversations task failed: {error}"))?
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn send_agent_conversation_message(
+    state: State<'_, AppState>,
+    conversation_id: String,
+    input: String,
+    agent_mentions: Option<Vec<agent_core::workflow::runtime::AgentMention>>,
+) -> Result<AgentConversationSendResult, String> {
+    if input.trim().is_empty() {
+        return Err("agent conversation message must not be empty".to_string());
+    }
+    let messaging = state.agent_messaging.clone();
+    let source = {
+        let messaging = messaging.clone();
+        let conversation_id = conversation_id.clone();
+        tokio::task::spawn_blocking(move || messaging.conversation(&conversation_id))
+            .await
+            .map_err(|error| format!("load source conversation task failed: {error}"))?
+            .map_err(|error| error.to_string())?
+    };
+    let mentions = agent_mentions.unwrap_or_default();
+    if mentions.is_empty() {
+        run_agent_conversation_turn(&state, &source, input, None, "agent_chat").await?;
+        let view =
+            load_agent_conversation_view(messaging, state.session_manager.clone(), source).await?;
+        return Ok(AgentConversationSendResult {
+            view,
+            deliveries: Vec::new(),
+        });
+    }
+    if mentions.len() != 1 {
+        return Err("agent conversations support one message recipient at a time".to_string());
+    }
+    let mention = &mentions[0];
+    let recipient = agent_core::agent_registry::get(&state.storage, &mention.agent_id)
+        .map_err(|error| error.to_string())?;
+    if !mention.revision_id.is_empty() && mention.revision_id != recipient.updated_at {
+        return Err(format!(
+            "mentioned agent '{}' changed after selection; select it again",
+            recipient.name
+        ));
+    }
+
+    append_agent_conversation_user_message(
+        state.session_manager.clone(),
+        &source,
+        input.clone(),
+        serde_json::json!({
+            "agent_messaging": {
+                "direction": "outbound_request",
+                "to_agent_id": recipient.id,
+                "to_display_name": recipient.name,
+            }
+        }),
+    )
+    .await?;
+
+    let request = {
+        let messaging = messaging.clone();
+        let source_id = source.id.clone();
+        let recipient_id = recipient.id.clone();
+        let input = input.clone();
+        tokio::task::spawn_blocking(move || {
+            messaging.send(agent_core::SendAgentMessage {
+                source_conversation_id: source_id,
+                to_agent_id: recipient_id,
+                kind: agent_core::MessageKind::Request,
+                parts: vec![agent_core::MessagePart::text(input)],
+                context_id: None,
+                correlation_id: None,
+                reply_to: None,
+                idempotency_key: format!("agent-chat:{}:{}", conversation_id, uuid::Uuid::new_v4()),
+                hop_count: 1,
+            })
+        })
+        .await
+        .map_err(|error| format!("send agent message task failed: {error}"))?
+        .map_err(|error| error.to_string())?
+    };
+    messaging
+        .command(&request.task.id, agent_core::AgentTaskCommand::Start)
+        .map_err(|error| error.to_string())?;
+
+    let recipient_input = format!(
+        "Message from {}:\n\n{}\n\nRespond directly to {} with your findings.",
+        request.message.from_display_name, input, request.message.from_display_name
+    );
+    let recipient_result = match run_agent_conversation_turn(
+        &state,
+        &request.target_conversation,
+        recipient_input.clone(),
+        Some(serde_json::json!({
+            "agent_messaging": {
+                "direction": "inbound",
+                "message_id": request.message.id,
+                "from_agent_id": request.message.from_agent_id,
+                "from_display_name": request.message.from_display_name,
+                "display_content": input,
+                "kind": "request",
+            }
+        })),
+        "agent_message",
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            let _ = messaging.command(
+                &request.task.id,
+                agent_core::AgentTaskCommand::Fail {
+                    error: error.clone(),
+                },
+            );
+            let _ = append_agent_conversation_user_message(
+                state.session_manager.clone(),
+                &request.target_conversation,
+                recipient_input,
+                serde_json::json!({
+                    "agent_messaging": {
+                        "direction": "inbound",
+                        "message_id": request.message.id,
+                        "from_agent_id": request.message.from_agent_id,
+                        "from_display_name": request.message.from_display_name,
+                        "display_content": input,
+                        "kind": "request",
+                    }
+                }),
+            )
+            .await;
+            return Err(error);
+        }
+    };
+
+    let reply = messaging
+        .send(agent_core::SendAgentMessage {
+            source_conversation_id: request.target_conversation.id.clone(),
+            to_agent_id: source.agent_id.clone(),
+            kind: agent_core::MessageKind::Reply,
+            parts: vec![agent_core::MessagePart::text(
+                recipient_result.output.clone(),
+            )],
+            context_id: Some(request.message.context_id.clone()),
+            correlation_id: Some(request.message.correlation_id.clone()),
+            reply_to: Some(request.message.id.clone()),
+            idempotency_key: format!("agent-reply:{}", request.message.id),
+            hop_count: 2,
+        })
+        .map_err(|error| error.to_string())?;
+    messaging
+        .command(
+            &request.task.id,
+            agent_core::AgentTaskCommand::Complete {
+                output_message_id: Some(reply.message.id.clone()),
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    messaging
+        .command(&reply.task.id, agent_core::AgentTaskCommand::Start)
+        .map_err(|error| error.to_string())?;
+
+    let relay_input = format!(
+        "Message from {}:\n\n{}\n\nRelay this response to the user faithfully and concisely. Do not send another agent message.",
+        reply.message.from_display_name, recipient_result.output
+    );
+    let relay_result = run_agent_conversation_turn(
+        &state,
+        &source,
+        relay_input.clone(),
+        Some(serde_json::json!({
+            "agent_messaging": {
+                "direction": "inbound_reply",
+                "message_id": reply.message.id,
+                "reply_to": request.message.id,
+                "from_agent_id": reply.message.from_agent_id,
+                "from_display_name": reply.message.from_display_name,
+                "display_content": recipient_result.output,
+                "kind": "reply",
+                "relay_only": true,
+            }
+        })),
+        "agent_message_relay",
+    )
+    .await;
+    match relay_result {
+        Ok(_) => {
+            messaging
+                .command(
+                    &reply.task.id,
+                    agent_core::AgentTaskCommand::Complete {
+                        output_message_id: None,
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        Err(error) => {
+            let _ = messaging.command(
+                &reply.task.id,
+                agent_core::AgentTaskCommand::Fail {
+                    error: error.clone(),
+                },
+            );
+            let _ = append_agent_conversation_user_message(
+                state.session_manager.clone(),
+                &source,
+                relay_input,
+                serde_json::json!({
+                    "agent_messaging": {
+                        "direction": "inbound_reply",
+                        "message_id": reply.message.id,
+                        "reply_to": request.message.id,
+                        "from_agent_id": reply.message.from_agent_id,
+                        "from_display_name": reply.message.from_display_name,
+                        "display_content": recipient_result.output,
+                        "kind": "reply",
+                        "relay_only": true,
+                    }
+                }),
+            )
+            .await;
+            return Err(error);
+        }
+    }
+
+    let view =
+        load_agent_conversation_view(messaging, state.session_manager.clone(), source).await?;
+    Ok(AgentConversationSendResult {
+        view,
+        deliveries: vec![request, reply],
+    })
 }
 
 /// Run a custom agent standalone (outside of a workflow).
@@ -2246,6 +2714,8 @@ async fn run_agent_standalone(
             cancel_token: agent_core::CancellationToken::new(),
             event_tx: None,
             subagent_depth: 0,
+            context_mode: agent_core::agent_registry::CustomAgentContextMode::Fresh,
+            input_metadata: None,
             record_history: true,
         })
         .await
@@ -2378,12 +2848,12 @@ async fn save_workflow_library_draft(
     let target_scope = match scope.as_str() {
         "user" => WorkflowScope::User,
         "project" => WorkflowScope::Project {
-            project_id: project_id.filter(|value| !value.is_empty()).ok_or_else(|| {
-                "project_id is required for a project workflow".to_string()
-            })?,
-            workspace: workspace.filter(|value| !value.is_empty()).ok_or_else(|| {
-                "workspace is required for a project workflow".to_string()
-            })?,
+            project_id: project_id
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "project_id is required for a project workflow".to_string())?,
+            workspace: workspace
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "workspace is required for a project workflow".to_string())?,
         },
         other => return Err(format!("unsupported workflow scope: {other}")),
     };
@@ -2454,15 +2924,10 @@ async fn publish_legacy_workflow_for_chat(
     tokio::task::spawn_blocking(move || {
         let legacy = agent_core::workflow::get(&storage, &legacy_workflow_id)
             .map_err(|error| error.to_string())?;
-        let program =
-            agent_core::workflow::runtime::LegacyWorkflowCompiler::new(storage)
-                .compile(&legacy, &permission)
-                .map_err(|error| error.to_string())?;
-        let request_id = format!(
-            "legacy-publish:{}:{}",
-            legacy.id,
-            legacy.updated_at
-        );
+        let program = agent_core::workflow::runtime::LegacyWorkflowCompiler::new(storage)
+            .compile(&legacy, &permission)
+            .map_err(|error| error.to_string())?;
+        let request_id = format!("legacy-publish:{}:{}", legacy.id, legacy.updated_at);
         authoring
             .publish_imported_program(
                 &request_id,
@@ -2491,9 +2956,7 @@ async fn run_published_workflow(
     project_id: Option<String>,
     workspace: Option<String>,
 ) -> Result<agent_core::workflow::runtime::StartReceipt, String> {
-    use agent_core::workflow::runtime::{
-        RunScope, StartRun, WorkflowRuntime, WorkflowSource,
-    };
+    use agent_core::workflow::runtime::{RunScope, StartRun, WorkflowRuntime, WorkflowSource};
     let revision = state
         .workflow_authoring
         .resolve_published_revision(&workflow_id, revision_id.as_deref())
@@ -2541,7 +3004,9 @@ async fn create_workflow(
 }
 
 #[tauri::command]
-async fn list_workflows(state: State<'_, AppState>) -> Result<Vec<agent_core::workflow::WorkflowDef>, String> {
+async fn list_workflows(
+    state: State<'_, AppState>,
+) -> Result<Vec<agent_core::workflow::WorkflowDef>, String> {
     let storage = state.storage.clone();
     tokio::task::spawn_blocking(move || {
         agent_core::workflow::list(&storage).map_err(|e| e.to_string())
@@ -2551,7 +3016,10 @@ async fn list_workflows(state: State<'_, AppState>) -> Result<Vec<agent_core::wo
 }
 
 #[tauri::command]
-async fn get_workflow(state: State<'_, AppState>, id: String) -> Result<agent_core::workflow::WorkflowDef, String> {
+async fn get_workflow(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<agent_core::workflow::WorkflowDef, String> {
     let storage = state.storage.clone();
     tokio::task::spawn_blocking(move || {
         agent_core::workflow::get(&storage, &id).map_err(|e| e.to_string())
@@ -2840,9 +3308,7 @@ pub fn run() {
                 .with_env_filter(
                     tracing_subscriber::EnvFilter::builder()
                         .from_env_lossy()
-                        .add_directive(
-                            "agent_core=info".parse().unwrap_or_default()
-                        ),
+                        .add_directive("agent_core=info".parse().unwrap_or_default()),
                 )
                 .with_writer(std::sync::Mutex::new(file))
                 .try_init();
@@ -3061,6 +3527,7 @@ pub fn run() {
                 session_manager,
                 storage: storage.clone(),
                 agent_registry: agent_core::agent_registry::AgentRegistry::new(storage.clone()),
+                agent_messaging: agent_core::AgentMessaging::new(storage.clone()),
                 workflow_runtime: workflow_runtime.clone(),
                 workflow_authoring,
                 agent_mentions_enabled,
@@ -3162,6 +3629,7 @@ pub fn run() {
             list_available_tools,
             create_agent, list_agents, get_agent, update_agent, delete_agent,
             search_agent_memory, get_agent_history, run_agent_standalone,
+            open_agent_conversation, list_agent_conversations, send_agent_conversation_message,
             validate_workflow,
             list_workflow_library, get_workflow_library_entry,
             list_workflow_revision_history, list_runtime_workflow_runs,

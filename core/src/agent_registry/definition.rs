@@ -95,10 +95,8 @@ impl AgentDef {
         let tools_json: String = row.get("tools")?;
         let rules_json: String = row.get("permission_rules")?;
 
-        let skills: Vec<String> =
-            serde_json::from_str(&skills_json).unwrap_or_default();
-        let tools: Vec<String> =
-            serde_json::from_str(&tools_json).unwrap_or_default();
+        let skills: Vec<String> = serde_json::from_str(&skills_json).unwrap_or_default();
+        let tools: Vec<String> = serde_json::from_str(&tools_json).unwrap_or_default();
         let permission_rules: serde_json::Value =
             serde_json::from_str(&rules_json).unwrap_or_default();
 
@@ -197,7 +195,7 @@ pub fn get(storage: &Storage, id: &str) -> Result<AgentDef> {
     get_with_conn(&db, id)
 }
 
-fn get_with_conn(db: &rusqlite::Connection, id: &str) -> Result<AgentDef> {
+pub(crate) fn get_with_conn(db: &rusqlite::Connection, id: &str) -> Result<AgentDef> {
     let mut stmt = db.prepare(
         "SELECT id, name, description, system_prompt, model, skills, tools, \
          permission_mode, permission_rules, max_iterations, max_context_tokens, \
@@ -358,10 +356,7 @@ pub fn build_model_config(def: &AgentDef, config: &Config) -> ModelConfig {
             def.model
         );
     }
-    config
-        .default_model()
-        .cloned()
-        .unwrap_or_default()
+    config.default_model().cloned().unwrap_or_default()
 }
 
 /// Parse a permission-mode string (case-insensitive) into a [`PermissionMode`].

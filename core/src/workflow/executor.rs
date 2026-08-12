@@ -425,6 +425,8 @@ async fn execute_agent_node(
             cancel_token,
             event_tx,
             subagent_depth: 1,
+            context_mode: crate::agent_registry::CustomAgentContextMode::Fresh,
+            input_metadata: None,
             record_history: true,
         })
         .await?;

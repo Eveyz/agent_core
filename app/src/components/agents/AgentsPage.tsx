@@ -1,14 +1,15 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useAppDispatch, useAppSelector } from "../../hooks/useAppDispatch";
 import { fetchAgents } from "../../features/agents/agentSlice";
-import { AgentList } from "./AgentList";
 import { AgentDashboard } from "./AgentDashboard";
+import { AgentConversationChat } from "./AgentConversationChat";
 import "./AgentsPage.css";
 
 export function AgentsPage() {
   const dispatch = useAppDispatch();
   const selectedAgentId = useAppSelector((s) => s.agents.selectedAgentId);
   const agents = useAppSelector((s) => s.agents.agents);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
     dispatch(fetchAgents());
@@ -16,14 +17,22 @@ export function AgentsPage() {
 
   const selectedAgent = agents.find((a) => a.id === selectedAgentId);
 
+  useEffect(() => {
+    setSettingsOpen(false);
+  }, [selectedAgentId]);
+
   return (
     <div className="agents-page-container">
-      <div className="agents-sidebar">
-        <AgentList agents={agents} selectedAgentId={selectedAgentId} />
-      </div>
       <div className="agents-main">
         {selectedAgent ? (
-          <AgentDashboard agent={selectedAgent} />
+          settingsOpen ? (
+            <AgentDashboard agent={selectedAgent} onBackToChat={() => setSettingsOpen(false)} />
+          ) : (
+            <AgentConversationChat
+              agent={selectedAgent}
+              onOpenSettings={() => setSettingsOpen(true)}
+            />
+          )
         ) : (
           <div className="agents-empty-state">
             <div className="empty-state-content">

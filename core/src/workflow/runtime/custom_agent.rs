@@ -3,10 +3,10 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{
-    agent_registry::{AgentDef, CustomAgentInvocation, CustomAgentRunner},
+    agent_registry::{AgentDef, CustomAgentContextMode, CustomAgentInvocation, CustomAgentRunner},
     permission::PermissionConfig,
 };
 
@@ -97,6 +97,8 @@ impl ActivityAdapter for CustomAgentActivityAdapter {
                 cancel_token: invocation.cancel_token,
                 event_tx: None,
                 subagent_depth: 1,
+                context_mode: CustomAgentContextMode::Fresh,
+                input_metadata: None,
                 record_history: config.record_history,
             })
             .await?;
@@ -161,7 +163,7 @@ fn format_agent_task(input: &Value) -> String {
 mod tests {
     use serde_json::json;
 
-    use super::{format_agent_task, FrozenCustomAgentConfig};
+    use super::{FrozenCustomAgentConfig, format_agent_task};
     use crate::{agent_registry::AgentDef, permission::PermissionConfig};
 
     #[test]

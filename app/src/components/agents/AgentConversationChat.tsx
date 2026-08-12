@@ -1,0 +1,262 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import BotIcon from "lucide-react/dist/esm/icons/bot.mjs";
+import SettingsIcon from "lucide-react/dist/esm/icons/settings.mjs";
+import SendIcon from "lucide-react/dist/esm/icons/send.mjs";
+import LoaderIcon from "lucide-react/dist/esm/icons/loader.mjs";
+import MessageSquareIcon from "lucide-react/dist/esm/icons/message-square.mjs";
+import { useAppSelector } from "../../hooks/useAppDispatch";
+import type {
+  AgentConversationMessage,
+  AgentConversationSendResult,
+  AgentConversationView,
+  AgentDef,
+} from "../../features/agents/types";
+import { resolveAgentMentions, type SelectedAgentMention } from "../chat/agentMentions";
+import { AssistantMarkdownContent } from "../chat/AssistantMarkdownContent";
+import "./AgentConversationChat.css";
+
+interface AgentConversationChatProps {
+  agent: AgentDef;
+  onOpenSettings: () => void;
+}
+
+interface AgentMessageMetadata {
+  direction?: "outbound_request" | "inbound" | "inbound_reply";
+  message_id?: string;
+  from_agent_id?: string;
+  from_display_name?: string;
+  to_agent_id?: string;
+  to_display_name?: string;
+  display_content?: string;
+  kind?: string;
+}
+
+function messageMetadata(message: AgentConversationMessage): AgentMessageMetadata | null {
+  const value = message.metadata?.agent_messaging;
+  if (!value || typeof value !== "object") return null;
+  return value as AgentMessageMetadata;
+}
+
+function tokenForAgent(agent: AgentDef): string {
+  return `@${agent.name.trim().replace(/\s+/g, "_")}`;
+}
+
+export function AgentConversationChat({ agent, onOpenSettings }: AgentConversationChatProps) {
+  const agents = useAppSelector((state) => state.agents.agents);
+  const activeProjectId = useAppSelector((state) => state.project.activeProjectId);
+  const [view, setView] = useState<AgentConversationView | null>(null);
+  const [input, setInput] = useState("");
+  const [selectedMentions, setSelectedMentions] = useState<SelectedAgentMention[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const historyRef = useRef<HTMLDivElement>(null);
+
+  const mentionQuery = useMemo(() => {
+    const match = input.match(/(?:^|\s)@([^\s]*)$/u);
+    return match?.[1]?.toLowerCase() ?? null;
+  }, [input]);
+  const mentionCandidates = useMemo(() => {
+    if (mentionQuery === null) return [];
+    return agents
+      .filter((candidate) => candidate.id !== agent.id)
+      .filter((candidate) =>
+        candidate.name.toLowerCase().replace(/\s+/g, "_").startsWith(mentionQuery),
+      )
+      .slice(0, 6);
+  }, [agent.id, agents, mentionQuery]);
+
+  const loadConversation = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await invoke<AgentConversationView>("open_agent_conversation", {
+        agentId: agent.id,
+        projectId: activeProjectId ?? "__adhoc_chat__",
+      });
+      setView(result);
+      window.dispatchEvent(new Event("agent-conversations-changed"));
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setLoading(false);
+    }
+  }, [activeProjectId, agent.id]);
+
+  useEffect(() => {
+    setView(null);
+    setInput("");
+    setSelectedMentions([]);
+    void loadConversation();
+  }, [loadConversation]);
+
+  useEffect(() => {
+    historyRef.current?.scrollTo({ top: historyRef.current.scrollHeight, behavior: "smooth" });
+  }, [view?.session.messages.length, sending]);
+
+  const insertMention = useCallback((mentioned: AgentDef) => {
+    const token = tokenForAgent(mentioned);
+    setInput((current) => current.replace(/@[^\s]*$/u, `${token} `));
+    setSelectedMentions((current) => {
+      if (current.some((item) => item.agent_id === mentioned.id)) return current;
+      return [
+        ...current,
+        {
+          agent_id: mentioned.id,
+          revision_id: mentioned.updated_at,
+          token,
+        },
+      ];
+    });
+  }, []);
+
+  const send = useCallback(async () => {
+    const text = input.trim();
+    if (!text || !view || sending) return;
+    const mentions = resolveAgentMentions(text, selectedMentions, agents);
+    setSending(true);
+    setError(null);
+    setInput("");
+    setSelectedMentions([]);
+    try {
+      const result = await invoke<AgentConversationSendResult>(
+        "send_agent_conversation_message",
+        {
+          conversationId: view.conversation.id,
+          input: text,
+          agentMentions: mentions.length ? mentions : undefined,
+        },
+      );
+      setView(result.view);
+      window.dispatchEvent(new Event("agent-conversations-changed"));
+    } catch (reason) {
+      setInput(text);
+      setError(String(reason));
+      await loadConversation();
+    } finally {
+      setSending(false);
+    }
+  }, [agents, input, loadConversation, selectedMentions, sending, view]);
+
+  const onKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (event.nativeEvent.isComposing) return;
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        void send();
+      }
+    },
+    [send],
+  );
+
+  return (
+    <div className="agent-conversation">
+      <header className="agent-conversation-header">
+        <div className="agent-conversation-identity">
+          <span className="agent-conversation-avatar">
+            <BotIcon size={18} color={agent.color || "var(--accent)"} />
+          </span>
+          <span>
+            <strong>{agent.name}</strong>
+            <small>{agent.model || "Default model"}</small>
+          </span>
+        </div>
+        <button className="agent-conversation-settings" onClick={onOpenSettings}>
+          <SettingsIcon size={15} /> Settings
+        </button>
+      </header>
+
+      <div className="agent-conversation-history" ref={historyRef}>
+        {loading && (
+          <div className="agent-conversation-state">
+            <LoaderIcon className="animate-spin" size={18} /> Opening {agent.name}…
+          </div>
+        )}
+        {!loading && view?.session.messages.length === 0 && (
+          <div className="agent-conversation-empty">
+            <BotIcon size={30} color={agent.color || "var(--accent)"} />
+            <h2>Chat with {agent.name}</h2>
+            <p>
+              This conversation is durable for the current project. Mention another agent to send
+              it a message.
+            </p>
+          </div>
+        )}
+        {view?.session.messages.map((message, index) => {
+          const metadata = messageMetadata(message);
+          if (message.role === "tool" || !message.content.trim()) return null;
+          if (metadata?.direction === "inbound" || metadata?.direction === "inbound_reply") {
+            return (
+              <div className="agent-peer-message" key={`${index}-${metadata.message_id ?? "peer"}`}>
+                <div className="agent-peer-message-label">
+                  <MessageSquareIcon size={13} /> Message from {metadata.from_display_name}
+                </div>
+                <div>{metadata.display_content || message.content}</div>
+              </div>
+            );
+          }
+          if (message.role === "user") {
+            return (
+              <div className="agent-conversation-user-group" key={`${index}-user`}>
+                <div className="message-row user-row">
+                  <div className="user-msg">{message.content}</div>
+                </div>
+                {metadata?.direction === "outbound_request" && (
+                  <div className="agent-delivery-card">
+                    <MessageSquareIcon size={13} /> Messaged {metadata.to_display_name}
+                  </div>
+                )}
+              </div>
+            );
+          }
+          return (
+            <div className="message-row agent-row" key={`${index}-assistant`}>
+              <div className="agent-conversation-assistant">
+                <AssistantMarkdownContent content={message.content} />
+              </div>
+            </div>
+          );
+        })}
+        {sending && (
+          <div className="agent-conversation-state agent-conversation-working">
+            <LoaderIcon className="animate-spin" size={16} /> Agents are working…
+          </div>
+        )}
+      </div>
+
+      <div className="agent-conversation-composer">
+        {error && <div className="agent-conversation-error">{error}</div>}
+        <div className="agent-conversation-input-wrap">
+          {mentionCandidates.length > 0 && (
+            <div className="agent-conversation-mentions">
+              {mentionCandidates.map((candidate) => (
+                <button key={candidate.id} onClick={() => insertMention(candidate)}>
+                  <BotIcon size={14} color={candidate.color || "var(--accent)"} />
+                  <span>{candidate.name}</span>
+                  <small>{candidate.description}</small>
+                </button>
+              ))}
+            </div>
+          )}
+          <textarea
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder={`Message ${agent.name}… Type @ to contact another agent`}
+            rows={2}
+            disabled={loading || sending}
+          />
+          <button
+            className="agent-conversation-send"
+            onClick={() => void send()}
+            disabled={!input.trim() || loading || sending}
+            aria-label="Send message"
+          >
+            {sending ? <LoaderIcon className="animate-spin" size={16} /> : <SendIcon size={16} />}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -4,7 +4,7 @@
 //! Sessions are created under the active project, allowing conversations
 //! to be grouped by codebase.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -52,9 +52,9 @@ impl Project {
 
 /// Default Documents directory for new empty projects.
 pub fn documents_dir() -> Result<PathBuf> {
-    dirs::document_dir().or_else(|| dirs::home_dir().map(|h| h.join("Documents"))).ok_or_else(|| {
-        anyhow::anyhow!("could not resolve Documents directory")
-    })
+    dirs::document_dir()
+        .or_else(|| dirs::home_dir().map(|h| h.join("Documents")))
+        .ok_or_else(|| anyhow::anyhow!("could not resolve Documents directory"))
 }
 
 /// Sanitize a project name into a safe path segment.
@@ -258,13 +258,13 @@ impl ProjectManager {
     // ── Sessions under project ──────────────────────────────────────
 
     /// List sessions belonging to a project.
-    /// Excludes child `session_type='subagent'` rows — those are spawn transcripts,
-    /// not user-facing chats.
+    /// Only lists ordinary main chats. Child subagent transcripts and durable
+    /// agent-contact conversations have dedicated navigation surfaces.
     pub fn list_sessions(&self, project_id: &str) -> Result<Vec<crate::session::SessionMeta>> {
         let db = self.storage.conn();
         let sql = format!(
             "{} WHERE project_id = ?1 AND archived = 0 \
-             AND COALESCE(session_type, 'main') != 'subagent' \
+             AND COALESCE(session_type, 'main') = 'main' \
              ORDER BY updated_at DESC LIMIT 100",
             crate::session::META_SELECT
         );
@@ -392,6 +392,7 @@ mod tests {
         assert_eq!(sessions[0].title, "hello");
     }
 
+    #[test]
     fn test_list_sessions_excludes_subagent_children() {
         let (proj_mgr, _dir) = make_manager();
         let p = proj_mgr.create("/tmp/proj-sa").unwrap();

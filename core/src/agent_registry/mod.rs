@@ -15,6 +15,7 @@ pub mod memory;
 pub mod runner;
 pub mod skill_drafts;
 
+pub(crate) use definition::get_with_conn;
 pub use definition::{
     AgentDef, AgentDefUpdate, build_model_config, build_permission_config, build_subagent_config,
     create, delete, get, list, update,
@@ -24,7 +25,9 @@ pub use history::{
     record as history_record,
 };
 pub use memory::{AgentMemoryRecord, AgentMemoryStore};
-pub use runner::{CustomAgentInvocation, CustomAgentRunResult, CustomAgentRunner};
+pub use runner::{
+    CustomAgentContextMode, CustomAgentInvocation, CustomAgentRunResult, CustomAgentRunner,
+};
 pub use skill_drafts::{
     DraftGenerationResult, SkillDraft, approve_draft, generate_drafts, get_draft, list_drafts,
     reject_draft,

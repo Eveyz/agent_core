@@ -9,18 +9,25 @@ use crate::{
     memory::{embedding::EmbeddingModel, storage::Storage},
     mode::AgentMode,
     permission::PermissionConfig,
-    runtime::{supervisor::ProcessSupervisor, Brain},
+    runtime::{Brain, supervisor::ProcessSupervisor},
     session::SessionManager,
     skills::SkillManager,
     subagent::Subagent,
     tools::{
-        subagent::{re_wire_subagent_tools_with_skills, ApprovalRouting},
         ToolRegistry,
+        subagent::{ApprovalRouting, re_wire_subagent_tools_with_skills},
     },
     types::EventSender,
 };
 
 use super::{AgentDef, AgentHistoryEntry, AgentMemoryStore};
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CustomAgentContextMode {
+    #[default]
+    Fresh,
+    ResumeSession,
+}
 
 #[derive(Clone)]
 pub struct CustomAgentRunner {
@@ -43,6 +50,12 @@ pub struct CustomAgentInvocation {
     pub cancel_token: CancellationToken,
     pub event_tx: Option<EventSender>,
     pub subagent_depth: u8,
+    /// Whether this invocation is an isolated activity or the next turn in a
+    /// durable agent conversation.
+    pub context_mode: CustomAgentContextMode,
+    /// UI-facing provenance attached to the newly persisted user turn. It is
+    /// not exposed as provider metadata during execution.
+    pub input_metadata: Option<serde_json::Value>,
     /// Whether to record this invocation in saved-agent history.
     pub record_history: bool,
 }
@@ -116,7 +129,7 @@ impl CustomAgentRunner {
             agent,
             input,
             session_id,
-            working_dir,
+            mut working_dir,
             workflow_run_id,
             trigger,
             permission_config,
@@ -124,11 +137,23 @@ impl CustomAgentRunner {
             cancel_token,
             event_tx,
             subagent_depth,
+            context_mode,
+            input_metadata,
             record_history,
         } = invocation;
 
+        let restored_messages = if context_mode == CustomAgentContextMode::ResumeSession {
+            let restored = self.session_manager.resume(&session_id)?;
+            if working_dir.is_none() {
+                working_dir = restored.as_ref().map(|session| session.meta.cwd.clone());
+            }
+            restored.map(|session| session.messages).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
         let mut subagent_config = super::build_subagent_config(&agent);
-        subagent_config.working_dir = working_dir.map(Into::into);
+        subagent_config.working_dir = working_dir.clone().map(Into::into);
         let effective_skills = if let Some(ref skill_manager) = self.brain.skill_manager {
             skill_manager
                 .lock()
@@ -218,6 +243,7 @@ impl CustomAgentRunner {
             memory,
             Some(agent.memory_identity()),
         )
+        .with_history(restored_messages)
         .with_runtime_scope(Some(session_id.clone()), None, workflow_run_id.clone())
         .with_supervisor(supervisor)
         .with_cancel_token(cancel_token);
@@ -254,6 +280,24 @@ impl CustomAgentRunner {
                 return Err(error.context(recovery));
             }
         };
+
+        if context_mode == CustomAgentContextMode::ResumeSession {
+            let mut messages = subagent.messages();
+            if let Some(metadata) = input_metadata
+                && let Some(input_message) = messages
+                    .iter_mut()
+                    .rev()
+                    .find(|message| message.role == crate::types::Role::User)
+            {
+                input_message.metadata = Some(metadata);
+            }
+            self.session_manager.save(
+                Some(&session_id),
+                &messages,
+                working_dir.as_deref().unwrap_or(""),
+                &model_config.model_id,
+            )?;
+        }
 
         history_guard.entry.output = match &transcript_ref {
             Some(path) => format!("{}\n\nTranscript: {path}", result.output),

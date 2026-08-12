@@ -10,8 +10,8 @@ use crate::agent_registry::memory::AgentMemoryStore;
 use crate::client::OpenAIClient;
 use crate::config::ModelConfig;
 use crate::context::Context;
-use crate::runtime::supervisor::ProcessSupervisor;
 use crate::runtime::EventGuard;
+use crate::runtime::supervisor::ProcessSupervisor;
 use crate::tools::ToolRegistry;
 use crate::types::{AgentEvent, EventSender, Message, MessageDelta, StreamEvent, ToolCall};
 use transcript::{TranscriptOutcome, TranscriptRecorder};
@@ -295,6 +295,20 @@ impl Subagent {
         self.parent_run_id = parent_run_id.clone();
         if let Some(recorder) = &self.transcript {
             recorder.lock().set_scope(session_id, parent_run_id);
+        }
+        self
+    }
+
+    /// Seed a saved conversational transcript before the next turn.
+    ///
+    /// System messages are intentionally ignored: the selected agent
+    /// definition remains the sole owner of the system prompt, while the
+    /// persisted transcript contributes only user/assistant/tool turns.
+    pub fn with_history(mut self, messages: Vec<Message>) -> Self {
+        for message in messages {
+            if message.role != crate::types::Role::System {
+                self.context.add(message);
+            }
         }
         self
     }
