@@ -73,6 +73,8 @@
       "filesChanged": "{{count}} 个文件已更改",
       "filesChanged_plural": "{{count}} 个文件已更改",
       "review": "审查代码",
+      "sources": "来源",
+      "sourcesTitle": "{{count}} 个网页来源",
       "longWorkWarning": "该任务已执行较长时间。",
       "continue": "继续",
       "interruptedTitle": "执行已中断",

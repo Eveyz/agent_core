@@ -73,6 +73,8 @@
       "filesChanged": "{{count}} file changed",
       "filesChanged_plural": "{{count}} files changed",
       "review": "Review",
+      "sources": "Sources",
+      "sourcesTitle": "{{count}} web sources",
       "longWorkWarning": "You have been working in this project for a while.",
       "continue": "Continue",
       "interruptedTitle": "Execution Interrupted",

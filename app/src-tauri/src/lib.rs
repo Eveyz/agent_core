@@ -1566,6 +1566,51 @@ fn open_in_explorer(path: String) -> Result<(), String> {
     tauri_plugin_opener::open_path(path, None::<&str>).map_err(|e| e.to_string())
 }
 
+/// Fetch a page and return its Open Graph / Twitter card image URL (absolute).
+/// Used by featured web source cards so previews show real site images, not just favicons.
+#[tauri::command]
+async fn resolve_page_image(url: String) -> Result<Option<String>, String> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Ok(None);
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .user_agent(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
+             (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        )
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let resp = client
+        .get(&url)
+        .header("Accept", "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+
+    let final_url = resp.url().to_string();
+    // Only need the head for og:image — cap bytes to keep this cheap.
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    let slice = if bytes.len() > 64_000 {
+        &bytes[..64_000]
+    } else {
+        &bytes[..]
+    };
+    let html = String::from_utf8_lossy(slice);
+
+    Ok(agent_core::tools::webfetch::resolve_og_image(
+        &html,
+        &final_url,
+    ))
+}
+
 #[derive(serde::Serialize)]
 struct GitBranchInfo {
     branches: Vec<String>,
@@ -3109,6 +3154,7 @@ pub fn run() {
             list_projects, create_project, create_new_project, get_documents_dir, get_default_project_path,
             set_project_pinned, set_session_pinned,
             delete_project, rename_project, open_in_explorer,
+            resolve_page_image,
             list_git_branches, switch_git_branch, get_project_sessions,
             get_agverse_md, clear_agverse_pending_notes, promote_agverse_pending_notes,
             maintain_agverse_md, get_reflection_status, read_file, read_attachment_data_url, get_skills, invalidate_skills_cache,

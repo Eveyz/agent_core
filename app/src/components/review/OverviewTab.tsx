@@ -27,8 +27,23 @@ import {
   truncateText,
 } from './overviewSubagents';
 import { groupPlansByPrompt, countPlanItems, planProgress } from './overviewTodos';
+import {
+  extractWebSourcesFromEntries,
+  formatRelativePublishedAt,
+  type WebSource,
+} from '../chat/webSources';
+import GlobeIcon from 'lucide-react/dist/esm/icons/globe.mjs';
 
-type SectionKey = 'subagent' | 'files_changed' | 'todos' | 'artifacts';
+type SectionKey = 'subagent' | 'files_changed' | 'todos' | 'artifacts' | 'web';
+
+async function openExternalUrl(url: string) {
+  try {
+    const { openUrl } = await import('@tauri-apps/plugin-opener');
+    await openUrl(url);
+  } catch {
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+}
 
 function SubagentStatusIcon({ status }: { status: SubagentEntry['status'] }) {
   if (status === 'working') {
@@ -136,6 +151,45 @@ export function OverviewTab() {
       return next;
     });
   }, [todoItemCount]);
+
+  const webSources = useMemo(
+    () => extractWebSourcesFromEntries(entries),
+    [entries],
+  );
+
+  // Focus Web section when Sources chip opens Overview
+  useEffect(() => {
+    const handleOpen = (e: Event) => {
+      const detail = (e as CustomEvent<{ tab?: string; section?: string }>).detail;
+      if (detail?.tab !== 'overview' || detail.section !== 'web') return;
+      setExpanded((prev) => {
+        if (prev.has('web')) return prev;
+        const next = new Set(prev);
+        next.add('web');
+        return next;
+      });
+      // Scroll into view after expand paints
+      requestAnimationFrame(() => {
+        document.getElementById('overview-section-web')?.scrollIntoView({
+          behavior: 'smooth',
+          block: 'nearest',
+        });
+      });
+    };
+    window.addEventListener('open-right-sidebar', handleOpen);
+    return () => window.removeEventListener('open-right-sidebar', handleOpen);
+  }, []);
+
+  // Auto-expand Web when the session has sources
+  useEffect(() => {
+    if (webSources.length === 0) return;
+    setExpanded((prev) => {
+      if (prev.has('web')) return prev;
+      const next = new Set(prev);
+      next.add('web');
+      return next;
+    });
+  }, [webSources.length]);
 
   const toggleSection = (key: SectionKey) => {
     setExpanded((prev) => {
@@ -614,6 +668,22 @@ export function OverviewTab() {
               )}
             </div>
 
+            {/* ── Web ────────────────────────────────────────────── */}
+            <div className="overview-section" id="overview-section-web">
+              {sectionHeader('web', 'Web', webSources.length)}
+              {expanded.has('web') && (
+                <div className="overview-section-body">
+                  {webSources.length === 0 ? (
+                    <div className="overview-placeholder">No web sources yet</div>
+                  ) : (
+                    webSources.map((source) => (
+                      <OverviewWebRow key={`${source.callId}:${source.url}`} source={source} />
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+
             {/* ── Artifacts ──────────────────────────────────────── */}
             <div className="overview-section">
               {sectionHeader('artifacts', 'Artifacts', artifacts.length)}
@@ -646,5 +716,35 @@ export function OverviewTab() {
         )}
       </div>
     </div>
+  );
+}
+
+function OverviewWebRow({ source }: { source: WebSource }) {
+  const when = formatRelativePublishedAt(source.publishedAt);
+  return (
+    <button
+      type="button"
+      className="overview-web-row"
+      title={source.url}
+      onClick={() => void openExternalUrl(source.url)}
+    >
+      <span className="overview-web-favicon">
+        {source.faviconUrl ? (
+          <img src={source.faviconUrl} alt="" loading="lazy" referrerPolicy="no-referrer" />
+        ) : (
+          <GlobeIcon size={14} />
+        )}
+      </span>
+      <span className="overview-web-main">
+        <span className="overview-web-title">{source.title}</span>
+        <span className="overview-web-meta">
+          {source.siteName}
+          {when ? ` · ${when}` : ''}
+        </span>
+        {source.snippet ? (
+          <span className="overview-web-snippet">{source.snippet}</span>
+        ) : null}
+      </span>
+    </button>
   );
 }

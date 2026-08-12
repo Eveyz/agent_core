@@ -211,8 +211,53 @@ pub(crate) fn extract_meta(html: &str) -> String {
     if !og_site.is_empty() {
         output.push_str(&format!("**Source:** {og_site}\n"));
     }
+    if !og_image.is_empty() {
+        output.push_str(&format!("**Image:** {og_image}\n"));
+    }
 
     output
+}
+
+/// Extract the first Open Graph / Twitter card image URL from HTML head meta.
+pub fn extract_og_image(html: &str) -> Option<String> {
+    let scan_limit = html.len().min(16_384);
+    let scan = &html[..scan_limit];
+    let scan_lower = scan.to_lowercase();
+
+    let mut og_image = String::new();
+    let mut twitter_image = String::new();
+    let mut pos = 0;
+    while let Some(m_idx) = scan_lower[pos..].find("<meta ") {
+        let abs_idx = pos + m_idx;
+        let tag_end = scan_lower[abs_idx..]
+            .find('>')
+            .map(|e| abs_idx + e + 1);
+        pos = abs_idx + 6;
+
+        let Some(end) = tag_end else { continue };
+        let tag_slice = &scan[abs_idx..end];
+        let name = extract_attr(tag_slice, "name").to_lowercase();
+        let property = extract_attr(tag_slice, "property").to_lowercase();
+        let content = extract_attr(tag_slice, "content");
+        if content.is_empty() {
+            continue;
+        }
+        if property == "og:image" && og_image.is_empty() {
+            og_image = content;
+        } else if (name == "twitter:image" || name == "twitter:image:src" || property == "twitter:image")
+            && twitter_image.is_empty()
+        {
+            twitter_image = content;
+        }
+    }
+
+    if !og_image.is_empty() {
+        Some(og_image)
+    } else if !twitter_image.is_empty() {
+        Some(twitter_image)
+    } else {
+        None
+    }
 }
 
 /// Extract an HTML attribute value from a tag fragment.

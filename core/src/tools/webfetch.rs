@@ -14,7 +14,26 @@ mod error;
 mod html;
 
 use error::{format_http_error, format_http_status, is_image_content_type, upgrade_to_https};
-use html::{build_browser_headers, check_robots, extract_meta, extract_readable};
+use html::{build_browser_headers, check_robots, extract_meta, extract_og_image, extract_readable};
+
+/// Resolve the page's Open Graph / Twitter card image to an absolute URL.
+pub fn resolve_og_image(html: &str, page_url: &str) -> Option<String> {
+    let raw = extract_og_image(html)?;
+    Some(absolutize_url(page_url, &raw))
+}
+
+fn absolutize_url(base: &str, href: &str) -> String {
+    let trimmed = href.trim();
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        return trimmed.to_string();
+    }
+    if let Ok(base_url) = reqwest::Url::parse(base) {
+        if let Ok(joined) = base_url.join(trimmed) {
+            return joined.to_string();
+        }
+    }
+    trimmed.to_string()
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // User-Agent profiles — each UA comes with matching Client Hints

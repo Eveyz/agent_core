@@ -14,6 +14,8 @@ import { AssistantMarkdownContent } from './AssistantMarkdownContent';
 import ProcessingTimer from './ProcessingTimer';
 import TurnIterationUI from './TurnIterationUI';
 import TurnFooter from './TurnFooter';
+import { FeaturedWebCards } from './FeaturedWebCards';
+import { extractWebSourcesFromBlocks } from './webSources';
 import { isSubagentTool, groupBlocksIntoItems, basename, parseEditSummary, parseUnifiedDiff, isTrivialAssistantText } from './turnHelpers';
 import { getFileIcon } from '../layout/FileTree';
 import { useTranslation } from 'react-i18next';
@@ -359,6 +361,11 @@ export const AgentTurnUI = memo(function AgentTurnUI({
     return Array.from(files.values()).filter(f => f.additions > 0 || f.deletions > 0);
   }, [entry.blocks]);
 
+  const webSources = useMemo(
+    () => extractWebSourcesFromBlocks(entry.blocks || []),
+    [entry.blocks],
+  );
+
   // Show duration even when the turn had no tools/thinking — only the timer/summary.
   const showTurnHeader = hasIntermediateSteps || isProcessing || !!totalTimeText;
 
@@ -511,11 +518,13 @@ export const AgentTurnUI = memo(function AgentTurnUI({
         </div>
       )}
 
+      {isDone && webSources.length > 0 && <FeaturedWebCards sources={webSources} />}
+
       {isDone && turnFilesChanged.length > 0 && (
         <FilesChangedCard files={turnFilesChanged} />
       )}
 
-      <TurnFooter entry={entry} />
+      <TurnFooter entry={entry} sources={webSources} />
     </div>
   );
 });

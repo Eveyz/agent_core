@@ -286,6 +286,54 @@
   opacity: 1;
 }
 
+.turn-footer-has-sources {
+  opacity: 1;
+}
+
+.turn-sources-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px 3px 4px;
+  border-radius: 999px;
+  border: 1px solid var(--border-default);
+  background: var(--bg-sidebar, var(--overlay-0_05));
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.turn-sources-chip:hover {
+  background: var(--overlay-0_08, var(--bg-hover));
+  color: var(--text-primary);
+  border-color: var(--text-dim, var(--border-default));
+}
+
+.turn-sources-favicons {
+  display: inline-flex;
+  align-items: center;
+}
+
+.turn-sources-favicon {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--bg-main, #fff);
+  background: var(--bg-main, #fff);
+  object-fit: cover;
+  margin-left: -4px;
+}
+
+.turn-sources-favicon:first-child {
+  margin-left: 0;
+}
+
+.turn-footer:not(.turn-footer-processing) .turn-end-time {
+  margin-left: auto;
+}
+
 .turn-footer-processing {
   opacity: 1;
 }
@@ -320,6 +368,159 @@
 .turn-copy-btn:hover {
   background: var(--overlay-0_05);
   color: var(--text-primary);
+}
+
+/* ── Featured web source cards ─────────────────────────────────── */
+.web-source-cards {
+  position: relative;
+  width: 100%;
+  max-width: 800px;
+  margin: 8px 0 4px;
+}
+
+.web-source-cards-track {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding: 2px 2px 8px;
+  scroll-snap-type: x proximity;
+  scrollbar-width: none;
+}
+
+.web-source-cards-track::-webkit-scrollbar {
+  display: none;
+}
+
+.web-source-card {
+  flex: 0 0 200px;
+  scroll-snap-align: start;
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+  padding: 0;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md, 10px);
+  background: var(--bg-sidebar, var(--bg-main));
+  color: inherit;
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.web-source-card:hover {
+  border-color: var(--text-dim, var(--border-default));
+  box-shadow: 0 1px 4px var(--overlay-0_08, rgba(0, 0, 0, 0.08));
+}
+
+.web-source-card-thumb {
+  width: 100%;
+  height: 110px;
+  background: var(--overlay-0_05, #f2f2f2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.web-source-card-thumb.has-cover {
+  background: var(--overlay-0_08, #e8e8e8);
+}
+
+.web-source-card-cover {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.web-source-card-favicon-large {
+  width: 48px;
+  height: 48px;
+  object-fit: contain;
+}
+
+.web-source-card-thumb-fallback {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: var(--overlay-0_1);
+}
+
+.web-source-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px 12px;
+  min-height: 88px;
+}
+
+.web-source-card-site {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-tertiary, var(--text-dim));
+  min-width: 0;
+}
+
+.web-source-card-site span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.web-source-card-favicon {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.web-source-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text-primary, var(--text-main));
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.web-source-card-meta {
+  margin-top: auto;
+  font-size: 11px;
+  color: var(--text-tertiary, var(--text-dim));
+}
+
+.web-source-cards-nav {
+  position: absolute;
+  top: 40%;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1px solid var(--border-default);
+  background: var(--bg-main);
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 1px 4px var(--overlay-0_08, rgba(0, 0, 0, 0.1));
+  z-index: 1;
+}
+
+.web-source-cards-nav:hover {
+  color: var(--text-primary);
+}
+
+.web-source-cards-nav-left {
+  left: 4px;
+}
+
+.web-source-cards-nav-right {
+  right: 4px;
 }
 
 .block-wrapper {

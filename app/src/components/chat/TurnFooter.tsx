@@ -4,6 +4,7 @@ import CopyIcon from 'lucide-react/dist/esm/icons/copy.mjs';
 import { useTranslation } from 'react-i18next';
 import type { ChatEntry, TurnBlock } from '../../features/chat/chatSlice';
 import { progressiveToolVerbKey } from './turnHelpers';
+import type { WebSource } from './webSources';
 
 /** After this many ms with no new stream tokens, show a "waiting on model" hint. */
 const MODEL_IDLE_MS = 4_000;
@@ -16,12 +17,38 @@ const WAITING_KEYS = [
   'chat.footer.modelWaitingQuiet',
 ] as const;
 
-const TurnFooter = memo(function TurnFooter({ entry }: { entry: ChatEntry }) {
+const TurnFooter = memo(function TurnFooter({
+  entry,
+  sources = [],
+}: {
+  entry: ChatEntry;
+  sources?: WebSource[];
+}) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   // PERF-7: Skip expensive text concatenation while streaming (no endTime).
   // The footer renders null during streaming anyway, so the computation is wasted.
   const isStreaming = !entry.endTime;
+  const sourceIcons = useMemo(() => {
+    const seen = new Set<string>();
+    const icons: { url: string; faviconUrl: string }[] = [];
+    for (const s of sources) {
+      const key = s.siteName || s.url;
+      if (seen.has(key) || !s.faviconUrl) continue;
+      seen.add(key);
+      icons.push({ url: s.url, faviconUrl: s.faviconUrl });
+      if (icons.length >= 3) break;
+    }
+    return icons;
+  }, [sources]);
+
+  const openSourcesOverview = useCallback(() => {
+    window.dispatchEvent(
+      new CustomEvent('open-right-sidebar', {
+        detail: { tab: 'overview', section: 'web' },
+      }),
+    );
+  }, []);
   const rawOutput = useMemo(() => {
     if (isStreaming || !entry.blocks) return '';
     return entry.blocks
@@ -143,13 +170,37 @@ const TurnFooter = memo(function TurnFooter({ entry }: { entry: ChatEntry }) {
     );
   }
 
-  if (!endTimeText && !rawOutput) return null;
+  if (!endTimeText && !rawOutput && sources.length === 0) return null;
+
+  const hasSources = sources.length > 0;
 
   return (
-    <div className="turn-footer">
+    <div className={`turn-footer${hasSources ? ' turn-footer-has-sources' : ''}`}>
       {rawOutput && !isProcessing && (
         <button className="turn-copy-btn" onClick={handleCopy} title="Copy Raw Assistant Output">
           {copied ? <CheckIcon size={11} color="var(--success)" /> : <CopyIcon size={11} />}
+        </button>
+      )}
+      {hasSources && (
+        <button
+          type="button"
+          className="turn-sources-chip"
+          onClick={openSourcesOverview}
+          title={t('chat.turn.sourcesTitle', { count: sources.length })}
+        >
+          <span className="turn-sources-favicons" aria-hidden>
+            {sourceIcons.map((icon) => (
+              <img
+                key={icon.url}
+                className="turn-sources-favicon"
+                src={icon.faviconUrl}
+                alt=""
+                loading="lazy"
+                referrerPolicy="no-referrer"
+              />
+            ))}
+          </span>
+          <span>{t('chat.turn.sources')}</span>
         </button>
       )}
       {endTimeText && <span className="turn-end-time">{endTimeText}</span>}
