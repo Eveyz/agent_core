@@ -4,7 +4,11 @@ import 'leaflet/dist/leaflet.css';
 import markerIconUrl from 'leaflet/dist/images/marker-icon.png';
 import markerIcon2xUrl from 'leaflet/dist/images/marker-icon-2x.png';
 import markerShadowUrl from 'leaflet/dist/images/marker-shadow.png';
-import type { MapFeature } from './mapSources';
+import {
+  googleMapsEmbedUrl,
+  prefersGoogleEmbed,
+  type MapFeature,
+} from './mapSources';
 
 const markerIcon = L.icon({
   iconUrl: markerIconUrl,
@@ -64,16 +68,24 @@ function collectPoints(features: MapFeature[]): {
   return { markers, lines };
 }
 
-/**
- * Interactive OSM map for place markers and route polylines.
- * Uses Leaflet (no Google/Amap display key) so Tauri can render maps when the
- * user only configured MCP keys for search/routing.
- */
-export const InteractiveMapView = memo(function InteractiveMapView({
-  features,
-}: {
-  features: MapFeature[];
-}) {
+function GoogleEmbedMap({ feature }: { feature: MapFeature }) {
+  const src = googleMapsEmbedUrl(feature);
+  if (!src) return null;
+  const title = feature.kind === 'place' ? feature.name : feature.title;
+  return (
+    <iframe
+      className="map-interactive map-interactive-frame"
+      title={title}
+      src={src}
+      key={src}
+      loading="lazy"
+      referrerPolicy="no-referrer-when-downgrade"
+      allowFullScreen
+    />
+  );
+}
+
+function LeafletMapView({ features }: { features: MapFeature[] }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
 
@@ -124,7 +136,6 @@ export const InteractiveMapView = memo(function InteractiveMapView({
       map.setView([20, 0], 2);
     }
 
-    // Leaflet needs a tick after layout to size correctly.
     requestAnimationFrame(() => map.invalidateSize());
 
     return () => {
@@ -145,6 +156,26 @@ export const InteractiveMapView = memo(function InteractiveMapView({
   if (markers.length === 0 && lines.length === 0) return null;
 
   return <div className="map-interactive" ref={containerRef} role="img" aria-label="Map" />;
+}
+
+/**
+ * Google Maps embed when the features came from Google MCP.
+ * Leaflet/OSM is the fallback (Amap, or no Google embed URL).
+ */
+export const InteractiveMapView = memo(function InteractiveMapView({
+  features,
+  focusId,
+}: {
+  features: MapFeature[];
+  focusId?: string;
+}) {
+  if (prefersGoogleEmbed(features)) {
+    const focused =
+      features.find((f) => f.id === focusId && googleMapsEmbedUrl(f)) ||
+      features.find((f) => googleMapsEmbedUrl(f));
+    if (focused) return <GoogleEmbedMap feature={focused} />;
+  }
+  return <LeafletMapView features={features} />;
 });
 
 function escapeHtml(s: string): string {

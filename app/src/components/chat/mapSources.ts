@@ -9,6 +9,8 @@ export type MapPlace = {
   address?: string;
   lat?: number;
   lng?: number;
+  /** Google Place ID without the `places/` prefix. */
+  placeId?: string;
   /** Deep link opened when the card is clicked. */
   mapUrl: string;
   /** Optional static preview (no product API key). */
@@ -159,8 +161,16 @@ export function googlePlaceMapUrl(opts: {
   lng?: number;
   name?: string;
   placeUrl?: string;
+  placeId?: string;
 }): string {
   if (opts.placeUrl && /^https?:\/\//i.test(opts.placeUrl)) return opts.placeUrl;
+  if (opts.placeId) {
+    const id = encodeURIComponent(opts.placeId);
+    if (opts.name?.trim()) {
+      return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(opts.name.trim())}&query_place_id=${id}`;
+    }
+    return `https://www.google.com/maps/search/?api=1&query_place_id=${id}`;
+  }
   if (opts.name?.trim()) {
     return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(opts.name.trim())}`;
   }
@@ -228,7 +238,7 @@ export function amapDirectionsUrl(opts: {
 
 function placeMapUrl(
   provider: MapProvider,
-  opts: { lat?: number; lng?: number; name?: string; placeUrl?: string },
+  opts: { lat?: number; lng?: number; name?: string; placeUrl?: string; placeId?: string },
 ): string {
   if (provider === 'amap') return amapPlaceMapUrl(opts);
   return googlePlaceMapUrl(opts);
@@ -250,12 +260,19 @@ function routeMapUrl(
 }
 
 function isUsefulPlaceName(name: string): boolean {
-  const trimmed = name.trim();
+  const trimmed = cleanPlaceName(name);
   if (!trimmed) return false;
-  // Grounding Lite often returns attribution.title like " - Google Maps".
   if (/^-?\s*google\s*maps\s*$/i.test(trimmed)) return false;
   if (/^maps?$/i.test(trimmed)) return false;
   return true;
+}
+
+/** Drop Grounding Lite branding suffixes like "Admiralty Station - Google Maps". */
+export function cleanPlaceName(name: string): string {
+  return name
+    .replace(/\s*[-–—]\s*Google Maps\s*$/i, '')
+    .replace(/\s*\(\s*Google Maps\s*\)\s*$/i, '')
+    .trim();
 }
 
 /** Pull bolded place labels from a Grounding Lite summary, in citation order. */
@@ -268,22 +285,22 @@ export function placeNamesFromSummary(summary: string | undefined): string[] {
 function displayNameFromRow(row: Record<string, unknown>): string {
   const displayName = row.displayName;
   if (typeof displayName === 'string' && isUsefulPlaceName(displayName)) {
-    return displayName.trim();
+    return cleanPlaceName(displayName);
   }
   if (displayName && typeof displayName === 'object') {
     const text = (displayName as { text?: unknown }).text;
-    if (typeof text === 'string' && isUsefulPlaceName(text)) return text.trim();
+    if (typeof text === 'string' && isUsefulPlaceName(text)) return cleanPlaceName(text);
   }
   for (const key of ['name', 'title', 'place_name', 'poi_name'] as const) {
     const v = row[key];
-    if (typeof v === 'string' && isUsefulPlaceName(v)) return v.trim();
+    if (typeof v === 'string' && isUsefulPlaceName(v)) return cleanPlaceName(v);
   }
   // Google Maps Grounding Lite PlaceView uses attribution.title — but often
   // just " - Google Maps", which is branding, not a place name.
   const attribution = row.attribution;
   if (attribution && typeof attribution === 'object') {
     const title = (attribution as { title?: unknown }).title;
-    if (typeof title === 'string' && isUsefulPlaceName(title)) return title.trim();
+    if (typeof title === 'string' && isUsefulPlaceName(title)) return cleanPlaceName(title);
   }
   return '';
 }
@@ -315,6 +332,44 @@ function googleMapsPlaceUrlFromRow(row: Record<string, unknown>): string | undef
   return undefined;
 }
 
+/** Extract Google Place ID from PlaceView / resolve_names Entity shapes. */
+export function placeIdFromRow(row: Record<string, unknown>): string | undefined {
+  const fromEntity = (entity: unknown): string | undefined => {
+    if (!entity || typeof entity !== 'object') return undefined;
+    const place = (entity as { place?: unknown }).place;
+    if (typeof place === 'string' && place.trim()) return normalizePlaceId(place);
+    return undefined;
+  };
+
+  const nested =
+    fromEntity(row.entity) ||
+    fromEntity(row.result) ||
+    (typeof row.place === 'string' ? normalizePlaceId(row.place) : undefined);
+  if (nested) return nested;
+
+  if (typeof row.id === 'string' && row.id.trim()) {
+    const id = row.id.trim();
+    if (id.startsWith('places/') || id.startsWith('ChIJ') || id.startsWith('ChI')) {
+      return normalizePlaceId(id);
+    }
+  }
+  return undefined;
+}
+
+function normalizePlaceId(raw: string): string {
+  return raw.trim().replace(/^places\//, '');
+}
+
+function confidenceLabel(value: unknown): string | undefined {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  const upper = value.trim().toUpperCase();
+  if (upper === 'HIGH') return 'High confidence';
+  if (upper === 'MEDIUM') return 'Medium confidence';
+  if (upper === 'LOW') return 'Low confidence';
+  if (upper === 'CONFIDENCE_UNSPECIFIED') return undefined;
+  return value.trim();
+}
+
 function coordsFromRow(row: Record<string, unknown>): { lat: number; lng: number } | null {
   return (
     parseLatLng(row.location) ||
@@ -342,28 +397,36 @@ function makePlace(
     '';
   const coords = coordsFromRow(row);
   const placeUrl = googleMapsPlaceUrlFromRow(row);
-  if (!name && !coords && !placeUrl) return null;
+  const placeId = placeIdFromRow(row);
+  if (!name && !coords && !placeUrl && !placeId) return null;
 
   const label =
     name ||
     (coords ? `${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)}` : '') ||
-    (typeof row.id === 'string' && row.id ? `Place ${row.id.slice(0, 8)}` : 'Place');
+    (placeId ? `Place ${placeId.slice(0, 8)}` : 'Place');
   const mapUrl = placeMapUrl(provider, {
     lat: coords?.lat,
     lng: coords?.lng,
     name: isUsefulPlaceName(label) ? label : undefined,
     placeUrl,
+    placeId,
   });
+  const confidence = confidenceLabel(row.confidence);
 
   return {
     kind: 'place',
-    id: `${callId}:place:${typeof row.id === 'string' ? row.id : index}`,
+    id: `${callId}:place:${placeId || (typeof row.id === 'string' ? row.id : index)}`,
     name: label,
-    address: addressFromRow(row),
+    address: addressFromRow(row) || confidence,
     lat: coords?.lat,
     lng: coords?.lng,
+    placeId,
     mapUrl,
-    previewUrl: coords ? staticMapPreviewUrl(coords.lat, coords.lng) : undefined,
+    // OSM static thumbs are a second "map"; Google places use the embed instead.
+    previewUrl:
+      provider === 'google' || !coords
+        ? undefined
+        : staticMapPreviewUrl(coords.lat, coords.lng),
     provider,
     toolName,
     callId,
@@ -537,7 +600,7 @@ function makeRoute(
       destName: typeof destName === 'string' ? destName : undefined,
     }),
     previewUrl:
-      midLat !== undefined && midLng !== undefined
+      provider !== 'google' && midLat !== undefined && midLng !== undefined
         ? staticMapPreviewUrl(midLat, midLng)
         : undefined,
     provider,
@@ -765,16 +828,39 @@ export function parseMapFeaturesFromJson(
       (typeof argsObj?.textQuery === 'string' && argsObj.textQuery) ||
       (typeof argsObj?.text_query === 'string' && argsObj.text_query) ||
       undefined;
+    const resolveQueryNames: string[] = Array.isArray(argsObj?.queries)
+      ? (argsObj.queries as unknown[])
+          .map((q) => {
+            if (typeof q === 'string') return q;
+            if (q && typeof q === 'object' && typeof (q as { text?: unknown }).text === 'string') {
+              return (q as { text: string }).text;
+            }
+            return '';
+          })
+          .filter(Boolean)
+      : [];
 
     places.forEach((item, i) => {
       if (!item || typeof item !== 'object') return;
+      // resolve_names failed slots are empty Result messages
+      const row = item as Record<string, unknown>;
+      if (
+        row.entity === undefined &&
+        row.place === undefined &&
+        !coordsFromRow(row) &&
+        !googleMapsPlaceUrlFromRow(row) &&
+        !displayNameFromRow(row) &&
+        !placeIdFromRow(row)
+      ) {
+        return;
+      }
       const place = makePlace(
-        item as Record<string, unknown>,
+        row,
         toolName,
         callId,
         i,
         provider,
-        summaryNames[i] || (places.length === 1 ? queryFallback : undefined),
+        summaryNames[i] || resolveQueryNames[i] || (places.length === 1 ? queryFallback : undefined),
       );
       if (place) out.push(place);
     });
@@ -783,7 +869,12 @@ export function parseMapFeaturesFromJson(
     if (
       out.length === 0 &&
       rootObj &&
-      (rootObj.location || rootObj.latitude || rootObj.name || rootObj.attribution || rootObj.googleMapsLinks)
+      (rootObj.location ||
+        rootObj.latitude ||
+        rootObj.name ||
+        rootObj.attribution ||
+        rootObj.googleMapsLinks ||
+        rootObj.entity)
     ) {
       const place = makePlace(
         rootObj,
@@ -791,7 +882,7 @@ export function parseMapFeaturesFromJson(
         callId,
         0,
         provider,
-        summaryNames[0] || queryFallback,
+        summaryNames[0] || resolveQueryNames[0] || queryFallback,
       );
       if (place) out.push(place);
     }
@@ -818,10 +909,17 @@ export function compactMapToolResult(toolName: string, result: string): string {
     const name = displayNameFromRow(row) || summaryNames[index] || '';
     const address = addressFromRow(row);
     const placeUrl = googleMapsPlaceUrlFromRow(row);
+    const placeId = placeIdFromRow(row);
     const out: Record<string, unknown> = {};
-    if (typeof row.id === 'string') out.id = row.id;
+    if (placeId) {
+      out.id = placeId;
+      out.entity = { place: `places/${placeId}` };
+    } else if (typeof row.id === 'string') {
+      out.id = row.id;
+    }
     if (name && isUsefulPlaceName(name)) out.name = name;
     if (address) out.address = address;
+    if (typeof row.confidence === 'string') out.confidence = row.confidence;
     if (coords) out.location = { latitude: coords.lat, longitude: coords.lng };
     if (placeUrl) out.googleMapsLinks = { placeUrl };
     // Keep real attribution titles only; skip " - Google Maps" branding.
@@ -955,6 +1053,60 @@ export function featuredMapFeatures(
   limit: number = FEATURED_MAP_LIMIT,
 ): MapFeature[] {
   return features.slice(0, Math.max(0, limit));
+}
+
+/** Key-free Google Maps iframe URL. Leaflet is only used when this cannot be built. */
+export function googleMapsEmbedUrl(feature: MapFeature): string | undefined {
+  if (feature.kind === 'place') {
+    if (feature.lat !== undefined && feature.lng !== undefined) {
+      return googleEmbedAt(feature.lat, feature.lng, 17, feature.name);
+    }
+    if (feature.name.trim()) {
+      return `https://www.google.com/maps?q=${encodeURIComponent(feature.name.trim())}&z=16&output=embed`;
+    }
+    return undefined;
+  }
+
+  const origin =
+    feature.originLat !== undefined && feature.originLng !== undefined
+      ? `${feature.originLat},${feature.originLng}`
+      : feature.title.split('→')[0]?.trim() || '';
+  const dest =
+    feature.destLat !== undefined && feature.destLng !== undefined
+      ? `${feature.destLat},${feature.destLng}`
+      : feature.title.split('→')[1]?.trim() || '';
+  if (!origin || !dest) return undefined;
+  return `https://www.google.com/maps?saddr=${encodeURIComponent(origin)}&daddr=${encodeURIComponent(dest)}&output=embed`;
+}
+
+/** Coordinate embed. `q=place_id:` is ignored by this endpoint and shows the world. */
+function googleEmbedAt(lat: number, lng: number, zoom: number, name?: string): string {
+  const label = name?.trim() && !/^Place\s/i.test(name) ? name.trim() : '';
+  const q = label ? `${lat},${lng}(${label})` : `${lat},${lng}`;
+  return `https://www.google.com/maps?q=${encodeURIComponent(q)}&ll=${lat},${lng}&z=${zoom}&output=embed`;
+}
+
+export function prefersGoogleEmbed(features: MapFeature[]): boolean {
+  return features.some((f) => f.provider === 'google' && !!googleMapsEmbedUrl(f));
+}
+
+/** True when Leaflet can draw markers/polylines (needs lat/lng). Place-ID-only cards are false. */
+export function hasMapGeometry(features: MapFeature[]): boolean {
+  for (const f of features) {
+    if (f.kind === 'place' && f.lat !== undefined && f.lng !== undefined) return true;
+    if (f.kind === 'route') {
+      if (f.polyline && f.polyline.length >= 2) return true;
+      if (
+        f.originLat !== undefined &&
+        f.originLng !== undefined &&
+        f.destLat !== undefined &&
+        f.destLng !== undefined
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 export function extractMapFeaturesFromEntries(

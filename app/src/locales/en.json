@@ -79,6 +79,8 @@
       "mapsTitle": "{{count}} map places",
       "mapsPrev": "Previous maps",
       "mapsNext": "More maps",
+      "mapsGeocoding": "Finding locations on the map…",
+      "mapsNoCoords": "Place IDs ready — tap a card to open in Google Maps. Ask for search_places / directions to pin them on the map.",
       "longWorkWarning": "You have been working in this project for a while.",
       "continue": "Continue",
       "interruptedTitle": "Execution Interrupted",

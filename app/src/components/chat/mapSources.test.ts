@@ -9,10 +9,13 @@ import {
   extractMapFeaturesFromEntries,
   featuredMapFeatures,
   googleDirectionsUrl,
+  googleMapsEmbedUrl,
   googlePlaceMapUrl,
+  hasMapGeometry,
   isMapToolName,
   parseLatLng,
   parseMapFeaturesFromJson,
+  prefersGoogleEmbed,
   staticMapPreviewUrl,
 } from './mapSources';
 
@@ -108,8 +111,13 @@ describe('parseMapFeaturesFromJson', () => {
       expect(first.name).toBe('Blue Bottle Coffee');
       expect(first.lat).toBeCloseTo(37.7825);
       expect(first.mapUrl).toContain('maps.google.com');
-      expect(first.previewUrl).toContain('staticmap.openstreetmap.de');
+      expect(first.previewUrl).toBeUndefined();
       expect(first.provider).toBe('google');
+      expect(prefersGoogleEmbed([first])).toBe(true);
+      const embed = googleMapsEmbedUrl(first);
+      expect(embed).toContain('37.7825');
+      expect(embed).toContain('-122.4077');
+      expect(embed).not.toContain('place_id:');
     }
   });
 
@@ -137,6 +145,29 @@ describe('parseMapFeaturesFromJson', () => {
     expect(features[0].kind).toBe('place');
     if (features[0].kind === 'place') {
       expect(features[0].name).toBe('Googleplex Cafe');
+    }
+  });
+
+  it('strips Google Maps branding from attribution titles', () => {
+    const payload = JSON.stringify({
+      places: [
+        {
+          id: 'ChIJadm',
+          location: { latitude: 22.279412, longitude: 114.164559 },
+          attribution: { title: 'Admiralty Station - Google Maps' },
+        },
+      ],
+    });
+    const features = parseMapFeaturesFromJson(
+      payload,
+      'mcp__google-map__search_places',
+      'adm',
+    );
+    expect(features).toHaveLength(1);
+    if (features[0].kind === 'place') {
+      expect(features[0].name).toBe('Admiralty Station');
+      expect(features[0].lat).toBeCloseTo(22.279412);
+      expect(googleMapsEmbedUrl(features[0])).toContain('22.279412');
     }
   });
 
@@ -171,6 +202,48 @@ describe('parseMapFeaturesFromJson', () => {
     }
   });
 
+  it('parses resolve_names Place IDs into map cards', () => {
+    const payload = JSON.stringify({
+      results: [
+        {
+          entity: { place: 'places/ChIJpY3us6oBBDQRxgBpoYUpA-0' },
+          confidence: 'MEDIUM',
+        },
+        {
+          entity: { place: 'places/ChIJBUVgzAEBBDQRBpw9Bk7GsXc' },
+          confidence: 'HIGH',
+        },
+        {},
+      ],
+    });
+    const features = parseMapFeaturesFromJson(
+      payload,
+      'mcp__google-map__resolve_names',
+      'rn1',
+      {
+        queries: [
+          { text: 'Tin Hau MTR Station Hong Kong' },
+          { text: '6-8 Mercury Street Tin Hau Hong Kong' },
+        ],
+      },
+    );
+    expect(features).toHaveLength(2);
+    expect(features[0].kind).toBe('place');
+    if (features[0].kind === 'place') {
+      expect(features[0].name).toBe('Tin Hau MTR Station Hong Kong');
+      expect(features[0].placeId).toBe('ChIJpY3us6oBBDQRxgBpoYUpA-0');
+      expect(features[0].mapUrl).toContain('query_place_id=ChIJpY3us6oBBDQRxgBpoYUpA-0');
+      expect(features[0].address).toBe('Medium confidence');
+      expect(googleMapsEmbedUrl(features[0])).toContain('Tin%20Hau');
+      expect(googleMapsEmbedUrl(features[0])).not.toContain('place_id:');
+    }
+    expect(prefersGoogleEmbed(features)).toBe(true);
+    if (features[1].kind === 'place') {
+      expect(features[1].name).toContain('Mercury');
+      expect(features[1].mapUrl).toContain('query_place_id=ChIJBUVgzAEBBDQRBpw9Bk7GsXc');
+    }
+  });
+
   it('parses Amap pois', () => {
     const features = parseMapFeaturesFromJson(
       AMAP_POIS,
@@ -186,6 +259,8 @@ describe('parseMapFeaturesFromJson', () => {
       expect(place.lat).toBeCloseTo(39.90923);
       expect(place.mapUrl).toContain('uri.amap.com');
       expect(place.provider).toBe('amap');
+      expect(place.previewUrl).toContain('staticmap.openstreetmap.de');
+      expect(prefersGoogleEmbed([place])).toBe(false);
     }
   });
 
@@ -248,6 +323,33 @@ describe('extractMapFeaturesFromBlocks', () => {
       },
     ];
     expect(extractMapFeaturesFromBlocks(blocks)).toEqual([]);
+  });
+
+  it('extracts resolve_names Place IDs without coordinates', () => {
+    const blocks: TurnBlock[] = [
+      {
+        type: 'tool',
+        call_id: 'rn1',
+        name: 'mcp__google-map__resolve_names',
+        args: {
+          queries: [
+            { text: 'Tin Hau MTR Station Hong Kong' },
+            { text: '6-8 Mercury Street Tin Hau Hong Kong' },
+          ],
+        },
+        result: JSON.stringify({
+          results: [
+            { entity: { place: 'places/ChIJpY3us6oBBDQRxgBpoYUpA-0' }, confidence: 'MEDIUM' },
+            { entity: { place: 'places/ChIJBUVgzAEBBDQRBpw9Bk7GsXc' }, confidence: 'HIGH' },
+          ],
+        }),
+        active: false,
+        is_error: false,
+      },
+    ];
+    const features = extractMapFeaturesFromBlocks(blocks);
+    expect(features).toHaveLength(2);
+    expect(hasMapGeometry(features)).toBe(false);
   });
 });
 

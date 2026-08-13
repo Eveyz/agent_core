@@ -79,6 +79,8 @@
       "mapsTitle": "{{count}} 个地点",
       "mapsPrev": "上一个地点",
       "mapsNext": "更多地点",
+      "mapsGeocoding": "正在定位到地图…",
+      "mapsNoCoords": "已解析地点 ID — 点击卡片可在 Google Maps 打开。若要在地图上标点，可再让助手调用 search_places / 路线查询。",
       "longWorkWarning": "该任务已执行较长时间。",
       "continue": "继续",
       "interruptedTitle": "执行已中断",
