@@ -4,8 +4,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use reqwest::cookie::Jar;
 use rand::Rng;
+use reqwest::cookie::Jar;
 use serde_json::{Value, json};
 
 use super::Tool;
@@ -17,8 +17,17 @@ use error::{format_http_error, format_http_status, is_image_content_type, upgrad
 use html::{build_browser_headers, check_robots, extract_meta, extract_og_image, extract_readable};
 
 /// Resolve the page's Open Graph / Twitter card image to an absolute URL.
+/// Extraction panics (e.g. from malformed HTML) are swallowed so callers
+/// never take down a Tokio worker.
 pub fn resolve_og_image(html: &str, page_url: &str) -> Option<String> {
-    let raw = extract_og_image(html)?;
+    let raw =
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| extract_og_image(html))) {
+            Ok(v) => v?,
+            Err(_) => {
+                tracing::warn!("webfetch: og:image extraction panicked");
+                return None;
+            }
+        };
     Some(absolutize_url(page_url, &raw))
 }
 
@@ -346,17 +355,31 @@ Use when you need to retrieve and analyze web content."
 
         // ── Content extraction pipeline ─────────────────────────────
         // 1. Extract meta tags (title, description, og:tags) from raw HTML
-        let meta = extract_meta(&body);
-
         // 2. Readability: extract main article content from noisy HTML
         // 3. htmd: convert clean HTML to Markdown (token-efficient)
-        let extracted = extract_readable(&body, &final_url);
+        //
+        // Wrap in catch_unwind: untrusted HTML has historically panicked
+        // this path (UTF-8 mid-char slices, parser bugs). A tool error is
+        // preferable to aborting the Tokio worker.
+        let (meta, extracted) = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let meta = extract_meta(&body);
+            let readable = extract_readable(&body, &final_url);
+            (meta, readable)
+        })) {
+            Ok(pair) => pair,
+            Err(_) => {
+                tracing::error!(url = %final_url, "webfetch: content extraction panicked");
+                return Ok(format!(
+                    "Fetched: {final_url}\nStatus: {status_code}\n\n\
+                     Content extraction failed unexpectedly. The page was retrieved but could not be parsed."
+                ));
+            }
+        };
 
         // ── Truncation ──────────────────────────────────────────────
         let max_len = 80_000;
         let truncated = if extracted.len() > max_len {
-            let safe_end = extracted.floor_char_boundary(max_len);
-            let head = &extracted[..safe_end];
+            let head = crate::util::utf8_prefix(&extracted, max_len);
             format!(
                 "{head}...\n\n[Content truncated at {max_len} chars. \
                  Total: {} chars. Consider using a more specific URL.]",
@@ -376,9 +399,7 @@ Use when you need to retrieve and analyze web content."
 
         // ── Redirect info ───────────────────────────────────────────
         if url_to_fetch != final_url {
-            output.push_str(&format!(
-                "Redirected: {url_to_fetch} → {final_url}\n\n"
-            ));
+            output.push_str(&format!("Redirected: {url_to_fetch} → {final_url}\n\n"));
         }
 
         output.push_str(&format!(
