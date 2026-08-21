@@ -1016,8 +1016,7 @@ impl AppState {
             | RunEvent::GoalCompleted { .. }
             | RunEvent::GoalCleared
             | RunEvent::CacheInfo { .. }
-            | RunEvent::CacheSummary { .. }
-            | RunEvent::ModeChanged { .. } => {}
+            | RunEvent::CacheSummary { .. } => {}
         }
     }
 

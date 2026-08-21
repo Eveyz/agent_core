@@ -38,20 +38,20 @@ use std::path::{Path, PathBuf};
 #[derive(Clone)]
 pub struct Brain {
     /// The full configuration (models, permissions, memory, mcp).
-    pub config: Config,
+    pub(crate) config: Config,
     /// Shared memory manager (if memory is enabled).
-    pub memory: Option<Arc<Mutex<MemoryManager>>>,
+    pub(crate) memory: Option<Arc<Mutex<MemoryManager>>>,
     /// Background reflection daemon (Deep mode only, if reflection_model is set).
-    pub reflection_daemon: Option<Arc<ReflectionDaemon>>,
+    pub(crate) reflection_daemon: Option<Arc<ReflectionDaemon>>,
     /// Shared skill manager (if skills are enabled).
-    pub skill_manager: Option<Arc<Mutex<SkillManager>>>,
+    pub(crate) skill_manager: Option<Arc<Mutex<SkillManager>>>,
     /// Workspace-scoped managers prevent same-named project skills from
     /// changing underneath Runs in another project.
     workspace_skill_managers: Arc<Mutex<HashMap<PathBuf, Arc<Mutex<SkillManager>>>>>,
     /// Per-session multi-plan store (active / parked plans shared across Runs).
-    pub todo_lists: Arc<SessionPlanStore>,
+    pub(crate) todo_lists: Arc<SessionPlanStore>,
     /// Offline reflector (analyzes Run event logs after completion).
-    pub reflector: Option<Reflector>,
+    pub(crate) reflector: Option<Reflector>,
     /// The currently active model name (e.g. "openai/gpt-4o").
     /// Switching the model updates this; new Runs use the new model.
     current_model_name: String,
@@ -61,20 +61,23 @@ pub struct Brain {
     current_mode: Arc<Mutex<AgentMode>>,
     /// Shared hook registry. When set, Runs use this instead of building fresh.
     /// This allows the Agent wrapper to register hooks that fire during Run execution.
-    pub hook_registry: Arc<Mutex<HookRegistry>>,
+    pub(crate) hook_registry: Arc<Mutex<HookRegistry>>,
     /// Persistent tool registry for CLI display / permission checking.
     /// NOT cloned into Runs — use [`Brain::register_tool_fn`] for tools that
     /// must execute during Runs (e.g. MCP tools).
-    pub base_tool_registry: Arc<Mutex<ToolRegistry>>,
+    pub(crate) base_tool_registry: Arc<Mutex<ToolRegistry>>,
     /// Tool registration callbacks applied to every per-Run ToolRegistry.
     /// CLI pushes callbacks here (e.g. MCP tools) so they flow into every Run.
     extra_tool_fns: Arc<Mutex<Vec<Box<dyn Fn(&mut ToolRegistry) + Send + Sync>>>>,
+    /// Per-Run approval resolvers, owned by the Brain so nested task
+    /// subagents can inherit the parent Run's resolver without a process-global map.
+    run_approvals: Arc<Mutex<HashMap<String, crate::runtime::ApprovalResolver>>>,
     /// Runtime temperature override (applied to each Run's client).
-    pub temperature_override: Option<f64>,
+    pub(crate) temperature_override: Option<f64>,
     /// Runtime max_tokens override (applied to each Run's client).
-    pub max_tokens_override: Option<u32>,
+    pub(crate) max_tokens_override: Option<u32>,
     /// Tool execution mode (Parallel or Sequential) for new Runs.
-    pub tool_execution_mode: ToolExecutionMode,
+    pub(crate) tool_execution_mode: ToolExecutionMode,
 }
 
 impl Brain {
@@ -120,6 +123,7 @@ impl Brain {
             hook_registry: Arc::new(Mutex::new(HookRegistry::new())),
             base_tool_registry: Arc::new(Mutex::new(base_tool_registry)),
             extra_tool_fns: Arc::new(Mutex::new(Vec::new())),
+            run_approvals: Arc::new(Mutex::new(HashMap::new())),
             temperature_override: None,
             max_tokens_override: None,
             tool_execution_mode: ToolExecutionMode::Parallel,
@@ -631,6 +635,68 @@ impl Brain {
     pub fn display_registry(&self) -> parking_lot::MutexGuard<'_, ToolRegistry> {
         self.base_tool_registry.lock()
     }
+
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
+    pub fn permissions(&self) -> &PermissionConfig {
+        &self.config.permissions
+    }
+
+    pub fn mcp_config(&self) -> &crate::mcp::McpConfig {
+        &self.config.mcp
+    }
+
+    pub fn todo_store(&self) -> &SessionPlanStore {
+        &self.todo_lists
+    }
+
+    pub fn memory(&self) -> Option<&Arc<Mutex<MemoryManager>>> {
+        self.memory.as_ref()
+    }
+
+    pub fn skill_manager(&self) -> Option<&Arc<Mutex<SkillManager>>> {
+        self.skill_manager.as_ref()
+    }
+
+    pub fn hook_registry(&self) -> &Arc<Mutex<HookRegistry>> {
+        &self.hook_registry
+    }
+
+    pub fn has_reflection_daemon(&self) -> bool {
+        self.reflection_daemon.is_some()
+    }
+
+    pub fn reflection_daemon(&self) -> Option<Arc<ReflectionDaemon>> {
+        self.reflection_daemon.clone()
+    }
+
+    pub fn tool_execution_mode(&self) -> ToolExecutionMode {
+        self.tool_execution_mode
+    }
+
+    pub fn set_permission_mode(&mut self, mode: crate::permission::PermissionMode) {
+        self.config.permissions.mode = mode;
+    }
+
+    pub(crate) fn register_run_approval(
+        &self,
+        run_id: &str,
+        resolver: crate::runtime::ApprovalResolver,
+    ) {
+        self.run_approvals
+            .lock()
+            .insert(run_id.to_string(), resolver);
+    }
+
+    pub(crate) fn approval_for_run(&self, run_id: &str) -> Option<crate::runtime::ApprovalResolver> {
+        self.run_approvals.lock().get(run_id).cloned()
+    }
+
+    pub(crate) fn unregister_run_approval(&self, run_id: &str) {
+        self.run_approvals.lock().remove(run_id);
+    }
 }
 
 #[cfg(test)]
@@ -780,5 +846,16 @@ default = { model_id = "mock" }
                 "Plan registry must not expose {name}"
             );
         }
+    }
+
+    #[test]
+    fn run_approvals_are_scoped_to_the_brain() {
+        let brain = Brain::from_config(test_config()).unwrap();
+        let resolver = crate::runtime::ApprovalResolver::new();
+        brain.register_run_approval("run-a", resolver.clone());
+        assert!(brain.approval_for_run("run-a").is_some());
+        assert!(brain.approval_for_run("run-b").is_none());
+        brain.unregister_run_approval("run-a");
+        assert!(brain.approval_for_run("run-a").is_none());
     }
 }

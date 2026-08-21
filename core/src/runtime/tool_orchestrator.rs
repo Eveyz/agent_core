@@ -20,26 +20,53 @@ use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 pub struct ToolOrchestrator<'a> {
-    pub registry: &'a ToolRegistry,
-    pub permission_policy: &'a mut PermissionPolicy,
-    pub hook_registry: Arc<Mutex<HookRegistry>>,
-    pub tool_execution_mode: ToolExecutionMode,
-    pub cancel_token: CancellationToken,
+    pub(crate) registry: &'a ToolRegistry,
+    pub(crate) permission_policy: &'a mut PermissionPolicy,
+    pub(crate) hook_registry: Arc<Mutex<HookRegistry>>,
+    pub(crate) tool_execution_mode: ToolExecutionMode,
+    pub(crate) cancel_token: CancellationToken,
     /// Distinguishes whole-Run cancellation from a turn-only steer.
-    /// Callers without that distinction retain generic abort wording.
-    pub lifetime_cancel: Option<CancellationToken>,
-    /// Per-Run approval resolver. If `None`, falls back to the global map
-    /// (for backward compat with the old Agent path).
-    pub approval_resolver: Option<ApprovalResolver>,
-    /// Per-Run clarification resolver for `ask_user`.
-    pub input_resolver: Option<InputResolver>,
-    pub session_id: Option<String>,
-    pub prompt_id: Option<String>,
-    pub run_id: Option<String>,
-    pub working_dir: Option<String>,
+    pub(crate) lifetime_cancel: Option<CancellationToken>,
+    pub(crate) approval_resolver: Option<ApprovalResolver>,
+    pub(crate) input_resolver: Option<InputResolver>,
+    pub(crate) session_id: Option<String>,
+    pub(crate) prompt_id: Option<String>,
+    pub(crate) run_id: Option<String>,
+    pub(crate) working_dir: Option<String>,
 }
 
 impl<'a> ToolOrchestrator<'a> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        registry: &'a ToolRegistry,
+        permission_policy: &'a mut PermissionPolicy,
+        hook_registry: Arc<Mutex<HookRegistry>>,
+        tool_execution_mode: ToolExecutionMode,
+        cancel_token: CancellationToken,
+        lifetime_cancel: Option<CancellationToken>,
+        approval_resolver: Option<ApprovalResolver>,
+        input_resolver: Option<InputResolver>,
+        session_id: Option<String>,
+        prompt_id: Option<String>,
+        run_id: Option<String>,
+        working_dir: Option<String>,
+    ) -> Self {
+        Self {
+            registry,
+            permission_policy,
+            hook_registry,
+            tool_execution_mode,
+            cancel_token,
+            lifetime_cancel,
+            approval_resolver,
+            input_resolver,
+            session_id,
+            prompt_id,
+            run_id,
+            working_dir,
+        }
+    }
+
     fn cancellation_message(&self) -> &'static str {
         match self.lifetime_cancel.as_ref() {
             Some(token) if token.is_cancelled() => "Aborted",
@@ -923,20 +950,20 @@ mod empty_success_tests {
         registry.register(Box::new(SilentOkTool));
 
         let mut policy = PermissionPolicy::with_builtin_defaults().with_mode(PermissionMode::Yolo);
-        let mut orchestrator = ToolOrchestrator {
-            registry: &registry,
-            permission_policy: &mut policy,
-            hook_registry: Arc::new(Mutex::new(HookRegistry::new())),
-            tool_execution_mode: ToolExecutionMode::Parallel,
-            cancel_token: CancellationToken::new(),
-            lifetime_cancel: None,
-            approval_resolver: None,
-            input_resolver: None,
-            session_id: None,
-            prompt_id: None,
-            run_id: None,
-            working_dir: None,
-        };
+        let mut orchestrator = ToolOrchestrator::new(
+            &registry,
+            &mut policy,
+            Arc::new(Mutex::new(HookRegistry::new())),
+            ToolExecutionMode::Parallel,
+            CancellationToken::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
 
         let calls = vec![ToolCall {
             id: "call-1".into(),
@@ -968,20 +995,20 @@ mod empty_success_tests {
         cancel.cancel();
 
         let mut policy = PermissionPolicy::with_builtin_defaults().with_mode(PermissionMode::Yolo);
-        let mut orchestrator = ToolOrchestrator {
-            registry: &registry,
-            permission_policy: &mut policy,
-            hook_registry: Arc::new(Mutex::new(HookRegistry::new())),
-            tool_execution_mode: ToolExecutionMode::Parallel,
-            cancel_token: cancel,
-            lifetime_cancel: None,
-            approval_resolver: None,
-            input_resolver: None,
-            session_id: None,
-            prompt_id: None,
-            run_id: None,
-            working_dir: None,
-        };
+        let mut orchestrator = ToolOrchestrator::new(
+            &registry,
+            &mut policy,
+            Arc::new(Mutex::new(HookRegistry::new())),
+            ToolExecutionMode::Parallel,
+            cancel,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
 
         let calls = vec![ToolCall {
             id: "call-1".into(),
@@ -1009,20 +1036,20 @@ mod empty_success_tests {
         });
 
         let mut policy = PermissionPolicy::with_builtin_defaults().with_mode(PermissionMode::Yolo);
-        let mut orchestrator = ToolOrchestrator {
-            registry: &registry,
-            permission_policy: &mut policy,
-            hook_registry: Arc::new(Mutex::new(HookRegistry::new())),
-            tool_execution_mode: ToolExecutionMode::Parallel,
-            cancel_token: cancel,
-            lifetime_cancel: None,
-            approval_resolver: None,
-            input_resolver: None,
-            session_id: None,
-            prompt_id: None,
-            run_id: None,
-            working_dir: None,
-        };
+        let mut orchestrator = ToolOrchestrator::new(
+            &registry,
+            &mut policy,
+            Arc::new(Mutex::new(HookRegistry::new())),
+            ToolExecutionMode::Parallel,
+            cancel,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         let calls = vec![ToolCall {
             id: "call-slow".into(),
             call_type: "function".into(),

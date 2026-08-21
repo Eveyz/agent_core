@@ -352,7 +352,12 @@ export function handleTurnStart(state: ChatState, sessionId: string, turnIndex: 
   }
 }
 
-export function handleCacheInfo(state: ChatState, sessionId: string, hitRate: number): void {
+export function handleCacheInfo(
+  state: ChatState,
+  sessionId: string,
+  status: { kind?: string; hit_rate?: number } | undefined,
+  fallbackHitRate?: number
+): void {
   let turn = getActiveTurn(state, sessionId);
   if (!turn) {
     for (let i = state.entries[sessionId].length - 1; i >= 0; i--) {
@@ -363,10 +368,15 @@ export function handleCacheInfo(state: ChatState, sessionId: string, hitRate: nu
     }
   }
   if (turn && turn.type === 'turn') {
-    // Any negative hit_rate is a sentinel (not a real rate):
-    //   -1.0 → prefix drifted   -2.0 → cache expired from idle
-    // Clear the display so the frontend doesn't show garbage.
-    if (hitRate < 0) {
+    // Tagged status (preferred) or legacy negative hit_rate sentinels.
+    const kind = status?.kind;
+    const hitRate =
+      kind === 'rate'
+        ? status?.hit_rate
+        : kind === 'prefix_drifted' || kind === 'idle_expired'
+          ? undefined
+          : fallbackHitRate;
+    if (hitRate === undefined || hitRate < 0) {
       turn.cacheHitRate = undefined;
     } else {
       turn.cacheHitRate = hitRate;
@@ -939,7 +949,7 @@ export function processSingleEvent(state: ChatState, payload: string | Record<st
       handleTurnStart(state, sessionId, ev.index ?? 0, ev.turn_id);
       break;
     case 'cache_info':
-      handleCacheInfo(state, sessionId, ev.hit_rate ?? -1.0);
+      handleCacheInfo(state, sessionId, ev.status, ev.hit_rate);
       break;
     case 'cache_summary':
       handleCacheSummary(state, ev.run_id, {

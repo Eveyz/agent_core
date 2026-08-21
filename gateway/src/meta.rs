@@ -22,7 +22,7 @@ pub async fn list_models(
     State(state): State<AppState>,
 ) -> Result<Json<ListModelsResponse>, ApiError> {
     let rm = state.run_manager.lock().await;
-    let mut ids: Vec<String> = rm.brain().config.models.keys().cloned().collect();
+    let mut ids: Vec<String> = rm.config().models.keys().cloned().collect();
     ids.sort();
     Ok(Json(ListModelsResponse {
         items: ids.into_iter().map(|id| ModelInfo { id }).collect(),

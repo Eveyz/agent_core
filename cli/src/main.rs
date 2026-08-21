@@ -706,7 +706,7 @@ async fn run_main() -> anyhow::Result<ExitCode> {
         "Hooks:       {}",
         if enable_hooks { "enabled" } else { "disabled" }
     );
-    println!("Tool mode:   {:?}", state.brain.tool_execution_mode);
+    println!("Tool mode:   {:?}", state.brain.tool_execution_mode());
     println!(
         "Tools:       {}",
         state.brain.display_registry().list_names().len()

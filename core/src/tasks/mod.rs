@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use crate::config::ModelConfig;
 use crate::permission::PermissionConfig;
+use crate::runtime::Brain;
 use crate::subagent::{Subagent, SubagentConfig};
 use crate::tools::{Tool, ToolRegistry};
 use parking_lot::Mutex;
@@ -16,6 +17,7 @@ pub fn register_task_tools(
     board: Arc<Mutex<TaskBoard>>,
     model_config: ModelConfig,
     permission_config: PermissionConfig,
+    brain: Arc<Brain>,
 ) {
     registry.register(Box::new(TaskCreateTool::new(board.clone())));
     registry.register(Box::new(TaskBatchCreateTool::new(board.clone())));
@@ -28,6 +30,7 @@ pub fn register_task_tools(
         board,
         model_config,
         permission_config,
+        brain,
     )));
 }
 
@@ -492,6 +495,7 @@ struct TaskExecuteTool {
     board: Arc<Mutex<TaskBoard>>,
     model_config: ModelConfig,
     permission_config: PermissionConfig,
+    brain: Arc<Brain>,
 }
 
 struct TaskExecutionGuard {
@@ -564,11 +568,13 @@ impl TaskExecuteTool {
         board: Arc<Mutex<TaskBoard>>,
         model_config: ModelConfig,
         permission_config: PermissionConfig,
+        brain: Arc<Brain>,
     ) -> Self {
         Self {
             board,
             model_config,
             permission_config,
+            brain,
         }
     }
 }
@@ -717,7 +723,7 @@ impl Tool for TaskExecuteTool {
         if let Some(resolver) = args
             .get("_parent_run_id")
             .and_then(Value::as_str)
-            .and_then(crate::runtime::approval::resolver_for_run)
+            .and_then(|id| self.brain.approval_for_run(id))
         {
             subagent = subagent.with_approval_resolver(resolver);
         }

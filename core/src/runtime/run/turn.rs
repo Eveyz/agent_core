@@ -5,10 +5,11 @@ use futures::StreamExt;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
+use crate::runtime::agent_loop::StreamPartial;
 use crate::runtime::tool_orchestrator::ToolOrchestrator;
 use crate::client::streaming::{TokenAccumulator, ToolCallAccumulator};
 use crate::client::ClientCacheHint;
-use crate::runtime::event::{Envelope, RunEvent};
+use crate::runtime::event::{CacheStatus, Envelope, RunEvent};
 use crate::runtime::guard::EventGuard;
 use crate::types::{CacheUsage, Message, MessageDelta, ReasoningState, StreamEvent, ToolCall};
 
@@ -28,29 +29,6 @@ pub(super) struct ModelTurnResult {
     pub cache_usage: CacheUsage,
     /// Opaque provider blobs collected during the stream (encrypted_content / signature).
     pub reasoning_blob: ReasoningState,
-}
-
-/// Partial stream output preserved across mid-stream retries within one model turn.
-#[derive(Default, Clone)]
-pub(super) struct StreamPartial {
-    pub text: String,
-    pub thinking: String,
-    pub message_id: Option<String>,
-}
-
-impl StreamPartial {
-    /// Keep the longest partial seen so far (model may regenerate from injected hint).
-    fn merge_attempt(&mut self, attempt: &StreamPartial) {
-        if attempt.text.len() > self.text.len() {
-            self.text.clone_from(&attempt.text);
-        }
-        if attempt.thinking.len() > self.thinking.len() {
-            self.thinking.clone_from(&attempt.thinking);
-        }
-        if attempt.message_id.is_some() {
-            self.message_id.clone_from(&attempt.message_id);
-        }
-    }
 }
 
 impl Run {
@@ -76,7 +54,7 @@ impl Run {
                 self.emit(RunEvent::CacheInfo {
                     hit_tokens: 0,
                     miss_tokens: 0,
-                    hit_rate: -2.0, // -2 signals "cache likely expired from idle"
+                    status: CacheStatus::IdleExpired,
                 });
             }
         }
@@ -94,7 +72,7 @@ impl Run {
             self.emit(RunEvent::CacheInfo {
                 hit_tokens: 0,
                 miss_tokens: 0,
-                hit_rate: -1.0, // -1 signals "prefix drifted"
+                status: CacheStatus::PrefixDrifted,
             });
             self.last_prefix_fingerprint = current_fp;
         }
@@ -177,7 +155,9 @@ impl Run {
             self.emit(RunEvent::CacheInfo {
                 hit_tokens: cache_usage.hit_tokens,
                 miss_tokens: cache_usage.miss_tokens,
-                hit_rate: cache_usage.hit_rate(),
+                status: CacheStatus::Rate {
+                    hit_rate: cache_usage.hit_rate(),
+                },
             });
         }
 
@@ -409,20 +389,20 @@ impl Run {
         let approval_resolver = self.approval_resolver.clone();
         let input_resolver = self.input_resolver.clone();
         let tool_results = {
-            let mut orchestrator = ToolOrchestrator {
-                registry: &self.registry,
-                permission_policy: &mut self.permission_policy,
-                hook_registry: self.hook_registry.clone(),
-                tool_execution_mode: self.tool_execution_mode,
-                cancel_token: self.steering.turn_token(),
-                lifetime_cancel: Some(self.cancel.clone()),
-                approval_resolver: Some(approval_resolver),
-                input_resolver: Some(input_resolver),
-                session_id: self.session_id.clone(),
-                prompt_id: self.prompt_id.clone(),
-                run_id: Some(self.id.clone()),
-                working_dir: self.working_dir.clone(),
-            };
+            let mut orchestrator = ToolOrchestrator::new(
+                &self.registry,
+                &mut self.permission_policy,
+                self.hook_registry.clone(),
+                self.tool_execution_mode,
+                self.steering.turn_token(),
+                Some(self.cancel.clone()),
+                Some(approval_resolver),
+                Some(input_resolver),
+                self.session_id.clone(),
+                self.prompt_id.clone(),
+                Some(self.id.clone()),
+                self.working_dir.clone(),
+            );
             orchestrator
                 .execute_tools(&tool_calls, &move |ev, parent_call_id: &str| {
                     if let Some(run_ev) = RunEvent::from_agent_event(&run_id, ev) {

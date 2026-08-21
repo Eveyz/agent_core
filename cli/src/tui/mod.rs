@@ -54,10 +54,10 @@ async fn run_app(terminal: &mut ratatui::DefaultTerminal, cli: Arc<Mutex<CliStat
     {
         let s = cli.lock().await;
         state.model = s.brain.current_model_name().to_string();
-        state.tool_mode = format!("{:?}", s.brain.tool_execution_mode);
-        state.permission_label = format!("{:?}", s.brain.config.permissions.mode).to_lowercase();
-        state.enable_permission = !matches!(s.brain.config.permissions.mode, PermissionMode::Yolo);
-        state.enable_hooks = !s.brain.hook_registry.lock().is_empty();
+        state.tool_mode = format!("{:?}", s.brain.tool_execution_mode());
+        state.permission_label = format!("{:?}", s.brain.permissions().mode).to_lowercase();
+        state.enable_permission = !matches!(s.brain.permissions().mode, PermissionMode::Yolo);
+        state.enable_hooks = !s.brain.hook_registry().lock().is_empty();
         state.cwd_short = short_cwd();
         state.session_short = s
             .session_id
@@ -275,9 +275,9 @@ async fn handle_pending_command(cli: &Arc<Mutex<CliState>>, state: &mut AppState
         };
 
         state.model = s.brain.current_model_name().to_string();
-        state.tool_mode = format!("{:?}", s.brain.tool_execution_mode);
-        state.permission_label = format!("{:?}", s.brain.config.permissions.mode).to_lowercase();
-        state.enable_permission = !matches!(s.brain.config.permissions.mode, PermissionMode::Yolo);
+        state.tool_mode = format!("{:?}", s.brain.tool_execution_mode());
+        state.permission_label = format!("{:?}", s.brain.permissions().mode).to_lowercase();
+        state.enable_permission = !matches!(s.brain.permissions().mode, PermissionMode::Yolo);
         state.session_short = s
             .session_id
             .as_deref()
@@ -360,7 +360,7 @@ async fn apply_register_model(cli: &Arc<Mutex<CliState>>, state: &mut AppState, 
     };
     let model_name = format!("{provider}/{model_id}");
     let mut s = cli.lock().await;
-    let mut cfg = s.brain.config.clone();
+    let mut cfg = s.brain.config().clone();
     cfg.add_model(model_name.clone(), model_cfg);
     if let Err(e) = s.run_manager.update_config(cfg.clone()) {
         state.push_notice(format!("Registered in memory but update failed: {e}"));

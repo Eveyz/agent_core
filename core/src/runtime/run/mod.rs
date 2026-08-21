@@ -87,7 +87,7 @@ enum RecoveryOutcome {
 
 enum ModelTurnFailure {
     Cancelled,
-    Interrupted(turn::StreamPartial),
+    Interrupted(crate::runtime::agent_loop::StreamPartial),
     Failed(String),
 }
 
@@ -389,7 +389,7 @@ impl Run {
             .as_ref()
             .map(|sid| crate::paths::session_messages_snapshot_path(sid));
 
-        crate::runtime::approval::register_run_resolver(&id, approval_resolver.clone());
+        brain.register_run_approval(&id, approval_resolver.clone());
 
         // Seed shared snapshots so Context Usage / btw work before the first turn.
         // Persistence snapshot = full transcript; usage = live model window.
@@ -645,7 +645,7 @@ impl Drop for Run {
         self.join_set.abort_all();
         // Kill all supervised processes
         self.supervisor.lock().kill_all();
-        crate::runtime::approval::unregister_run_resolver(&self.id);
+        self.brain.unregister_run_approval(&self.id);
         // approval_resolver.clear() is called above (resolvers get dropped error)
     }
 }

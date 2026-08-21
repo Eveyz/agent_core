@@ -55,7 +55,7 @@ pub use model_capabilities::{
 pub use tokio_util::sync::CancellationToken;
 pub use tools::{Tool, ToolRegistry, ToolUpdateFn, build_tool_by_name};
 pub use types::{
-    AgentEvent, AgentState, EventReceiver, EventSender, FunctionCall, FunctionSchema,
+    AgentState, EventReceiver, EventSender, FunctionCall, FunctionSchema,
     ImageAttachment, Message, MessageDelta, ReasoningState, Role, StreamEvent, ToolCall,
     ToolDefinition, ToolExecutionMode, ToolResultRecord,
 };
@@ -92,9 +92,10 @@ pub use project::{
 pub use reflector::{Digester, Reflector, Suggestion, SuggestionAction, SuggestionKind};
 pub use runtime::{
     ApprovalResolver, Brain, ChildId, ClarificationAnswers, ClarificationOption,
-    ClarificationQuestion, ClarificationRequest, CreateRunResult, Envelope, EventGuard, EventLog,
-    ExecutionPhase, ExecutionState, InputResolver, ProcessSupervisor, Run, RunCommand, RunEvent,
-    RunHandle, RunId, RunManager, RunState, STEER_MID_RUN_PREFIX, SteerEntry, SupervisedChild,
+    ClarificationQuestion, ClarificationRequest, CreateRunRequest, CreateRunResult, Envelope,
+    EventGuard, EventLog, ExecutionPhase, ExecutionState, InputResolver, ProcessSupervisor, Run,
+    RunCommand, RunEvent, RunHandle, RunId, RunManager, RunState, STEER_MID_RUN_PREFIX, SteerEntry,
+    SupervisedChild, UserIntent, CacheStatus, parse_user_intent,
 };
 pub use session::{
     Prompt, Session, SessionCounts, SessionManager, SessionMeta, SubagentResultLike,

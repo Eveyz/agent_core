@@ -117,7 +117,6 @@ fn event_tag(ev: &RunEvent) -> &'static str {
         RunEvent::GoalCleared => "goal_cleared",
         RunEvent::CacheInfo { .. } => "cache_info",
         RunEvent::CacheSummary { .. } => "cache_summary",
-        RunEvent::ModeChanged { .. } => "mode_changed",
     }
 }
 

@@ -13,6 +13,7 @@ use crate::context::Context;
 use crate::runtime::supervisor::ProcessSupervisor;
 use crate::runtime::EventGuard;
 use crate::tools::ToolRegistry;
+use crate::runtime::agent_loop::StreamPartial;
 use crate::types::{AgentEvent, EventSender, Message, MessageDelta, StreamEvent, ToolCall};
 use transcript::{TranscriptOutcome, TranscriptRecorder};
 
@@ -135,27 +136,6 @@ pub struct SubagentResult {
     pub last_text: String,
     pub iterations_used: usize,
     pub success: bool,
-}
-
-#[derive(Default, Clone)]
-struct StreamPartial {
-    text: String,
-    thinking: String,
-}
-
-impl StreamPartial {
-    fn merge_attempt(&mut self, attempt: &Self) {
-        if attempt.text.len() > self.text.len() {
-            self.text.clone_from(&attempt.text);
-        }
-        if attempt.thinking.len() > self.thinking.len() {
-            self.thinking.clone_from(&attempt.thinking);
-        }
-    }
-
-    fn recoverable_text(&self) -> String {
-        crate::hygiene::wrap_thinking(&self.thinking, &self.text)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -458,7 +438,12 @@ impl Subagent {
                 });
             }
 
-            self.context.trim_to_fit();
+            match crate::runtime::LoopPolicy::nested().compact {
+                crate::runtime::CompactMode::TrimToFit => {
+                    let _ = self.context.trim_to_fit();
+                }
+                crate::runtime::CompactMode::DualTranscript => {}
+            }
 
             let base_messages = self.context.messages();
             let tools = self.registry.tool_definitions();
@@ -614,24 +599,23 @@ impl Subagent {
                     .cancel_token
                     .clone()
                     .unwrap_or_else(|| tokio_util::sync::CancellationToken::new());
-                let mut orchestrator = crate::runtime::tool_orchestrator::ToolOrchestrator {
-                    registry: &self.registry,
-                    permission_policy: &mut self.permission_policy,
-                    hook_registry: self.hook_registry.clone(),
-                    tool_execution_mode: crate::types::ToolExecutionMode::Sequential,
-                    cancel_token: cancel,
-                    lifetime_cancel: None,
-                    approval_resolver: self.approval_resolver.clone(),
-                    input_resolver: None, // ask_user only on main Run (v1)
-                    session_id: self.session_id.clone(),
-                    prompt_id: self.prompt_id.clone(),
-                    run_id: self.parent_run_id.clone().or_else(|| Some(self.id.clone())),
-                    working_dir: self
-                        .config
+                let mut orchestrator = crate::runtime::tool_orchestrator::ToolOrchestrator::new(
+                    &self.registry,
+                    &mut self.permission_policy,
+                    self.hook_registry.clone(),
+                    crate::runtime::LoopPolicy::nested().tool_mode,
+                    cancel,
+                    None,
+                    self.approval_resolver.clone(),
+                    None,
+                    self.session_id.clone(),
+                    self.prompt_id.clone(),
+                    self.parent_run_id.clone().or_else(|| Some(self.id.clone())),
+                    self.config
                         .working_dir
                         .as_ref()
                         .map(|p| p.to_string_lossy().to_string()),
-                };
+                );
 
                 let sender_clone = event_sender.clone();
                 let subagent_id = self.id.clone();

@@ -1,8 +1,8 @@
 //! Commands sent *to* a Run (from frontend / CLI / RunManager).
 //!
-//! A Run owns an `mpsc::Receiver<RunCommand>`. External callers push commands
-//! through the corresponding `mpsc::Sender`. The Run's loop polls this channel
-//! at turn boundaries and during blocking waits (approval / input / pause).
+//! Lifecycle commands (Start, Pause, Resume, Cancel, FollowUp) use this
+//! mailbox. Interaction (approve / answer / steer) is a RunManager method
+//! that talks to resolvers; mailbox Approve/Steer is a deadlock backup.
 
 use crate::permission::ApprovalChoice;
 use crate::types::Message;
@@ -80,10 +80,6 @@ pub enum RunCommand {
     },
     /// Answer a pending input request. Valid in `AwaitingInput`.
     Answer { prompt_id: String, answer: String },
-
-    /// Set the agent mode on the Brain. Takes effect on the NEXT Run.
-    /// Existing Runs keep their mode.
-    SetMode { mode: String },
 
     /// Queue a follow-up message that will be processed after the Run finishes,
     /// mimicking the user sending a follow-up input.

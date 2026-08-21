@@ -6,7 +6,7 @@
 
 | Type | Count | Description |
 |------|-------|-------------|
-| ADR | 4 | Architecture Decision Records |
+| ADR | 5 | Architecture Decision Records |
 | RFC | 2 | Requests for Comments |
 | PLAN | 13 | Development Plans |
 | RUN | 0 | Runbooks |
@@ -26,6 +26,7 @@
 | ADR-0019 | Workflow Runtime Seam | Draft | agent_core | 2026-07-23 |
 | ADR-0020 | Workflow History and Recovery | Draft | agent_core | 2026-07-23 |
 | ADR-0021 | Workflow Side-effect Semantics | Draft | agent_core | 2026-07-23 |
+| ADR-0022 | Runtime External Seam | Draft | agent_core | 2026-08-21 |
 
 ## RFC (Requests for Comments)
 
