@@ -54,8 +54,8 @@ tags: [runtime, seam, run-manager, agent-loop]
 
 - Intent: `core/src/runtime/intent.rs`
 - Request: `RunManager::create_run_from(CreateRunRequest)`
-- Loop: `core/src/runtime/agent_loop.rs`
-- Tests at `parse_user_intent` and `RunManager`; eval `contract_v1` is the integration surface
+- Loop: `core/src/runtime/agent_loop.rs` (`apply_compact`, `run_model_phase`, `collect_model_stream`)
+- Tests at `parse_user_intent`, `RunManager`, and `AgentLoop`; eval `contract_v1` is the integration surface
 
 ## References
 
@@ -66,4 +66,4 @@ tags: [runtime, seam, run-manager, agent-loop]
 
 | Date | Author | Change |
 |------|--------|--------|
-| 2026-08-21 | agent_core | Created as Draft |
+| 2026-08-21 | agent_core | Interactive and Nested now share compact + SSE collect/retry in AgentLoop |

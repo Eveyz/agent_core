@@ -13,8 +13,11 @@ use crate::context::Context;
 use crate::runtime::supervisor::ProcessSupervisor;
 use crate::runtime::EventGuard;
 use crate::tools::ToolRegistry;
-use crate::runtime::agent_loop::StreamPartial;
-use crate::types::{AgentEvent, EventSender, Message, MessageDelta, StreamEvent, ToolCall};
+use crate::runtime::agent_loop::{
+    apply_compact, promote_thinking_to_text, LoopPolicy, ModelCall, StreamCallbacks, StreamPartial,
+};
+use crate::runtime::event::RunEvent;
+use crate::types::{AgentEvent, EventSender, Message, MessageDelta};
 use transcript::{TranscriptOutcome, TranscriptRecorder};
 
 pub mod handoff;
@@ -160,6 +163,22 @@ impl AgentMemoryIdentity {
     }
 }
 
+fn emit_nested(
+    sink: &Option<Arc<dyn Fn(RunEvent) + Send + Sync>>,
+    sender: Option<&EventSender>,
+    event: AgentEvent,
+) {
+    if let Some(sink) = sink {
+        if let Some(run_ev) = RunEvent::from_agent_event("", event) {
+            sink(run_ev);
+        }
+        return;
+    }
+    if let Some(tx) = sender {
+        let _ = tx.send(event);
+    }
+}
+
 pub struct Subagent {
     pub id: String,
     pub role_name: String,
@@ -186,6 +205,9 @@ pub struct Subagent {
     pub supervisor: Option<Arc<Mutex<ProcessSupervisor>>>,
     transcript: Option<Mutex<TranscriptRecorder>>,
     approval_resolver: Option<crate::runtime::ApprovalResolver>,
+    /// When set, Nested emits `RunEvent::Subagent*` once to the parent Run
+    /// instead of wrapping tool dialect as `AgentEvent` for later translation.
+    run_event_sink: Option<Arc<dyn Fn(crate::runtime::event::RunEvent) + Send + Sync>>,
 }
 
 impl Subagent {
@@ -242,6 +264,7 @@ impl Subagent {
             supervisor: None,
             transcript,
             approval_resolver: None,
+            run_event_sink: None,
         }
     }
 
@@ -261,6 +284,14 @@ impl Subagent {
 
     pub fn with_approval_resolver(mut self, resolver: crate::runtime::ApprovalResolver) -> Self {
         self.approval_resolver = Some(resolver);
+        self
+    }
+
+    pub fn with_run_event_sink(
+        mut self,
+        sink: Arc<dyn Fn(crate::runtime::event::RunEvent) + Send + Sync>,
+    ) -> Self {
+        self.run_event_sink = Some(sink);
         self
     }
 
@@ -395,14 +426,15 @@ impl Subagent {
             .add(Message::user_with_model(task, &self.client.model.model_id));
         self.checkpoint_transcript(None);
 
-        // Emit SubagentStart
-        if let Some(ref tx) = event_sender {
-            let _ = tx.send(AgentEvent::SubagentStart {
+        emit_nested(
+            &self.run_event_sink,
+            event_sender.as_ref(),
+            AgentEvent::SubagentStart {
                 subagent_id: self.id.clone(),
                 role_name: self.role_name.clone(),
                 task: task.to_string(),
-            });
-        }
+            },
+        );
 
         // RAII guard: if run_with_sender returns Err(?) early (e.g. stream
         // error) or panics, Drop emits SubagentEnd{success:false} so the
@@ -411,15 +443,18 @@ impl Subagent {
         let sa_id = self.id.clone();
         let sa_role = self.role_name.clone();
         let guard_tx = event_sender.clone();
+        let guard_sink = self.run_event_sink.clone();
         let mut guard = EventGuard::new(move || {
-            if let Some(ref tx) = guard_tx {
-                let _ = tx.send(AgentEvent::SubagentEnd {
+            emit_nested(
+                &guard_sink,
+                guard_tx.as_ref(),
+                AgentEvent::SubagentEnd {
                     subagent_id: sa_id.clone(),
                     role_name: sa_role.clone(),
                     success: false,
                     iterations_used: 0,
-                });
-            }
+                },
+            );
         });
 
         let mut all_text = String::new();
@@ -430,122 +465,79 @@ impl Subagent {
             if self.cancel_token.as_ref().is_some_and(|t| t.is_cancelled()) {
                 anyhow::bail!("subagent cancelled");
             }
-            // Emit SubagentTurnStart
-            if let Some(ref tx) = event_sender {
-                let _ = tx.send(AgentEvent::SubagentTurnStart {
+            emit_nested(
+                &self.run_event_sink,
+                event_sender.as_ref(),
+                AgentEvent::SubagentTurnStart {
                     subagent_id: self.id.clone(),
                     turn_index: iteration,
-                });
-            }
+                },
+            );
 
-            match crate::runtime::LoopPolicy::nested().compact {
-                crate::runtime::CompactMode::TrimToFit => {
-                    let _ = self.context.trim_to_fit();
-                }
-                crate::runtime::CompactMode::DualTranscript => {}
-            }
+            let policy = LoopPolicy::nested();
+            apply_compact(policy, &mut self.context);
 
             let base_messages = self.context.messages();
             let tools = self.registry.tool_definitions();
-
-            const MAX_STREAM_ATTEMPTS: u32 = 3;
-            let mut stream_error: Option<anyhow::Error> = None;
-            let mut text = String::new();
-            let mut thinking = String::new();
-            let mut reasoning_blob = crate::types::ReasoningState::default();
-            let mut tool_calls = Vec::new();
-            let mut message_id = String::new();
-            let mut retry_checkpoint = StreamPartial::default();
-
-            for attempt in 0..MAX_STREAM_ATTEMPTS {
-                let mut attempt_messages = base_messages.clone();
-                crate::hygiene::inject_stream_retry_hint(
-                    &mut attempt_messages,
-                    &retry_checkpoint.thinking,
-                    &retry_checkpoint.text,
+            let subagent_id = self.id.clone();
+            let sink = self.run_event_sink.clone();
+            let sender = event_sender.clone();
+            let on_delta = move |mid: &str, delta: MessageDelta| {
+                emit_nested(
+                    &sink,
+                    sender.as_ref(),
+                    AgentEvent::SubagentMessageUpdate {
+                        subagent_id: subagent_id.clone(),
+                        message_id: mid.to_string(),
+                        delta,
+                    },
                 );
-                let stream = match self
-                    .client
-                    .chat_completion_stream(&attempt_messages, &tools)
-                    .await
-                {
-                    Ok(s) => s,
-                    Err(e) => {
-                        if attempt + 1 < MAX_STREAM_ATTEMPTS {
-                            let delay = std::time::Duration::from_millis(500 * 2u64.pow(attempt));
-                            tracing::warn!(attempt, delay_ms = delay.as_millis(), error = %e,
-                                "subagent: stream request failed, retrying");
-                            if let Some(cancel) = &self.cancel_token {
-                                tokio::select! {
-                                    _ = tokio::time::sleep(delay) => {}
-                                    _ = cancel.cancelled() => anyhow::bail!("subagent cancelled"),
-                                }
-                            } else {
-                                tokio::time::sleep(delay).await;
-                            }
-                            continue;
-                        }
-                        stream_error = Some(e);
-                        break;
-                    }
-                };
-
-                let mut attempt_partial = StreamPartial::default();
-                match self
-                    .collect_stream(stream, event_sender.as_ref(), &mut attempt_partial)
-                    .await
-                {
-                    Ok((t, th, blob, tc, mid)) => {
-                        text = t;
-                        thinking = th;
-                        reasoning_blob = blob;
-                        tool_calls = tc;
-                        message_id = mid;
-                        stream_error = None;
-                        break;
-                    }
-                    Err(e) => {
-                        retry_checkpoint.merge_attempt(&attempt_partial);
-                        self.checkpoint_transcript(Some(&retry_checkpoint.recoverable_text()));
-                        if self.cancel_token.as_ref().is_some_and(|t| t.is_cancelled()) {
-                            return Err(e);
-                        }
-                        if attempt + 1 < MAX_STREAM_ATTEMPTS {
-                            let delay = std::time::Duration::from_millis(1000 * 2u64.pow(attempt));
-                            tracing::warn!(attempt, delay_ms = delay.as_millis(), error = %e,
-                                "subagent: SSE stream dropped mid-response, retrying");
-                            if let Some(cancel) = &self.cancel_token {
-                                tokio::select! {
-                                    _ = tokio::time::sleep(delay) => {}
-                                    _ = cancel.cancelled() => anyhow::bail!("subagent cancelled"),
-                                }
-                            } else {
-                                tokio::time::sleep(delay).await;
-                            }
-                            continue;
-                        }
-                        stream_error = Some(e);
+            };
+            let on_partial = {
+                let recorder = self.transcript.as_ref();
+                let snapshot = self.context.raw_messages().to_vec();
+                move |partial: &StreamPartial| {
+                    if let Some(rec) = recorder {
+                        rec.lock()
+                            .checkpoint(&snapshot, Some(&partial.recoverable_text()));
                     }
                 }
-            }
+            };
+            let collected = crate::runtime::agent_loop::run_model_phase(ModelCall {
+                client: &self.client,
+                policy,
+                messages: base_messages,
+                tools: &tools,
+                cache_hint: None,
+                required_tool: None,
+                lifetime_cancel: self.cancel_token.clone(),
+                turn_cancel: None,
+                callbacks: StreamCallbacks {
+                    on_delta: &on_delta,
+                    on_tool_preparing: None,
+                    on_partial: Some(&on_partial),
+                },
+                on_retry: None,
+                on_stream_open: None,
+            })
+            .await?;
 
-            if let Some(e) = stream_error {
-                return Err(e);
-            }
+            let mut text = collected.text;
+            let mut thinking = collected.thinking;
+            let reasoning_blob = collected.reasoning_blob;
+            let tool_calls = collected.tool_calls;
+            let message_id = collected.message_id;
 
-            // Some reasoning-heavy models (e.g. DeepSeek via NVIDIA) put the
-            // entire final answer in `reasoning_content` with an empty `content`
-            // field.  Promote thinking → text so the UI and parent agent see it.
-            if tool_calls.is_empty() && text.trim().is_empty() && !thinking.trim().is_empty() {
-                text = thinking.trim().to_string();
-                thinking.clear();
-                if let Some(ref tx) = event_sender {
-                    let _ = tx.send(AgentEvent::SubagentMessageUpdate {
+            if promote_thinking_to_text(&mut text, &mut thinking) {
+                emit_nested(
+                    &self.run_event_sink,
+                    event_sender.as_ref(),
+                    AgentEvent::SubagentMessageUpdate {
                         subagent_id: self.id.clone(),
                         message_id: message_id.clone(),
                         delta: MessageDelta::Text(text.clone()),
-                    });
-                }
+                    },
+                );
             }
 
             last_text = text.clone();
@@ -558,15 +550,16 @@ impl Subagent {
             if tool_calls.is_empty() {
                 self.record_final_response(&text, &thinking, reasoning_blob);
                 guard.complete();
-                // Emit SubagentEnd
-                if let Some(ref tx) = event_sender {
-                    let _ = tx.send(AgentEvent::SubagentEnd {
+                emit_nested(
+                    &self.run_event_sink,
+                    event_sender.as_ref(),
+                    AgentEvent::SubagentEnd {
                         subagent_id: self.id.clone(),
                         role_name: self.role_name.clone(),
                         success: true,
                         iterations_used: iteration + 1,
-                    });
-                }
+                    },
+                );
 
                 self.persist_memory(task, &all_text);
                 return Ok(SubagentResult {
@@ -618,51 +611,50 @@ impl Subagent {
                 );
 
                 let sender_clone = event_sender.clone();
+                let sink_clone = self.run_event_sink.clone();
                 let subagent_id = self.id.clone();
                 orchestrator
                     .execute_tools(&tool_calls, &move |e, _call_id: &str| {
-                        if let Some(ref tx) = sender_clone {
-                            let mapped = match e {
-                                AgentEvent::ToolExecutionStart {
-                                    tool_call_id,
-                                    tool_name,
-                                    args,
-                                } => AgentEvent::SubagentToolStart {
-                                    subagent_id: subagent_id.clone(),
-                                    tool_call_id,
-                                    tool_name,
-                                    args,
-                                },
-                                AgentEvent::ToolExecutionEnd {
-                                    tool_call_id,
-                                    tool_name,
-                                    result,
-                                    is_error,
-                                } => AgentEvent::SubagentToolEnd {
-                                    subagent_id: subagent_id.clone(),
-                                    tool_call_id,
-                                    tool_name,
-                                    result,
-                                    is_error,
-                                },
-                                AgentEvent::ApprovalRequired {
-                                    prompt_id,
-                                    tool_name,
-                                    tool_input,
-                                    danger_level,
-                                    explanation,
-                                } => AgentEvent::SubagentApprovalRequired {
-                                    subagent_id: subagent_id.clone(),
-                                    prompt_id,
-                                    tool_name,
-                                    tool_input,
-                                    danger_level,
-                                    explanation,
-                                },
-                                _ => e,
-                            };
-                            let _ = tx.send(mapped);
-                        }
+                        let mapped = match e {
+                            AgentEvent::ToolExecutionStart {
+                                tool_call_id,
+                                tool_name,
+                                args,
+                            } => AgentEvent::SubagentToolStart {
+                                subagent_id: subagent_id.clone(),
+                                tool_call_id,
+                                tool_name,
+                                args,
+                            },
+                            AgentEvent::ToolExecutionEnd {
+                                tool_call_id,
+                                tool_name,
+                                result,
+                                is_error,
+                            } => AgentEvent::SubagentToolEnd {
+                                subagent_id: subagent_id.clone(),
+                                tool_call_id,
+                                tool_name,
+                                result,
+                                is_error,
+                            },
+                            AgentEvent::ApprovalRequired {
+                                prompt_id,
+                                tool_name,
+                                tool_input,
+                                danger_level,
+                                explanation,
+                            } => AgentEvent::SubagentApprovalRequired {
+                                subagent_id: subagent_id.clone(),
+                                prompt_id,
+                                tool_name,
+                                tool_input,
+                                danger_level,
+                                explanation,
+                            },
+                            other => other,
+                        };
+                        emit_nested(&sink_clone, sender_clone.as_ref(), mapped);
                     })
                     .await
             };
@@ -675,15 +667,17 @@ impl Subagent {
             // itself; it is emitted by the caller, mirroring agent/mod.rs.)
             for (call, result) in tool_calls.iter().zip(&results) {
                 let is_error = crate::runtime::execution::tool_result_is_error(result);
-                if let Some(ref tx) = event_sender {
-                    let _ = tx.send(AgentEvent::SubagentToolEnd {
+                emit_nested(
+                    &self.run_event_sink,
+                    event_sender.as_ref(),
+                    AgentEvent::SubagentToolEnd {
                         subagent_id: self.id.clone(),
                         tool_call_id: call.id.clone(),
                         tool_name: call.function.name.clone(),
                         result: result.clone(),
                         is_error,
-                    });
-                }
+                    },
+                );
                 self.context.add(Message::tool(
                     call.id.clone(),
                     result.clone(),
@@ -694,15 +688,16 @@ impl Subagent {
         }
 
         guard.complete();
-        // Emit SubagentEnd (max iterations reached)
-        if let Some(ref tx) = event_sender {
-            let _ = tx.send(AgentEvent::SubagentEnd {
+        emit_nested(
+            &self.run_event_sink,
+            event_sender.as_ref(),
+            AgentEvent::SubagentEnd {
                 subagent_id: self.id.clone(),
                 role_name: self.role_name.clone(),
                 success: false,
                 iterations_used: self.config.max_iterations,
-            });
-        }
+            },
+        );
 
         let truncated_output = if all_text.len() > 1000 {
             format!(
@@ -740,194 +735,6 @@ impl Subagent {
             iterations_used: self.config.max_iterations,
             success: false,
         })
-    }
-
-    async fn collect_stream(
-        &self,
-        stream: impl futures::Stream<Item = Result<StreamEvent>>,
-        event_sender: Option<&EventSender>,
-        partial: &mut StreamPartial,
-    ) -> Result<(
-        String,
-        String,
-        crate::types::ReasoningState,
-        Vec<ToolCall>,
-        String,
-    )> {
-        use crate::client::streaming::{TokenAccumulator, ToolCallAccumulator};
-        use futures::StreamExt;
-
-        let mut text_buffer = String::new();
-        let mut thinking_buffer = String::new();
-        let mut reasoning_blob = crate::types::ReasoningState::default();
-        let mut accumulator = ToolCallAccumulator::new();
-        let mut has_tool_calls = false;
-        let mut tokens = TokenAccumulator::new();
-        let message_id = uuid::Uuid::new_v4().to_string();
-
-        let flush_tokens =
-            |tokens: &mut TokenAccumulator, tx: Option<&EventSender>, id: &str, msg_id: &str| {
-                if let Some((text, thinking)) = tokens.force_flush() {
-                    if let Some(tx) = tx {
-                        if !text.is_empty() {
-                            let _ = tx.send(AgentEvent::SubagentMessageUpdate {
-                                subagent_id: id.to_string(),
-                                message_id: msg_id.to_string(),
-                                delta: MessageDelta::Text(text),
-                            });
-                        }
-                        if !thinking.is_empty() {
-                            let _ = tx.send(AgentEvent::SubagentMessageUpdate {
-                                subagent_id: id.to_string(),
-                                message_id: msg_id.to_string(),
-                                delta: MessageDelta::Thinking(thinking),
-                            });
-                        }
-                    }
-                }
-            };
-
-        tokio::pin!(stream);
-        loop {
-            let flush_delay = tokens.pending_flush_delay();
-            let next = tokio::select! {
-                _ = async {
-                    match &self.cancel_token {
-                        Some(t) => t.cancelled().await,
-                        None => std::future::pending().await,
-                    }
-                }, if self.cancel_token.is_some() => {
-                    anyhow::bail!("subagent cancelled");
-                }
-                _ = tokio::time::sleep(flush_delay.unwrap_or(std::time::Duration::ZERO)),
-                    if flush_delay.is_some() => {
-                    if let Some((text, thinking)) = tokens.flush() {
-                        if let Some(tx) = event_sender {
-                            if !text.is_empty() {
-                                let _ = tx.send(AgentEvent::SubagentMessageUpdate {
-                                    subagent_id: self.id.clone(),
-                                    message_id: message_id.clone(),
-                                    delta: MessageDelta::Text(text),
-                                });
-                            }
-                            if !thinking.is_empty() {
-                                let _ = tx.send(AgentEvent::SubagentMessageUpdate {
-                                    subagent_id: self.id.clone(),
-                                    message_id: message_id.clone(),
-                                    delta: MessageDelta::Thinking(thinking),
-                                });
-                            }
-                        }
-                    }
-                    continue;
-                }
-                item = stream.next() => item,
-            };
-            let Some(event) = next else { break };
-            let event = event?;
-            match event {
-                StreamEvent::TextDelta(delta) => {
-                    tokens.push_text(&delta);
-                    text_buffer.push_str(&delta);
-                    partial.text.push_str(&delta);
-                    self.checkpoint_transcript(Some(&partial.recoverable_text()));
-                    if tokens.should_flush() {
-                        if let Some((text, thinking)) = tokens.flush() {
-                            if let Some(tx) = event_sender {
-                                if !text.is_empty() {
-                                    let _ = tx.send(AgentEvent::SubagentMessageUpdate {
-                                        subagent_id: self.id.clone(),
-                                        message_id: message_id.clone(),
-                                        delta: MessageDelta::Text(text),
-                                    });
-                                }
-                                if !thinking.is_empty() {
-                                    let _ = tx.send(AgentEvent::SubagentMessageUpdate {
-                                        subagent_id: self.id.clone(),
-                                        message_id: message_id.clone(),
-                                        delta: MessageDelta::Thinking(thinking),
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-                StreamEvent::ThinkingDelta(delta) => {
-                    tokens.push_thinking(&delta);
-                    thinking_buffer.push_str(&delta);
-                    partial.thinking.push_str(&delta);
-                    self.checkpoint_transcript(Some(&partial.recoverable_text()));
-                    if tokens.should_flush() {
-                        if let Some((text, thinking)) = tokens.flush() {
-                            if let Some(tx) = event_sender {
-                                if !text.is_empty() {
-                                    let _ = tx.send(AgentEvent::SubagentMessageUpdate {
-                                        subagent_id: self.id.clone(),
-                                        message_id: message_id.clone(),
-                                        delta: MessageDelta::Text(text),
-                                    });
-                                }
-                                if !thinking.is_empty() {
-                                    let _ = tx.send(AgentEvent::SubagentMessageUpdate {
-                                        subagent_id: self.id.clone(),
-                                        message_id: message_id.clone(),
-                                        delta: MessageDelta::Thinking(thinking),
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-                StreamEvent::ReasoningBlob {
-                    encrypted_content,
-                    signature,
-                    summary,
-                } => {
-                    if let Some(blob) = encrypted_content {
-                        if !blob.is_empty() {
-                            reasoning_blob.encrypted_content = Some(blob);
-                        }
-                    }
-                    if let Some(sig) = signature {
-                        if !sig.is_empty() {
-                            match &mut reasoning_blob.signature {
-                                Some(existing) => existing.push_str(&sig),
-                                None => reasoning_blob.signature = Some(sig),
-                            }
-                        }
-                    }
-                    if let Some(s) = summary {
-                        if !s.is_empty() {
-                            reasoning_blob.summary = Some(s);
-                        }
-                    }
-                }
-                StreamEvent::ToolCallDelta { .. } => {
-                    has_tool_calls = true;
-                    accumulator.push(event);
-                }
-                StreamEvent::Done => break,
-                StreamEvent::CacheUsage { .. } => {}
-                StreamEvent::CompleteWithUsage { .. } => break,
-            }
-        }
-
-        // Final flush: emit any remaining buffered text/thinking.
-        flush_tokens(&mut tokens, event_sender, &self.id, &message_id);
-
-        let tool_calls = if has_tool_calls {
-            accumulator.into_tool_calls()
-        } else {
-            vec![]
-        };
-
-        Ok((
-            text_buffer,
-            thinking_buffer,
-            reasoning_blob,
-            tool_calls,
-            message_id,
-        ))
     }
 
     fn record_final_response(

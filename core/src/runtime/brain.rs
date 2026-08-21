@@ -31,6 +31,14 @@ use crate::types::ToolExecutionMode;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// Per-Run extras applied while building a tool registry (task tools, Nested
+/// event sink). Identity-only tools (MCP) ignore this.
+#[derive(Default)]
+pub struct ExtraToolContext {
+    pub approval_resolver: Option<crate::runtime::ApprovalResolver>,
+    pub run_event_emit: Option<crate::runtime::event::RunEventEmit>,
+}
+
 /// The reusable "brain" shared by all Runs.
 ///
 /// Cloneable via `Arc` — each Run holds an `Arc<Brain>`.
@@ -68,10 +76,7 @@ pub struct Brain {
     pub(crate) base_tool_registry: Arc<Mutex<ToolRegistry>>,
     /// Tool registration callbacks applied to every per-Run ToolRegistry.
     /// CLI pushes callbacks here (e.g. MCP tools) so they flow into every Run.
-    extra_tool_fns: Arc<Mutex<Vec<Box<dyn Fn(&mut ToolRegistry) + Send + Sync>>>>,
-    /// Per-Run approval resolvers, owned by the Brain so nested task
-    /// subagents can inherit the parent Run's resolver without a process-global map.
-    run_approvals: Arc<Mutex<HashMap<String, crate::runtime::ApprovalResolver>>>,
+    extra_tool_fns: Arc<Mutex<Vec<Box<dyn Fn(&mut ToolRegistry, &ExtraToolContext) + Send + Sync>>>>,
     /// Runtime temperature override (applied to each Run's client).
     pub(crate) temperature_override: Option<f64>,
     /// Runtime max_tokens override (applied to each Run's client).
@@ -123,7 +128,6 @@ impl Brain {
             hook_registry: Arc::new(Mutex::new(HookRegistry::new())),
             base_tool_registry: Arc::new(Mutex::new(base_tool_registry)),
             extra_tool_fns: Arc::new(Mutex::new(Vec::new())),
-            run_approvals: Arc::new(Mutex::new(HashMap::new())),
             temperature_override: None,
             max_tokens_override: None,
             tool_execution_mode: ToolExecutionMode::Parallel,
@@ -455,6 +459,16 @@ impl Brain {
         session_id: Option<&str>,
         prompt_id: Option<&str>,
     ) -> ToolRegistry {
+        self.build_tool_registry_with(mode, session_id, prompt_id, ExtraToolContext::default())
+    }
+
+    pub(crate) fn build_tool_registry_with(
+        &self,
+        mode: AgentMode,
+        session_id: Option<&str>,
+        prompt_id: Option<&str>,
+        extra: ExtraToolContext,
+    ) -> ToolRegistry {
         let mut registry = ToolRegistry::with_defaults();
 
         // Register memory tools only in Standard and Deep modes
@@ -481,7 +495,7 @@ impl Brain {
         {
             let fns = self.extra_tool_fns.lock();
             for f in fns.iter() {
-                f(&mut registry);
+                f(&mut registry, &extra);
             }
         }
 
@@ -509,6 +523,7 @@ impl Brain {
                 self.skill_manager.clone(),
                 None,
                 Some(self.todo_lists.clone()),
+                extra.run_event_emit.clone(),
             );
         }
 
@@ -627,6 +642,17 @@ impl Brain {
     /// Register a tool registration callback. Applied to every per-Run ToolRegistry.
     /// Use this for tools that need to execute during Runs (e.g. MCP tools).
     pub fn register_tool_fn(&self, f: Box<dyn Fn(&mut ToolRegistry) + Send + Sync>) {
+        self.extra_tool_fns
+            .lock()
+            .push(Box::new(move |reg, _ctx| f(reg)));
+    }
+
+    /// Like [`Self::register_tool_fn`], but the callback receives the per-Run
+    /// approval resolver and Nested event sink.
+    pub fn register_tool_fn_ctx(
+        &self,
+        f: Box<dyn Fn(&mut ToolRegistry, &ExtraToolContext) + Send + Sync>,
+    ) {
         self.extra_tool_fns.lock().push(f);
     }
 
@@ -678,24 +704,6 @@ impl Brain {
 
     pub fn set_permission_mode(&mut self, mode: crate::permission::PermissionMode) {
         self.config.permissions.mode = mode;
-    }
-
-    pub(crate) fn register_run_approval(
-        &self,
-        run_id: &str,
-        resolver: crate::runtime::ApprovalResolver,
-    ) {
-        self.run_approvals
-            .lock()
-            .insert(run_id.to_string(), resolver);
-    }
-
-    pub(crate) fn approval_for_run(&self, run_id: &str) -> Option<crate::runtime::ApprovalResolver> {
-        self.run_approvals.lock().get(run_id).cloned()
-    }
-
-    pub(crate) fn unregister_run_approval(&self, run_id: &str) {
-        self.run_approvals.lock().remove(run_id);
     }
 }
 
@@ -849,13 +857,26 @@ default = { model_id = "mock" }
     }
 
     #[test]
-    fn run_approvals_are_scoped_to_the_brain() {
+    fn extra_tool_fn_receives_run_approval_resolver() {
         let brain = Brain::from_config(test_config()).unwrap();
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = seen.clone();
+        brain.register_tool_fn_ctx(Box::new(move |_reg, ctx| {
+            flag.store(
+                ctx.approval_resolver.is_some(),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }));
         let resolver = crate::runtime::ApprovalResolver::new();
-        brain.register_run_approval("run-a", resolver.clone());
-        assert!(brain.approval_for_run("run-a").is_some());
-        assert!(brain.approval_for_run("run-b").is_none());
-        brain.unregister_run_approval("run-a");
-        assert!(brain.approval_for_run("run-a").is_none());
+        let _ = brain.build_tool_registry_with(
+            AgentMode::Build,
+            None,
+            None,
+            ExtraToolContext {
+                approval_resolver: Some(resolver),
+                run_event_emit: None,
+            },
+        );
+        assert!(seen.load(std::sync::atomic::Ordering::Relaxed));
     }
 }

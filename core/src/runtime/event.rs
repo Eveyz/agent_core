@@ -378,6 +378,10 @@ pub struct Envelope {
     pub event: RunEvent,
 }
 
+/// Sink used by Nested (`Subagent`) to emit `RunEvent`s onto a parent Run's
+/// envelope stream. The `Option<String>` is the wrapper tool's `parent_call_id`.
+pub type RunEventEmit = std::sync::Arc<dyn Fn(RunEvent, Option<String>) + Send + Sync>;
+
 /// Convert a legacy `AgentEvent` into a `RunEvent`.
 ///
 /// This bridge lets us migrate incrementally: existing tool/subagent code

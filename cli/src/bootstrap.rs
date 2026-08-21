@@ -85,16 +85,15 @@ pub async fn bootstrap_runtime(opts: BootstrapOptions) -> anyhow::Result<CliStat
         let tb = task_board.clone();
         let mc = brain.current_model_config().ok();
         let pc = brain.permissions().clone();
-        let tasks_brain = brain.clone();
         // Todo tools are registered per-Run via Brain::build_tool_registry_for
         // (SessionPlanStore). Only extra task tools are injected here.
-        brain.register_tool_fn(Box::new(move |reg: &mut agent_core::ToolRegistry| {
+        brain.register_tool_fn_ctx(Box::new(move |reg, extra| {
             tasks::register_task_tools(
                 reg,
                 tb.clone(),
                 mc.clone().unwrap_or_default(),
                 pc.clone(),
-                tasks_brain.clone(),
+                extra,
             );
         }));
     }
@@ -129,8 +128,6 @@ pub async fn bootstrap_runtime(opts: BootstrapOptions) -> anyhow::Result<CliStat
         }
     };
 
-    // Keep CliState.brain in sync with the RunManager Arc after model/permission setup.
-    let brain_snapshot = (**run_manager.brain()).clone();
     let custom_agent_runner = Arc::new(agent_core::agent_registry::CustomAgentRunner::new(
         session_storage.clone(),
         run_manager.brain().clone(),
@@ -157,7 +154,6 @@ pub async fn bootstrap_runtime(opts: BootstrapOptions) -> anyhow::Result<CliStat
     );
 
     Ok(CliState {
-        brain: brain_snapshot,
         run_manager,
         context_history: Vec::new(),
         session_id: None,

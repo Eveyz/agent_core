@@ -93,7 +93,7 @@ pub use reflector::{Digester, Reflector, Suggestion, SuggestionAction, Suggestio
 pub use runtime::{
     ApprovalResolver, Brain, ChildId, ClarificationAnswers, ClarificationOption,
     ClarificationQuestion, ClarificationRequest, CreateRunRequest, CreateRunResult, Envelope,
-    EventGuard, EventLog, ExecutionPhase, ExecutionState, InputResolver, ProcessSupervisor, Run,
+    EventGuard, EventLog, ExecutionPhase, ExecutionState, ExtraToolContext, InputResolver, ProcessSupervisor, Run,
     RunCommand, RunEvent, RunHandle, RunId, RunManager, RunState, STEER_MID_RUN_PREFIX, SteerEntry,
     SupervisedChild, UserIntent, CacheStatus, parse_user_intent,
 };

@@ -20,19 +20,19 @@ use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 pub struct ToolOrchestrator<'a> {
-    pub(crate) registry: &'a ToolRegistry,
-    pub(crate) permission_policy: &'a mut PermissionPolicy,
-    pub(crate) hook_registry: Arc<Mutex<HookRegistry>>,
-    pub(crate) tool_execution_mode: ToolExecutionMode,
-    pub(crate) cancel_token: CancellationToken,
+    registry: &'a ToolRegistry,
+    permission_policy: &'a mut PermissionPolicy,
+    hook_registry: Arc<Mutex<HookRegistry>>,
+    tool_execution_mode: ToolExecutionMode,
+    cancel_token: CancellationToken,
     /// Distinguishes whole-Run cancellation from a turn-only steer.
-    pub(crate) lifetime_cancel: Option<CancellationToken>,
-    pub(crate) approval_resolver: Option<ApprovalResolver>,
-    pub(crate) input_resolver: Option<InputResolver>,
-    pub(crate) session_id: Option<String>,
-    pub(crate) prompt_id: Option<String>,
-    pub(crate) run_id: Option<String>,
-    pub(crate) working_dir: Option<String>,
+    lifetime_cancel: Option<CancellationToken>,
+    approval_resolver: Option<ApprovalResolver>,
+    input_resolver: Option<InputResolver>,
+    session_id: Option<String>,
+    prompt_id: Option<String>,
+    run_id: Option<String>,
+    working_dir: Option<String>,
 }
 
 impl<'a> ToolOrchestrator<'a> {

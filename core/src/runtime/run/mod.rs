@@ -56,9 +56,9 @@ use crate::hooks::HookRegistry;
 use crate::mode::AgentMode;
 use crate::permission::PermissionPolicy;
 use crate::runtime::approval::ApprovalResolver;
-use crate::runtime::brain::Brain;
+use crate::runtime::brain::{Brain, ExtraToolContext};
 use crate::runtime::command::RunCommand;
-use crate::runtime::event::{CacheMetrics, Envelope, RunEvent, RunId};
+use crate::runtime::event::{CacheMetrics, Envelope, RunEvent, RunEventEmit, RunId};
 use crate::runtime::execution::ExecutionState;
 use crate::runtime::input::InputResolver;
 use crate::runtime::state::RunState;
@@ -276,14 +276,39 @@ impl Run {
         let cancel_token = CancellationToken::new();
         let steering = SteeringController::new(cancel_token.clone());
         let approval_resolver = ApprovalResolver::new();
+        let run_event_emit: RunEventEmit = {
+            let event_tx = event_tx.clone();
+            let seq = seq.clone();
+            let run_id = id.clone();
+            let session_id = session_id.clone();
+            Arc::new(move |event, parent_call_id| {
+                let _ = event_tx.send(Envelope {
+                    seq: seq.fetch_add(1, Ordering::Relaxed),
+                    event_id: uuid::Uuid::new_v4().to_string(),
+                    run_id: run_id.clone(),
+                    session_id: session_id.clone(),
+                    turn_id: None,
+                    parent_call_id,
+                    ts: chrono::Utc::now(),
+                    event,
+                });
+            })
+        };
 
         // Skill discovery follows a stable workspace-scoped manager rather
         // than mutating the desktop process' global path precedence.
         let skill_manager =
             brain.skill_manager_for_workspace(working_dir.as_deref().map(std::path::Path::new))?;
 
-        let mut registry =
-            brain.build_tool_registry_for(mode, session_id.as_deref(), prompt_id.as_deref());
+        let mut registry = brain.build_tool_registry_with(
+            mode,
+            session_id.as_deref(),
+            prompt_id.as_deref(),
+            ExtraToolContext {
+                approval_resolver: Some(approval_resolver.clone()),
+                run_event_emit: Some(run_event_emit.clone()),
+            },
+        );
         if let Some(ref manager) = skill_manager {
             registry.remove_all(&[
                 "skill_search",
@@ -329,6 +354,7 @@ impl Run {
                 skill_manager.clone(),
                 Some(approval_resolver.clone()),
                 Some(brain.todo_lists.clone()),
+                Some(run_event_emit.clone()),
             );
         }
         let required_tool = scoped_tool_factory
@@ -388,8 +414,6 @@ impl Run {
         let session_snapshot_path = session_id
             .as_ref()
             .map(|sid| crate::paths::session_messages_snapshot_path(sid));
-
-        brain.register_run_approval(&id, approval_resolver.clone());
 
         // Seed shared snapshots so Context Usage / btw work before the first turn.
         // Persistence snapshot = full transcript; usage = live model window.
@@ -645,7 +669,6 @@ impl Drop for Run {
         self.join_set.abort_all();
         // Kill all supervised processes
         self.supervisor.lock().kill_all();
-        self.brain.unregister_run_approval(&self.id);
         // approval_resolver.clear() is called above (resolvers get dropped error)
     }
 }

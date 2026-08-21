@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::config::ModelConfig;
 use crate::permission::PermissionConfig;
-use crate::runtime::Brain;
+use crate::runtime::{ApprovalResolver, ExtraToolContext};
 use crate::subagent::{Subagent, SubagentConfig};
 use crate::tools::{Tool, ToolRegistry};
 use parking_lot::Mutex;
@@ -17,7 +17,7 @@ pub fn register_task_tools(
     board: Arc<Mutex<TaskBoard>>,
     model_config: ModelConfig,
     permission_config: PermissionConfig,
-    brain: Arc<Brain>,
+    extra: &ExtraToolContext,
 ) {
     registry.register(Box::new(TaskCreateTool::new(board.clone())));
     registry.register(Box::new(TaskBatchCreateTool::new(board.clone())));
@@ -30,7 +30,8 @@ pub fn register_task_tools(
         board,
         model_config,
         permission_config,
-        brain,
+        extra.approval_resolver.clone(),
+        extra.run_event_emit.clone(),
     )));
 }
 
@@ -495,7 +496,8 @@ struct TaskExecuteTool {
     board: Arc<Mutex<TaskBoard>>,
     model_config: ModelConfig,
     permission_config: PermissionConfig,
-    brain: Arc<Brain>,
+    approval_resolver: Option<ApprovalResolver>,
+    run_event_emit: Option<crate::runtime::event::RunEventEmit>,
 }
 
 struct TaskExecutionGuard {
@@ -568,13 +570,15 @@ impl TaskExecuteTool {
         board: Arc<Mutex<TaskBoard>>,
         model_config: ModelConfig,
         permission_config: PermissionConfig,
-        brain: Arc<Brain>,
+        approval_resolver: Option<ApprovalResolver>,
+        run_event_emit: Option<crate::runtime::event::RunEventEmit>,
     ) -> Self {
         Self {
             board,
             model_config,
             permission_config,
-            brain,
+            approval_resolver,
+            run_event_emit,
         }
     }
 }
@@ -720,12 +724,17 @@ impl Tool for TaskExecuteTool {
         )
         .with_supervisor(supervisor)
         .with_cancel_token(cancel_token);
-        if let Some(resolver) = args
-            .get("_parent_run_id")
-            .and_then(Value::as_str)
-            .and_then(|id| self.brain.approval_for_run(id))
-        {
+        if let Some(resolver) = self.approval_resolver.clone() {
             subagent = subagent.with_approval_resolver(resolver);
+        }
+        if let Some(emit) = self.run_event_emit.clone() {
+            let parent = args
+                .get("_parent_call_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned);
+            subagent = subagent.with_run_event_sink(std::sync::Arc::new(move |event| {
+                emit(event, parent.clone());
+            }));
         }
         let runtime_subagent_id = subagent.id().to_string();
         execution_guard.set_recovery(&runtime_subagent_id);

@@ -50,12 +50,12 @@ pub mod supervisor;
 pub mod tool_orchestrator;
 pub mod tool_scheduler;
 
-pub use agent_loop::{CompactMode, LoopPolicy, StreamPartial};
+pub use agent_loop::{CollectedStream, CompactMode, LoopPolicy, StreamPartial};
 pub use approval::ApprovalResolver;
-pub use brain::Brain;
+pub use brain::{Brain, ExtraToolContext};
 pub use file_ledger::FileLedger;
 pub use command::{RunCommand, SteerEntry, STEER_MID_RUN_PREFIX};
-pub use event::{CacheMetrics, CacheStatus, ChildId, Envelope, RunEvent, RunId};
+pub use event::{CacheMetrics, CacheStatus, ChildId, Envelope, RunEvent, RunEventEmit, RunId};
 pub use event_log::EventLog;
 pub use execution::{ExecutionPhase, ExecutionState};
 pub use guard::EventGuard;

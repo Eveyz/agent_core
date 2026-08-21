@@ -1,35 +1,22 @@
 //! Turn execution — model interaction, streaming collection, and turn dispatch.
 
 use anyhow::Result;
-use futures::StreamExt;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::Instant;
 
-use crate::runtime::agent_loop::StreamPartial;
+use crate::runtime::agent_loop::{
+    CollectedStream, LoopPolicy, ModelCall, StreamCallbacks, StreamPartial,
+};
 use crate::runtime::tool_orchestrator::ToolOrchestrator;
-use crate::client::streaming::{TokenAccumulator, ToolCallAccumulator};
 use crate::client::ClientCacheHint;
 use crate::runtime::event::{CacheStatus, Envelope, RunEvent};
 use crate::runtime::guard::EventGuard;
-use crate::types::{CacheUsage, Message, MessageDelta, ReasoningState, StreamEvent, ToolCall};
+use crate::types::{Message, MessageDelta};
 
 use super::{
     CACHE_IDLE_WARN_SECS, ModelTurnFailure, RecoveryOutcome, Run, RunError, TurnOutcome,
 };
-
-/// Gap between consecutive SSE events that warrants a live warn (ms).
-const LATENCY_GAP_WARN_MS: u64 = 2_000;
-
-/// Result of one successful model stream collection.
-pub(super) struct ModelTurnResult {
-    pub text: String,
-    pub thinking: String,
-    pub tool_calls: Vec<ToolCall>,
-    pub message_id: String,
-    pub cache_usage: CacheUsage,
-    /// Opaque provider blobs collected during the stream (encrypted_content / signature).
-    pub reasoning_blob: ReasoningState,
-}
 
 impl Run {
     pub(super) async fn run_turn(&mut self, turn_index: usize) -> Result<TurnOutcome, RunError> {
@@ -83,7 +70,7 @@ impl Run {
         // Stage: Model
         tracing::info!("TURN: calling model_turn");
         let model_turn_started = Instant::now();
-        let ModelTurnResult {
+        let CollectedStream {
             text,
             thinking,
             tool_calls,
@@ -591,11 +578,8 @@ impl Run {
 
     // ── Model interaction ────────────────────────────────────────
 
-    pub(super) async fn model_turn(&mut self) -> Result<ModelTurnResult, ModelTurnFailure> {
+    pub(super) async fn model_turn(&mut self) -> Result<CollectedStream, ModelTurnFailure> {
         const MAX_RECOVERY_ATTEMPTS: u32 = 3;
-        /// How many times we restart a dropped SSE stream before escalating to recovery.
-        const MAX_STREAM_RETRIES: u32 = 5;
-        const MAX_RETRY_DELAY_MS: u64 = 30_000;
 
         let turn_cancel = self.steering.turn_token();
         for _attempt in 0..MAX_RECOVERY_ATTEMPTS {
@@ -644,147 +628,109 @@ impl Run {
             if let Some(preset) = preset {
                 self.recovery_ctx.record_success();
                 self.hook_registry.lock().fire_after_model(&preset, 0);
-                return Ok(ModelTurnResult {
+                return Ok(CollectedStream {
                     text: preset,
                     thinking: String::new(),
                     tool_calls: Vec::new(),
                     message_id: uuid::Uuid::new_v4().to_string(),
-                    cache_usage: CacheUsage::default(),
-                    reasoning_blob: ReasoningState::default(),
+                    cache_usage: crate::types::CacheUsage::default(),
+                    reasoning_blob: crate::types::ReasoningState::default(),
                 });
             }
 
-            // ── Inner stream-retry loop ──────────────────────────────
-            // The outer `send_with_retry` handles HTTP-level failures
-            // (429, 5xx, connection refused). This inner loop handles
-            // *mid-stream* drops — the HTTP connection succeeded, the
-            // SSE stream started delivering tokens, then the connection
-            // reset / the proxy timed out / the gateway dropped us.
-            // On retry we inject truncated partial thinking/text so the
-            // model can continue without redoing completed work.
-            let mut stream_attempt = 0;
-            let mut retry_checkpoint = StreamPartial::default();
-
-            let stream_result = 'stream_loop: loop {
-                if self.cancel.is_cancelled() {
-                    return Err(ModelTurnFailure::Cancelled);
-                }
-                if turn_cancel.is_cancelled() {
-                    return Err(ModelTurnFailure::Interrupted(retry_checkpoint));
-                }
-
-                let mut attempt_messages = base_messages.clone();
-                crate::hygiene::inject_stream_retry_hint(
-                    &mut attempt_messages,
-                    &retry_checkpoint.thinking,
-                    &retry_checkpoint.text,
-                );
-
-                let mut attempt_partial = StreamPartial::default();
-
-                let step_res = {
-                    let stream_res = tokio::select! {
-                        biased;
-                        _ = self.cancel.cancelled() => return Err(ModelTurnFailure::Cancelled),
-                        _ = turn_cancel.cancelled() => {
-                            retry_checkpoint.merge_attempt(&attempt_partial);
-                            return Err(ModelTurnFailure::Interrupted(retry_checkpoint));
-                        }
-                        result = self.client.chat_completion_stream_with_hint_and_required_tool(
-                            &attempt_messages,
-                            &tools,
-                            Some(cache_hint),
-                            self.required_tool.as_deref(),
-                        ) => result,
-                    };
-
-                    match stream_res {
-                        Ok(s) => {
-                            let cancel = self.cancel.clone();
-                            let event_tx = self.event_tx.clone();
-                            // Connection is up again. Thinking models can sit
-                            // silent for a long time before the first token —
-                            // clear the retry banner immediately, don't wait
-                            // for model_streaming deltas.
-                            // Use wrap+send (&self) rather than emit (&mut self)
-                            // so we don't conflict with the stream borrow.
-                            let _ = event_tx.send(self.wrap(RunEvent::ModelCallStarted));
-                            let res = self
-                                .collect_stream(
-                                    s,
-                                    &event_tx,
-                                    &mut attempt_partial,
-                                    &turn_cancel,
-                                )
-                                .await;
-                            match res {
-                                Ok(r) => {
-                                    if r.text.is_empty() && r.tool_calls.is_empty() {
-                                        Err("empty response from model — SSE stream had no useful events".to_string())
-                                    } else {
-                                        Ok(r)
-                                    }
-                                }
-                                Err(_) if cancel.is_cancelled() => {
-                                    return Err(ModelTurnFailure::Cancelled);
-                                }
-                                Err(_) if turn_cancel.is_cancelled() => {
-                                    retry_checkpoint.merge_attempt(&attempt_partial);
-                                    return Err(ModelTurnFailure::Interrupted(retry_checkpoint));
-                                }
-                                Err(e) => Err(format!("Stream error: {e}")),
-                            }
-                        }
-                        Err(e) => Err(e.to_string()),
-                    }
-                };
-
-                match step_res {
-                    Ok(r) => {
-                        break 'stream_loop Ok(r);
-                    }
-                    Err(err_msg) => {
-                        retry_checkpoint.merge_attempt(&attempt_partial);
-                        tracing::warn!(attempt = stream_attempt, error = %err_msg, "stream attempt failed");
-                        if stream_attempt < MAX_STREAM_RETRIES {
-                            let delay_ms = (1000u64 * 2u64.pow(stream_attempt))
-                                .min(MAX_RETRY_DELAY_MS);
-                            self.emit(RunEvent::Notice {
-                                code: "model_stream_retry".to_string(),
-                                severity: "warning".to_string(),
-                                recoverable: true,
-                                message: format!(
-                                    "Failed to connect to remote model (stream failed), retrying in {}s (attempt {}/{})",
-                                    delay_ms / 1000,
-                                    stream_attempt + 1,
-                                    MAX_STREAM_RETRIES,
-                                ),
-                            });
-                            tokio::select! {
-                                biased;
-                                _ = self.cancel.cancelled() => {
-                                    return Err(ModelTurnFailure::Cancelled);
-                                }
-                                _ = turn_cancel.cancelled() => {
-                                    return Err(ModelTurnFailure::Interrupted(retry_checkpoint));
-                                }
-                                _ = tokio::time::sleep(std::time::Duration::from_millis(delay_ms)) => {}
-                            }
-                            stream_attempt += 1;
-                            continue;
-                        }
-
-                        break 'stream_loop Err(err_msg);
-                    }
-                }
+            let event_tx = self.event_tx.clone();
+            let seq = self.seq.clone();
+            let run_id = self.id.clone();
+            let session_id = self.session_id.clone();
+            let turn_id = self.current_turn_id.clone();
+            let emit: Arc<dyn Fn(RunEvent) + Send + Sync> = Arc::new(move |event| {
+                let _ = event_tx.send(Envelope {
+                    seq: seq.fetch_add(1, Ordering::Relaxed),
+                    event_id: uuid::Uuid::new_v4().to_string(),
+                    run_id: run_id.clone(),
+                    session_id: session_id.clone(),
+                    turn_id: turn_id.clone(),
+                    parent_call_id: None,
+                    ts: chrono::Utc::now(),
+                    event,
+                });
+            });
+            let emit_delta = emit.clone();
+            let emit_prep = emit.clone();
+            let emit_retry = emit.clone();
+            let emit_open = emit.clone();
+            let checkpoint = parking_lot::Mutex::new(StreamPartial::default());
+            let on_delta = move |mid: &str, delta: MessageDelta| {
+                emit_delta(RunEvent::ModelStreaming {
+                    subagent_id: None,
+                    message_id: mid.to_string(),
+                    delta,
+                });
+            };
+            let on_prep = move |notify: crate::client::streaming::ToolPreparingNotify| {
+                emit_prep(RunEvent::ToolPreparing {
+                    index: notify.index,
+                    call_id: notify.call_id,
+                    name: notify.name,
+                    hint_path: notify.hint_path,
+                });
+            };
+            let on_partial = |partial: &StreamPartial| {
+                *checkpoint.lock() = partial.clone();
+            };
+            let on_retry = move |attempt: u32, delay_ms: u64, _err: &str| {
+                emit_retry(RunEvent::Notice {
+                    code: "model_stream_retry".to_string(),
+                    severity: "warning".to_string(),
+                    recoverable: true,
+                    message: format!(
+                        "Failed to connect to remote model (stream failed), retrying in {}s (attempt {}/{})",
+                        delay_ms / 1000,
+                        attempt + 1,
+                        LoopPolicy::interactive().max_stream_attempts().saturating_sub(1),
+                    ),
+                });
+            };
+            let on_open = move || {
+                emit_open(RunEvent::ModelCallStarted);
             };
 
-            let r = match stream_result {
-                Ok(res_val) => res_val,
-                Err(msg) => {
-                    if turn_cancel.is_cancelled() {
-                        return Err(ModelTurnFailure::Interrupted(retry_checkpoint));
+            let policy = LoopPolicy::interactive();
+            let result = crate::runtime::agent_loop::run_model_phase(ModelCall {
+                client: &self.client,
+                policy,
+                messages: base_messages,
+                tools: &tools,
+                cache_hint: Some(cache_hint),
+                required_tool: self.required_tool.as_deref(),
+                lifetime_cancel: Some(self.cancel.clone()),
+                turn_cancel: Some(turn_cancel.clone()),
+                callbacks: StreamCallbacks {
+                    on_delta: &on_delta,
+                    on_tool_preparing: Some(&on_prep),
+                    on_partial: Some(&on_partial),
+                },
+                on_retry: Some(&on_retry),
+                on_stream_open: Some(&on_open),
+            })
+            .await;
+
+            match result {
+                Ok(r) => {
+                    self.recovery_ctx.record_success();
+                    self.hook_registry
+                        .lock()
+                        .fire_after_model(&r.text, r.tool_calls.len());
+                    return Ok(r);
+                }
+                Err(e) => {
+                    if self.cancel.is_cancelled() {
+                        return Err(ModelTurnFailure::Cancelled);
                     }
+                    if turn_cancel.is_cancelled() {
+                        return Err(ModelTurnFailure::Interrupted(checkpoint.lock().clone()));
+                    }
+                    let msg = e.to_string();
                     self.recovery_ctx.record_error(&msg);
                     match self.try_recover(&msg).await {
                         RecoveryOutcome::Retry => {
@@ -796,429 +742,12 @@ impl Run {
                         }
                     }
                 }
-            };
-
-            self.recovery_ctx.record_success();
-            self.hook_registry.lock().fire_after_model(&r.text, r.tool_calls.len());
-            return Ok(r);
+            }
         }
 
         Err(ModelTurnFailure::Failed(
             "exhausted recovery attempts".to_string(),
         ))
-    }
-
-    pub(super) async fn collect_stream(
-        &self,
-        stream: impl futures::Stream<Item = Result<StreamEvent>>,
-        event_tx: &tokio::sync::mpsc::UnboundedSender<Envelope>,
-        partial: &mut StreamPartial,
-        turn_cancel: &tokio_util::sync::CancellationToken,
-    ) -> Result<ModelTurnResult> {
-        tracing::debug!("LATENCY: collect_stream start");
-        let stream_t0 = Instant::now();
-        let mut text_buffer = String::new();
-        let mut thinking_buffer = String::new();
-        let mut reasoning_blob = ReasoningState::default();
-        let mut accumulator = ToolCallAccumulator::new();
-        let mut has_tool_calls = false;
-        let mut cache_usage = CacheUsage::default();
-        // Token accumulator: batches text/thinking deltas to cut IPC traffic.
-        let mut tokens = TokenAccumulator::new();
-        // Stable id for this model response; carried on every streaming delta
-        // so the frontend routes by identity instead of position.
-        let message_id = uuid::Uuid::new_v4().to_string();
-        partial.message_id = Some(message_id.clone());
-
-        // ── Latency milestones (ms since stream_t0) ─────────────────
-        // Level policy (keep forever; tune RUST_LOG in prod):
-        //   info  — one summary per stream + first tool_call (smoking gun)
-        //   warn  — inter-event gaps ≥ LATENCY_GAP_WARN_MS
-        //   debug — per-phase first-* breadcrumbs (TTFE / thinking / text / preparing)
-        // Pinpoints: TTFT / first thinking / last thinking / first tool / stream done.
-        let mut first_event_ms: Option<u64> = None;
-        let mut first_thinking_ms: Option<u64> = None;
-        let mut last_thinking_ms: Option<u64> = None;
-        let mut first_text_ms: Option<u64> = None;
-        let mut last_text_ms: Option<u64> = None;
-        let mut first_tool_ms: Option<u64> = None;
-        let mut first_tool_name: Option<String> = None;
-        let mut first_preparing_ms: Option<u64> = None;
-        let mut last_tool_delta_ms: Option<u64> = None;
-        let mut tool_delta_count: u64 = 0;
-        let mut thinking_delta_count: u64 = 0;
-        let mut text_delta_count: u64 = 0;
-        let mut last_event_at = stream_t0;
-        let mut last_event_kind = "start";
-        let mut max_gap_ms: u64 = 0;
-        let mut max_gap_from = "start";
-        let mut max_gap_to = "start";
-
-        // Classify + stamp a stream event for latency tracking.
-        let stamp = |kind: &'static str,
-                     now: Instant,
-                     last_at: &mut Instant,
-                     last_kind: &mut &'static str,
-                     max_gap: &mut u64,
-                     max_from: &mut &'static str,
-                     max_to: &mut &'static str| {
-            let gap = now.duration_since(*last_at).as_millis() as u64;
-            if gap > *max_gap {
-                *max_gap = gap;
-                *max_from = *last_kind;
-                *max_to = kind;
-            }
-            if gap >= LATENCY_GAP_WARN_MS {
-                tracing::warn!(
-                    gap_ms = gap,
-                    from = %last_kind,
-                    to = %kind,
-                    since_start_ms = now.duration_since(stream_t0).as_millis() as u64,
-                    "LATENCY: stream gap"
-                );
-            }
-            *last_at = now;
-            *last_kind = kind;
-        };
-
-        const STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(90);
-        tokio::pin!(stream);
-        loop {
-            let flush_delay = tokens.pending_flush_delay();
-            let event = tokio::select! {
-                biased;
-                _ = self.cancel.cancelled() => anyhow::bail!("aborted"),
-                _ = turn_cancel.cancelled() => anyhow::bail!("interrupted by user steer"),
-                // Interval flush even when the upstream SSE pauses mid-burst.
-                _ = tokio::time::sleep(flush_delay.unwrap_or(std::time::Duration::ZERO)),
-                    if flush_delay.is_some() => {
-                    if let Some((text, thinking)) = tokens.flush() {
-                        if !text.is_empty() {
-                            let _ = event_tx.send(self.wrap(RunEvent::ModelStreaming {
-                                subagent_id: None,
-                                message_id: message_id.clone(),
-                                delta: MessageDelta::Text(text),
-                            }));
-                        }
-                        if !thinking.is_empty() {
-                            let _ = event_tx.send(self.wrap(RunEvent::ModelStreaming {
-                                subagent_id: None,
-                                message_id: message_id.clone(),
-                                delta: MessageDelta::Thinking(thinking),
-                            }));
-                        }
-                    }
-                    continue;
-                }
-                result = tokio::time::timeout(STREAM_IDLE_TIMEOUT, stream.next()) => {
-                    match result {
-                        Ok(Some(event)) => event,
-                        Ok(None) => break,
-                        Err(_) => anyhow::bail!("model stream idle timeout after {}s", STREAM_IDLE_TIMEOUT.as_secs()),
-                    }
-                }
-            };
-            let event = event?;
-            let now = Instant::now();
-            let since = now.duration_since(stream_t0).as_millis() as u64;
-            if first_event_ms.is_none() {
-                first_event_ms = Some(since);
-                tracing::debug!(ttfe_ms = since, "LATENCY: first stream event");
-            }
-
-            match event {
-                StreamEvent::TextDelta(delta) => {
-                    if !delta.is_empty() {
-                        stamp(
-                            "text",
-                            now,
-                            &mut last_event_at,
-                            &mut last_event_kind,
-                            &mut max_gap_ms,
-                            &mut max_gap_from,
-                            &mut max_gap_to,
-                        );
-                        text_delta_count += 1;
-                        if first_text_ms.is_none() {
-                            first_text_ms = Some(since);
-                            tracing::debug!(
-                                since_start_ms = since,
-                                chars = delta.len(),
-                                "LATENCY: first text delta"
-                            );
-                        }
-                        last_text_ms = Some(since);
-                    }
-                    tokens.push_text(&delta);
-                    text_buffer.push_str(&delta);
-                    partial.text.push_str(&delta);
-                    if tokens.should_flush() {
-                        if let Some((text, thinking)) = tokens.flush() {
-                            if !text.is_empty() {
-                                let _ = event_tx.send(self.wrap(RunEvent::ModelStreaming {
-                                    subagent_id: None,
-                                    message_id: message_id.clone(),
-                                    delta: MessageDelta::Text(text),
-                                }));
-                            }
-                            if !thinking.is_empty() {
-                                let _ = event_tx.send(self.wrap(RunEvent::ModelStreaming {
-                                    subagent_id: None,
-                                    message_id: message_id.clone(),
-                                    delta: MessageDelta::Thinking(thinking),
-                                }));
-                            }
-                        }
-                    }
-                }
-                StreamEvent::ThinkingDelta(delta) => {
-                    if !delta.is_empty() {
-                        stamp(
-                            "thinking",
-                            now,
-                            &mut last_event_at,
-                            &mut last_event_kind,
-                            &mut max_gap_ms,
-                            &mut max_gap_from,
-                            &mut max_gap_to,
-                        );
-                        thinking_delta_count += 1;
-                        if first_thinking_ms.is_none() {
-                            first_thinking_ms = Some(since);
-                            tracing::debug!(
-                                since_start_ms = since,
-                                chars = delta.len(),
-                                "LATENCY: first thinking delta"
-                            );
-                        }
-                        last_thinking_ms = Some(since);
-                    }
-                    tokens.push_thinking(&delta);
-                    thinking_buffer.push_str(&delta);
-                    partial.thinking.push_str(&delta);
-                    if tokens.should_flush() {
-                        if let Some((text, thinking)) = tokens.flush() {
-                            if !text.is_empty() {
-                                let _ = event_tx.send(self.wrap(RunEvent::ModelStreaming {
-                                    subagent_id: None,
-                                    message_id: message_id.clone(),
-                                    delta: MessageDelta::Text(text),
-                                }));
-                            }
-                            if !thinking.is_empty() {
-                                let _ = event_tx.send(self.wrap(RunEvent::ModelStreaming {
-                                    subagent_id: None,
-                                    message_id: message_id.clone(),
-                                    delta: MessageDelta::Thinking(thinking),
-                                }));
-                            }
-                        }
-                    }
-                }
-                StreamEvent::ReasoningBlob {
-                    encrypted_content,
-                    signature,
-                    summary,
-                } => {
-                    stamp(
-                        "reasoning_blob",
-                        now,
-                        &mut last_event_at,
-                        &mut last_event_kind,
-                        &mut max_gap_ms,
-                        &mut max_gap_from,
-                        &mut max_gap_to,
-                    );
-                    if let Some(blob) = encrypted_content {
-                        if !blob.is_empty() {
-                            reasoning_blob.encrypted_content = Some(blob);
-                        }
-                    }
-                    if let Some(sig) = signature {
-                        if !sig.is_empty() {
-                            // Anthropic may stream signature in chunks; append.
-                            match &mut reasoning_blob.signature {
-                                Some(existing) => existing.push_str(&sig),
-                                None => reasoning_blob.signature = Some(sig),
-                            }
-                        }
-                    }
-                    if let Some(s) = summary {
-                        if !s.is_empty() {
-                            reasoning_blob.summary = Some(s);
-                        }
-                    }
-                }
-                StreamEvent::ToolCallDelta { .. } => {
-                    stamp(
-                        "tool_delta",
-                        now,
-                        &mut last_event_at,
-                        &mut last_event_kind,
-                        &mut max_gap_ms,
-                        &mut max_gap_from,
-                        &mut max_gap_to,
-                    );
-                    has_tool_calls = true;
-                    tool_delta_count += 1;
-                    last_tool_delta_ms = Some(since);
-                    if first_tool_ms.is_none() {
-                        first_tool_ms = Some(since);
-                        let gap_after_thinking = last_thinking_ms
-                            .map(|t| since.saturating_sub(t))
-                            .unwrap_or(since);
-                        let gap_after_text = last_text_ms
-                            .map(|t| since.saturating_sub(t))
-                            .unwrap_or(0);
-                        tracing::info!(
-                            since_start_ms = since,
-                            gap_after_last_thinking_ms = gap_after_thinking,
-                            gap_after_last_text_ms = gap_after_text,
-                            "LATENCY: first tool_call delta"
-                        );
-                    }
-                    if let Some(notify) = accumulator.push(event) {
-                        if first_tool_name.is_none() {
-                            if let Some(ref name) = notify.name {
-                                first_tool_name = Some(name.clone());
-                            }
-                        }
-                        if first_preparing_ms.is_none() {
-                            first_preparing_ms = Some(since);
-                            tracing::debug!(
-                                since_start_ms = since,
-                                index = notify.index,
-                                name = ?notify.name,
-                                call_id = ?notify.call_id,
-                                hint_path = ?notify.hint_path,
-                                "LATENCY: first tool_preparing emit"
-                            );
-                        }
-                        let _ = event_tx.send(self.wrap(RunEvent::ToolPreparing {
-                            index: notify.index,
-                            call_id: notify.call_id,
-                            name: notify.name,
-                            hint_path: notify.hint_path,
-                        }));
-                    }
-                }
-                StreamEvent::Done => {
-                    stamp(
-                        "done",
-                        now,
-                        &mut last_event_at,
-                        &mut last_event_kind,
-                        &mut max_gap_ms,
-                        &mut max_gap_from,
-                        &mut max_gap_to,
-                    );
-                    break;
-                }
-                StreamEvent::CacheUsage { prompt_cache_hit_tokens, prompt_cache_miss_tokens } => {
-                    cache_usage = CacheUsage {
-                        hit_tokens: prompt_cache_hit_tokens.unwrap_or(0),
-                        miss_tokens: prompt_cache_miss_tokens.unwrap_or(0),
-                    };
-                }
-                StreamEvent::CompleteWithUsage { prompt_cache_hit_tokens, prompt_cache_miss_tokens } => {
-                    stamp(
-                        "complete_usage",
-                        now,
-                        &mut last_event_at,
-                        &mut last_event_kind,
-                        &mut max_gap_ms,
-                        &mut max_gap_from,
-                        &mut max_gap_to,
-                    );
-                    cache_usage = CacheUsage {
-                        hit_tokens: prompt_cache_hit_tokens.unwrap_or(0),
-                        miss_tokens: prompt_cache_miss_tokens.unwrap_or(0),
-                    };
-                    break;
-                }
-            }
-        }
-
-        // Final flush: emit any remaining buffered text/thinking.
-        if let Some((text, thinking)) = tokens.force_flush() {
-            if !text.is_empty() {
-                let _ = event_tx.send(self.wrap(RunEvent::ModelStreaming {
-                    subagent_id: None,
-                    message_id: message_id.clone(),
-                    delta: MessageDelta::Text(text),
-                }));
-            }
-            if !thinking.is_empty() {
-                let _ = event_tx.send(self.wrap(RunEvent::ModelStreaming {
-                    subagent_id: None,
-                    message_id: message_id.clone(),
-                    delta: MessageDelta::Thinking(thinking),
-                }));
-            }
-        }
-
-        let tool_calls = if has_tool_calls {
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                accumulator.into_tool_calls()
-            })) {
-                Ok(calls) => calls,
-                Err(_) => {
-                    tracing::error!("TURN: tool_calls accumulator panicked");
-                    return Err(anyhow::anyhow!("tool call accumulator panicked — incomplete SSE stream"));
-                }
-            }
-        } else {
-            vec![]
-        };
-
-        let total_ms = stream_t0.elapsed().as_millis() as u64;
-        let thinking_to_tool_ms = match (last_thinking_ms, first_tool_ms) {
-            (Some(t), Some(f)) => Some(f.saturating_sub(t)),
-            _ => None,
-        };
-        let text_to_tool_ms = match (last_text_ms, first_tool_ms) {
-            (Some(t), Some(f)) => Some(f.saturating_sub(t)),
-            _ => None,
-        };
-        let tool_args_span_ms = match (first_tool_ms, last_tool_delta_ms) {
-            (Some(f), Some(l)) => Some(l.saturating_sub(f)),
-            _ => None,
-        };
-
-        tracing::info!(
-            total_ms,
-            first_event_ms,
-            first_thinking_ms,
-            last_thinking_ms,
-            first_text_ms,
-            last_text_ms,
-            first_tool_ms,
-            first_preparing_ms,
-            last_tool_delta_ms,
-            thinking_to_tool_ms,
-            text_to_tool_ms,
-            tool_args_span_ms,
-            max_gap_ms,
-            max_gap_from,
-            max_gap_to,
-            thinking_delta_count,
-            text_delta_count,
-            tool_delta_count,
-            thinking_chars = thinking_buffer.len(),
-            text_chars = text_buffer.len(),
-            tool_count = tool_calls.len(),
-            first_tool_name = ?first_tool_name,
-            "LATENCY: collect_stream summary"
-        );
-
-        Ok(ModelTurnResult {
-            text: text_buffer,
-            thinking: thinking_buffer,
-            tool_calls,
-            message_id,
-            cache_usage,
-            reasoning_blob,
-        })
     }
 
     /// Queue a best-effort mid-turn context snapshot write on the blocking

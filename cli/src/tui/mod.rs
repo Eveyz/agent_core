@@ -53,11 +53,11 @@ async fn run_app(terminal: &mut ratatui::DefaultTerminal, cli: Arc<Mutex<CliStat
     let mut state = AppState::new();
     {
         let s = cli.lock().await;
-        state.model = s.brain.current_model_name().to_string();
-        state.tool_mode = format!("{:?}", s.brain.tool_execution_mode());
-        state.permission_label = format!("{:?}", s.brain.permissions().mode).to_lowercase();
-        state.enable_permission = !matches!(s.brain.permissions().mode, PermissionMode::Yolo);
-        state.enable_hooks = !s.brain.hook_registry().lock().is_empty();
+        state.model = s.brain().current_model_name().to_string();
+        state.tool_mode = format!("{:?}", s.brain().tool_execution_mode());
+        state.permission_label = format!("{:?}", s.brain().permissions().mode).to_lowercase();
+        state.enable_permission = !matches!(s.brain().permissions().mode, PermissionMode::Yolo);
+        state.enable_hooks = !s.brain().hook_registry().lock().is_empty();
         state.cwd_short = short_cwd();
         state.session_short = s
             .session_id
@@ -274,10 +274,10 @@ async fn handle_pending_command(cli: &Arc<Mutex<CliState>>, state: &mut AppState
             commands::dispatch_sync(&mut s, slash, state.enable_permission, state.enable_hooks)
         };
 
-        state.model = s.brain.current_model_name().to_string();
-        state.tool_mode = format!("{:?}", s.brain.tool_execution_mode());
-        state.permission_label = format!("{:?}", s.brain.permissions().mode).to_lowercase();
-        state.enable_permission = !matches!(s.brain.permissions().mode, PermissionMode::Yolo);
+        state.model = s.brain().current_model_name().to_string();
+        state.tool_mode = format!("{:?}", s.brain().tool_execution_mode());
+        state.permission_label = format!("{:?}", s.brain().permissions().mode).to_lowercase();
+        state.enable_permission = !matches!(s.brain().permissions().mode, PermissionMode::Yolo);
         state.session_short = s
             .session_id
             .as_deref()
@@ -302,7 +302,7 @@ async fn handle_pending_command(cli: &Arc<Mutex<CliState>>, state: &mut AppState
             state.enable_permission,
             state.enable_hooks,
         );
-        state.model = s.brain.current_model_name().to_string();
+        state.model = s.brain().current_model_name().to_string();
         drop(s);
         apply_outcome(state, outcome);
     } else if let Some(idx) = cmd.strip_prefix("rewind_to:") {
@@ -360,18 +360,17 @@ async fn apply_register_model(cli: &Arc<Mutex<CliState>>, state: &mut AppState, 
     };
     let model_name = format!("{provider}/{model_id}");
     let mut s = cli.lock().await;
-    let mut cfg = s.brain.config().clone();
+    let mut cfg = s.brain().config().clone();
     cfg.add_model(model_name.clone(), model_cfg);
     if let Err(e) = s.run_manager.update_config(cfg.clone()) {
         state.push_notice(format!("Registered in memory but update failed: {e}"));
         return;
     }
-    s.brain = (**s.run_manager.brain()).clone();
     let path = agent_core::paths::get_agverse_dir().join("config.toml");
     if let Err(e) = cfg.save(&path.to_string_lossy()) {
         state.push_notice(format!("Model '{model_name}' registered; config save failed: {e}"));
     } else {
         state.push_notice(format!("Model registered: {model_name} — saved to config.toml"));
     }
-    state.model = s.brain.current_model_name().to_string();
+    state.model = s.brain().current_model_name().to_string();
 }

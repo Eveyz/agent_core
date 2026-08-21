@@ -184,9 +184,9 @@ pub fn dispatch_sync(
         "/help" => CommandOutcome::NeedsUi(UiRequest::Help),
         "/status" => CommandOutcome::NeedsUi(UiRequest::Status),
         "/models" | "/model" => {
-            let mut models: Vec<String> = state.brain.config().models.keys().cloned().collect();
+            let mut models: Vec<String> = state.brain().config().models.keys().cloned().collect();
             models.sort();
-            let current = state.brain.current_model_name().to_string();
+            let current = state.brain().current_model_name().to_string();
             CommandOutcome::NeedsUi(UiRequest::ModelPicker { models, current })
         }
         "/models new" => CommandOutcome::NeedsUi(UiRequest::ModelForm),
@@ -214,7 +214,7 @@ pub fn dispatch_sync(
         }
         "/tool-mode" => CommandOutcome::info(format!(
             "Tool mode: {:?}",
-            state.brain.tool_execution_mode()
+            state.brain().tool_execution_mode()
         )),
         "/permission" | "/perm" => CommandOutcome::info(format!(
             "Permission system: {}\nRules checked before each tool.\nUse /perm test <tool> [json] or /perm mode <mode>.",
@@ -307,10 +307,7 @@ fn dispatch_sync_prefixed(
             return dispatch_sync(state, "/models", enable_permission, false);
         }
         return match state.run_manager.switch_model(name) {
-            Ok(()) => {
-                state.brain = (**state.run_manager.brain()).clone();
-                CommandOutcome::info(format!("Switched to model: {name}"))
-            }
+            Ok(()) => CommandOutcome::info(format!("Switched to model: {name}")),
             Err(e) => CommandOutcome::err(format!("Failed to switch model: {e}")),
         };
     }
@@ -318,7 +315,6 @@ fn dispatch_sync_prefixed(
         return match rest.trim().parse::<f64>() {
             Ok(t) => {
                 state.run_manager.set_temperature(t);
-                state.brain = (**state.run_manager.brain()).clone();
                 CommandOutcome::info(format!("Temperature set to {t}"))
             }
             Err(_) => CommandOutcome::err("Usage: /temp <float>"),
@@ -328,7 +324,6 @@ fn dispatch_sync_prefixed(
         return match rest.trim().parse::<u32>() {
             Ok(n) => {
                 state.run_manager.set_max_tokens(n);
-                state.brain = (**state.run_manager.brain()).clone();
                 CommandOutcome::info(format!("Max tokens set to {n}"))
             }
             Err(_) => CommandOutcome::err("Usage: /max-tokens <u32>"),
@@ -343,7 +338,6 @@ fn dispatch_sync_prefixed(
             }
         };
         state.run_manager.set_tool_execution_mode(mode);
-        state.brain = (**state.run_manager.brain()).clone();
         return CommandOutcome::info(format!("Tool mode: {mode:?}"));
     }
     if let Some(rest) = input.strip_prefix("/rewind") {
@@ -384,7 +378,7 @@ fn dispatch_sync_prefixed(
         if q.is_empty() {
             return CommandOutcome::err("Usage: /memory search <query>");
         }
-        let Some(memory) = state.brain.memory() else {
+        let Some(memory) = state.brain().memory() else {
             return CommandOutcome::info("Memory is disabled.");
         };
         let mem = memory.lock();
@@ -416,7 +410,6 @@ fn dispatch_sync_prefixed(
             Err(e) => return CommandOutcome::err(e),
         };
         state.run_manager.set_permission_mode(mode);
-        state.brain = (**state.run_manager.brain()).clone();
         return CommandOutcome::info(format!("Permission mode set to {mode:?}"));
     }
     if let Some(rest) = input.strip_prefix("/perm test ") {
@@ -633,7 +626,7 @@ fn list_skills(state: &CliState) -> CommandOutcome {
 }
 
 fn memory_list(state: &CliState) -> CommandOutcome {
-    let Some(memory) = state.brain.memory() else {
+    let Some(memory) = state.brain().memory() else {
         return CommandOutcome::info("Memory is disabled.");
     };
     let mem = memory.lock();
@@ -646,7 +639,7 @@ fn memory_list(state: &CliState) -> CommandOutcome {
 }
 
 fn memory_stats(state: &CliState) -> CommandOutcome {
-    let Some(memory) = state.brain.memory() else {
+    let Some(memory) = state.brain().memory() else {
         return CommandOutcome::info("Memory is disabled.");
     };
     let mem = memory.lock();
@@ -704,7 +697,7 @@ fn perm_test(state: &CliState, rest: &str) -> CommandOutcome {
     }
     let input = parts.next().unwrap_or("{}").trim();
     let json = if input.is_empty() { "{}" } else { input };
-    let mut policy = state.brain.build_permission_policy();
+    let mut policy = state.brain().build_permission_policy();
     let decision = policy.check(tool, json, None, None, None);
     CommandOutcome::info(format!("Decision for '{tool}': {decision:?}"))
 }
@@ -879,7 +872,7 @@ pub fn save_session(state: &mut CliState) -> CommandOutcome {
     let cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| ".".into());
-    let model = state.brain.current_model_name().to_string();
+    let model = state.brain().current_model_name().to_string();
     match state
         .session_mgr
         .save(state.session_id.as_deref(), &messages, &cwd, &model)
@@ -915,7 +908,7 @@ pub fn format_status(
     enable_permission: bool,
     enable_hooks: bool,
 ) -> String {
-    let model = state.brain.current_model_name();
+    let model = state.brain().current_model_name();
     let running = if state.current_run_id.is_some() {
         "Running"
     } else {
@@ -934,7 +927,7 @@ pub fn format_status(
          Hooks: {}\n\
          Todos: {todos}  Tasks: {tasks}  Skills: {skills}\n\
          Session: {}",
-        state.brain.tool_execution_mode(),
+        state.brain().tool_execution_mode(),
         state.context_history.len() as u32 * 4,
         if enable_permission {
             "active"
