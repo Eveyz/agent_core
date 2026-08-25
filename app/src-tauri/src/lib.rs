@@ -112,10 +112,52 @@ struct AgentConversationSendResult {
     deliveries: Vec<agent_core::DeliveryReceipt>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentConversationRoute {
+    SoloTurn,
+    CoordinatedTurn,
+}
+
+fn agent_conversation_route(mention_count: usize) -> Result<AgentConversationRoute, &'static str> {
+    match mention_count {
+        0 => Ok(AgentConversationRoute::SoloTurn),
+        1 => Ok(AgentConversationRoute::CoordinatedTurn),
+        _ => Err("agent conversations support one collaborator at a time"),
+    }
+}
+
+fn collaboration_orchestration_context(recipient_agent_id: &str) -> String {
+    format!(
+        "Agent-swarm coordination policy:\n\
+         - You are the primary agent for this user turn.\n\
+         - The user selected saved-agent collaborator id `{recipient_agent_id}`.\n\
+         - Do not forward the raw user request as the entire handoff.\n\
+         - Complete your own assigned work and include the concrete artifact and findings in your \
+           final response. The coordinator will deliver that completed response to the selected \
+           collaborator for review after this turn succeeds.\n\
+         - Continue coordinating from durable replies until the task is complete."
+    )
+}
+
+fn coordinated_review_request(output: &str) -> Vec<agent_core::MessagePart> {
+    vec![agent_core::MessagePart::text(format!(
+        "Review the primary agent's completed work and reply with findings:\n\n{output}"
+    ))]
+}
+
+fn completed_coordination_output(success: bool, output: &str) -> Result<&str, &'static str> {
+    if !success {
+        Err("the primary agent did not complete its coordinated turn")
+    } else if output.trim().is_empty() {
+        Err("the primary agent completed without a reviewable result")
+    } else {
+        Ok(output)
+    }
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 enum AgentConversationDirection {
-    OutboundRequest,
     Inbound,
     InboundReply,
 }
@@ -248,6 +290,7 @@ impl agent_core::AgentMessageExecutor for DesktopAgentMessageExecutor {
                 context_mode: agent_core::agent_registry::CustomAgentContextMode::ResumeSession,
                 input_metadata: Some(metadata.clone()),
                 record_history: true,
+                orchestration_context: None,
                 swarm_context: self
                     .swarm_coordinator
                     .snapshot(&delivery.message.context_id)
@@ -422,6 +465,53 @@ mod workflow_command_tests {
         assert_eq!(workflow_authoring_goal("/workflows"), None);
         assert_eq!(workflow_authoring_goal("please run /workflow"), None);
         assert_eq!(workflow_authoring_goal("normal message"), None);
+    }
+}
+
+#[cfg(test)]
+mod agent_conversation_routing_tests {
+    use super::{
+        AgentConversationRoute, agent_conversation_route, completed_coordination_output,
+        coordinated_review_request,
+    };
+
+    #[test]
+    fn agent_mentions_select_a_two_stage_coordinated_turn() {
+        assert_eq!(
+            agent_conversation_route(1),
+            Ok(AgentConversationRoute::CoordinatedTurn),
+        );
+    }
+
+    #[test]
+    fn collaboration_policy_requires_a_concrete_handoff() {
+        let policy = super::collaboration_orchestration_context("debugger-id");
+        assert!(policy.contains("Complete your own assigned work"));
+        assert!(policy.contains("Do not forward the raw user request"));
+        assert!(policy.contains("after this turn succeeds"));
+        assert!(policy.contains("`debugger-id`"));
+    }
+
+    #[test]
+    fn canonical_handoff_contains_completed_output() {
+        let parts = coordinated_review_request("result = 1 + 1");
+        assert_eq!(parts.len(), 1);
+        assert_eq!(
+            parts[0],
+            agent_core::MessagePart::text(
+                "Review the primary agent's completed work and reply with findings:\n\nresult = 1 + 1"
+            )
+        );
+    }
+
+    #[test]
+    fn unsuccessful_source_turn_cannot_create_a_handoff() {
+        assert!(completed_coordination_output(false, "iteration limit reached").is_err());
+        assert!(completed_coordination_output(true, "   ").is_err());
+        assert_eq!(
+            completed_coordination_output(true, "result = 1 + 1"),
+            Ok("result = 1 + 1")
+        );
     }
 }
 
@@ -2514,6 +2604,8 @@ async fn run_agent_conversation_turn(
     trigger: &str,
     swarm_run_id: Option<String>,
     swarm_turn_id: Option<String>,
+    orchestration_context: Option<String>,
+    expose_swarm_tools: bool,
 ) -> Result<agent_core::agent_registry::CustomAgentRunResult, String> {
     let brain = {
         let run_manager = state.run_manager.lock().await;
@@ -2558,7 +2650,12 @@ async fn run_agent_conversation_turn(
             return Err(error.to_string());
         }
     }
-    let swarm_context = swarm_run_id.as_ref().and_then(|run_id| {
+    let swarm_context = (if expose_swarm_tools {
+        swarm_run_id.as_ref()
+    } else {
+        None
+    })
+    .and_then(|run_id| {
         state.swarm_coordinator.snapshot(&run_id).ok().map(|snapshot| {
             agent_core::SwarmToolContext {
                 run_id: run_id.clone(),
@@ -2592,6 +2689,7 @@ async fn run_agent_conversation_turn(
             context_mode: agent_core::agent_registry::CustomAgentContextMode::ResumeSession,
             input_metadata,
             record_history: true,
+            orchestration_context,
             swarm_context,
         })
         .await;
@@ -2709,6 +2807,8 @@ async fn command_agent_swarm(
         "swarm_intervention",
         Some(snapshot.run.id.clone()),
         Some(turn_id.clone()),
+        None,
+        true,
     )
     .await;
     let outcome = (|| -> Result<(), String> { match result {
@@ -2810,155 +2910,136 @@ async fn send_agent_conversation_message(
     };
     let mentions = agent_mentions.unwrap_or_default();
     let priority = priority.unwrap_or(false);
-    if mentions.is_empty() {
-        if priority {
-            return Err("priority is only available for agent messages".to_string());
-        }
-        let swarm = start_or_continue_agent_swarm(&state.swarm_coordinator, &source, &input)
+    let route = agent_conversation_route(mentions.len()).map_err(str::to_string)?;
+    if route == AgentConversationRoute::SoloTurn && priority {
+        return Err("priority is only available for coordinated agent turns".to_string());
+    }
+    let recipient = if route == AgentConversationRoute::CoordinatedTurn {
+        let mention = &mentions[0];
+        let recipient = agent_core::agent_registry::get(&state.storage, &mention.agent_id)
             .map_err(|error| error.to_string())?;
-        let turn_id = format!("user:{}", uuid::Uuid::new_v4());
-        let result = run_agent_conversation_turn(
-            &state,
-            &source,
-            input,
-            None,
-            "agent_chat",
-            Some(swarm.id.clone()),
-            Some(turn_id.clone()),
-        )
-        .await;
-        let outcome = (|| -> Result<(), String> { match result {
-            Ok(result) => {
-                let snapshot = state
-                    .swarm_coordinator
-                    .snapshot(&swarm.id)
-                    .map_err(|error| error.to_string())?;
-                if snapshot.run.status == agent_core::SwarmStatus::Running
-                    && snapshot.run.messages_used == 0
-                {
-                    let _ = state.swarm_coordinator.command(
-                        &swarm.id,
-                        agent_core::SwarmCommand::Complete {
-                            agent_id: source.agent_id.clone(),
-                            summary: result.output,
-                            current_task_id: None,
-                            current_turn_id: Some(turn_id.clone()),
-                        },
-                    );
-                }
-                Ok(())
-            }
-            Err(error) => {
-                state
-                    .swarm_coordinator
-                    .mark_needs_attention(&swarm.id, &error)
-                    .map_err(|mark_error| mark_error.to_string())?;
-                Err(error)
-            }
-        } })();
-        let finish = state
-            .swarm_coordinator
-            .finish_turn(&swarm.id, &turn_id)
-            .map_err(|error| error.to_string());
-        outcome?;
-        finish?;
-        let view =
-            load_agent_conversation_view(
-                messaging,
-                state.swarm_coordinator.clone(),
-                state.session_manager.clone(),
-                source,
-            ).await?;
-        return Ok(AgentConversationSendResult {
-            view,
-            deliveries: Vec::new(),
-        });
-    }
-    if mentions.len() != 1 {
-        return Err("agent conversations support one message recipient at a time".to_string());
-    }
-    let mention = &mentions[0];
-    let recipient = agent_core::agent_registry::get(&state.storage, &mention.agent_id)
-        .map_err(|error| error.to_string())?;
-    if recipient.id == source.agent_id {
-        return Err("an agent cannot message itself".to_string());
-    }
-    if !mention.revision_id.is_empty() && mention.revision_id != recipient.updated_at {
-        return Err(format!(
-            "mentioned agent '{}' changed after selection; select it again",
-            recipient.name
-        ));
-    }
-
-    let request = {
-        let coordinator = state.swarm_coordinator.clone();
-        let messaging = messaging.clone();
-        let source_conversation = source.clone();
-        let source_agent_id = source.agent_id.clone();
-        let recipient_id = recipient.id.clone();
-        let input = input.clone();
-        tokio::task::spawn_blocking(move || {
-            let run = start_or_continue_agent_swarm(&coordinator, &source_conversation, &input)?;
-            let snapshot = coordinator.command(&run.id, agent_core::SwarmCommand::Send {
-                from_agent_id: source_agent_id,
-                to_agent_id: recipient_id,
-                parts: vec![agent_core::MessagePart::text(input)],
-                idempotency_key: format!("agent-chat:{}:{}", conversation_id, uuid::Uuid::new_v4()),
-                priority,
-                hop_count: 1,
-            })?;
-            let message = snapshot
-                .messages
-                .last()
-                .ok_or_else(|| anyhow::anyhow!("swarm send did not create a message"))?;
-            messaging.delivery(&message.id)
-        })
-        .await
-        .map_err(|error| format!("send agent message task failed: {error}"))?
-        .map_err(|error| error.to_string())?
+        if recipient.id == source.agent_id {
+            return Err("an agent cannot collaborate with itself".to_string());
+        }
+        if !mention.revision_id.is_empty() && mention.revision_id != recipient.updated_at {
+            return Err(format!(
+                "mentioned agent '{}' changed after selection; select it again",
+                recipient.name
+            ));
+        }
+        Some(recipient)
+    } else {
+        None
     };
-    if let Err(error) = append_agent_conversation_user_message(
-        state.session_manager.clone(),
+    let orchestration_context = recipient
+        .as_ref()
+        .map(|recipient| collaboration_orchestration_context(&recipient.id));
+    let swarm = start_or_continue_agent_swarm(&state.swarm_coordinator, &source, &input)
+        .map_err(|error| error.to_string())?;
+    let turn_id = format!("user:{}", uuid::Uuid::new_v4());
+    let result = run_agent_conversation_turn(
+        &state,
         &source,
-        input.clone(),
-        agent_conversation_metadata(AgentConversationMessageMetadata {
-            direction: AgentConversationDirection::OutboundRequest,
-            message_id: Some(&request.message.id),
-            reply_to: None,
-            from_agent_id: None,
-            from_display_name: None,
-            to_agent_id: Some(&request.message.to_agent_id),
-            to_display_name: Some(&request.message.to_display_name),
-            display_content: None,
-            kind: Some(agent_core::MessageKind::Request),
-            relay_only: false,
-            priority,
-        }),
+        input,
+        None,
+        if recipient.is_some() { "agent_chat_coordination" } else { "agent_chat" },
+        Some(swarm.id.clone()),
+        Some(turn_id.clone()),
+        orchestration_context,
+        recipient.is_none(),
     )
-    .await
-    {
-        let _ = messaging.command(
-            &request.task.id,
-            agent_core::AgentTaskCommand::Fail {
-                error: error.clone(),
-            },
-        );
-        return Err(error);
-    }
-    state
-        .agent_dispatcher
-        .route_peer_message(&recipient.id, priority);
-    let view =
-        load_agent_conversation_view(
-            messaging,
-            state.swarm_coordinator.clone(),
-            state.session_manager.clone(),
-            source,
-        ).await?;
-    Ok(AgentConversationSendResult {
-        view,
-        deliveries: vec![request],
-    })
+    .await;
+    let mut deliveries = Vec::new();
+    let outcome = (|| -> Result<(), String> { match result {
+        Ok(result) => {
+            let mut snapshot = state
+                .swarm_coordinator
+                .snapshot(&swarm.id)
+                .map_err(|error| error.to_string())?;
+            if let Some(recipient) = &recipient {
+                let completed_output = match completed_coordination_output(
+                    result.success,
+                    &result.output,
+                ) {
+                    Ok(output) => output,
+                    Err(error) => {
+                        state
+                            .swarm_coordinator
+                            .mark_needs_attention(&swarm.id, error)
+                            .map_err(|mark_error| mark_error.to_string())?;
+                        return Err(error.to_string());
+                    }
+                };
+                let idempotency_key = format!(
+                    "agent-chat-handoff:{}:{}:{}",
+                    swarm.id, turn_id, recipient.id
+                );
+                snapshot = state
+                    .swarm_coordinator
+                    .command(
+                        &swarm.id,
+                        agent_core::SwarmCommand::Send {
+                            from_agent_id: source.agent_id.clone(),
+                            to_agent_id: recipient.id.clone(),
+                            parts: coordinated_review_request(completed_output),
+                            idempotency_key: idempotency_key.clone(),
+                            priority,
+                            hop_count: 1,
+                        },
+                    )
+                    .map_err(|error| error.to_string())?;
+                let handoff_message_id = snapshot
+                    .messages
+                    .iter()
+                    .find(|message| message.idempotency_key == idempotency_key)
+                    .ok_or_else(|| "coordinated handoff was not persisted".to_string())?
+                    .id
+                    .clone();
+                deliveries.push(
+                    messaging
+                        .delivery(&handoff_message_id)
+                        .map_err(|error| error.to_string())?,
+                );
+                state
+                    .agent_dispatcher
+                    .route_peer_message(&recipient.id, priority);
+            } else if snapshot.run.status == agent_core::SwarmStatus::Running
+                && snapshot.run.messages_used == 0
+            {
+                let _ = state.swarm_coordinator.command(
+                    &swarm.id,
+                    agent_core::SwarmCommand::Complete {
+                        agent_id: source.agent_id.clone(),
+                        summary: result.output,
+                        current_task_id: None,
+                        current_turn_id: Some(turn_id.clone()),
+                    },
+                );
+            }
+            Ok(())
+        }
+        Err(error) => {
+            state
+                .swarm_coordinator
+                .mark_needs_attention(&swarm.id, &error)
+                .map_err(|mark_error| mark_error.to_string())?;
+            Err(error)
+        }
+    } })();
+    let finish = state
+        .swarm_coordinator
+        .finish_turn(&swarm.id, &turn_id)
+        .map_err(|error| error.to_string());
+    outcome?;
+    finish?;
+    let view = load_agent_conversation_view(
+        messaging,
+        state.swarm_coordinator.clone(),
+        state.session_manager.clone(),
+        source,
+    )
+    .await?;
+    Ok(AgentConversationSendResult { view, deliveries })
 }
 
 /// Run a custom agent standalone (outside of a workflow).
@@ -3019,6 +3100,7 @@ async fn run_agent_standalone(
             context_mode: agent_core::agent_registry::CustomAgentContextMode::Fresh,
             input_metadata: None,
             record_history: true,
+            orchestration_context: None,
             swarm_context: None,
         })
         .await;

@@ -610,7 +610,7 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
         <div className="agent-conversation-input-wrap">
           {mentionCandidates.length > 0 && (
             <div className="agent-conversation-mentions">
-              <div className="agent-mentions-heading">Send a message to an agent</div>
+              <div className="agent-mentions-heading">Coordinate with another agent</div>
               {mentionCandidates.map((candidate) => (
                 <button key={candidate.id} onClick={() => insertMention(candidate)}>
                   <span
@@ -659,7 +659,7 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
                 onClick={() => setPriority((current) => !current)}
                 disabled={!hasSingleRecipient || loading || sending}
                 aria-pressed={priority}
-                title={hasSingleRecipient ? "Interrupt the recipient's current agent task" : "Mention one agent to enable priority"}
+                title={hasSingleRecipient ? "Prioritize the collaborator handoff" : "Mention one collaborator to enable priority"}
               >
                 <ZapIcon size={12} /> Priority
               </button>

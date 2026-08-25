@@ -58,6 +58,9 @@ pub struct CustomAgentInvocation {
     pub input_metadata: Option<serde_json::Value>,
     /// Whether to record this invocation in saved-agent history.
     pub record_history: bool,
+    /// Trusted runtime guidance appended to the agent's system prompt. User
+    /// content must remain in `input`; callers must never copy raw user text here.
+    pub orchestration_context: Option<String>,
     /// Durable swarm context; when present, native coordination tools are injected.
     pub swarm_context: Option<crate::SwarmToolContext>,
 }
@@ -142,6 +145,7 @@ impl CustomAgentRunner {
             context_mode,
             input_metadata,
             record_history,
+            orchestration_context,
             swarm_context,
         } = invocation;
 
@@ -157,6 +161,10 @@ impl CustomAgentRunner {
 
         let mut subagent_config = super::build_subagent_config(&agent);
         subagent_config.working_dir = working_dir.clone().map(Into::into);
+        if let Some(context) = orchestration_context {
+            subagent_config.system_prompt.push_str("\n\n");
+            subagent_config.system_prompt.push_str(&context);
+        }
         let effective_skills = if let Some(ref skill_manager) = self.brain.skill_manager {
             skill_manager
                 .lock()
