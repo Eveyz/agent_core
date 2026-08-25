@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveAgentMentions } from './agentMentions';
+import { insertAgentMentionToken, resolveAgentMentions } from './agentMentions';
 import type { AgentDef } from '../../features/agents/types';
 
 const coder: AgentDef = {
@@ -34,5 +34,16 @@ describe('resolveAgentMentions', () => {
     expect(resolveAgentMentions('@unknown hello', [], [coder])).toEqual([]);
     expect(resolveAgentMentions('@coder hello', [], [coder, duplicate])).toEqual([]);
     expect(resolveAgentMentions('@coder2 hello', [], [coder])).toEqual([]);
+  });
+});
+
+describe('insertAgentMentionToken', () => {
+  it('starts a new coordination mention from a contact shortcut', () => {
+    expect(insertAgentMentionToken('', coder)).toBe('@coder ');
+    expect(insertAgentMentionToken('Please investigate', coder)).toBe('Please investigate @coder ');
+  });
+
+  it('completes an active mention query without replacing earlier text', () => {
+    expect(insertAgentMentionToken('Please ask @co', coder)).toBe('Please ask @coder ');
   });
 });

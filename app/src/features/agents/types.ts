@@ -102,15 +102,46 @@ export interface AgentSwarmSnapshot {
   messages: Array<{ id: string }>;
 }
 
-export interface AgentMessageEvent {
+interface AgentMessageEventBase {
   sequence: number;
   conversation_id: string;
-  event_type: string;
   message_id?: string;
   task_id?: string;
-  payload: Record<string, unknown>;
   created_at: string;
 }
+
+export type AgentMessageEvent =
+  | (AgentMessageEventBase & {
+      event_type: 'message_received';
+      payload: {
+        from?: string;
+        kind?: 'request' | 'reply' | 'notification';
+        priority?: boolean;
+        display_content?: string;
+      };
+    })
+  | (AgentMessageEventBase & {
+      event_type: 'message_sent';
+      payload: {
+        to?: string;
+        kind?: 'request' | 'reply' | 'notification';
+        priority?: boolean;
+      };
+    })
+  | (AgentMessageEventBase & {
+      event_type:
+        | 'task_queued'
+        | 'task_working'
+        | 'task_completed'
+        | 'task_failed'
+        | 'task_cancelled'
+        | 'task_needs_attention';
+      payload: {
+        error?: string;
+        worker_id?: string;
+        attempt_count?: number;
+      };
+    });
 
 export interface AgentConversationSendResult {
   view: AgentConversationView;

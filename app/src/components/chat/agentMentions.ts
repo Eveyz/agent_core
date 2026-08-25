@@ -7,6 +7,15 @@ function tokenForAgent(agent: AgentDef): string {
   return `@${agent.name.trim().replace(/\s+/g, '_')}`;
 }
 
+export function insertAgentMentionToken(input: string, agent: AgentDef): string {
+  const token = tokenForAgent(agent);
+  if (/(?:^|\s)@[^\s]*$/u.test(input)) {
+    return input.replace(/@[^\s]*$/u, `${token} `);
+  }
+  const separator = input.length > 0 && !/\s$/u.test(input) ? " " : "";
+  return `${input}${separator}${token} `;
+}
+
 function containsMentionToken(input: string, token: string): boolean {
   const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(

@@ -202,9 +202,12 @@ export const Sidebar = memo(function Sidebar({
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
   const addMenuRef = useRef<HTMLDivElement>(null);
+  const agentConversationRefreshInFlight = useRef(false);
   const { confirm, prompt, dialogElement } = useConfirmDialog();
 
   const refreshAgentConversations = useCallback(async () => {
+    if (agentConversationRefreshInFlight.current) return;
+    agentConversationRefreshInFlight.current = true;
     try {
       const conversations = await invoke<AgentConversation[]>("list_agent_conversations", {
         projectId: activeProjectId ?? "__adhoc_chat__",
@@ -212,6 +215,8 @@ export const Sidebar = memo(function Sidebar({
       setAgentConversations(conversations);
     } catch {
       setAgentConversations([]);
+    } finally {
+      agentConversationRefreshInFlight.current = false;
     }
   }, [activeProjectId]);
 
@@ -219,7 +224,13 @@ export const Sidebar = memo(function Sidebar({
     void refreshAgentConversations();
     const refresh = () => void refreshAgentConversations();
     window.addEventListener("agent-conversations-changed", refresh);
-    return () => window.removeEventListener("agent-conversations-changed", refresh);
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") refresh();
+    }, 2000);
+    return () => {
+      window.removeEventListener("agent-conversations-changed", refresh);
+      window.clearInterval(timer);
+    };
   }, [refreshAgentConversations]);
 
   useEffect(() => {
@@ -422,6 +433,11 @@ export const Sidebar = memo(function Sidebar({
     return items;
   }, [projects, sessions]);
 
+  const conversationsByAgent = useMemo(
+    () => new Map(agentConversations.map((conversation) => [conversation.agent_id, conversation])),
+    [agentConversations],
+  );
+
   const renderProjectGroup = (project: Project) => {
     const isExpanded = expandedProjects.has(project.id);
     const projectSessions = (sessions[project.id] ?? []).filter((s) => !s.pinned);
@@ -550,7 +566,7 @@ export const Sidebar = memo(function Sidebar({
 
       <div className="sidebar-scrollable">
         {/* Agent contacts */}
-        <div className={`projects-section ${agentsCollapsed ? "section-collapsed" : ""}`}>
+        <div className={`projects-section agent-swarm-section ${agentsCollapsed ? "section-collapsed" : ""}`}>
           <div
             className="projects-header"
             role="button"
@@ -570,7 +586,8 @@ export const Sidebar = memo(function Sidebar({
               ) : (
                 <ChevronDownIcon size={12} style={{ opacity: 0.7 }} />
               )}
-              {t("sidebar.agents")}
+              {t("sidebar.agentSwarm")}
+              <span className="sidebar-section-count">{agents.length}</span>
             </span>
             <button
               className="icon-btn"
@@ -590,30 +607,44 @@ export const Sidebar = memo(function Sidebar({
                   No custom agents
                 </div>
               )}
-              {agents.map((agent) => (
-                <button
-                  key={agent.id}
-                  className={`sidebar-agent-contact ${
-                    activeView === "agents" && selectedAgentId === agent.id ? "active" : ""
-                  }`}
-                  onClick={() => {
-                    dispatch(setSelectedAgent(agent.id));
-                    onNavigate?.("agents");
-                  }}
-                >
-                  <span className="sidebar-agent-contact-icon">
-                    <BotIcon size={14} color={agent.color || "var(--accent)"} />
-                  </span>
-                  <span className="sidebar-agent-contact-name">{agent.name}</span>
-                  {(agentConversations.find((conversation) => conversation.agent_id === agent.id)
-                    ?.unread_count ?? 0) > 0 && (
-                    <span className="sidebar-agent-unread">
-                      {agentConversations.find((conversation) => conversation.agent_id === agent.id)
-                        ?.unread_count}
+              {agents.map((agent) => {
+                const conversation = conversationsByAgent.get(agent.id);
+                const unreadCount = conversation?.unread_count ?? 0;
+                return (
+                  <button
+                    key={agent.id}
+                    className={`sidebar-agent-contact ${
+                      activeView === "agents" && selectedAgentId === agent.id ? "active" : ""
+                    }`}
+                    onClick={() => {
+                      dispatch(setSelectedAgent(agent.id));
+                      onNavigate?.("agents");
+                    }}
+                    aria-label={`${t("sidebar.openAgentChat")} ${agent.name}`}
+                  >
+                    <span
+                      className="sidebar-agent-contact-icon"
+                      style={{ "--agent-color": agent.color || "var(--accent)" } as React.CSSProperties}
+                    >
+                      <BotIcon size={14} />
+                      <span className="sidebar-agent-presence" />
                     </span>
-                  )}
-                </button>
-              ))}
+                    <span className="sidebar-agent-contact-copy">
+                      <span className="sidebar-agent-contact-name">{agent.name}</span>
+                      <span className="sidebar-agent-contact-state">
+                        {unreadCount > 0
+                          ? t("sidebar.agentNewMessage")
+                          : conversation
+                            ? t("sidebar.agentConversationReady")
+                            : t("sidebar.agentReady")}
+                      </span>
+                    </span>
+                    {unreadCount > 0 && (
+                      <span className="sidebar-agent-unread">{unreadCount}</span>
+                    )}
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>

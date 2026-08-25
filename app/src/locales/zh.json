@@ -300,6 +300,11 @@
   "sidebar": {
     "chat": "对话",
     "agents": "智能体",
+    "agentSwarm": "智能体群组",
+    "openAgentChat": "打开智能体对话",
+    "agentReady": "可随时对话",
+    "agentConversationReady": "对话已建立",
+    "agentNewMessage": "收到智能体消息",
     "workflows": "工作流",
     "projects": "项目",
     "pinned": "已固定",

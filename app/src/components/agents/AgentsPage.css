@@ -34,6 +34,177 @@
   color: var(--text-muted);
 }
 
+.agent-swarm-home {
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  padding: clamp(48px, 9vh, 104px) clamp(32px, 8vw, 112px) 56px;
+  background:
+    radial-gradient(circle at 50% 12%, var(--accent-subtle), transparent 34%),
+    var(--bg-main);
+}
+
+.agent-swarm-home-hero {
+  max-width: 660px;
+  margin: 0 auto 42px;
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  text-align: center;
+}
+
+.agent-swarm-home-mark {
+  width: 54px;
+  height: 54px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 18px;
+  border: 1px solid var(--accent-border);
+  border-radius: 18px;
+  background: var(--accent-subtle);
+  color: var(--accent);
+  box-shadow: 0 18px 44px color-mix(in srgb, var(--accent) 13%, transparent);
+}
+
+.agent-swarm-home-eyebrow {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.agent-swarm-home h1 {
+  margin: 9px 0 12px;
+  color: var(--text-main);
+  font-size: clamp(28px, 4vw, 42px);
+  font-weight: 620;
+  letter-spacing: -0.04em;
+}
+
+.agent-swarm-home p {
+  max-width: 590px;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.agent-swarm-create {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 22px;
+  padding: 9px 14px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--accent);
+  color: white;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.agent-swarm-contact-grid {
+  max-width: 880px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.agent-swarm-contact-card {
+  --agent-color: var(--accent);
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 15px;
+  background: color-mix(in srgb, var(--agent-color) 3%, var(--bg-secondary));
+  color: var(--text-main);
+  text-align: left;
+  cursor: pointer;
+  transition: transform 150ms ease, border-color 150ms ease, background 150ms ease;
+}
+
+.agent-swarm-contact-card:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--agent-color) 38%, var(--border-color));
+  background: color-mix(in srgb, var(--agent-color) 7%, var(--bg-secondary));
+}
+
+.agent-swarm-contact-avatar {
+  position: relative;
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--agent-color) 28%, var(--border-color));
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--agent-color) 12%, var(--bg-main));
+  color: var(--agent-color);
+}
+
+.agent-swarm-contact-avatar > span {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--bg-secondary);
+  border-radius: 999px;
+  background: var(--success);
+}
+
+.agent-swarm-contact-details {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.agent-swarm-contact-details strong,
+.agent-swarm-contact-details small {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.agent-swarm-contact-details strong {
+  font-size: 14px;
+}
+
+.agent-swarm-contact-details small {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.agent-swarm-contact-action {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.agent-swarm-contact-card:hover .agent-swarm-contact-action {
+  color: var(--agent-color);
+}
+
+.agent-swarm-home-empty {
+  max-width: 520px;
+  margin: 0 auto;
+  padding: 28px;
+  border: 1px dashed var(--border-color);
+  border-radius: 14px;
+  color: var(--text-muted);
+  text-align: center;
+  font-size: 13px;
+}
+
 .agents-empty-state .empty-state-content {
   text-align: center;
   padding: 40px;

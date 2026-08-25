@@ -300,6 +300,11 @@
   "sidebar": {
     "chat": "Chat",
     "agents": "Agents",
+    "agentSwarm": "Agent Swarm",
+    "openAgentChat": "Open chat with",
+    "agentReady": "Ready to chat",
+    "agentConversationReady": "Conversation ready",
+    "agentNewMessage": "New agent message",
     "workflows": "Workflows",
     "projects": "Projects",
     "pinned": "Pinned",
