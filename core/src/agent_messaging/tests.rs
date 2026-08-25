@@ -207,3 +207,73 @@ fn task_state_machine_and_hop_limit_stop_unbounded_agent_chains() {
             .contains("cannot message itself")
     );
 }
+
+#[test]
+fn queued_delivery_can_only_be_claimed_once() {
+    let (_directory, messaging, coder, _) = service_with_agents();
+    let source = messaging
+        .open_conversation(&coder.id, Some("__adhoc_chat__"))
+        .expect("source");
+    let delivery = messaging.send(request(&source)).expect("delivery");
+
+    let claimed = messaging
+        .claim_next("desktop-worker")
+        .expect("claim")
+        .expect("queued delivery");
+
+    assert_eq!(claimed.message, delivery.message);
+    assert_eq!(claimed.task.status, AgentTaskStatus::Working);
+    assert_eq!(claimed.task.attempt_count, 1);
+    assert_eq!(claimed.task.worker_id, "desktop-worker");
+    assert!(
+        messaging
+            .claim_next("other-worker")
+            .expect("second claim")
+            .is_none()
+    );
+}
+
+#[test]
+fn interrupted_work_requires_attention_and_can_be_explicitly_retried() {
+    let (_directory, messaging, coder, _) = service_with_agents();
+    let source = messaging
+        .open_conversation(&coder.id, Some("__adhoc_chat__"))
+        .expect("source");
+    let delivery = messaging.send(request(&source)).expect("delivery");
+    messaging
+        .claim_next("desktop-worker")
+        .expect("claim")
+        .expect("queued delivery");
+
+    let recovered = messaging
+        .recover_interrupted("application restarted during agent execution")
+        .expect("recover");
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].id, delivery.task.id);
+    assert_eq!(recovered[0].status, AgentTaskStatus::NeedsAttention);
+    assert!(
+        messaging
+            .claim_next("desktop-worker")
+            .expect("claim after recovery")
+            .is_none()
+    );
+
+    let queued = messaging.retry(&delivery.task.id).expect("explicit retry");
+    assert_eq!(queued.status, AgentTaskStatus::Queued);
+    let claimed_again = messaging
+        .claim_next("desktop-worker")
+        .expect("reclaim")
+        .expect("retried delivery");
+    assert_eq!(claimed_again.task.attempt_count, 2);
+
+    let events = messaging
+        .observe(&delivery.target_conversation.id, 0)
+        .expect("events");
+    let event_types = events
+        .events
+        .iter()
+        .map(|event| event.event_type.as_str())
+        .collect::<Vec<_>>();
+    assert!(event_types.contains(&"task_needs_attention"));
+    assert!(event_types.contains(&"task_queued"));
+}

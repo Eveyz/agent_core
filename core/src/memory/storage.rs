@@ -131,6 +131,16 @@ impl Storage {
 
         storage.init_tables()?;
         storage.add_column_if_not_exists(
+            "agent_message_tasks",
+            "attempt_count",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        storage.add_column_if_not_exists(
+            "agent_message_tasks",
+            "worker_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        storage.add_column_if_not_exists(
             "recall_memory",
             "reflection_sequence",
             "INTEGER NOT NULL DEFAULT 0",
@@ -549,6 +559,8 @@ impl Storage {
                 status TEXT NOT NULL,
                 output_message_id TEXT REFERENCES agent_messages(id),
                 error TEXT NOT NULL DEFAULT '',
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                worker_id TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );

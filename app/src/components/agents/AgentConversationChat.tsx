@@ -92,6 +92,44 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
   }, [loadConversation]);
 
   useEffect(() => {
+    if (!view || sending) return;
+    let cancelled = false;
+    let refreshing = false;
+    const refresh = async () => {
+      if (refreshing) return;
+      refreshing = true;
+      try {
+        const result = await invoke<AgentConversationView>("open_agent_conversation", {
+          agentId: agent.id,
+          projectId: activeProjectId ?? "__adhoc_chat__",
+        });
+        if (cancelled) return;
+        setView((current) => {
+          if (
+            current &&
+            current.messaging.next_sequence === result.messaging.next_sequence &&
+            current.session.messages.length === result.session.messages.length
+          ) {
+            return current;
+          }
+          window.dispatchEvent(new Event("agent-conversations-changed"));
+          return result;
+        });
+      } catch {
+        // Sending remains durable even if a transient refresh fails. The next
+        // poll (or reopening the conversation) reconstructs the latest view.
+      } finally {
+        refreshing = false;
+      }
+    };
+    const timer = window.setInterval(() => void refresh(), 1500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [activeProjectId, agent.id, sending, view?.conversation.id]);
+
+  useEffect(() => {
     historyRef.current?.scrollTo({ top: historyRef.current.scrollHeight, behavior: "smooth" });
   }, [view?.session.messages.length, sending]);
 

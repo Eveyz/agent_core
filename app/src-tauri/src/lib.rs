@@ -22,6 +22,8 @@ struct AppState {
     agent_registry: agent_core::agent_registry::AgentRegistry,
     /// Durable local inboxes and task state for agent-to-agent messages.
     agent_messaging: agent_core::AgentMessaging,
+    /// Background consumer for durable agent inbox tasks.
+    agent_dispatcher: Arc<agent_core::AgentInboxDispatcher>,
     /// Durable orchestration kernel shared by mentions and saved workflows.
     workflow_runtime: Arc<
         agent_core::workflow::runtime::DurableWorkflowRuntime<
@@ -144,6 +146,111 @@ fn agent_conversation_metadata(
     metadata: AgentConversationMessageMetadata<'_>,
 ) -> serde_json::Value {
     serde_json::json!({ "agent_messaging": metadata })
+}
+
+struct DesktopAgentMessageExecutor {
+    storage: agent_core::memory::storage::Storage,
+    runner: Arc<agent_core::agent_registry::CustomAgentRunner>,
+    session_manager: Arc<agent_core::SessionManager>,
+    base_permissions: agent_core::permission::PermissionConfig,
+}
+
+#[async_trait::async_trait]
+impl agent_core::AgentMessageExecutor for DesktopAgentMessageExecutor {
+    async fn execute(&self, delivery: &agent_core::ClaimedAgentMessage) -> anyhow::Result<String> {
+        let agent =
+            agent_core::agent_registry::get(&self.storage, &delivery.target_conversation.agent_id)?;
+        let display_content = delivery
+            .message
+            .parts
+            .iter()
+            .map(|part| match part {
+                agent_core::MessagePart::Text { text } => text.clone(),
+                agent_core::MessagePart::Data { value } => value.to_string(),
+                agent_core::MessagePart::File { artifact_id } => {
+                    format!("[Artifact: {artifact_id}]")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (input, direction, relay_only, trigger) = match delivery.message.kind {
+            agent_core::MessageKind::Request => (
+                format!(
+                    "Message from {}:\n\n{}\n\nRespond directly to {} with your findings.",
+                    delivery.message.from_display_name,
+                    display_content,
+                    delivery.message.from_display_name,
+                ),
+                AgentConversationDirection::Inbound,
+                false,
+                "agent_message",
+            ),
+            agent_core::MessageKind::Reply => (
+                format!(
+                    "Message from {}:\n\n{}\n\nRelay this response to the user faithfully and concisely. Do not send another agent message.",
+                    delivery.message.from_display_name, display_content,
+                ),
+                AgentConversationDirection::InboundReply,
+                true,
+                "agent_message_relay",
+            ),
+            agent_core::MessageKind::Notification => (
+                format!(
+                    "Notification from {}:\n\n{}",
+                    delivery.message.from_display_name, display_content,
+                ),
+                AgentConversationDirection::Inbound,
+                false,
+                "agent_notification",
+            ),
+        };
+        let metadata = agent_conversation_metadata(AgentConversationMessageMetadata {
+            direction,
+            message_id: Some(&delivery.message.id),
+            reply_to: delivery.message.reply_to.as_deref(),
+            from_agent_id: Some(&delivery.message.from_agent_id),
+            from_display_name: Some(&delivery.message.from_display_name),
+            to_agent_id: None,
+            to_display_name: None,
+            display_content: Some(&display_content),
+            kind: Some(delivery.message.kind),
+            relay_only,
+        });
+        let permission_config =
+            agent_core::agent_registry::build_permission_config(&agent, &self.base_permissions);
+        let result = self
+            .runner
+            .run(agent_core::agent_registry::CustomAgentInvocation {
+                agent,
+                input: input.clone(),
+                session_id: delivery.target_conversation.session_id.clone(),
+                working_dir: None,
+                workflow_run_id: None,
+                trigger: trigger.to_string(),
+                permission_config,
+                approval_resolver: Some(agent_core::runtime::ApprovalResolver::auto_deny()),
+                cancel_token: agent_core::CancellationToken::new(),
+                event_tx: None,
+                subagent_depth: 0,
+                context_mode: agent_core::agent_registry::CustomAgentContextMode::ResumeSession,
+                input_metadata: Some(metadata.clone()),
+                record_history: true,
+            })
+            .await;
+        match result {
+            Ok(result) => Ok(result.output),
+            Err(error) => {
+                let _ = append_agent_conversation_user_message(
+                    self.session_manager.clone(),
+                    &delivery.target_conversation,
+                    input,
+                    metadata,
+                )
+                .await;
+                Err(error)
+            }
+        }
+    }
 }
 
 /// Result of starting a user message run.
@@ -2574,139 +2681,12 @@ async fn send_agent_conversation_message(
         );
         return Err(error);
     }
-    messaging
-        .command(&request.task.id, agent_core::AgentTaskCommand::Start)
-        .map_err(|error| error.to_string())?;
-
-    let recipient_input = format!(
-        "Message from {}:\n\n{}\n\nRespond directly to {} with your findings.",
-        request.message.from_display_name, input, request.message.from_display_name
-    );
-    let inbound_metadata = agent_conversation_metadata(AgentConversationMessageMetadata {
-        direction: AgentConversationDirection::Inbound,
-        message_id: Some(&request.message.id),
-        reply_to: None,
-        from_agent_id: Some(&request.message.from_agent_id),
-        from_display_name: Some(&request.message.from_display_name),
-        to_agent_id: None,
-        to_display_name: None,
-        display_content: Some(&input),
-        kind: Some(agent_core::MessageKind::Request),
-        relay_only: false,
-    });
-    let recipient_result = match run_agent_conversation_turn(
-        &state,
-        &request.target_conversation,
-        recipient_input.clone(),
-        Some(inbound_metadata.clone()),
-        "agent_message",
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(error) => {
-            let _ = messaging.command(
-                &request.task.id,
-                agent_core::AgentTaskCommand::Fail {
-                    error: error.clone(),
-                },
-            );
-            let _ = append_agent_conversation_user_message(
-                state.session_manager.clone(),
-                &request.target_conversation,
-                recipient_input,
-                inbound_metadata,
-            )
-            .await;
-            return Err(error);
-        }
-    };
-
-    let reply = messaging
-        .send(agent_core::SendAgentMessage {
-            source_conversation_id: request.target_conversation.id.clone(),
-            to_agent_id: source.agent_id.clone(),
-            kind: agent_core::MessageKind::Reply,
-            parts: vec![agent_core::MessagePart::text(
-                recipient_result.output.clone(),
-            )],
-            context_id: Some(request.message.context_id.clone()),
-            correlation_id: Some(request.message.correlation_id.clone()),
-            reply_to: Some(request.message.id.clone()),
-            idempotency_key: format!("agent-reply:{}", request.message.id),
-            hop_count: 2,
-        })
-        .map_err(|error| error.to_string())?;
-    messaging
-        .command(
-            &request.task.id,
-            agent_core::AgentTaskCommand::Complete {
-                output_message_id: Some(reply.message.id.clone()),
-            },
-        )
-        .map_err(|error| error.to_string())?;
-    messaging
-        .command(&reply.task.id, agent_core::AgentTaskCommand::Start)
-        .map_err(|error| error.to_string())?;
-
-    let relay_input = format!(
-        "Message from {}:\n\n{}\n\nRelay this response to the user faithfully and concisely. Do not send another agent message.",
-        reply.message.from_display_name, recipient_result.output
-    );
-    let reply_metadata = agent_conversation_metadata(AgentConversationMessageMetadata {
-        direction: AgentConversationDirection::InboundReply,
-        message_id: Some(&reply.message.id),
-        reply_to: Some(&request.message.id),
-        from_agent_id: Some(&reply.message.from_agent_id),
-        from_display_name: Some(&reply.message.from_display_name),
-        to_agent_id: None,
-        to_display_name: None,
-        display_content: Some(&recipient_result.output),
-        kind: Some(agent_core::MessageKind::Reply),
-        relay_only: true,
-    });
-    let relay_result = run_agent_conversation_turn(
-        &state,
-        &source,
-        relay_input.clone(),
-        Some(reply_metadata.clone()),
-        "agent_message_relay",
-    )
-    .await;
-    match relay_result {
-        Ok(_) => {
-            messaging
-                .command(
-                    &reply.task.id,
-                    agent_core::AgentTaskCommand::Complete {
-                        output_message_id: None,
-                    },
-                )
-                .map_err(|error| error.to_string())?;
-        }
-        Err(error) => {
-            let _ = messaging.command(
-                &reply.task.id,
-                agent_core::AgentTaskCommand::Fail {
-                    error: error.clone(),
-                },
-            );
-            let _ = append_agent_conversation_user_message(
-                state.session_manager.clone(),
-                &source,
-                relay_input,
-                reply_metadata,
-            )
-            .await;
-            return Err(error);
-        }
-    }
-
+    state.agent_dispatcher.wake();
     let view =
         load_agent_conversation_view(messaging, state.session_manager.clone(), source).await?;
     Ok(AgentConversationSendResult {
         view,
-        deliveries: vec![request, reply],
+        deliveries: vec![request],
     })
 }
 
@@ -3532,6 +3512,22 @@ pub fn run() {
                     session_manager.clone(),
                 ),
             );
+            let agent_messaging = agent_core::AgentMessaging::new(storage.clone());
+            if let Err(error) = agent_messaging
+                .recover_interrupted("application restarted during agent execution")
+            {
+                eprintln!("[agent-messaging] recovery failed: {error}");
+            }
+            let agent_dispatcher = Arc::new(agent_core::AgentInboxDispatcher::new(
+                agent_messaging.clone(),
+                Arc::new(DesktopAgentMessageExecutor {
+                    storage: storage.clone(),
+                    runner: custom_agent_runner.clone(),
+                    session_manager: session_manager.clone(),
+                    base_permissions: run_manager.brain().config.permissions.clone(),
+                }),
+                format!("desktop-{}", uuid::Uuid::new_v4()),
+            ));
             let workflow_activities =
                 agent_core::workflow::runtime::ActivityRegistry::new([Arc::new(
                     agent_core::workflow::runtime::CustomAgentActivityAdapter::new(
@@ -3568,7 +3564,8 @@ pub fn run() {
                 session_manager,
                 storage: storage.clone(),
                 agent_registry: agent_core::agent_registry::AgentRegistry::new(storage.clone()),
-                agent_messaging: agent_core::AgentMessaging::new(storage.clone()),
+                agent_messaging,
+                agent_dispatcher: agent_dispatcher.clone(),
                 workflow_runtime: workflow_runtime.clone(),
                 workflow_authoring,
                 agent_mentions_enabled,
@@ -3586,6 +3583,10 @@ pub fn run() {
                 {
                     eprintln!("[workflow] recovery failed: {error}");
                 }
+            });
+
+            tauri::async_runtime::spawn(async move {
+                agent_dispatcher.run().await;
             });
 
             if let Some(daemon) = reflection_daemon {

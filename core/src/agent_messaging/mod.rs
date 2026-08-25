@@ -5,6 +5,8 @@
 //! events, and advance the recipient task through explicit commands. A future
 //! remote A2A adapter can satisfy the same interface without changing the UI.
 
+pub mod dispatcher;
+
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use rusqlite::{OptionalExtension, Transaction, params};
@@ -149,6 +151,8 @@ pub struct AgentMessageTask {
     pub status: AgentTaskStatus,
     pub output_message_id: Option<String>,
     pub error: String,
+    pub attempt_count: u32,
+    pub worker_id: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -193,6 +197,13 @@ pub struct DeliveryReceipt {
     pub task: AgentMessageTask,
     pub target_conversation: AgentConversation,
     pub replayed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClaimedAgentMessage {
+    pub message: AgentMessage,
+    pub task: AgentMessageTask,
+    pub target_conversation: AgentConversation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -355,6 +366,8 @@ impl AgentMessaging {
             status: AgentTaskStatus::Queued,
             output_message_id: None,
             error: String::new(),
+            attempt_count: 0,
+            worker_id: String::new(),
             created_at: now.clone(),
             updated_at: now.clone(),
         };
@@ -463,6 +476,152 @@ impl AgentMessaging {
         task.status = next_status;
         task.output_message_id = output_message_id;
         task.error = error;
+        task.updated_at = now;
+        Ok(task)
+    }
+
+    /// Atomically claims the oldest queued delivery for this process.
+    ///
+    /// The status predicate on the update is deliberate: even if this method
+    /// is later called by multiple workers, a task can only transition from
+    /// queued to working once.
+    pub fn claim_next(&self, worker_id: &str) -> Result<Option<ClaimedAgentMessage>> {
+        if worker_id.trim().is_empty() {
+            bail!("worker_id must not be empty");
+        }
+        let mut db = self.storage.conn();
+        let tx = db.transaction()?;
+        let task_id = tx
+            .query_row(
+                "SELECT id FROM agent_message_tasks
+                 WHERE status = 'queued'
+                 ORDER BY created_at ASC, id ASC
+                 LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(task_id) = task_id else {
+            tx.commit()?;
+            return Ok(None);
+        };
+        let now = Utc::now().to_rfc3339();
+        let changed = tx.execute(
+            "UPDATE agent_message_tasks
+             SET status = 'working', attempt_count = attempt_count + 1,
+                 worker_id = ?1, error = '', updated_at = ?2
+             WHERE id = ?3 AND status = 'queued'",
+            params![worker_id, now, task_id],
+        )?;
+        if changed == 0 {
+            tx.commit()?;
+            return Ok(None);
+        }
+        let task = task_by_id(&tx, &task_id)?.context("claimed agent task disappeared")?;
+        let message = message_by_id(&tx, &task.message_id)?
+            .context("message for claimed agent task is missing")?;
+        let target_conversation = conversation_by_id(&tx, &task.recipient_conversation_id)?
+            .context("conversation for claimed agent task is missing")?;
+        append_event(
+            &tx,
+            &task.recipient_conversation_id,
+            "task_working",
+            Some(&task.message_id),
+            Some(&task.id),
+            &serde_json::json!({
+                "worker_id": worker_id,
+                "attempt_count": task.attempt_count,
+            }),
+            &now,
+        )?;
+        tx.commit()?;
+        Ok(Some(ClaimedAgentMessage {
+            message,
+            task,
+            target_conversation,
+        }))
+    }
+
+    /// Marks work that was active when the process stopped as ambiguous.
+    /// It is intentionally not requeued automatically because a custom agent
+    /// may have completed workspace or external side effects before shutdown.
+    pub fn recover_interrupted(&self, reason: &str) -> Result<Vec<AgentMessageTask>> {
+        let mut db = self.storage.conn();
+        let tx = db.transaction()?;
+        let mut statement = tx.prepare(
+            "SELECT id, message_id, recipient_agent_id, recipient_conversation_id,
+                    status, output_message_id, error, attempt_count, worker_id,
+                    created_at, updated_at
+             FROM agent_message_tasks WHERE status = 'working'
+             ORDER BY created_at ASC, id ASC",
+        )?;
+        let interrupted = statement
+            .query_map([], task_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(statement);
+        let now = Utc::now().to_rfc3339();
+        let mut recovered = Vec::with_capacity(interrupted.len());
+        for mut task in interrupted {
+            tx.execute(
+                "UPDATE agent_message_tasks
+                 SET status = 'needs_attention', error = ?1, worker_id = '', updated_at = ?2
+                 WHERE id = ?3 AND status = 'working'",
+                params![reason, now, task.id],
+            )?;
+            append_event(
+                &tx,
+                &task.recipient_conversation_id,
+                "task_needs_attention",
+                Some(&task.message_id),
+                Some(&task.id),
+                &serde_json::json!({ "error": reason, "recovered": true }),
+                &now,
+            )?;
+            task.status = AgentTaskStatus::NeedsAttention;
+            task.error = reason.to_string();
+            task.worker_id.clear();
+            task.updated_at = now.clone();
+            recovered.push(task);
+        }
+        tx.commit()?;
+        Ok(recovered)
+    }
+
+    pub fn retry(&self, task_id: &str) -> Result<AgentMessageTask> {
+        let mut db = self.storage.conn();
+        let tx = db.transaction()?;
+        let mut task = task_by_id(&tx, task_id)?
+            .with_context(|| format!("agent message task '{task_id}' not found"))?;
+        if !matches!(
+            task.status,
+            AgentTaskStatus::NeedsAttention | AgentTaskStatus::Failed
+        ) {
+            bail!(
+                "agent message task '{task_id}' cannot be retried from {:?}",
+                task.status
+            );
+        }
+        let now = Utc::now().to_rfc3339();
+        tx.execute(
+            "UPDATE agent_message_tasks
+             SET status = 'queued', output_message_id = NULL, error = '',
+                 worker_id = '', updated_at = ?1 WHERE id = ?2",
+            params![now, task_id],
+        )?;
+        append_event(
+            &tx,
+            &task.recipient_conversation_id,
+            "task_queued",
+            Some(&task.message_id),
+            Some(&task.id),
+            &serde_json::json!({ "retry": true, "previous_attempts": task.attempt_count }),
+            &now,
+        )?;
+        tx.commit()?;
+        task.status = AgentTaskStatus::Queued;
+        task.output_message_id = None;
+        task.error.clear();
+        task.worker_id.clear();
         task.updated_at = now;
         Ok(task)
     }
@@ -666,8 +825,8 @@ fn insert_task(tx: &Transaction<'_>, task: &AgentMessageTask) -> Result<()> {
     tx.execute(
         "INSERT INTO agent_message_tasks
          (id, message_id, recipient_agent_id, recipient_conversation_id, status,
-          output_message_id, error, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+          output_message_id, error, attempt_count, worker_id, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             task.id,
             task.message_id,
@@ -676,6 +835,8 @@ fn insert_task(tx: &Transaction<'_>, task: &AgentMessageTask) -> Result<()> {
             task.status.as_str(),
             task.output_message_id,
             task.error,
+            task.attempt_count,
+            task.worker_id,
             task.created_at,
             task.updated_at,
         ],
@@ -752,7 +913,8 @@ fn message_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentMessage> {
 fn task_by_id(db: &rusqlite::Connection, id: &str) -> Result<Option<AgentMessageTask>> {
     db.query_row(
         "SELECT id, message_id, recipient_agent_id, recipient_conversation_id,
-                status, output_message_id, error, created_at, updated_at
+                status, output_message_id, error, attempt_count, worker_id,
+                created_at, updated_at
          FROM agent_message_tasks WHERE id = ?1",
         params![id],
         task_from_row,
@@ -771,8 +933,10 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentMessageTask> 
         status: AgentTaskStatus::from_str(&status).map_err(to_sql_conversion_error)?,
         output_message_id: row.get(5)?,
         error: row.get(6)?,
-        created_at: row.get(7)?,
-        updated_at: row.get(8)?,
+        attempt_count: row.get::<_, i64>(7)? as u32,
+        worker_id: row.get(8)?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
     })
 }
 
@@ -797,7 +961,8 @@ fn delivery_by_idempotency_key(
     };
     let task = db.query_row(
         "SELECT id, message_id, recipient_agent_id, recipient_conversation_id,
-                status, output_message_id, error, created_at, updated_at
+                status, output_message_id, error, attempt_count, worker_id,
+                created_at, updated_at
          FROM agent_message_tasks WHERE message_id = ?1",
         params![message.id],
         task_from_row,

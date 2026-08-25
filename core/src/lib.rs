@@ -35,10 +35,11 @@ pub mod util;
 pub mod workflow;
 pub mod worktree;
 
+pub use agent_messaging::dispatcher::{AgentInboxDispatcher, AgentMessageExecutor};
 pub use agent_messaging::{
     AGENT_MESSAGE_SCHEMA_V1, AgentConversation, AgentMessage, AgentMessageEvent, AgentMessageTask,
-    AgentMessaging, AgentTaskCommand, AgentTaskStatus, DeliveryReceipt, MAX_AGENT_MESSAGE_HOPS,
-    MessageKind, MessageObservation, MessagePart, SendAgentMessage,
+    AgentMessaging, AgentTaskCommand, AgentTaskStatus, ClaimedAgentMessage, DeliveryReceipt,
+    MAX_AGENT_MESSAGE_HOPS, MessageKind, MessageObservation, MessagePart, SendAgentMessage,
 };
 pub use config::{
     ApiMode, Config, MemoryConfig, MemoryMode, ModelConfig, ReflectionConfig, RuntimeOverrides,
