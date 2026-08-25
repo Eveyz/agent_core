@@ -2751,6 +2751,16 @@ async fn run_agent_standalone(
         state.session_manager.clone(),
     );
     let _ = app_handle;
+    let cancel_token = agent_core::CancellationToken::new();
+    let lease = state
+        .active_agent_runs
+        .enter(
+            def.id.clone(),
+            format!("standalone:{}", uuid::Uuid::new_v4()),
+            agent_core::AgentRunLane::User,
+            cancel_token.clone(),
+        )
+        .await;
     let result = runner
         .run(agent_core::agent_registry::CustomAgentInvocation {
             agent: def,
@@ -2761,15 +2771,16 @@ async fn run_agent_standalone(
             trigger: "manual".to_string(),
             permission_config,
             approval_resolver: None,
-            cancel_token: agent_core::CancellationToken::new(),
+            cancel_token,
             event_tx: None,
             subagent_depth: 0,
             context_mode: agent_core::agent_registry::CustomAgentContextMode::Fresh,
             input_metadata: None,
             record_history: true,
         })
-        .await
-        .map_err(|error| error.to_string())?;
+        .await;
+    lease.finish();
+    let result = result.map_err(|error| error.to_string())?;
     Ok(result.output)
 }
 

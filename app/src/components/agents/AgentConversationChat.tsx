@@ -79,8 +79,13 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
       .slice(0, 6);
   }, [agent.id, agents, mentionQuery]);
   const resolvedMentions = useMemo(
-    () => resolveAgentMentions(input, selectedMentions, agents),
-    [agents, input, selectedMentions],
+    () =>
+      resolveAgentMentions(
+        input,
+        selectedMentions,
+        agents.filter((candidate) => candidate.id !== agent.id),
+      ),
+    [agent.id, agents, input, selectedMentions],
   );
   const hasSingleRecipient = resolvedMentions.length === 1;
   const persistedPeerMessageIds = useMemo(

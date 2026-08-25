@@ -8,7 +8,7 @@ use std::{
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Notify;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,13 +28,12 @@ pub enum PeerMessageRoute {
 
 #[derive(Clone, Default)]
 pub struct ActiveAgentRuns {
-    inner: Arc<ActiveAgentRunsInner>,
+    slots: Arc<Mutex<HashMap<String, Arc<AgentSlot>>>>,
 }
 
-#[derive(Default)]
-struct ActiveAgentRunsInner {
-    runs: Mutex<HashMap<String, ActiveAgentRun>>,
-    changed: Notify,
+struct AgentSlot {
+    permit: Arc<Semaphore>,
+    active: Mutex<Option<ActiveAgentRun>>,
 }
 
 struct ActiveAgentRun {
@@ -45,11 +44,10 @@ struct ActiveAgentRun {
 }
 
 pub struct ActiveAgentRunLease {
-    registry: ActiveAgentRuns,
-    agent_id: String,
-    run_id: String,
+    slot: Arc<AgentSlot>,
+    run_id: Option<String>,
     preempted: Arc<AtomicBool>,
-    finished: bool,
+    permit: Option<OwnedSemaphorePermit>,
 }
 
 impl ActiveAgentRuns {
@@ -65,38 +63,40 @@ impl ActiveAgentRuns {
         lane: AgentRunLane,
         cancel: CancellationToken,
     ) -> ActiveAgentRunLease {
-        let agent_id = agent_id.into();
         let run_id = run_id.into();
-        loop {
-            let changed = self.inner.changed.notified();
-            let acquired = {
-                let mut runs = self.inner.runs.lock();
-                if runs.contains_key(&agent_id) {
-                    None
-                } else {
-                    let preempted = Arc::new(AtomicBool::new(false));
-                    runs.insert(
-                        agent_id.clone(),
-                        ActiveAgentRun {
-                            run_id: run_id.clone(),
-                            lane,
-                            cancel: cancel.clone(),
-                            preempted: preempted.clone(),
-                        },
-                    );
-                    Some(preempted)
-                }
-            };
-            if let Some(preempted) = acquired {
-                return ActiveAgentRunLease {
-                    registry: self.clone(),
-                    agent_id,
-                    run_id,
-                    preempted,
-                    finished: false,
-                };
-            }
-            changed.await;
+        let mut lease = self.reserve(agent_id).await;
+        lease.activate(run_id, lane, cancel);
+        lease
+    }
+
+    /// Reserves an agent's single turn without exposing a cancellable run yet.
+    /// The dispatcher uses this to choose the highest-priority durable task
+    /// only after the recipient lane is available.
+    pub(crate) async fn reserve(&self, agent_id: impl Into<String>) -> ActiveAgentRunLease {
+        let agent_id = agent_id.into();
+        let slot = self
+            .slots
+            .lock()
+            .entry(agent_id)
+            .or_insert_with(|| {
+                Arc::new(AgentSlot {
+                    permit: Arc::new(Semaphore::new(1)),
+                    active: Mutex::new(None),
+                })
+            })
+            .clone();
+        let permit = slot
+            .permit
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("agent run semaphore is never closed");
+        let preempted = Arc::new(AtomicBool::new(false));
+        ActiveAgentRunLease {
+            slot,
+            run_id: None,
+            preempted,
+            permit: Some(permit),
         }
     }
 
@@ -104,8 +104,11 @@ impl ActiveAgentRuns {
         if !priority {
             return PeerMessageRoute::Queued;
         }
-        let runs = self.inner.runs.lock();
-        let Some(active) = runs.get(agent_id) else {
+        let Some(slot) = self.slots.lock().get(agent_id).cloned() else {
+            return PeerMessageRoute::Queued;
+        };
+        let active = slot.active.lock();
+        let Some(active) = active.as_ref() else {
             return PeerMessageRoute::Queued;
         };
         match active.lane {
@@ -121,35 +124,49 @@ impl ActiveAgentRuns {
             }
         }
     }
-
-    fn finish(&self, agent_id: &str, run_id: &str) {
-        let mut runs = self.inner.runs.lock();
-        if runs
-            .get(agent_id)
-            .is_some_and(|active| active.run_id == run_id)
-        {
-            runs.remove(agent_id);
-            drop(runs);
-            self.inner.changed.notify_waiters();
-        }
-    }
 }
 
 impl ActiveAgentRunLease {
+    pub(crate) fn activate(
+        &mut self,
+        run_id: impl Into<String>,
+        lane: AgentRunLane,
+        cancel: CancellationToken,
+    ) {
+        let run_id = run_id.into();
+        *self.slot.active.lock() = Some(ActiveAgentRun {
+            run_id: run_id.clone(),
+            lane,
+            cancel,
+            preempted: self.preempted.clone(),
+        });
+        self.run_id = Some(run_id);
+    }
+
     pub fn was_preempted(&self) -> bool {
         self.preempted.load(Ordering::Acquire)
     }
 
     pub fn finish(mut self) {
-        self.registry.finish(&self.agent_id, &self.run_id);
-        self.finished = true;
+        self.release();
+    }
+
+    fn release(&mut self) {
+        let mut active = self.slot.active.lock();
+        if self.run_id.as_ref().is_some_and(|run_id| {
+            active
+                .as_ref()
+                .is_some_and(|active| active.run_id == *run_id)
+        }) {
+            *active = None;
+        }
+        drop(active);
+        self.permit.take();
     }
 }
 
 impl Drop for ActiveAgentRunLease {
     fn drop(&mut self) {
-        if !self.finished {
-            self.registry.finish(&self.agent_id, &self.run_id);
-        }
+        self.release();
     }
 }

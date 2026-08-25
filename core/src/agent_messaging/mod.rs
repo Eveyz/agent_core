@@ -499,13 +499,55 @@ impl AgentMessaging {
     /// is later called by multiple workers, a task can only transition from
     /// queued to working once.
     pub fn claim_next(&self, worker_id: &str) -> Result<Option<ClaimedAgentMessage>> {
+        self.claim_next_matching(worker_id, None)
+    }
+
+    pub(crate) fn claim_next_for(
+        &self,
+        worker_id: &str,
+        recipient_agent_id: &str,
+    ) -> Result<Option<ClaimedAgentMessage>> {
+        self.claim_next_matching(worker_id, Some(recipient_agent_id))
+    }
+
+    pub(crate) fn queued_recipient_ids(&self) -> Result<Vec<String>> {
+        let db = self.storage.conn();
+        let mut statement = db.prepare(
+            "SELECT task.recipient_agent_id
+             FROM agent_message_tasks AS task
+             JOIN agent_messages AS message ON message.id = task.message_id
+             WHERE task.status = 'queued'
+             GROUP BY task.recipient_agent_id
+             ORDER BY MAX(message.priority) DESC, MIN(task.created_at) ASC",
+        )?;
+        Ok(statement
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    fn claim_next_matching(
+        &self,
+        worker_id: &str,
+        recipient_agent_id: Option<&str>,
+    ) -> Result<Option<ClaimedAgentMessage>> {
         if worker_id.trim().is_empty() {
             bail!("worker_id must not be empty");
         }
         let mut db = self.storage.conn();
         let tx = db.transaction()?;
-        let task_id = tx
-            .query_row(
+        let task_id = if let Some(recipient_agent_id) = recipient_agent_id {
+            tx.query_row(
+                "SELECT task.id FROM agent_message_tasks AS task
+                 JOIN agent_messages AS message ON message.id = task.message_id
+                 WHERE task.status = 'queued' AND task.recipient_agent_id = ?1
+                 ORDER BY message.priority DESC, task.created_at ASC, task.id ASC
+                 LIMIT 1",
+                params![recipient_agent_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+        } else {
+            tx.query_row(
                 "SELECT task.id FROM agent_message_tasks AS task
                  JOIN agent_messages AS message ON message.id = task.message_id
                  WHERE task.status = 'queued'
@@ -514,7 +556,8 @@ impl AgentMessaging {
                 [],
                 |row| row.get::<_, String>(0),
             )
-            .optional()?;
+            .optional()?
+        };
         let Some(task_id) = task_id else {
             tx.commit()?;
             return Ok(None);

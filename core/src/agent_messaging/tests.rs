@@ -342,6 +342,41 @@ async fn peer_messages_never_interrupt_an_active_user_lane() {
     lease.finish();
 }
 
+#[tokio::test]
+async fn a_waiting_turn_acquires_the_agent_slot_after_the_active_turn_finishes() {
+    let active_runs = ActiveAgentRuns::new();
+    let first = active_runs
+        .enter(
+            "debugger",
+            "user-run-1",
+            AgentRunLane::User,
+            tokio_util::sync::CancellationToken::new(),
+        )
+        .await;
+    let waiting = tokio::spawn({
+        let active_runs = active_runs.clone();
+        async move {
+            active_runs
+                .enter(
+                    "debugger",
+                    "peer-run-2",
+                    AgentRunLane::Peer,
+                    tokio_util::sync::CancellationToken::new(),
+                )
+                .await
+        }
+    });
+    tokio::task::yield_now().await;
+
+    first.finish();
+
+    let second = tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+        .await
+        .expect("waiting turn should be notified")
+        .expect("waiting task should not panic");
+    second.finish();
+}
+
 #[test]
 fn priority_delivery_is_claimed_before_older_normal_delivery() {
     let (_directory, messaging, coder, _) = service_with_agents();

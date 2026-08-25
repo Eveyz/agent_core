@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashSet, sync::Arc, time::Duration};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -30,6 +30,7 @@ pub struct AgentInboxDispatcher {
     active_runs: ActiveAgentRuns,
     worker_id: String,
     wake: Notify,
+    recipient_workers: parking_lot::Mutex<HashSet<String>>,
 }
 
 impl AgentInboxDispatcher {
@@ -45,6 +46,7 @@ impl AgentInboxDispatcher {
             active_runs,
             worker_id: worker_id.into(),
             wake: Notify::new(),
+            recipient_workers: parking_lot::Mutex::new(HashSet::new()),
         }
     }
 
@@ -61,20 +63,38 @@ impl AgentInboxDispatcher {
     }
 
     pub async fn process_next(&self) -> Result<bool> {
-        let Some(delivery) = self.messaging.claim_next(&self.worker_id)? else {
+        let Some(recipient_agent_id) = self.messaging.queued_recipient_ids()?.into_iter().next()
+        else {
             return Ok(false);
         };
+        self.process_next_for(&recipient_agent_id).await
+    }
 
+    async fn process_next_for(&self, recipient_agent_id: &str) -> Result<bool> {
         let cancel_token = CancellationToken::new();
-        let lease = self
-            .active_runs
-            .enter(
-                delivery.task.recipient_agent_id.clone(),
-                delivery.task.id.clone(),
-                AgentRunLane::Peer,
-                cancel_token.clone(),
-            )
-            .await;
+        let mut lease = self.active_runs.reserve(recipient_agent_id).await;
+        let Some(delivery) = self
+            .messaging
+            .claim_next_for(&self.worker_id, recipient_agent_id)?
+        else {
+            lease.finish();
+            return Ok(false);
+        };
+        lease.activate(
+            delivery.task.id.clone(),
+            AgentRunLane::Peer,
+            cancel_token.clone(),
+        );
+        self.process_claimed(delivery, cancel_token, lease).await?;
+        Ok(true)
+    }
+
+    async fn process_claimed(
+        &self,
+        delivery: ClaimedAgentMessage,
+        cancel_token: CancellationToken,
+        lease: super::ActiveAgentRunLease,
+    ) -> Result<()> {
         let execution = self.executor.execute(&delivery, cancel_token).await;
         let was_preempted = lease.was_preempted();
         lease.finish();
@@ -93,7 +113,7 @@ impl AgentInboxDispatcher {
                     }
                 };
                 self.messaging.command(&delivery.task.id, command)?;
-                return Ok(true);
+                return Ok(());
             }
         };
 
@@ -129,7 +149,7 @@ impl AgentInboxDispatcher {
                 AgentTaskCommand::NeedsAttention { reason },
             )?;
         }
-        Ok(true)
+        Ok(())
     }
 
     pub async fn drain_available(&self) -> Result<usize> {
@@ -140,9 +160,43 @@ impl AgentInboxDispatcher {
         Ok(processed)
     }
 
-    pub async fn run(&self) {
+    async fn drain_recipient(&self, recipient_agent_id: &str) -> Result<()> {
+        while self.process_next_for(recipient_agent_id).await? {
+            self.wake();
+        }
+        Ok(())
+    }
+
+    fn schedule_recipient_workers(self: &Arc<Self>) -> Result<()> {
+        for recipient_agent_id in self.messaging.queued_recipient_ids()? {
+            if !self
+                .recipient_workers
+                .lock()
+                .insert(recipient_agent_id.clone())
+            {
+                continue;
+            }
+            let dispatcher = self.clone();
+            tokio::spawn(async move {
+                let result = dispatcher.drain_recipient(&recipient_agent_id).await;
+                dispatcher
+                    .recipient_workers
+                    .lock()
+                    .remove(&recipient_agent_id);
+                dispatcher.wake();
+                if let Err(error) = result {
+                    eprintln!(
+                        "[agent-messaging] recipient {recipient_agent_id} dispatcher error: {error}"
+                    );
+                }
+            });
+        }
+        Ok(())
+    }
+
+    pub async fn run(self: Arc<Self>) {
         loop {
-            if let Err(error) = self.drain_available().await {
+            if let Err(error) = self.schedule_recipient_workers() {
                 eprintln!("[agent-messaging] dispatcher error: {error}");
             }
             tokio::select! {
@@ -174,6 +228,16 @@ mod tests {
         started: TokioNotify,
     }
 
+    struct PriorityRecordingExecutor {
+        priorities: Mutex<Vec<bool>>,
+    }
+
+    struct RecipientConcurrencyExecutor {
+        debugger_started: TokioNotify,
+        release_debugger: TokioNotify,
+        coder_processed: TokioNotify,
+    }
+
     #[async_trait]
     impl AgentMessageExecutor for BlockingExecutor {
         async fn execute(
@@ -184,6 +248,38 @@ mod tests {
             self.started.notify_one();
             cancel_token.cancelled().await;
             anyhow::bail!("cancelled")
+        }
+    }
+
+    #[async_trait]
+    impl AgentMessageExecutor for PriorityRecordingExecutor {
+        async fn execute(
+            &self,
+            delivery: &ClaimedAgentMessage,
+            _cancel_token: CancellationToken,
+        ) -> Result<String> {
+            self.priorities
+                .lock()
+                .unwrap()
+                .push(delivery.message.priority);
+            Ok("processed".into())
+        }
+    }
+
+    #[async_trait]
+    impl AgentMessageExecutor for RecipientConcurrencyExecutor {
+        async fn execute(
+            &self,
+            delivery: &ClaimedAgentMessage,
+            _cancel_token: CancellationToken,
+        ) -> Result<String> {
+            if delivery.task.recipient_agent_id == "debugger" {
+                self.debugger_started.notify_one();
+                self.release_debugger.notified().await;
+            } else if delivery.task.recipient_agent_id == "coder" {
+                self.coder_processed.notify_one();
+            }
+            Ok("processed".into())
         }
     }
 
@@ -356,5 +452,114 @@ mod tests {
             event.task_id.as_deref() == Some(interrupted.task.id.as_str())
                 && event.event_type == "task_needs_attention"
         }));
+    }
+
+    #[tokio::test]
+    async fn priority_is_reselected_after_a_user_lane_becomes_available() {
+        let (_directory, messaging, source) = setup();
+        messaging
+            .send(SendAgentMessage {
+                source_conversation_id: source.id.clone(),
+                to_agent_id: "debugger".into(),
+                kind: MessageKind::Notification,
+                parts: vec![MessagePart::text("normal")],
+                context_id: None,
+                correlation_id: None,
+                reply_to: None,
+                idempotency_key: "normal-notification".into(),
+                hop_count: 1,
+                priority: false,
+            })
+            .unwrap();
+        let active_runs = ActiveAgentRuns::new();
+        let user_lease = active_runs
+            .enter(
+                "debugger",
+                "user-run",
+                AgentRunLane::User,
+                CancellationToken::new(),
+            )
+            .await;
+        let executor = Arc::new(PriorityRecordingExecutor {
+            priorities: Mutex::new(Vec::new()),
+        });
+        let dispatcher = Arc::new(AgentInboxDispatcher::new(
+            messaging.clone(),
+            executor.clone(),
+            active_runs,
+            "test-worker",
+        ));
+        let processing = tokio::spawn({
+            let dispatcher = dispatcher.clone();
+            async move { dispatcher.process_next().await }
+        });
+        tokio::task::yield_now().await;
+        messaging
+            .send(SendAgentMessage {
+                source_conversation_id: source.id,
+                to_agent_id: "debugger".into(),
+                kind: MessageKind::Notification,
+                parts: vec![MessagePart::text("priority")],
+                context_id: None,
+                correlation_id: None,
+                reply_to: None,
+                idempotency_key: "priority-notification".into(),
+                hop_count: 1,
+                priority: true,
+            })
+            .unwrap();
+
+        user_lease.finish();
+        assert!(processing.await.unwrap().unwrap());
+        assert_eq!(*executor.priorities.lock().unwrap(), vec![true]);
+    }
+
+    #[tokio::test]
+    async fn a_busy_recipient_does_not_block_an_unrelated_recipient() {
+        let (_directory, messaging, coder_source) = setup();
+        let debugger_source = messaging
+            .open_conversation("debugger", Some("__adhoc_chat__"))
+            .unwrap();
+        for (source_conversation_id, recipient, key) in [
+            (coder_source.id, "debugger", "to-debugger"),
+            (debugger_source.id, "coder", "to-coder"),
+        ] {
+            messaging
+                .send(SendAgentMessage {
+                    source_conversation_id,
+                    to_agent_id: recipient.into(),
+                    kind: MessageKind::Notification,
+                    parts: vec![MessagePart::text("notification")],
+                    context_id: None,
+                    correlation_id: None,
+                    reply_to: None,
+                    idempotency_key: key.into(),
+                    hop_count: 1,
+                    priority: false,
+                })
+                .unwrap();
+        }
+        let executor = Arc::new(RecipientConcurrencyExecutor {
+            debugger_started: TokioNotify::new(),
+            release_debugger: TokioNotify::new(),
+            coder_processed: TokioNotify::new(),
+        });
+        let dispatcher = Arc::new(AgentInboxDispatcher::new(
+            messaging,
+            executor.clone(),
+            ActiveAgentRuns::new(),
+            "test-worker",
+        ));
+        let run = tokio::spawn(dispatcher.run());
+
+        tokio::time::timeout(Duration::from_secs(1), executor.debugger_started.notified())
+            .await
+            .expect("debugger execution should start");
+        tokio::time::timeout(Duration::from_secs(1), executor.coder_processed.notified())
+            .await
+            .expect("coder should execute while debugger is still busy");
+
+        executor.release_debugger.notify_one();
+        run.abort();
     }
 }
