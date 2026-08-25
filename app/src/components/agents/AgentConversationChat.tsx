@@ -92,7 +92,7 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
   );
 
   const deliveryStatus = useCallback(
-    (messageId?: string) => {
+    (messageId?: string, completedLabel = "Completed") => {
       if (!messageId || !view) return null;
       const event = [...view.messaging.events]
         .reverse()
@@ -102,7 +102,7 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
         );
       if (!event) return null;
       if (event.event_type === "task_working") return "Working…";
-      if (event.event_type === "task_completed") return "Replied";
+      if (event.event_type === "task_completed") return completedLabel;
       if (event.event_type === "task_failed") {
         return `Failed: ${eventPayloadText(event.payload, "error") || "delivery failed"}`;
       }
@@ -272,12 +272,14 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
           const metadata = messageMetadata(message);
           if (message.role === "tool" || !message.content.trim()) return null;
           if (metadata?.direction === "inbound" || metadata?.direction === "inbound_reply") {
+            const status = deliveryStatus(metadata.message_id, "Processed");
             return (
               <div className="agent-peer-message" key={`${index}-${metadata.message_id ?? "peer"}`}>
                 <div className="agent-peer-message-label">
                   <MessageSquareIcon size={13} /> Message from {metadata.from_display_name}
                 </div>
                 <div>{metadata.display_content || message.content}</div>
+                {status && <div className="agent-delivery-card">{status}</div>}
               </div>
             );
           }
@@ -290,8 +292,8 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
                 {metadata?.direction === "outbound_request" && (
                   <div className="agent-delivery-card">
                     <MessageSquareIcon size={13} /> Messaged {metadata.to_display_name}
-                    {deliveryStatus(metadata.message_id) && (
-                      <span> · {deliveryStatus(metadata.message_id)}</span>
+                    {deliveryStatus(metadata.message_id, "Replied") && (
+                      <span> · {deliveryStatus(metadata.message_id, "Replied")}</span>
                     )}
                   </div>
                 )}
@@ -312,6 +314,11 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
               <MessageSquareIcon size={13} /> Message from {eventPayloadText(event.payload, "from")}
             </div>
             <div>{eventPayloadText(event.payload, "display_content") || "Message received"}</div>
+            {deliveryStatus(event.message_id, "Processed") && (
+              <div className="agent-delivery-card">
+                {deliveryStatus(event.message_id, "Processed")}
+              </div>
+            )}
           </div>
         ))}
         {sending && (
