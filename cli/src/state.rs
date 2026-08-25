@@ -10,12 +10,11 @@ use std::sync::Arc;
 
 /// CLI session state — replaces the legacy `Agent` struct.
 ///
-/// Holds the shared Brain + RunManager, plus per-session data
+/// Holds the shared RunManager, plus per-session data
 /// (context history, tool registrations, session info).
 pub struct CliState {
-    /// The shared Brain (config, memory, skills, etc.).
-    pub brain: Brain,
-    /// The RunManager for creating and managing Runs.
+    /// The RunManager for creating and managing Runs. Brain access goes
+    /// through [`Self::brain`].
     pub run_manager: RunManager,
     /// Per-session context history (persists across Runs).
     pub context_history: Vec<agent_core::Message>,
@@ -41,4 +40,10 @@ pub struct CliState {
     pub workflow_authoring: Arc<WorkflowAuthoringService>,
     /// `/workflow` handoff consumed by the active CLI frontend.
     pub pending_workflow_request: Option<String>,
+}
+
+impl CliState {
+    pub fn brain(&self) -> &Brain {
+        self.run_manager.brain().as_ref()
+    }
 }

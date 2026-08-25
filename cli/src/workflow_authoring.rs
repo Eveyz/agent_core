@@ -49,7 +49,7 @@ pub fn scoped_tool_factory(
     workflow_authoring_tool_factory(
         state.workflow_authoring.clone(),
         state.workflow_runtime.clone(),
-        state.run_manager.brain().config.permissions.clone(),
+        state.run_manager.permissions(),
         RunScope {
             session_id: session_id.unwrap_or_default(),
             workspace,

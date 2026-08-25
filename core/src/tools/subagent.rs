@@ -24,6 +24,7 @@ pub fn register_subagent_tools(
     skill_manager: Option<Arc<Mutex<crate::skills::SkillManager>>>,
     approval_resolver: Option<crate::runtime::ApprovalResolver>,
     plan_store: Option<Arc<SessionPlanStore>>,
+    run_event_emit: Option<crate::runtime::event::RunEventEmit>,
 ) {
     let parent_max_iterations = model_config.max_iterations;
     let mut single = SubagentSpawnTool::new(
@@ -62,6 +63,10 @@ pub fn register_subagent_tools(
         single = single.with_plan_store(store.clone());
         spawn_all = spawn_all.with_plan_store(store);
     }
+    if let Some(emit) = run_event_emit {
+        single = single.with_run_event_emit(emit.clone());
+        spawn_all = spawn_all.with_run_event_emit(emit);
+    }
     registry.register(Box::new(single));
     registry.register(Box::new(spawn_all));
     registry.register(Box::new(SubagentTranscriptTool::default()));
@@ -78,7 +83,7 @@ pub fn register_subagent_tools(
 ///
 /// `parent_depth` is the recursion depth of the agent owning `registry`;
 /// spawn calls inside it will become depth `parent_depth + 1`.
-pub fn re_wire_subagent_tools(
+pub(crate) fn re_wire_subagent_tools(
     registry: &mut ToolRegistry,
     model_config: ModelConfig,
     session_mgr: Option<Arc<SessionManager>>,
@@ -111,7 +116,7 @@ pub enum ApprovalRouting {
 
 /// Like [`re_wire_subagent_tools`], but also wires a shared [`SkillManager`]
 /// so spawned subagents inherit parent session actives.
-pub fn re_wire_subagent_tools_with_skills(
+pub(crate) fn re_wire_subagent_tools_with_skills(
     registry: &mut ToolRegistry,
     model_config: ModelConfig,
     session_mgr: Option<Arc<SessionManager>>,
@@ -148,6 +153,7 @@ pub fn re_wire_subagent_tools_with_skills(
         skill_manager,
         approval_resolver,
         plan_store,
+        None,
     );
 }
 
@@ -259,6 +265,7 @@ pub(crate) struct SubagentSpawnTool {
     skill_manager: Option<Arc<Mutex<crate::skills::SkillManager>>>,
     approval_resolver: Option<crate::runtime::ApprovalResolver>,
     plan_store: Option<Arc<SessionPlanStore>>,
+    run_event_emit: Option<crate::runtime::event::RunEventEmit>,
 }
 
 impl SubagentSpawnTool {
@@ -281,6 +288,7 @@ impl SubagentSpawnTool {
             skill_manager: None,
             approval_resolver: None,
             plan_store: None,
+            run_event_emit: None,
         }
     }
 
@@ -314,6 +322,11 @@ impl SubagentSpawnTool {
 
     pub fn with_plan_store(mut self, store: Arc<SessionPlanStore>) -> Self {
         self.plan_store = Some(store);
+        self
+    }
+
+    pub fn with_run_event_emit(mut self, emit: crate::runtime::event::RunEventEmit) -> Self {
+        self.run_event_emit = Some(emit);
         self
     }
 }
@@ -394,6 +407,7 @@ Args: id (string), task (string), system_prompt (optional), tools (optional arra
             self.approval_resolver.clone(),
             self.session_mgr.clone(),
             self.plan_store.clone(),
+            self.run_event_emit.clone(),
         )
         .await;
         let (result, _messages) = match spawned {
@@ -422,6 +436,7 @@ pub(crate) struct SubagentSpawnAllTool {
     skill_manager: Option<Arc<Mutex<crate::skills::SkillManager>>>,
     approval_resolver: Option<crate::runtime::ApprovalResolver>,
     plan_store: Option<Arc<SessionPlanStore>>,
+    run_event_emit: Option<crate::runtime::event::RunEventEmit>,
 }
 
 impl SubagentSpawnAllTool {
@@ -444,6 +459,7 @@ impl SubagentSpawnAllTool {
             skill_manager: None,
             approval_resolver: None,
             plan_store: None,
+            run_event_emit: None,
         }
     }
 
@@ -477,6 +493,11 @@ impl SubagentSpawnAllTool {
 
     pub fn with_plan_store(mut self, store: Arc<SessionPlanStore>) -> Self {
         self.plan_store = Some(store);
+        self
+    }
+
+    pub fn with_run_event_emit(mut self, emit: crate::runtime::event::RunEventEmit) -> Self {
+        self.run_event_emit = Some(emit);
         self
     }
 }
@@ -606,6 +627,7 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
             let parent_depth = self.parent_depth;
             let skill_manager = self.skill_manager.clone();
             let approval_resolver = self.approval_resolver.clone();
+            let run_event_emit = self.run_event_emit.clone();
             let parent_session_id = parent_session_id.clone();
             let parent_prompt_id = parent_prompt_id.clone();
             let parent_working_dir = parent_working_dir.clone();
@@ -670,6 +692,7 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                     approval_resolver,
                     mgr_clone,
                     plan_store_clone,
+                    run_event_emit,
                 )
                 .await;
 
@@ -1097,6 +1120,7 @@ async fn spawn_single(
     approval_resolver: Option<crate::runtime::ApprovalResolver>,
     session_mgr: Option<Arc<SessionManager>>,
     plan_store: Option<Arc<SessionPlanStore>>,
+    run_event_emit: Option<crate::runtime::event::RunEventEmit>,
 ) -> std::result::Result<(SpawnResult, Vec<crate::types::Message>), SpawnFailure> {
     use crate::skills::SkillManager;
 
@@ -1285,6 +1309,12 @@ Do NOT attempt to bypass a missing capability through another tool.";
     }
     if let Some(resolver) = approval_resolver {
         subagent = subagent.with_approval_resolver(resolver);
+    }
+    if let Some(emit) = run_event_emit {
+        let parent = parent_call_id.map(ToOwned::to_owned);
+        subagent = subagent.with_run_event_sink(std::sync::Arc::new(move |event| {
+            emit(event, parent.clone());
+        }));
     }
 
     let runtime_subagent_id = subagent.id().to_string();

@@ -473,29 +473,26 @@ async fn send_message(
     }
 
     // Persist /goal mutations on the session before creating the Run.
-    let trimmed = message.trim();
-    let is_goal_clear = trimmed == "/goal clear"
-        || trimmed == "/goal stop"
-        || trimmed == "/goal cancel"
-        || trimmed == "/goal off";
+    let intent = agent_core::UserIntent::parse(&message);
     if let Some(ref sid) = session_id {
         let sm = state.session_manager.clone();
         let sid_owned = sid.clone();
-        if is_goal_clear {
-            let _ = tokio::task::spawn_blocking(move || sm.clear_pinned_goal(&sid_owned)).await;
-            initial_goal = None;
-            initial_goal_completed = false;
-        } else if let Some(g) = message
-            .strip_prefix("/goal ")
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-        {
-            let goal_for_db = g.clone();
-            let _ =
-                tokio::task::spawn_blocking(move || sm.set_pinned_goal(&sid_owned, &goal_for_db))
-                    .await;
-            initial_goal = Some(g);
-            initial_goal_completed = false;
+        match &intent {
+            agent_core::UserIntent::GoalClear => {
+                let _ = tokio::task::spawn_blocking(move || sm.clear_pinned_goal(&sid_owned)).await;
+                initial_goal = None;
+                initial_goal_completed = false;
+            }
+            agent_core::UserIntent::Goal { text } => {
+                let goal_for_db = text.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    sm.set_pinned_goal(&sid_owned, &goal_for_db)
+                })
+                .await;
+                initial_goal = Some(text.clone());
+                initial_goal_completed = false;
+            }
+            _ => {}
         }
     }
 
@@ -575,13 +572,13 @@ async fn send_message(
                 agent_core::workflow::runtime::workflow_authoring_tool_factory(
                     state.workflow_authoring.clone(),
                     state.workflow_runtime.clone(),
-                    manager.brain().config.permissions.clone(),
+                    manager.permissions(),
                     agent_core::workflow::runtime::RunScope {
                         session_id: session_id.clone().unwrap_or_default(),
                         parent_prompt_id: early_prompt_id.clone().unwrap_or_default(),
                         workspace: working_dir.clone().unwrap_or_default(),
                         project_id: working_project_id.clone().unwrap_or_default(),
-                        permission_ceiling: Some(manager.brain().config.permissions.clone()),
+                        permission_ceiling: Some(manager.permissions()),
                         trigger: "workflow_authoring".to_string(),
                         ..Default::default()
                     },
@@ -598,7 +595,7 @@ async fn send_message(
                         parent_prompt_id: early_prompt_id.clone().unwrap_or_default(),
                         workspace: working_dir.clone().unwrap_or_default(),
                         project_id: working_project_id.clone().unwrap_or_default(),
-                        permission_ceiling: Some(manager.brain().config.permissions.clone()),
+                        permission_ceiling: Some(manager.permissions()),
                         trigger: "workflow_mention".to_string(),
                         ..Default::default()
                     },
@@ -614,7 +611,7 @@ async fn send_message(
                     let compiler = agent_core::workflow::runtime::MentionWorkflowCompiler::new(
                         state.storage.clone(),
                     );
-                    let caller_permission = manager.brain().config.permissions.clone();
+                    let caller_permission = manager.permissions();
                     let scope = agent_core::workflow::runtime::RunScope {
                         session_id: session_id.clone().unwrap_or_default(),
                         parent_prompt_id: early_prompt_id.clone().unwrap_or_default(),
@@ -670,17 +667,17 @@ async fn send_message(
     // Prompt lifecycle (create / finish / persist) lives in RunManager so CLI
     // and Tauri share one prompts-table source of truth.
     let created = match manager
-        .create_run_with_workdir_and_images(
-            &message,
-            session_id.clone(),
+        .create_run_from(agent_core::CreateRunRequest {
+            intent,
+            session_id: session_id.clone(),
             working_dir,
-            history.clone(),
+            history: history.clone(),
             initial_goal,
             initial_goal_completed,
             user_images,
-            early_prompt_id.clone(),
+            existing_prompt_id: early_prompt_id.clone(),
             scoped_tool_factory,
-        )
+        })
         .await
     {
         Ok(created) => created,
@@ -1152,7 +1149,7 @@ async fn clear_session_goal(state: State<'_, AppState>, session_id: String) -> R
     // Clear all plans for this session (active + parked).
     {
         let manager = state.run_manager.lock().await;
-        manager.brain().todo_lists.clear_session(&session_id);
+        manager.todo_store().clear_session(&session_id);
     }
     Ok(())
 }
@@ -1245,7 +1242,7 @@ async fn get_session_plans(
 ) -> Result<PlansSnapshotDto, String> {
     let manager = state.run_manager.lock().await;
     Ok(plans_snapshot_dto(
-        manager.brain().todo_lists.as_ref(),
+        manager.todo_store(),
         &session_id,
     ))
 }
@@ -1258,7 +1255,7 @@ async fn resume_session_plan(
     plan_id: Option<String>,
 ) -> Result<PlansSnapshotDto, String> {
     let manager = state.run_manager.lock().await;
-    let store = manager.brain().todo_lists.as_ref();
+    let store = manager.todo_store();
     if let Some(id) = plan_id.filter(|s| !s.is_empty()) {
         store.activate(Some(&session_id), &id).map_err(|e| e)?;
     } else {
@@ -1281,7 +1278,7 @@ async fn cancel_session_plan(
     plan_id: Option<String>,
 ) -> Result<PlansSnapshotDto, String> {
     let manager = state.run_manager.lock().await;
-    let store = manager.brain().todo_lists.as_ref();
+    let store = manager.todo_store();
     if let Some(id) = plan_id.filter(|s| !s.is_empty()) {
         store.cancel(Some(&session_id), &id).map_err(|e| e)?;
     } else {
@@ -1297,9 +1294,9 @@ async fn clear_session_plans(
     session_id: String,
 ) -> Result<PlansSnapshotDto, String> {
     let manager = state.run_manager.lock().await;
-    manager.brain().todo_lists.clear_session(&session_id);
+    manager.todo_store().clear_session(&session_id);
     Ok(plans_snapshot_dto(
-        manager.brain().todo_lists.as_ref(),
+        manager.todo_store(),
         &session_id,
     ))
 }
@@ -1467,7 +1464,7 @@ async fn search_files(
 #[tauri::command]
 async fn get_config(state: State<'_, AppState>) -> Result<agent_core::config::Config, String> {
     let manager = state.run_manager.lock().await;
-    Ok(manager.brain().config.clone())
+    Ok(manager.config().clone())
 }
 
 #[tauri::command]
@@ -1631,7 +1628,7 @@ async fn create_session(
 async fn delete_session(state: State<'_, AppState>, session_id: String) -> Result<bool, String> {
     {
         let manager = state.run_manager.lock().await;
-        manager.brain().todo_lists.remove_session(&session_id);
+        manager.todo_store().remove_session(&session_id);
         manager.brain().clear_skill_session(&session_id);
     }
     let authoring = state.workflow_authoring.clone();
@@ -1973,7 +1970,7 @@ async fn get_reflection_status(
     let mut status = agent_core::memory::reflection::reflection_status(state.storage.clone())
         .map_err(|e| e.to_string())?;
     let manager = state.run_manager.lock().await;
-    status.enabled = manager.brain().reflection_daemon.is_some();
+    status.enabled = manager.has_reflection_daemon();
     Ok(status)
 }
 
@@ -2263,7 +2260,7 @@ fn build_agent_memory_store(
     brain: &Brain,
     storage: agent_core::memory::storage::Storage,
 ) -> agent_core::agent_registry::AgentMemoryStore {
-    if let Some(ref mem) = brain.config.memory {
+    if let Some(ref mem) = brain.config().memory {
         if mem.embedding_enabled {
             if let Ok(model) =
                 agent_core::memory::embedding::EmbeddingModel::new(&mem.embedding_model)
@@ -2532,7 +2529,7 @@ async fn run_agent_conversation_turn(
     .map_err(|error| format!("load custom agent task failed: {error}"))?
     .map_err(|error| error.to_string())?;
     let permission_config =
-        agent_core::agent_registry::build_permission_config(&agent, &brain.config.permissions);
+        agent_core::agent_registry::build_permission_config(&agent, &brain.config().permissions);
     let runner = agent_core::agent_registry::CustomAgentRunner::new(
         storage,
         brain,
@@ -2988,7 +2985,7 @@ async fn run_agent_standalone(
         .map_err(|e| format!("task failed: {e}"))??
     };
     let permission_config =
-        agent_core::agent_registry::build_permission_config(&def, &brain.config.permissions);
+        agent_core::agent_registry::build_permission_config(&def, &brain.config().permissions);
     let session = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let runner = agent_core::agent_registry::CustomAgentRunner::new(
         storage,
@@ -3080,7 +3077,7 @@ async fn list_workflow_library(
     let authoring = state.workflow_authoring.clone();
     let permission = {
         let manager = state.run_manager.lock().await;
-        manager.brain().config.permissions.clone()
+        manager.permissions()
     };
     tokio::task::spawn_blocking(move || {
         if let (Some(project_id), Some(workspace)) = (project_id.as_deref(), workspace.as_deref()) {
@@ -3224,7 +3221,7 @@ async fn publish_legacy_workflow_for_chat(
 ) -> Result<agent_core::workflow::runtime::PublishedWorkflowReceipt, String> {
     let permission = {
         let manager = state.run_manager.lock().await;
-        manager.brain().config.permissions.clone()
+        manager.permissions()
     };
     let storage = state.storage.clone();
     let authoring = state.workflow_authoring.clone();
@@ -3270,7 +3267,7 @@ async fn run_published_workflow(
         .map_err(|error| error.to_string())?;
     let permission_ceiling = {
         let manager = state.run_manager.lock().await;
-        manager.brain().config.permissions.clone()
+        manager.permissions()
     };
     state
         .workflow_runtime
@@ -3412,7 +3409,7 @@ async fn run_workflow(
     };
 
     let run_manager = state.run_manager.lock().await;
-    let caller_permission = run_manager.brain().config.permissions.clone();
+    let caller_permission = run_manager.permissions();
     drop(run_manager);
     let session = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let workspace = {
@@ -3633,7 +3630,7 @@ pub fn run() {
                 .expect("Failed to build brain from config");
 
             // Determine the SQLite path for project/session storage
-            let db_path = if let Some(ref mem_config) = brain.config.memory {
+            let db_path = if let Some(ref mem_config) = brain.config().memory {
                 mem_config.db_path.clone()
             } else {
                 agent_core::paths::get_memory_db_path().to_string_lossy().into_owned()
@@ -3708,7 +3705,7 @@ pub fn run() {
             // per-Run registration callback (which runs synchronously
             // inside build_tool_registry) can always read them without
             // racing against the async connect_all task.
-            let mcp_config = run_manager.brain().config.mcp.clone();
+            let mcp_config = run_manager.mcp_config().clone();
             let mcp_tool_defs: Arc<parking_lot::RwLock<Vec<agent_core::McpToolDef>>> =
                 Arc::new(parking_lot::RwLock::new(Vec::new()));
             let mcp_manager = Arc::new(AsyncMutex::new(
@@ -3779,17 +3776,10 @@ pub fn run() {
             // used for deferred background warmup and index building below.
             let embed_model = run_manager
                 .brain()
-                .memory
-                .as_ref()
+                .memory()
                 .and_then(|mm| mm.lock().recall().embedding_model().cloned());
-            let memory_mgr = run_manager
-                .brain()
-                .memory
-                .clone();
-            let reflection_daemon = run_manager
-                .brain()
-                .reflection_daemon
-                .clone();
+            let memory_mgr = run_manager.brain().memory().cloned();
+            let reflection_daemon = run_manager.brain().reflection_daemon();
 
             let custom_agent_runner = Arc::new(
                 agent_core::agent_registry::CustomAgentRunner::new(
@@ -3821,7 +3811,7 @@ pub fn run() {
                     storage: storage.clone(),
                     runner: custom_agent_runner.clone(),
                     session_manager: session_manager.clone(),
-                    base_permissions: run_manager.brain().config.permissions.clone(),
+                    base_permissions: run_manager.brain().config().permissions.clone(),
                     swarm_coordinator: swarm_coordinator.clone(),
                 }),
                 active_agent_runs.clone(),

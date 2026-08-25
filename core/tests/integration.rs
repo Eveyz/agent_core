@@ -33,7 +33,7 @@ fn test_brain_sets_all_options() {
     let config = build_test_config();
     let mut brain = Brain::from_config(config).unwrap();
     brain.set_tool_execution_mode(ToolExecutionMode::Sequential);
-    assert_eq!(brain.tool_execution_mode, ToolExecutionMode::Sequential);
+    assert_eq!(brain.tool_execution_mode(), ToolExecutionMode::Sequential);
 }
 
 #[test]

@@ -1,10 +1,19 @@
-use std::time::Duration;
-use std::io::Cursor;
 use anyhow::{Result, bail};
 use reqwest::header;
+use std::io::Cursor;
+use std::time::Duration;
 use url::Url;
 
+use crate::util::utf8_prefix;
+
 use super::UaProfile;
+
+/// Bytes of HTML head scanned for `<meta>` tags.
+const HEAD_SCAN_BYTES: usize = 16_384;
+
+fn head_prefix(html: &str) -> &str {
+    utf8_prefix(html, HEAD_SCAN_BYTES)
+}
 
 pub(crate) fn build_browser_headers(profile: &UaProfile, _url: &str) -> header::HeaderMap {
     let mut h = header::HeaderMap::new();
@@ -59,8 +68,14 @@ pub(crate) fn build_browser_headers(profile: &UaProfile, _url: &str) -> header::
     );
 
     // ── Sec-Fetch headers (document-level navigation) ──────────────
-    h.insert("Sec-Fetch-Dest", header::HeaderValue::from_static("document"));
-    h.insert("Sec-Fetch-Mode", header::HeaderValue::from_static("navigate"));
+    h.insert(
+        "Sec-Fetch-Dest",
+        header::HeaderValue::from_static("document"),
+    );
+    h.insert(
+        "Sec-Fetch-Mode",
+        header::HeaderValue::from_static("navigate"),
+    );
     // "none" for direct entry (no referrer); switches to "same-origin"
     // or "cross-site" if we had a referrer chain.
     h.insert("Sec-Fetch-Site", header::HeaderValue::from_static("none"));
@@ -130,9 +145,9 @@ pub(crate) fn extract_meta(html: &str) -> String {
     let mut og_site = String::new();
     let mut twitter_card = String::new();
 
-    // Quick scan with simple string matching (no full HTML parser needed)
-    let lower = html.to_lowercase();
-    let _meta_start = lower.find("<meta ");
+    // Quick scan with simple string matching (no full HTML parser needed).
+    // ASCII lowercase keeps byte offsets aligned with `html` for slicing.
+    let lower = html.to_ascii_lowercase();
     let title_start = lower.find("<title>");
 
     // <title> tag
@@ -144,16 +159,13 @@ pub(crate) fn extract_meta(html: &str) -> String {
     }
 
     // <meta ...> tags — scan up to first 16 KB for meta
-    let scan_limit = html.len().min(16_384);
-    let scan = &html[..scan_limit];
-    let scan_lower = &lower[..scan_limit];
+    let scan = head_prefix(html);
+    let scan_lower = scan.to_ascii_lowercase();
 
     let mut pos = 0;
     while let Some(m_idx) = scan_lower[pos..].find("<meta ") {
         let abs_idx = pos + m_idx;
-        let tag_end = scan_lower[abs_idx..]
-            .find('>')
-            .map(|e| abs_idx + e + 1);
+        let tag_end = scan_lower[abs_idx..].find('>').map(|e| abs_idx + e + 1);
         pos = abs_idx + 6; // move past "<meta "
 
         let Some(end) = tag_end else { continue };
@@ -220,18 +232,15 @@ pub(crate) fn extract_meta(html: &str) -> String {
 
 /// Extract the first Open Graph / Twitter card image URL from HTML head meta.
 pub fn extract_og_image(html: &str) -> Option<String> {
-    let scan_limit = html.len().min(16_384);
-    let scan = &html[..scan_limit];
-    let scan_lower = scan.to_lowercase();
+    let scan = head_prefix(html);
+    let scan_lower = scan.to_ascii_lowercase();
 
     let mut og_image = String::new();
     let mut twitter_image = String::new();
     let mut pos = 0;
     while let Some(m_idx) = scan_lower[pos..].find("<meta ") {
         let abs_idx = pos + m_idx;
-        let tag_end = scan_lower[abs_idx..]
-            .find('>')
-            .map(|e| abs_idx + e + 1);
+        let tag_end = scan_lower[abs_idx..].find('>').map(|e| abs_idx + e + 1);
         pos = abs_idx + 6;
 
         let Some(end) = tag_end else { continue };
@@ -244,7 +253,9 @@ pub fn extract_og_image(html: &str) -> Option<String> {
         }
         if property == "og:image" && og_image.is_empty() {
             og_image = content;
-        } else if (name == "twitter:image" || name == "twitter:image:src" || property == "twitter:image")
+        } else if (name == "twitter:image"
+            || name == "twitter:image:src"
+            || property == "twitter:image")
             && twitter_image.is_empty()
         {
             twitter_image = content;
@@ -263,7 +274,7 @@ pub fn extract_og_image(html: &str) -> Option<String> {
 /// Extract an HTML attribute value from a tag fragment.
 /// Handles quoted (single/double) and unquoted values.
 fn extract_attr(tag: &str, attr_name: &str) -> String {
-    let lower = tag.to_lowercase();
+    let lower = tag.to_ascii_lowercase();
     let pattern = format!("{attr_name}=");
     let Some(attr_start) = lower.find(&pattern) else {
         return String::new();
@@ -410,4 +421,73 @@ fn strip_html_tags(html: &str) -> String {
         }
     }
     cleaned.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MULTIBYTE: &[char] = &['é', 'ß', '金', '你', '😀', '🧬'];
+
+    /// Pad so `HEAD_SCAN_BYTES` lands inside `ch` (any 2/3/4-byte code point).
+    fn html_with_char_straddling_scan_cap(ch: char) -> String {
+        assert!(
+            ch.len_utf8() > 1,
+            "{ch:?} must be multibyte to straddle a cap"
+        );
+        let mut html = String::from(
+            "<!DOCTYPE html><html><head>\
+             <meta charset=\"UTF-8\">\
+             <title>测试 title 😀</title>\
+             <meta property=\"og:image\" content=\"https://example.com/hero.png\">\
+             <meta name=\"description\" content=\"unicode 描述 é\">",
+        );
+        let pad_to = HEAD_SCAN_BYTES - 1;
+        if html.len() < pad_to {
+            html.push_str(&"a".repeat(pad_to - html.len()));
+        }
+        html.push(ch);
+        html.push_str("</head><body><p>body</p></body></html>");
+        assert!(html.len() > HEAD_SCAN_BYTES);
+        assert!(
+            !html.is_char_boundary(HEAD_SCAN_BYTES),
+            "cap must sit inside {ch:?}"
+        );
+        html
+    }
+
+    #[test]
+    fn head_prefix_never_splits_multibyte_chars() {
+        for &ch in MULTIBYTE {
+            let html = html_with_char_straddling_scan_cap(ch);
+            let prefix = head_prefix(&html);
+            assert!(html.is_char_boundary(prefix.len()), "ch={ch:?}");
+            assert!(prefix.len() <= HEAD_SCAN_BYTES);
+            assert!(!prefix.ends_with(ch), "partial {ch:?} must be dropped");
+        }
+    }
+
+    #[test]
+    fn extractors_survive_any_multibyte_char_at_scan_cap() {
+        for &ch in MULTIBYTE {
+            let html = html_with_char_straddling_scan_cap(ch);
+            let img = extract_og_image(&html);
+            assert_eq!(
+                img.as_deref(),
+                Some("https://example.com/hero.png"),
+                "ch={ch:?}"
+            );
+
+            let meta = extract_meta(&html);
+            assert!(meta.contains("测试 title 😀"), "ch={ch:?} meta={meta}");
+            assert!(meta.contains("unicode 描述 é"), "ch={ch:?} meta={meta}");
+
+            let resolved = super::super::resolve_og_image(&html, "https://example.com/page");
+            assert_eq!(
+                resolved.as_deref(),
+                Some("https://example.com/hero.png"),
+                "ch={ch:?}"
+            );
+        }
+    }
 }

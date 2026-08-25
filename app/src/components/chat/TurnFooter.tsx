@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import type { ChatEntry, TurnBlock } from '../../features/chat/chatSlice';
 import { progressiveToolVerbKey } from './turnHelpers';
 import type { WebSource } from './webSources';
+import type { MapFeature } from './mapSources';
 
 /** After this many ms with no new stream tokens, show a "waiting on model" hint. */
 const MODEL_IDLE_MS = 4_000;
@@ -20,9 +21,11 @@ const WAITING_KEYS = [
 const TurnFooter = memo(function TurnFooter({
   entry,
   sources = [],
+  mapFeatures = [],
 }: {
   entry: ChatEntry;
   sources?: WebSource[];
+  mapFeatures?: MapFeature[];
 }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
@@ -46,6 +49,14 @@ const TurnFooter = memo(function TurnFooter({
     window.dispatchEvent(
       new CustomEvent('open-right-sidebar', {
         detail: { tab: 'overview', section: 'web' },
+      }),
+    );
+  }, []);
+
+  const openMapsOverview = useCallback(() => {
+    window.dispatchEvent(
+      new CustomEvent('open-right-sidebar', {
+        detail: { tab: 'overview', section: 'maps' },
       }),
     );
   }, []);
@@ -170,12 +181,17 @@ const TurnFooter = memo(function TurnFooter({
     );
   }
 
-  if (!endTimeText && !rawOutput && sources.length === 0) return null;
+  if (!endTimeText && !rawOutput && sources.length === 0 && mapFeatures.length === 0) {
+    return null;
+  }
 
   const hasSources = sources.length > 0;
+  const hasMaps = mapFeatures.length > 0;
 
   return (
-    <div className={`turn-footer${hasSources ? ' turn-footer-has-sources' : ''}`}>
+    <div
+      className={`turn-footer${hasSources || hasMaps ? ' turn-footer-has-sources' : ''}`}
+    >
       {rawOutput && !isProcessing && (
         <button className="turn-copy-btn" onClick={handleCopy} title="Copy Raw Assistant Output">
           {copied ? <CheckIcon size={11} color="var(--success)" /> : <CopyIcon size={11} />}
@@ -201,6 +217,16 @@ const TurnFooter = memo(function TurnFooter({
             ))}
           </span>
           <span>{t('chat.turn.sources')}</span>
+        </button>
+      )}
+      {hasMaps && (
+        <button
+          type="button"
+          className="turn-sources-chip"
+          onClick={openMapsOverview}
+          title={t('chat.turn.mapsTitle', { count: mapFeatures.length })}
+        >
+          <span>{t('chat.turn.maps')}</span>
         </button>
       )}
       {endTimeText && <span className="turn-end-time">{endTimeText}</span>}

@@ -6,6 +6,7 @@ use std::time::Instant;
 use crate::context::ContextEngine as Context;
 use crate::runtime::command::{RunCommand, SteerEntry};
 use crate::runtime::event::RunEvent;
+use crate::runtime::intent::{UserIntent, learn_system_prompt};
 use crate::runtime::state::RunState;
 use crate::types::Message;
 
@@ -21,7 +22,7 @@ impl Run {
     /// 2. Runs the turn loop
     /// 3. Handles cancel/pause/approval mid-loop
     /// 4. Cleans up all resources on exit
-    pub async fn run(mut self, user_input: &str) {
+    pub async fn run(mut self, intent: UserIntent) {
         // Wait for Start command
         loop {
             match self.cmd_rx.recv().await {
@@ -40,26 +41,8 @@ impl Run {
         self.emit(RunEvent::RunStarted);
         self.transition(RunState::Running);
 
-        // Add user message to context (strip /goal prefix; pin as goal when present; clean /learn prefix)
-        let trimmed = user_input.trim();
-        let is_goal_clear = trimmed == "/goal clear"
-            || trimmed == "/goal stop"
-            || trimmed == "/goal cancel"
-            || trimmed == "/goal off";
-        let new_goal = user_input
-            .strip_prefix("/goal ")
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty() && !is_goal_clear);
-        let is_learn = trimmed == "/learn" || trimmed.starts_with("/learn ");
-        let display_input = if is_learn {
-            "/learn".to_string()
-        } else if is_goal_clear {
-            "/goal clear".to_string()
-        } else {
-            new_goal
-                .clone()
-                .unwrap_or_else(|| user_input.to_string())
-        };
+        let trigger_text = intent.trigger_text();
+        let display_input = intent.display_text();
         let user_images = std::mem::take(&mut self.pending_user_images);
         self.append_conversation(
             Message::user_with_model(&display_input, &self.client.model.model_id)
@@ -69,46 +52,8 @@ impl Run {
         // persistence; avoid cloning and recounting the full transcript twice.
         self.save_session_snapshot();
 
-        // /learn: inject system instruction prompting the agent to extract and save lessons
-        if is_learn {
-            let learn_content = if user_input.trim() == "/learn" {
-                "".to_string()
-            } else {
-                user_input.trim().strip_prefix("/learn ").unwrap_or("").trim().to_string()
-            };
-
-            let learn_prompt = if learn_content.is_empty() {
-                "System instruction: The user wants you to learn from this session. Please analyze the conversation history, identify any critical lessons, coding standards, user preferences, or workflows established. \
-                 \n\n\
-                 You have two ways to save this learning based on its complexity:\n\
-                 1. Core Memory: If it is a user trait, simple preference, or rule, call the `core_memory_append` tool (with block_id: 'human') to append it.\n\
-                 2. Custom Skill: If it is a complex workflow, reusable procedure, or specialized agent task, create a Custom Skill. To create the skill:\n\
-                    - Check if there is an available meta skill called `skill-creator` (by Anthropic). If it is available, use the `skill-creator` skill to build the skill.\n\n\
-                    - If the `skill-creator` skill is not available, fallback to writing a `SKILL.md` file (starting with YAML frontmatter containing 'name' and 'description') under one of the customization directories:\n\
-                      * Workspace root: `.agents/skills/<skill_name>/SKILL.md` (applies to all agents in this project)\n\
-                      * Antigravity/Gemini Global: `/Users/zniverse/.gemini/config/skills/<skill_name>/SKILL.md`\n\
-                      * Claude Code Global: `~/.claudecode/skills/<skill_name>/SKILL.md`\n\
-                      * OpenCode / Codex Global customization folders.\n\n\
-                 Choose the most appropriate approach, call the corresponding tools to save it, and respond explaining what you have learned and saved.".to_string()
-            } else {
-                format!(
-                    "System instruction: The user wants you to save the following specific learning/rule/workflow:\n\
-                     \"{}\"\n\n\
-                     You have two ways to save this based on its complexity:\n\
-                     1. Core Memory: If it is a user preference, habit, or simple rule, call the `core_memory_append` tool (with block_id: 'human') to append it.\n\
-                     2. Custom Skill: If it is a complex workflow, reusable procedure, or specialized agent task, create a Custom Skill. To create the skill:\n\
-                        - Check if there is an available meta skill called `skill-creator` (by Anthropic). If it is available, use the `skill-creator` skill to build the skill.\n\n\
-                        - If the `skill-creator` skill is not available, fallback to writing a `SKILL.md` file (starting with YAML frontmatter containing 'name' and 'description') under one of the customization directories:\n\
-                          * Workspace root: `.agents/skills/<skill_name>/SKILL.md` (applies to all agents in this project)\n\
-                          * Antigravity/Gemini Global: `/Users/zniverse/.gemini/config/skills/<skill_name>/SKILL.md`\n\
-                          * Claude Code Global: `~/.claudecode/skills/<skill_name>/SKILL.md`\n\
-                          * OpenCode / Codex Global customization folders.\n\n\
-                     Choose the most appropriate approach, call the corresponding tools to save it, and respond to confirm what you have saved.",
-                    learn_content
-                )
-            };
-
-            self.append_conversation(Message::system(&learn_prompt));
+        if let UserIntent::Learn { content } = &intent {
+            self.append_conversation(Message::system(&learn_system_prompt(content.as_deref())));
         }
 
         // Store the user turn in long-term memory off the request-critical path.
@@ -118,7 +63,7 @@ impl Run {
         if let Some(ref mem) = self.brain.memory {
             if self.brain.memory_mode() != crate::config::MemoryMode::Stateless {
                 let mem = mem.clone();
-                let user_input = user_input.to_string();
+                let user_input = trigger_text.clone();
                 let session_id = self.session_id.clone();
                 let reflection_daemon = self.brain.reflection_daemon.clone();
                 let _memory_write = tokio::task::spawn_blocking(move || {
@@ -153,7 +98,7 @@ impl Run {
             let mut mgr = sm.lock();
             let sid = self.session_id.as_deref();
             let matched_names: Vec<String> = mgr
-                .check_triggers_for(sid, user_input)
+                .check_triggers_for(sid, &trigger_text)
                 .iter()
                 .map(|s| s.name.clone())
                 .collect();
@@ -161,7 +106,7 @@ impl Run {
                 mgr.activate_for(sid, &name);
             }
 
-            let (_activated, missing) = mgr.activate_mentions_in(sid, user_input);
+            let (_activated, missing) = mgr.activate_mentions_in(sid, &trigger_text);
             skill_misses = missing;
         }
         for name in skill_misses {
@@ -175,165 +120,7 @@ impl Run {
             });
         }
 
-        // /goal clear — drop session-level pin for this Run (persistence cleared by Tauri).
-        if is_goal_clear {
-            self.goal = None;
-            self.goal_completed = false;
-            self.goal_continue_nudges = 0;
-            if let Some(ref sid) = self.session_id {
-                self.brain.todo_lists.clear_session(sid);
-            } else {
-                self.brain.todo_lists.clear_session("");
-            }
-            self.emit(RunEvent::GoalCleared);
-            self.emit_plans_updated();
-        }
-
-        // /goal <text>: pin a new goal (do NOT auto-decompose).
-        // Auto-decomposition raced ahead of ask_user and produced generic plans
-        // the agent then narrated instead of clarifying / executing.
-        if let Some(ref g) = new_goal {
-            self.goal = Some(g.clone());
-            self.goal_completed = false;
-            self.goal_continue_nudges = 0;
-            if let Some(ref sid) = self.session_id {
-                self.brain.todo_lists.clear_session(sid);
-            } else {
-                self.brain.todo_lists.clear_session("");
-            }
-            self.emit(RunEvent::GoalSet { goal: g.clone() });
-            self.emit_plans_updated();
-        } else if !is_goal_clear {
-            // Inherited session-level goal: re-emit so UI stays in sync on follow-ups.
-            if let Some(g) = self.goal.clone() {
-                if !self.goal_completed {
-                    self.emit(RunEvent::GoalSet { goal: g });
-                }
-            }
-        }
-
-        // New user prompt: park session-active plan if it belongs to another prompt.
-        if !is_goal_clear
-            && new_goal.is_none()
-            && !is_learn
-            && !crate::todo::is_plan_park_cmd(trimmed)
-            && !crate::todo::is_plan_clear_cmd(trimmed)
-            && !crate::todo::is_plan_resume_cmd(trimmed)
-            && !crate::todo::is_bare_continue(trimmed)
-            && !crate::todo::is_explicit_plan_resume(trimmed)
-            && !trimmed.is_empty()
-        {
-            if self
-                .brain
-                .todo_lists
-                .park_active_if_other_prompt(
-                    self.session_id.as_deref(),
-                    self.prompt_id.as_deref(),
-                )
-            {
-                self.emit_plans_updated();
-            }
-        }
-
-        // /plan park | /plan clear | /plan resume — explicit plan lifecycle.
-        let is_plan_park = crate::todo::is_plan_park_cmd(trimmed);
-        let is_plan_clear = crate::todo::is_plan_clear_cmd(trimmed);
-        let is_plan_resume = crate::todo::is_plan_resume_cmd(trimmed);
-        if is_plan_park {
-            let _ = self
-                .brain
-                .todo_lists
-                .park_active(self.session_id.as_deref());
-            self.emit_plans_updated();
-            self.execution.set_resume_hint(
-                "Active plan parked. Answer the user; do not advance parked steps.".to_string(),
-            );
-        } else if is_plan_clear {
-            if let Some(ref sid) = self.session_id {
-                self.brain.todo_lists.clear_session(sid);
-            } else {
-                self.brain.todo_lists.clear_session("");
-            }
-            self.emit_plans_updated();
-            self.execution.sync_from_todos(&crate::todo::TodoList::new());
-        } else if is_plan_resume || crate::todo::is_explicit_plan_resume(trimmed) {
-            use crate::todo::ResumeTarget;
-            match crate::todo::parse_resume_target(trimmed) {
-                ResumeTarget::PlanId(id) => {
-                    match self
-                        .brain
-                        .todo_lists
-                        .activate(self.session_id.as_deref(), &id)
-                    {
-                        Ok(()) => {
-                            let list = self
-                                .brain
-                                .todo_lists
-                                .active_list(self.session_id.as_deref());
-                            self.execution.sync_from_todos(&list);
-                            self.execution.set_resume_hint(
-                                "Plan resumed. Continue the NEXT incomplete step with tools."
-                                    .to_string(),
-                            );
-                            self.emit_plans_updated();
-                        }
-                        Err(e) => {
-                            self.execution.set_resume_hint(format!(
-                                "Could not resume plan: {e}. Call ask_user or name the plan clearly."
-                            ));
-                        }
-                    }
-                }
-                ResumeTarget::Title(title) => {
-                    match self
-                        .brain
-                        .todo_lists
-                        .activate_by_title(self.session_id.as_deref(), &title)
-                    {
-                        Ok(_) => {
-                            let list = self
-                                .brain
-                                .todo_lists
-                                .active_list(self.session_id.as_deref());
-                            self.execution.sync_from_todos(&list);
-                            self.execution.set_resume_hint(format!(
-                                "Plan \"{title}\" resumed. Continue the NEXT incomplete step with tools."
-                            ));
-                            self.emit_plans_updated();
-                        }
-                        Err(_) => {
-                            // Title ambiguous/missing — fall back to single-parked / ask_user.
-                            self.apply_continue_resolution();
-                        }
-                    }
-                }
-                ResumeTarget::Unspecified => {
-                    self.apply_continue_resolution();
-                }
-            }
-        } else if crate::todo::is_bare_continue(trimmed)
-            && self
-                .brain
-                .todo_lists
-                .has_resumable_work(self.session_id.as_deref())
-        {
-            // Ambiguous "continue" — ask whether to resume the plan.
-            self.apply_bare_continue_ask();
-        } else if crate::todo::looks_like_detour(trimmed) {
-            // Explicit side-channel (btw / quick question): park active so Final-block doesn't hijack.
-            let has_active_incomplete = self.brain.todo_lists.with_active(
-                self.session_id.as_deref(),
-                |list| list.has_incomplete(),
-            );
-            if has_active_incomplete {
-                let _ = self
-                    .brain
-                    .todo_lists
-                    .park_active(self.session_id.as_deref());
-                self.emit_plans_updated();
-            }
-        }
-        // Object-bearing continue ("继续算斐波那契") falls through as a normal turn.
+        self.apply_startup_intent(&intent);
 
         // Run the loop
         let result = self.run_loop().await;
@@ -754,6 +541,134 @@ impl Run {
                 .items
                 .iter()
                 .any(|i| i.status != crate::todo::TodoStatus::Completed)
+    }
+
+    fn apply_startup_intent(&mut self, intent: &UserIntent) {
+        match intent {
+            UserIntent::GoalClear => {
+                self.goal = None;
+                self.goal_completed = false;
+                self.goal_continue_nudges = 0;
+                self.brain
+                    .todo_lists
+                    .clear_session(self.session_id.as_deref().unwrap_or(""));
+                self.emit(RunEvent::GoalCleared);
+                self.emit_plans_updated();
+            }
+            UserIntent::Goal { text } => {
+                self.goal = Some(text.clone());
+                self.goal_completed = false;
+                self.goal_continue_nudges = 0;
+                self.brain
+                    .todo_lists
+                    .clear_session(self.session_id.as_deref().unwrap_or(""));
+                self.emit(RunEvent::GoalSet { goal: text.clone() });
+                self.emit_plans_updated();
+            }
+            other => {
+                if !matches!(other, UserIntent::GoalClear) {
+                    if let Some(g) = self.goal.clone() {
+                        if !self.goal_completed {
+                            self.emit(RunEvent::GoalSet { goal: g });
+                        }
+                    }
+                }
+                if intent.should_park_other_prompt_plan()
+                    && self.brain.todo_lists.park_active_if_other_prompt(
+                        self.session_id.as_deref(),
+                        self.prompt_id.as_deref(),
+                    )
+                {
+                    self.emit_plans_updated();
+                }
+                match other {
+                    UserIntent::PlanPark => {
+                        let _ = self.brain.todo_lists.park_active(self.session_id.as_deref());
+                        self.emit_plans_updated();
+                        self.execution.set_resume_hint(
+                            "Active plan parked. Answer the user; do not advance parked steps."
+                                .to_string(),
+                        );
+                    }
+                    UserIntent::PlanClear => {
+                        self.brain
+                            .todo_lists
+                            .clear_session(self.session_id.as_deref().unwrap_or(""));
+                        self.emit_plans_updated();
+                        self.execution
+                            .sync_from_todos(&crate::todo::TodoList::new());
+                    }
+                    UserIntent::PlanResume { .. } => {
+                        use crate::todo::ResumeTarget;
+                        match intent.resume_target().unwrap_or(ResumeTarget::Unspecified) {
+                            ResumeTarget::PlanId(id) => {
+                                match self.brain.todo_lists.activate(self.session_id.as_deref(), &id)
+                                {
+                                    Ok(()) => {
+                                        let list = self
+                                            .brain
+                                            .todo_lists
+                                            .active_list(self.session_id.as_deref());
+                                        self.execution.sync_from_todos(&list);
+                                        self.execution.set_resume_hint(
+                                            "Plan resumed. Continue the NEXT incomplete step with tools."
+                                                .to_string(),
+                                        );
+                                        self.emit_plans_updated();
+                                    }
+                                    Err(e) => {
+                                        self.execution.set_resume_hint(format!(
+                                            "Could not resume plan: {e}. Call ask_user or name the plan clearly."
+                                        ));
+                                    }
+                                }
+                            }
+                            ResumeTarget::Title(title) => {
+                                match self
+                                    .brain
+                                    .todo_lists
+                                    .activate_by_title(self.session_id.as_deref(), &title)
+                                {
+                                    Ok(_) => {
+                                        let list = self
+                                            .brain
+                                            .todo_lists
+                                            .active_list(self.session_id.as_deref());
+                                        self.execution.sync_from_todos(&list);
+                                        self.execution.set_resume_hint(format!(
+                                            "Plan \"{title}\" resumed. Continue the NEXT incomplete step with tools."
+                                        ));
+                                        self.emit_plans_updated();
+                                    }
+                                    Err(_) => self.apply_continue_resolution(),
+                                }
+                            }
+                            ResumeTarget::Unspecified => self.apply_continue_resolution(),
+                        }
+                    }
+                    UserIntent::BareContinue { .. } => {
+                        if self
+                            .brain
+                            .todo_lists
+                            .has_resumable_work(self.session_id.as_deref())
+                        {
+                            self.apply_bare_continue_ask();
+                        }
+                    }
+                    UserIntent::Detour { .. } => {
+                        let has_active_incomplete = self.brain.todo_lists.with_active(
+                            self.session_id.as_deref(),
+                            |list| list.has_incomplete(),
+                        );
+                        if has_active_incomplete {
+                            let _ = self.brain.todo_lists.park_active(self.session_id.as_deref());
+                            self.emit_plans_updated();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
 
     fn apply_continue_resolution(&mut self) {

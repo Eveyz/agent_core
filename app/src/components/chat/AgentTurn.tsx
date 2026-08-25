@@ -15,7 +15,9 @@ import ProcessingTimer from './ProcessingTimer';
 import TurnIterationUI from './TurnIterationUI';
 import TurnFooter from './TurnFooter';
 import { FeaturedWebCards } from './FeaturedWebCards';
+import { FeaturedMapCards } from './FeaturedMapCards';
 import { extractWebSourcesFromBlocks } from './webSources';
+import { extractMapFeaturesFromBlocks } from './mapSources';
 import { isSubagentTool, groupBlocksIntoItems, basename, parseEditSummary, parseUnifiedDiff, isTrivialAssistantText } from './turnHelpers';
 import { getFileIcon } from '../layout/FileTree';
 import { useTranslation } from 'react-i18next';
@@ -366,6 +368,11 @@ export const AgentTurnUI = memo(function AgentTurnUI({
     [entry.blocks],
   );
 
+  const mapFeatures = useMemo(
+    () => extractMapFeaturesFromBlocks(entry.blocks || []),
+    [entry.blocks],
+  );
+
   // Show duration even when the turn had no tools/thinking — only the timer/summary.
   const showTurnHeader = hasIntermediateSteps || isProcessing || !!totalTimeText;
 
@@ -519,12 +526,13 @@ export const AgentTurnUI = memo(function AgentTurnUI({
       )}
 
       {isDone && webSources.length > 0 && <FeaturedWebCards sources={webSources} />}
+      {isDone && mapFeatures.length > 0 && <FeaturedMapCards features={mapFeatures} />}
 
       {isDone && turnFilesChanged.length > 0 && (
         <FilesChangedCard files={turnFilesChanged} />
       )}
 
-      <TurnFooter entry={entry} sources={webSources} />
+      <TurnFooter entry={entry} sources={webSources} mapFeatures={mapFeatures} />
     </div>
   );
 });

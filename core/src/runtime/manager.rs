@@ -32,11 +32,12 @@ use crate::runtime::command::{RunCommand, SteerEntry};
 use crate::runtime::event::{Envelope, RunEvent, RunId};
 use crate::runtime::event_log::EventLog;
 use crate::runtime::input::{ClarificationAnswers, InputResolver};
-use crate::runtime::run::{Run, default_runs_dir};
+use crate::runtime::intent::UserIntent;
+use crate::runtime::run::{Run, ScopedToolFactory, default_runs_dir};
 use crate::runtime::state::RunState;
 use crate::runtime::steering::{SteerAcceptError, SteeringController};
 use crate::session::SessionManager;
-use crate::types::Message;
+use crate::types::{ImageAttachment, Message};
 use crate::worktree::WorktreeManager;
 
 /// Capacity for the event broadcast channel per Run.
@@ -44,6 +45,37 @@ const EVENT_CHANNEL_CAPACITY: usize = 1024;
 
 /// Capacity for the command channel per Run.
 const COMMAND_CHANNEL_CAPACITY: usize = 64;
+
+/// Arguments for [`RunManager::create_run_from`].
+///
+/// Slash strings must be parsed into [`UserIntent`] before they reach a Run.
+pub struct CreateRunRequest {
+    pub intent: UserIntent,
+    pub session_id: Option<String>,
+    pub working_dir: Option<String>,
+    pub history: Vec<Message>,
+    pub initial_goal: Option<String>,
+    pub initial_goal_completed: bool,
+    pub user_images: Vec<ImageAttachment>,
+    pub existing_prompt_id: Option<String>,
+    pub scoped_tool_factory: Option<ScopedToolFactory>,
+}
+
+impl CreateRunRequest {
+    pub fn from_text(text: &str) -> Self {
+        Self {
+            intent: UserIntent::parse(text),
+            session_id: None,
+            working_dir: None,
+            history: Vec::new(),
+            initial_goal: None,
+            initial_goal_completed: false,
+            user_images: Vec::new(),
+            existing_prompt_id: None,
+            scoped_tool_factory: None,
+        }
+    }
+}
 
 /// Result of [`RunManager::create_run`] / [`RunManager::create_run_with_workdir`].
 ///
@@ -65,7 +97,8 @@ pub struct RunHandle {
     /// Sender for commands (Start, Pause, Cancel, Steer, Approve, etc.)
     cmd_tx: mpsc::Sender<RunCommand>,
     /// Broadcast sender for events. Subscribers call `.subscribe()` on this.
-    pub event_tx: broadcast::Sender<Envelope>,
+    /// Broadcast sender for events. Subscribers call `.subscribe()` on this.
+    pub(crate) event_tx: broadcast::Sender<Envelope>,
     /// Single durable event mailbox. Steers publish acceptance here immediately
     /// instead of waiting for the interrupted turn to unwind.
     producer_tx: mpsc::UnboundedSender<Envelope>,
@@ -75,15 +108,15 @@ pub struct RunHandle {
     state: Arc<RwLock<RunState>>,
     /// Per-Run approval resolver — resolved directly by `approve_tool`
     /// to avoid actor deadlock (bypassing the command channel).
-    pub approval_resolver: ApprovalResolver,
+    pub(crate) approval_resolver: ApprovalResolver,
     /// Per-Run clarification resolver — resolved directly by `answer_input`.
-    pub input_resolver: InputResolver,
+    pub(crate) input_resolver: InputResolver,
     /// CancellationToken — cancelled immediately on `cancel_run()` so that
     /// hot-path checks in collect_stream() and ToolOrchestrator respond
     /// without waiting for the next poll_commands() turn boundary.
-    pub cancel_token: CancellationToken,
+    pub(crate) cancel_token: CancellationToken,
     /// Wakeable mailbox used to interrupt a turn without ending the Run.
-    pub steering: SteeringController,
+    pub(crate) steering: SteeringController,
     /// Shared context snapshot (refreshed by the Run at turn boundaries).
     context_snapshot: Arc<RwLock<Vec<Message>>>,
     /// Shared context usage breakdown (refreshed with context_snapshot).
@@ -179,9 +212,40 @@ impl RunManager {
         &self.brain
     }
 
-    /// Mutable access to the runs map (used by Agent wrapper to remove handles).
-    pub async fn runs_mut(&self) -> tokio::sync::MutexGuard<'_, HashMap<RunId, RunHandle>> {
-        self.runs.lock().await
+    pub fn config(&self) -> &crate::config::Config {
+        self.brain.config()
+    }
+
+    pub fn permissions(&self) -> crate::permission::PermissionConfig {
+        self.brain.permissions().clone()
+    }
+
+    pub fn mcp_config(&self) -> &crate::mcp::McpConfig {
+        self.brain.mcp_config()
+    }
+
+    pub fn todo_store(&self) -> &crate::todo::SessionPlanStore {
+        self.brain.todo_store()
+    }
+
+    pub fn has_reflection_daemon(&self) -> bool {
+        self.brain.has_reflection_daemon()
+    }
+
+    pub fn set_temperature(&mut self, val: f64) {
+        Arc::make_mut(&mut self.brain).set_temperature(val);
+    }
+
+    pub fn set_max_tokens(&mut self, val: u32) {
+        Arc::make_mut(&mut self.brain).set_max_tokens(val);
+    }
+
+    pub fn set_tool_execution_mode(&mut self, mode: crate::types::ToolExecutionMode) {
+        Arc::make_mut(&mut self.brain).set_tool_execution_mode(mode);
+    }
+
+    pub fn set_permission_mode(&mut self, mode: crate::permission::PermissionMode) {
+        Arc::make_mut(&mut self.brain).set_permission_mode(mode);
     }
 
     /// Look up the active (non-terminal) Run for a session and return a
@@ -321,8 +385,10 @@ impl RunManager {
         session_id: Option<String>,
         history: Vec<crate::types::Message>,
     ) -> Result<CreateRunResult> {
-        self.create_run_with_workdir(user_input, session_id, None, history, None, false)
-            .await
+        let mut request = CreateRunRequest::from_text(user_input);
+        request.session_id = session_id;
+        request.history = history;
+        self.create_run_from(request).await
     }
 
     /// Create a Run with an isolated working directory (for worktree isolation).
@@ -341,18 +407,13 @@ impl RunManager {
         initial_goal: Option<String>,
         initial_goal_completed: bool,
     ) -> Result<CreateRunResult> {
-        self.create_run_with_workdir_and_images(
-            user_input,
-            session_id,
-            working_dir,
-            history,
-            initial_goal,
-            initial_goal_completed,
-            Vec::new(),
-            None,
-            None,
-        )
-        .await
+        let mut request = CreateRunRequest::from_text(user_input);
+        request.session_id = session_id;
+        request.working_dir = working_dir;
+        request.history = history;
+        request.initial_goal = initial_goal;
+        request.initial_goal_completed = initial_goal_completed;
+        self.create_run_from(request).await
     }
 
     /// Create a Run with optional user image attachments for multimodal models.
@@ -371,6 +432,33 @@ impl RunManager {
         existing_prompt_id: Option<String>,
         scoped_tool_factory: Option<super::run::ScopedToolFactory>,
     ) -> Result<CreateRunResult> {
+        self.create_run_from(CreateRunRequest {
+            intent: UserIntent::parse(user_input),
+            session_id,
+            working_dir,
+            history,
+            initial_goal,
+            initial_goal_completed,
+            user_images,
+            existing_prompt_id,
+            scoped_tool_factory,
+        })
+        .await
+    }
+
+    /// Create a Run from a structured request. This is the external seam.
+    pub async fn create_run_from(&self, request: CreateRunRequest) -> Result<CreateRunResult> {
+        let CreateRunRequest {
+            intent,
+            session_id,
+            working_dir,
+            history,
+            initial_goal,
+            initial_goal_completed,
+            user_images,
+            existing_prompt_id,
+            scoped_tool_factory,
+        } = request;
         let run_id = uuid::Uuid::new_v4().to_string();
 
         // Canonical prompt row — sole source of truth for session rewind.
@@ -651,7 +739,7 @@ impl RunManager {
         }
 
         // Spawn the Run's task
-        let user_input_owned = user_input.to_string();
+        let intent_for_run = intent;
         let state_clone = shared_state.clone();
         let event_tx_clone = event_tx.clone();
         let brain_for_reflect = self.brain.clone();
@@ -678,7 +766,7 @@ impl RunManager {
                 }
             });
 
-            run.run(&user_input_owned).await;
+            run.run(intent_for_run).await;
             // The state mirror task will exit when it sees the terminal event.
             // Give it a moment to process the last event.
             let _ = state_task.await;
@@ -962,41 +1050,6 @@ impl RunManager {
     pub fn replay_since(&self, run_id: &str, from_seq: u64) -> Result<Vec<Envelope>> {
         let path = crate::paths::get_runs_dir().join(format!("{run_id}.jsonl"));
         EventLog::replay_since(&path, from_seq)
-    }
-
-    /// Create a Run in an isolated git worktree.
-    ///
-    /// This creates a new git worktree with a fresh branch, then creates a
-    /// Run with `working_dir` set to the worktree path. The Run's tools
-    /// (shell, file operations) execute in the worktree, not the main repo.
-    ///
-    /// When the Run completes (or is cancelled), the worktree is NOT
-    /// automatically removed — the caller should inspect the result first
-    /// and call `cleanup_worktree()` when done.
-    pub async fn create_run_in_worktree(
-        &self,
-        user_input: &str,
-        session_id: Option<String>,
-        repo_root: &str,
-        branch_name: &str,
-        history: Vec<crate::types::Message>,
-    ) -> Result<(RunId, String)> {
-        let mut wt = WorktreeManager::new(std::path::PathBuf::from(repo_root));
-        let record = wt.create(&uuid::Uuid::new_v4().to_string(), branch_name)?;
-        let worktree_path = record.path.to_string_lossy().to_string();
-
-        let result = self
-            .create_run_with_workdir(
-                user_input,
-                session_id,
-                Some(worktree_path.clone()),
-                history,
-                None,
-                false,
-            )
-            .await?;
-
-        Ok((result.run_id, worktree_path))
     }
 
     /// Remove a git worktree by path. Called after a worktree-isolated

@@ -32,9 +32,16 @@ import {
   formatRelativePublishedAt,
   type WebSource,
 } from '../chat/webSources';
+import {
+  extractMapFeaturesFromEntries,
+  providerLabel,
+  type MapFeature,
+} from '../chat/mapSources';
 import GlobeIcon from 'lucide-react/dist/esm/icons/globe.mjs';
+import MapPinIcon from 'lucide-react/dist/esm/icons/map-pin.mjs';
+import RouteIcon from 'lucide-react/dist/esm/icons/route.mjs';
 
-type SectionKey = 'subagent' | 'files_changed' | 'todos' | 'artifacts' | 'web';
+type SectionKey = 'subagent' | 'files_changed' | 'todos' | 'artifacts' | 'web' | 'maps';
 
 async function openExternalUrl(url: string) {
   try {
@@ -157,20 +164,27 @@ export function OverviewTab() {
     [entries],
   );
 
-  // Focus Web section when Sources chip opens Overview
+  const mapFeatures = useMemo(
+    () => extractMapFeaturesFromEntries(entries),
+    [entries],
+  );
+
+  // Focus Web / Maps section when chip opens Overview
   useEffect(() => {
     const handleOpen = (e: Event) => {
       const detail = (e as CustomEvent<{ tab?: string; section?: string }>).detail;
-      if (detail?.tab !== 'overview' || detail.section !== 'web') return;
+      if (detail?.tab !== 'overview') return;
+      if (detail.section !== 'web' && detail.section !== 'maps') return;
+      const section = detail.section;
       setExpanded((prev) => {
-        if (prev.has('web')) return prev;
+        if (prev.has(section)) return prev;
         const next = new Set(prev);
-        next.add('web');
+        next.add(section);
         return next;
       });
       // Scroll into view after expand paints
       requestAnimationFrame(() => {
-        document.getElementById('overview-section-web')?.scrollIntoView({
+        document.getElementById(`overview-section-${section}`)?.scrollIntoView({
           behavior: 'smooth',
           block: 'nearest',
         });
@@ -190,6 +204,16 @@ export function OverviewTab() {
       return next;
     });
   }, [webSources.length]);
+
+  useEffect(() => {
+    if (mapFeatures.length === 0) return;
+    setExpanded((prev) => {
+      if (prev.has('maps')) return prev;
+      const next = new Set(prev);
+      next.add('maps');
+      return next;
+    });
+  }, [mapFeatures.length]);
 
   const toggleSection = (key: SectionKey) => {
     setExpanded((prev) => {
@@ -684,6 +708,22 @@ export function OverviewTab() {
               )}
             </div>
 
+            {/* ── Maps ───────────────────────────────────────────── */}
+            <div className="overview-section" id="overview-section-maps">
+              {sectionHeader('maps', 'Maps', mapFeatures.length)}
+              {expanded.has('maps') && (
+                <div className="overview-section-body">
+                  {mapFeatures.length === 0 ? (
+                    <div className="overview-placeholder">No map places yet</div>
+                  ) : (
+                    mapFeatures.map((feature) => (
+                      <OverviewMapRow key={feature.id} feature={feature} />
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+
             {/* ── Artifacts ──────────────────────────────────────── */}
             <div className="overview-section">
               {sectionHeader('artifacts', 'Artifacts', artifacts.length)}
@@ -744,6 +784,30 @@ function OverviewWebRow({ source }: { source: WebSource }) {
         {source.snippet ? (
           <span className="overview-web-snippet">{source.snippet}</span>
         ) : null}
+      </span>
+    </button>
+  );
+}
+
+function OverviewMapRow({ feature }: { feature: MapFeature }) {
+  const title = feature.kind === 'place' ? feature.name : feature.title;
+  const meta =
+    feature.kind === 'place'
+      ? [providerLabel(feature.provider), feature.address].filter(Boolean).join(' · ')
+      : [providerLabel(feature.provider), feature.summary].filter(Boolean).join(' · ');
+  return (
+    <button
+      type="button"
+      className="overview-web-row"
+      title={feature.mapUrl}
+      onClick={() => void openExternalUrl(feature.mapUrl)}
+    >
+      <span className="overview-web-favicon">
+        {feature.kind === 'place' ? <MapPinIcon size={14} /> : <RouteIcon size={14} />}
+      </span>
+      <span className="overview-web-main">
+        <span className="overview-web-title">{title}</span>
+        {meta ? <span className="overview-web-meta">{meta}</span> : null}
       </span>
     </button>
   );

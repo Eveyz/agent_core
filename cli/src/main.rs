@@ -706,12 +706,12 @@ async fn run_main() -> anyhow::Result<ExitCode> {
         "Hooks:       {}",
         if enable_hooks { "enabled" } else { "disabled" }
     );
-    println!("Tool mode:   {:?}", state.brain.tool_execution_mode);
+    println!("Tool mode:   {:?}", state.brain().tool_execution_mode());
     println!(
         "Tools:       {}",
-        state.brain.display_registry().list_names().len()
+        state.brain().display_registry().list_names().len()
     );
-    println!("Model:       {}", state.brain.current_model_name());
+    println!("Model:       {}", state.brain().current_model_name());
     println!("--------------\n");
     println!("Type /help for commands, /quit to exit\n");
 
@@ -780,7 +780,7 @@ async fn run_main() -> anyhow::Result<ExitCode> {
             .ok()
             .and_then(|p| p.to_str().map(|s| s.to_string()))
             .unwrap_or_default();
-        let model = state.brain.current_model_name().to_string();
+        let model = state.brain().current_model_name().to_string();
         let mgr = &*session_mgr;
         let current_id = state.session_id.clone();
         if let Ok(id) = mgr.save(current_id.as_deref(), &messages, &cwd, &model) {

@@ -79,6 +79,25 @@ const PRESETS: { label: string; build: () => McpFormData }[] = [
     }),
   },
   {
+    label: 'Google Maps',
+    build: () => ({
+      ...EMPTY_FORM,
+      name: 'maps-grounding-lite',
+      transport: 'http',
+      url: 'https://mapstools.googleapis.com/mcp',
+      headerRows: [{ key: 'X-Goog-Api-Key', value: '' }],
+    }),
+  },
+  {
+    label: 'Amap 高德',
+    build: () => ({
+      ...EMPTY_FORM,
+      name: 'amap-maps',
+      transport: 'http',
+      url: 'https://mcp.amap.com/mcp?key=',
+    }),
+  },
+  {
     label: 'Custom URL',
     build: () => ({
       ...EMPTY_FORM,

@@ -31,6 +31,7 @@
 //! 3. Drop (RAII) → supervisor + join_set + cancel all fire automatically
 
 pub mod approval;
+pub mod agent_loop;
 pub mod brain;
 pub mod command;
 pub mod event;
@@ -39,6 +40,7 @@ pub mod execution;
 pub mod file_ledger;
 pub mod guard;
 pub mod input;
+pub mod intent;
 pub mod manager;
 pub mod platform_shell;
 pub mod run;
@@ -48,11 +50,12 @@ pub mod supervisor;
 pub mod tool_orchestrator;
 pub mod tool_scheduler;
 
+pub use agent_loop::{CollectedStream, CompactMode, LoopPolicy, StreamPartial};
 pub use approval::ApprovalResolver;
-pub use brain::Brain;
+pub use brain::{Brain, ExtraToolContext};
 pub use file_ledger::FileLedger;
 pub use command::{RunCommand, SteerEntry, STEER_MID_RUN_PREFIX};
-pub use event::{CacheMetrics, ChildId, Envelope, RunEvent, RunId};
+pub use event::{CacheMetrics, CacheStatus, ChildId, Envelope, RunEvent, RunEventEmit, RunId};
 pub use event_log::EventLog;
 pub use execution::{ExecutionPhase, ExecutionState};
 pub use guard::EventGuard;
@@ -60,7 +63,8 @@ pub use input::{
     ClarificationAnswers, ClarificationOption, ClarificationQuestion, ClarificationRequest,
     InputResolver,
 };
-pub use manager::{CreateRunResult, RunHandle, RunManager};
+pub use intent::{parse_user_intent, UserIntent};
+pub use manager::{CreateRunRequest, CreateRunResult, RunHandle, RunManager};
 pub use run::Run;
 pub use state::RunState;
 pub use steering::SteeringController;

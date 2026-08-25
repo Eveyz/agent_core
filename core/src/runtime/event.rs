@@ -17,6 +17,15 @@ pub type RunId = String;
 /// A unique identifier for a supervised child process.
 pub type ChildId = String;
 
+/// Tagged cache telemetry. Negative `hit_rate` sentinels are not used.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CacheStatus {
+    Rate { hit_rate: f64 },
+    PrefixDrifted,
+    IdleExpired,
+}
+
 /// Events emitted during a Run's lifecycle.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
@@ -241,13 +250,10 @@ pub enum RunEvent {
 
     // ── Cache telemetry ────────────────────────────────────────────
     /// Per-turn cache hit/miss statistics from the model API response.
-    /// hit_rate sentinels:
-    ///   -1.0 → stable prefix drifted (expected cache miss, not a real rate)
-    ///   -2.0 → cache likely expired from idle timeout (expected cache miss)
     CacheInfo {
         hit_tokens: u64,
         miss_tokens: u64,
-        hit_rate: f64,
+        status: CacheStatus,
     },
 
     /// Cumulative cache metrics emitted at Run completion.
@@ -258,14 +264,6 @@ pub enum RunEvent {
         total_miss_tokens: u64,
         turns_with_hits: u64,
         cumulative_hit_rate: f64,
-    },
-
-    // ── Mode changes ───────────────────────────────────────────────
-    /// Emitted when the agent mode changes (Brain-level, affects next Run).
-    /// The frontend can use this to update its mode indicator without
-    /// creating a new Run.
-    ModeChanged {
-        mode: String,
     },
 }
 
@@ -379,6 +377,10 @@ pub struct Envelope {
     #[serde(flatten)]
     pub event: RunEvent,
 }
+
+/// Sink used by Nested (`Subagent`) to emit `RunEvent`s onto a parent Run's
+/// envelope stream. The `Option<String>` is the wrapper tool's `parent_call_id`.
+pub type RunEventEmit = std::sync::Arc<dyn Fn(RunEvent, Option<String>) + Send + Sync>;
 
 /// Convert a legacy `AgentEvent` into a `RunEvent`.
 ///
@@ -586,109 +588,6 @@ impl RunEvent {
         })
     }
 
-    /// Convert a `RunEvent` back into a legacy `AgentEvent`.
-    /// Used by the CLI TUI which still consumes `AgentEvent` but is backed
-    /// by the Runtime (Brain/Run) engine.
-    pub fn to_agent_event(&self) -> Option<crate::types::AgentEvent> {
-        use crate::types::AgentEvent;
-        let ev = match &self {
-            RunEvent::RunStarted => AgentEvent::AgentStart,
-            RunEvent::RunCancelled { reason } => AgentEvent::Aborted { reason: reason.clone() },
-            RunEvent::TurnStarted { index } => AgentEvent::TurnStart { turn_index: *index },
-            RunEvent::TurnEnded { index } => AgentEvent::TurnEnd {
-                turn_index: *index,
-                assistant_message: crate::types::Message::assistant(""),
-                tool_results: vec![],
-            },
-            RunEvent::MessageStart { message_id, message } => AgentEvent::MessageStart {
-                message_id: message_id.clone(),
-                message: message.clone(),
-            },
-            RunEvent::MessageUpdate { message_id, delta, .. } | RunEvent::ModelStreaming { message_id, delta, .. } => {
-                AgentEvent::MessageUpdate {
-                    message_id: message_id.clone(),
-                    delta: delta.clone(),
-                }
-            }
-            RunEvent::MessageEnd { message_id, message } => AgentEvent::MessageEnd {
-                message_id: message_id.clone(),
-                message: message.clone(),
-            },
-            RunEvent::ToolPreparing {
-                index,
-                call_id,
-                name,
-                hint_path,
-            } => AgentEvent::ToolPreparing {
-                index: *index,
-                call_id: call_id.clone(),
-                name: name.clone(),
-                hint_path: hint_path.clone(),
-            },
-            RunEvent::ToolStarted { call_id, name, args, .. } => AgentEvent::ToolExecutionStart {
-                tool_call_id: call_id.clone(),
-                tool_name: name.clone(),
-                args: args.clone(),
-            },
-            RunEvent::ToolUpdate { call_id, partial, .. } => AgentEvent::ToolExecutionUpdate {
-                tool_call_id: call_id.clone(),
-                tool_name: String::new(),
-                partial_result: partial.clone(),
-            },
-            RunEvent::ToolEnded { call_id, name, result, is_error, .. } => {
-                AgentEvent::ToolExecutionEnd {
-                    tool_call_id: call_id.clone(),
-                    tool_name: name.clone(),
-                    result: result.clone(),
-                    is_error: *is_error,
-                }
-            }
-            RunEvent::ApprovalRequired { prompt_id, tool_name, tool_input, danger_level, explanation, .. } => {
-                AgentEvent::ApprovalRequired {
-                    prompt_id: prompt_id.clone(),
-                    tool_name: tool_name.clone(),
-                    tool_input: tool_input.clone(),
-                    danger_level: danger_level.clone(),
-                    explanation: explanation.clone(),
-                }
-            }
-            RunEvent::ApprovalResolved { prompt_id, choice } => AgentEvent::ApprovalResolved {
-                prompt_id: prompt_id.clone(),
-                choice: format!("{choice:?}"),
-            },
-            RunEvent::InputRequested {
-                prompt_id,
-                title,
-                questions,
-                ..
-            } => AgentEvent::InputRequested {
-                prompt_id: prompt_id.clone(),
-                title: title.clone(),
-                questions: questions.clone(),
-            },
-            RunEvent::Error { message } => AgentEvent::Error(message.clone()),
-            RunEvent::Notice { message, .. } => AgentEvent::Error(message.clone()),
-            RunEvent::SubagentStarted { subagent_id, role_name, task } => {
-                AgentEvent::SubagentStart {
-                    subagent_id: subagent_id.clone(),
-                    role_name: role_name.clone(),
-                    task: task.clone(),
-                }
-            }
-            RunEvent::SubagentEnded { subagent_id, success, iterations_used } => {
-                AgentEvent::SubagentEnd {
-                    subagent_id: subagent_id.clone(),
-                    role_name: String::new(),
-                    success: *success,
-                    iterations_used: *iterations_used,
-                }
-            }
-            RunEvent::RunCompleted { .. } => AgentEvent::AgentEnd { messages: vec![] },
-            RunEvent::RunFailed { error } => AgentEvent::Error(error.clone()),
-            _ => return None,
-        };
-        Some(ev)
-    }
 }
 
 #[cfg(test)]

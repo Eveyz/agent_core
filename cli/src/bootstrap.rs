@@ -55,7 +55,7 @@ pub async fn bootstrap_runtime(opts: BootstrapOptions) -> anyhow::Result<CliStat
     }
 
     if opts.dry_run || opts.enable_hooks {
-        let mut hooks = brain.hook_registry.lock();
+        let mut hooks = brain.hook_registry().lock();
         if opts.dry_run {
             hooks.register(Box::new(crate::dry_run::DryRunHook));
         }
@@ -65,8 +65,8 @@ pub async fn bootstrap_runtime(opts: BootstrapOptions) -> anyhow::Result<CliStat
     }
 
     let skill_manager = brain
-        .skill_manager
-        .clone()
+        .skill_manager()
+        .cloned()
         .expect("Brain always initializes a SkillManager");
 
     let session_db_path = agent_core::paths::get_memory_db_path();
@@ -81,19 +81,25 @@ pub async fn bootstrap_runtime(opts: BootstrapOptions) -> anyhow::Result<CliStat
     let task_board: Arc<Mutex<TaskBoard>> = Arc::new(Mutex::new(TaskBoard::new()));
 
     {
-        let brain = run_manager.brain();
+        let brain = run_manager.brain().clone();
         let tb = task_board.clone();
         let mc = brain.current_model_config().ok();
-        let pc = brain.config.permissions.clone();
+        let pc = brain.permissions().clone();
         // Todo tools are registered per-Run via Brain::build_tool_registry_for
         // (SessionPlanStore). Only extra task tools are injected here.
-        brain.register_tool_fn(Box::new(move |reg: &mut agent_core::ToolRegistry| {
-            tasks::register_task_tools(reg, tb.clone(), mc.clone().unwrap_or_default(), pc.clone());
+        brain.register_tool_fn_ctx(Box::new(move |reg, extra| {
+            tasks::register_task_tools(
+                reg,
+                tb.clone(),
+                mc.clone().unwrap_or_default(),
+                pc.clone(),
+                extra,
+            );
         }));
     }
 
     let mcp_mgr = {
-        let mut mgr = McpClientManager::from_config(&run_manager.brain().config.mcp);
+        let mut mgr = McpClientManager::from_config(run_manager.mcp_config());
         let errors = mgr.connect_all().await;
         for (name, errs) in &errors {
             for err in errs {
@@ -122,8 +128,6 @@ pub async fn bootstrap_runtime(opts: BootstrapOptions) -> anyhow::Result<CliStat
         }
     };
 
-    // Keep CliState.brain in sync with the RunManager Arc after model/permission setup.
-    let brain_snapshot = (**run_manager.brain()).clone();
     let custom_agent_runner = Arc::new(agent_core::agent_registry::CustomAgentRunner::new(
         session_storage.clone(),
         run_manager.brain().clone(),
@@ -150,7 +154,6 @@ pub async fn bootstrap_runtime(opts: BootstrapOptions) -> anyhow::Result<CliStat
     );
 
     Ok(CliState {
-        brain: brain_snapshot,
         run_manager,
         context_history: Vec::new(),
         session_id: None,

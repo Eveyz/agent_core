@@ -335,6 +335,7 @@ export interface RunEventPayload {
   hit_tokens?: number;
   miss_tokens?: number;
   hit_rate?: number;
+  status?: { kind: 'rate' | 'prefix_drifted' | 'idle_expired'; hit_rate?: number };
   // Steering event fields
   steer_id?: string;
   queue_depth?: number;
