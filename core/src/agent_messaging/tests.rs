@@ -156,8 +156,10 @@ fn task_state_machine_and_hop_limit_stop_unbounded_agent_chains() {
     let delivery = messaging.send(request(&source)).expect("delivery");
 
     let working = messaging
-        .command(&delivery.task.id, AgentTaskCommand::Start)
-        .expect("start");
+        .claim_next("test-worker")
+        .expect("claim")
+        .expect("queued task")
+        .task;
     let completed = messaging
         .command(
             &delivery.task.id,
@@ -171,7 +173,12 @@ fn task_state_machine_and_hop_limit_stop_unbounded_agent_chains() {
     assert_eq!(completed.status, AgentTaskStatus::Completed);
     assert!(
         messaging
-            .command(&delivery.task.id, AgentTaskCommand::Start)
+            .command(
+                &delivery.task.id,
+                AgentTaskCommand::Fail {
+                    error: "too late".into(),
+                },
+            )
             .expect_err("terminal task")
             .to_string()
             .contains("already terminal")

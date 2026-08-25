@@ -42,6 +42,11 @@ function tokenForAgent(agent: AgentDef): string {
   return `@${agent.name.trim().replace(/\s+/g, "_")}`;
 }
 
+function eventPayloadText(payload: Record<string, unknown>, key: string): string | undefined {
+  const value = payload[key];
+  return typeof value === "string" ? value : undefined;
+}
+
 export function AgentConversationChat({ agent, onOpenSettings }: AgentConversationChatProps) {
   const agents = useAppSelector((state) => state.agents.agents);
   const activeProjectId = useAppSelector((state) => state.project.activeProjectId);
@@ -66,6 +71,48 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
       )
       .slice(0, 6);
   }, [agent.id, agents, mentionQuery]);
+  const persistedPeerMessageIds = useMemo(
+    () =>
+      new Set(
+        view?.session.messages
+          .map((message) => messageMetadata(message)?.message_id)
+          .filter((id): id is string => Boolean(id)) ?? [],
+      ),
+    [view?.session.messages],
+  );
+  const pendingInboundEvents = useMemo(
+    () =>
+      view?.messaging.events.filter(
+        (event) =>
+          event.event_type === "message_received" &&
+          Boolean(event.message_id) &&
+          !persistedPeerMessageIds.has(event.message_id!),
+      ) ?? [],
+    [persistedPeerMessageIds, view?.messaging.events],
+  );
+
+  const deliveryStatus = useCallback(
+    (messageId?: string) => {
+      if (!messageId || !view) return null;
+      const event = [...view.messaging.events]
+        .reverse()
+        .find(
+          (candidate) =>
+            candidate.message_id === messageId && candidate.event_type.startsWith("task_"),
+        );
+      if (!event) return null;
+      if (event.event_type === "task_working") return "Working…";
+      if (event.event_type === "task_completed") return "Replied";
+      if (event.event_type === "task_failed") {
+        return `Failed: ${eventPayloadText(event.payload, "error") || "delivery failed"}`;
+      }
+      if (event.event_type === "task_needs_attention") {
+        return `Needs attention: ${eventPayloadText(event.payload, "error") || "execution was interrupted"}`;
+      }
+      return null;
+    },
+    [view],
+  );
 
   const loadConversation = useCallback(async () => {
     setLoading(true);
@@ -243,6 +290,9 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
                 {metadata?.direction === "outbound_request" && (
                   <div className="agent-delivery-card">
                     <MessageSquareIcon size={13} /> Messaged {metadata.to_display_name}
+                    {deliveryStatus(metadata.message_id) && (
+                      <span> · {deliveryStatus(metadata.message_id)}</span>
+                    )}
                   </div>
                 )}
               </div>
@@ -256,6 +306,14 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
             </div>
           );
         })}
+        {pendingInboundEvents.map((event) => (
+          <div className="agent-peer-message" key={`pending-${event.message_id}`}>
+            <div className="agent-peer-message-label">
+              <MessageSquareIcon size={13} /> Message from {eventPayloadText(event.payload, "from")}
+            </div>
+            <div>{eventPayloadText(event.payload, "display_content") || "Message received"}</div>
+          </div>
+        ))}
         {sending && (
           <div className="agent-conversation-state agent-conversation-working">
             <LoaderIcon className="animate-spin" size={16} /> Agents are working…

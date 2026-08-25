@@ -62,27 +62,37 @@ impl AgentInboxDispatcher {
             }
         };
 
-        let output_message_id = if delivery.message.kind == MessageKind::Request {
-            let reply = self.messaging.send(SendAgentMessage {
-                source_conversation_id: delivery.target_conversation.id.clone(),
-                to_agent_id: delivery.message.from_agent_id.clone(),
-                kind: MessageKind::Reply,
-                parts: vec![MessagePart::text(output)],
-                context_id: Some(delivery.message.context_id.clone()),
-                correlation_id: Some(delivery.message.correlation_id.clone()),
-                reply_to: Some(delivery.message.id.clone()),
-                idempotency_key: format!("agent-reply:{}", delivery.message.id),
-                hop_count: delivery.message.hop_count + 1,
-            })?;
-            Some(reply.message.id)
-        } else {
-            None
-        };
+        let completion = (|| -> Result<()> {
+            let output_message_id = if delivery.message.kind == MessageKind::Request {
+                let reply = self.messaging.send(SendAgentMessage {
+                    source_conversation_id: delivery.target_conversation.id.clone(),
+                    to_agent_id: delivery.message.from_agent_id.clone(),
+                    kind: MessageKind::Reply,
+                    parts: vec![MessagePart::text(output)],
+                    context_id: Some(delivery.message.context_id.clone()),
+                    correlation_id: Some(delivery.message.correlation_id.clone()),
+                    reply_to: Some(delivery.message.id.clone()),
+                    idempotency_key: format!("agent-reply:{}", delivery.message.id),
+                    hop_count: delivery.message.hop_count + 1,
+                })?;
+                Some(reply.message.id)
+            } else {
+                None
+            };
 
-        self.messaging.command(
-            &delivery.task.id,
-            AgentTaskCommand::Complete { output_message_id },
-        )?;
+            self.messaging.command(
+                &delivery.task.id,
+                AgentTaskCommand::Complete { output_message_id },
+            )?;
+            Ok(())
+        })();
+        if let Err(error) = completion {
+            let reason = format!("agent executed but delivery finalization failed: {error}");
+            self.messaging.command(
+                &delivery.task.id,
+                AgentTaskCommand::NeedsAttention { reason },
+            )?;
+        }
         Ok(true)
     }
 
@@ -194,6 +204,39 @@ mod tests {
             *executor.deliveries.lock().unwrap(),
             vec![MessageKind::Request, MessageKind::Reply]
         );
+        assert!(!dispatcher.process_next().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn finalization_failure_does_not_leave_the_task_working() {
+        let (_directory, messaging, source) = setup();
+        let delivery = messaging
+            .send(SendAgentMessage {
+                source_conversation_id: source.id.clone(),
+                to_agent_id: "debugger".into(),
+                kind: MessageKind::Request,
+                parts: vec![MessagePart::text("inspect panic")],
+                context_id: None,
+                correlation_id: None,
+                reply_to: None,
+                idempotency_key: "request-at-hop-limit".into(),
+                hop_count: super::super::MAX_AGENT_MESSAGE_HOPS,
+            })
+            .unwrap();
+        let executor = Arc::new(RecordingExecutor {
+            deliveries: Mutex::new(Vec::new()),
+        });
+        let dispatcher = AgentInboxDispatcher::new(messaging.clone(), executor, "test-worker");
+
+        assert!(dispatcher.process_next().await.unwrap());
+
+        let events = messaging
+            .observe(&delivery.target_conversation.id, 0)
+            .unwrap();
+        assert!(events.events.iter().any(|event| {
+            event.task_id.as_deref() == Some(delivery.task.id.as_str())
+                && event.event_type == "task_needs_attention"
+        }));
         assert!(!dispatcher.process_next().await.unwrap());
     }
 }

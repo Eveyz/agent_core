@@ -209,7 +209,6 @@ pub struct ClaimedAgentMessage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentTaskCommand {
-    Start,
     RequireInput { reason: String },
     NeedsAttention { reason: String },
     Complete { output_message_id: Option<String> },
@@ -388,7 +387,11 @@ impl AgentMessaging {
             "message_received",
             Some(&message.id),
             Some(&task.id),
-            &serde_json::json!({ "from": message.from_display_name, "kind": message.kind }),
+            &serde_json::json!({
+                "from": message.from_display_name,
+                "kind": message.kind,
+                "display_content": message_display_content(&message.parts),
+            }),
             &now,
         )?;
         append_event(
@@ -463,12 +466,10 @@ impl AgentMessaging {
              WHERE id = ?5",
             params![next_status.as_str(), output_message_id, error, now, task_id],
         )?;
-        append_event(
+        append_task_event(
             &tx,
-            &task.recipient_conversation_id,
+            &task,
             &format!("task_{}", next_status.as_str()),
-            Some(&task.message_id),
-            Some(&task.id),
             &serde_json::json!({ "error": error }),
             &now,
         )?;
@@ -522,12 +523,10 @@ impl AgentMessaging {
             .context("message for claimed agent task is missing")?;
         let target_conversation = conversation_by_id(&tx, &task.recipient_conversation_id)?
             .context("conversation for claimed agent task is missing")?;
-        append_event(
+        append_task_event(
             &tx,
-            &task.recipient_conversation_id,
+            &task,
             "task_working",
-            Some(&task.message_id),
-            Some(&task.id),
             &serde_json::json!({
                 "worker_id": worker_id,
                 "attempt_count": task.attempt_count,
@@ -568,12 +567,10 @@ impl AgentMessaging {
                  WHERE id = ?3 AND status = 'working'",
                 params![reason, now, task.id],
             )?;
-            append_event(
+            append_task_event(
                 &tx,
-                &task.recipient_conversation_id,
+                &task,
                 "task_needs_attention",
-                Some(&task.message_id),
-                Some(&task.id),
                 &serde_json::json!({ "error": reason, "recovered": true }),
                 &now,
             )?;
@@ -608,12 +605,10 @@ impl AgentMessaging {
                  worker_id = '', updated_at = ?1 WHERE id = ?2",
             params![now, task_id],
         )?;
-        append_event(
+        append_task_event(
             &tx,
-            &task.recipient_conversation_id,
+            &task,
             "task_queued",
-            Some(&task.message_id),
-            Some(&task.id),
             &serde_json::json!({ "retry": true, "previous_attempts": task.attempt_count }),
             &now,
         )?;
@@ -667,9 +662,6 @@ fn transition(
     command: AgentTaskCommand,
 ) -> Result<(AgentTaskStatus, Option<String>, String)> {
     match (task.status, command) {
-        (AgentTaskStatus::Queued, AgentTaskCommand::Start) => {
-            Ok((AgentTaskStatus::Working, None, String::new()))
-        }
         (AgentTaskStatus::Working, AgentTaskCommand::RequireInput { reason }) => {
             Ok((AgentTaskStatus::InputRequired, None, reason))
         }
@@ -867,6 +859,50 @@ fn append_event(
         ],
     )?;
     Ok(())
+}
+
+fn append_task_event(
+    tx: &Transaction<'_>,
+    task: &AgentMessageTask,
+    event_type: &str,
+    payload: &serde_json::Value,
+    created_at: &str,
+) -> Result<()> {
+    append_event(
+        tx,
+        &task.recipient_conversation_id,
+        event_type,
+        Some(&task.message_id),
+        Some(&task.id),
+        payload,
+        created_at,
+    )?;
+    let message =
+        message_by_id(tx, &task.message_id)?.context("message for agent task is missing")?;
+    if message.source_conversation_id != task.recipient_conversation_id {
+        append_event(
+            tx,
+            &message.source_conversation_id,
+            event_type,
+            Some(&task.message_id),
+            Some(&task.id),
+            payload,
+            created_at,
+        )?;
+    }
+    Ok(())
+}
+
+fn message_display_content(parts: &[MessagePart]) -> String {
+    parts
+        .iter()
+        .map(|part| match part {
+            MessagePart::Text { text } => text.clone(),
+            MessagePart::Data { value } => value.to_string(),
+            MessagePart::File { artifact_id } => format!("[Artifact: {artifact_id}]"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn message_by_id(db: &rusqlite::Connection, id: &str) -> Result<Option<AgentMessage>> {
