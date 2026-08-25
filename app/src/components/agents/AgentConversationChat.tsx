@@ -5,6 +5,7 @@ import SettingsIcon from "lucide-react/dist/esm/icons/settings.mjs";
 import SendIcon from "lucide-react/dist/esm/icons/send.mjs";
 import LoaderIcon from "lucide-react/dist/esm/icons/loader.mjs";
 import MessageSquareIcon from "lucide-react/dist/esm/icons/message-square.mjs";
+import ZapIcon from "lucide-react/dist/esm/icons/zap.mjs";
 import { useAppSelector } from "../../hooks/useAppDispatch";
 import type {
   AgentConversationMessage,
@@ -30,6 +31,7 @@ interface AgentMessageMetadata {
   to_display_name?: string;
   display_content?: string;
   kind?: string;
+  priority?: boolean;
 }
 
 function messageMetadata(message: AgentConversationMessage): AgentMessageMetadata | null {
@@ -47,12 +49,17 @@ function eventPayloadText(payload: Record<string, unknown>, key: string): string
   return typeof value === "string" ? value : undefined;
 }
 
+function eventPayloadBoolean(payload: Record<string, unknown>, key: string): boolean {
+  return payload[key] === true;
+}
+
 export function AgentConversationChat({ agent, onOpenSettings }: AgentConversationChatProps) {
   const agents = useAppSelector((state) => state.agents.agents);
   const activeProjectId = useAppSelector((state) => state.project.activeProjectId);
   const [view, setView] = useState<AgentConversationView | null>(null);
   const [input, setInput] = useState("");
   const [selectedMentions, setSelectedMentions] = useState<SelectedAgentMention[]>([]);
+  const [priority, setPriority] = useState(false);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -71,6 +78,11 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
       )
       .slice(0, 6);
   }, [agent.id, agents, mentionQuery]);
+  const resolvedMentions = useMemo(
+    () => resolveAgentMentions(input, selectedMentions, agents),
+    [agents, input, selectedMentions],
+  );
+  const hasSingleRecipient = resolvedMentions.length === 1;
   const persistedPeerMessageIds = useMemo(
     () =>
       new Set(
@@ -135,8 +147,13 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
     setView(null);
     setInput("");
     setSelectedMentions([]);
+    setPriority(false);
     void loadConversation();
   }, [loadConversation]);
+
+  useEffect(() => {
+    if (!hasSingleRecipient) setPriority(false);
+  }, [hasSingleRecipient]);
 
   useEffect(() => {
     if (!view || sending) return;
@@ -200,10 +217,12 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
     const text = input.trim();
     if (!text || !view || sending) return;
     const mentions = resolveAgentMentions(text, selectedMentions, agents);
+    const sendPriority = priority && mentions.length === 1;
     setSending(true);
     setError(null);
     setInput("");
     setSelectedMentions([]);
+    setPriority(false);
     try {
       const result = await invoke<AgentConversationSendResult>(
         "send_agent_conversation_message",
@@ -211,18 +230,20 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
           conversationId: view.conversation.id,
           input: text,
           agentMentions: mentions.length ? mentions : undefined,
+          priority: sendPriority,
         },
       );
       setView(result.view);
       window.dispatchEvent(new Event("agent-conversations-changed"));
     } catch (reason) {
       setInput(text);
+      setPriority(sendPriority);
       setError(String(reason));
       await loadConversation();
     } finally {
       setSending(false);
     }
-  }, [agents, input, loadConversation, selectedMentions, sending, view]);
+  }, [agents, input, loadConversation, priority, selectedMentions, sending, view]);
 
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -276,7 +297,8 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
             return (
               <div className="agent-peer-message" key={`${index}-${metadata.message_id ?? "peer"}`}>
                 <div className="agent-peer-message-label">
-                  <MessageSquareIcon size={13} /> Message from {metadata.from_display_name}
+                  {metadata.priority ? <ZapIcon size={13} /> : <MessageSquareIcon size={13} />} Message
+                  from {metadata.from_display_name}
                 </div>
                 <div>{metadata.display_content || message.content}</div>
                 {status && <div className="agent-delivery-card">{status}</div>}
@@ -291,7 +313,8 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
                 </div>
                 {metadata?.direction === "outbound_request" && (
                   <div className="agent-delivery-card">
-                    <MessageSquareIcon size={13} /> Messaged {metadata.to_display_name}
+                    {metadata.priority ? <ZapIcon size={13} /> : <MessageSquareIcon size={13} />}
+                    {metadata.priority ? "Priority messaged" : "Messaged"} {metadata.to_display_name}
                     {deliveryStatus(metadata.message_id, "Replied") && (
                       <span> · {deliveryStatus(metadata.message_id, "Replied")}</span>
                     )}
@@ -311,7 +334,12 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
         {pendingInboundEvents.map((event) => (
           <div className="agent-peer-message" key={`pending-${event.message_id}`}>
             <div className="agent-peer-message-label">
-              <MessageSquareIcon size={13} /> Message from {eventPayloadText(event.payload, "from")}
+              {eventPayloadBoolean(event.payload, "priority") ? (
+                <ZapIcon size={13} />
+              ) : (
+                <MessageSquareIcon size={13} />
+              )}{" "}
+              Message from {eventPayloadText(event.payload, "from")}
             </div>
             <div>{eventPayloadText(event.payload, "display_content") || "Message received"}</div>
             {deliveryStatus(event.message_id, "Processed") && (
@@ -350,6 +378,19 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
             rows={2}
             disabled={loading || sending}
           />
+          <button
+            className={`agent-conversation-priority${priority ? " active" : ""}`}
+            onClick={() => setPriority((current) => !current)}
+            disabled={!hasSingleRecipient || loading || sending}
+            aria-pressed={priority}
+            title={
+              hasSingleRecipient
+                ? "Interrupt the recipient's current agent task"
+                : "Mention one agent to enable priority"
+            }
+          >
+            <ZapIcon size={13} /> Priority
+          </button>
           <button
             className="agent-conversation-send"
             onClick={() => void send()}

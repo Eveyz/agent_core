@@ -196,13 +196,40 @@
   width: 100%;
   min-height: 72px;
   max-height: 180px;
-  padding: 15px 52px 15px 16px;
+  padding: 15px 152px 15px 16px;
   resize: vertical;
   border: 0;
   outline: 0;
   background: transparent;
   color: var(--text-main);
   font: 14px/1.5 var(--font-prose);
+}
+
+.agent-conversation-priority {
+  position: absolute;
+  right: 52px;
+  bottom: 15px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.agent-conversation-priority.active {
+  border-color: color-mix(in srgb, var(--warning) 55%, transparent);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  color: var(--warning);
+}
+
+.agent-conversation-priority:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 .agent-conversation-send {

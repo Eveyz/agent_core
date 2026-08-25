@@ -24,6 +24,8 @@ struct AppState {
     agent_messaging: agent_core::AgentMessaging,
     /// Background consumer for durable agent inbox tasks.
     agent_dispatcher: Arc<agent_core::AgentInboxDispatcher>,
+    /// Serializes saved-agent turns and protects user turns from peer preemption.
+    active_agent_runs: agent_core::ActiveAgentRuns,
     /// Durable orchestration kernel shared by mentions and saved workflows.
     workflow_runtime: Arc<
         agent_core::workflow::runtime::DurableWorkflowRuntime<
@@ -136,6 +138,8 @@ struct AgentConversationMessageMetadata<'a> {
     kind: Option<agent_core::MessageKind>,
     #[serde(skip_serializing_if = "is_false")]
     relay_only: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    priority: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -157,7 +161,11 @@ struct DesktopAgentMessageExecutor {
 
 #[async_trait::async_trait]
 impl agent_core::AgentMessageExecutor for DesktopAgentMessageExecutor {
-    async fn execute(&self, delivery: &agent_core::ClaimedAgentMessage) -> anyhow::Result<String> {
+    async fn execute(
+        &self,
+        delivery: &agent_core::ClaimedAgentMessage,
+        cancel_token: agent_core::CancellationToken,
+    ) -> anyhow::Result<String> {
         let agent =
             agent_core::agent_registry::get(&self.storage, &delivery.target_conversation.agent_id)?;
         let display_content = delivery
@@ -215,6 +223,7 @@ impl agent_core::AgentMessageExecutor for DesktopAgentMessageExecutor {
             display_content: Some(&display_content),
             kind: Some(delivery.message.kind),
             relay_only,
+            priority: delivery.message.priority,
         });
         let permission_config =
             agent_core::agent_registry::build_permission_config(&agent, &self.base_permissions);
@@ -229,7 +238,7 @@ impl agent_core::AgentMessageExecutor for DesktopAgentMessageExecutor {
                 trigger: trigger.to_string(),
                 permission_config,
                 approval_resolver: Some(agent_core::runtime::ApprovalResolver::auto_deny()),
-                cancel_token: agent_core::CancellationToken::new(),
+                cancel_token,
                 event_tx: None,
                 subagent_depth: 0,
                 context_mode: agent_core::agent_registry::CustomAgentContextMode::ResumeSession,
@@ -2505,7 +2514,17 @@ async fn run_agent_conversation_turn(
         brain,
         state.session_manager.clone(),
     );
-    runner
+    let cancel_token = agent_core::CancellationToken::new();
+    let lease = state
+        .active_agent_runs
+        .enter(
+            conversation.agent_id.clone(),
+            format!("user:{}", uuid::Uuid::new_v4()),
+            agent_core::AgentRunLane::User,
+            cancel_token.clone(),
+        )
+        .await;
+    let result = runner
         .run(agent_core::agent_registry::CustomAgentInvocation {
             agent,
             input,
@@ -2515,15 +2534,16 @@ async fn run_agent_conversation_turn(
             trigger: trigger.to_string(),
             permission_config,
             approval_resolver: None,
-            cancel_token: agent_core::CancellationToken::new(),
+            cancel_token,
             event_tx: None,
             subagent_depth: 0,
             context_mode: agent_core::agent_registry::CustomAgentContextMode::ResumeSession,
             input_metadata,
             record_history: true,
         })
-        .await
-        .map_err(|error| error.to_string())
+        .await;
+    lease.finish();
+    result.map_err(|error| error.to_string())
 }
 
 async fn append_agent_conversation_user_message(
@@ -2593,6 +2613,7 @@ async fn send_agent_conversation_message(
     conversation_id: String,
     input: String,
     agent_mentions: Option<Vec<agent_core::workflow::runtime::AgentMention>>,
+    priority: Option<bool>,
 ) -> Result<AgentConversationSendResult, String> {
     if input.trim().is_empty() {
         return Err("agent conversation message must not be empty".to_string());
@@ -2607,7 +2628,11 @@ async fn send_agent_conversation_message(
             .map_err(|error| error.to_string())?
     };
     let mentions = agent_mentions.unwrap_or_default();
+    let priority = priority.unwrap_or(false);
     if mentions.is_empty() {
+        if priority {
+            return Err("priority is only available for agent messages".to_string());
+        }
         run_agent_conversation_turn(&state, &source, input, None, "agent_chat").await?;
         let view =
             load_agent_conversation_view(messaging, state.session_manager.clone(), source).await?;
@@ -2648,6 +2673,7 @@ async fn send_agent_conversation_message(
                 reply_to: None,
                 idempotency_key: format!("agent-chat:{}:{}", conversation_id, uuid::Uuid::new_v4()),
                 hop_count: 1,
+                priority,
             })
         })
         .await
@@ -2669,6 +2695,7 @@ async fn send_agent_conversation_message(
             display_content: None,
             kind: Some(agent_core::MessageKind::Request),
             relay_only: false,
+            priority,
         }),
     )
     .await
@@ -2681,7 +2708,9 @@ async fn send_agent_conversation_message(
         );
         return Err(error);
     }
-    state.agent_dispatcher.wake();
+    state
+        .agent_dispatcher
+        .route_peer_message(&recipient.id, priority);
     let view =
         load_agent_conversation_view(messaging, state.session_manager.clone(), source).await?;
     Ok(AgentConversationSendResult {
@@ -3513,6 +3542,7 @@ pub fn run() {
                 ),
             );
             let agent_messaging = agent_core::AgentMessaging::new(storage.clone());
+            let active_agent_runs = agent_core::ActiveAgentRuns::new();
             if let Err(error) = agent_messaging
                 .recover_interrupted("application restarted during agent execution")
             {
@@ -3526,6 +3556,7 @@ pub fn run() {
                     session_manager: session_manager.clone(),
                     base_permissions: run_manager.brain().config.permissions.clone(),
                 }),
+                active_agent_runs.clone(),
                 format!("desktop-{}", uuid::Uuid::new_v4()),
             ));
             let workflow_activities =
@@ -3566,6 +3597,7 @@ pub fn run() {
                 agent_registry: agent_core::agent_registry::AgentRegistry::new(storage.clone()),
                 agent_messaging,
                 agent_dispatcher: agent_dispatcher.clone(),
+                active_agent_runs,
                 workflow_runtime: workflow_runtime.clone(),
                 workflow_authoring,
                 agent_mentions_enabled,

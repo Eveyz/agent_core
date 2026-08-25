@@ -5,7 +5,10 @@
 //! events, and advance the recipient task through explicit commands. A future
 //! remote A2A adapter can satisfy the same interface without changing the UI.
 
+mod active_runs;
 pub mod dispatcher;
+
+pub use active_runs::{ActiveAgentRunLease, ActiveAgentRuns, AgentRunLane, PeerMessageRoute};
 
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
@@ -93,6 +96,7 @@ pub struct AgentMessage {
     pub project_id: String,
     pub idempotency_key: String,
     pub hop_count: u8,
+    pub priority: bool,
     pub created_at: String,
 }
 
@@ -189,6 +193,8 @@ pub struct SendAgentMessage {
     pub reply_to: Option<String>,
     pub idempotency_key: String,
     pub hop_count: u8,
+    #[serde(default)]
+    pub priority: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -353,6 +359,7 @@ impl AgentMessaging {
             project_id: source.project_id.clone(),
             idempotency_key: command.idempotency_key,
             hop_count: command.hop_count,
+            priority: command.priority,
             created_at: now.clone(),
         };
         insert_message(&tx, &message)?;
@@ -378,7 +385,11 @@ impl AgentMessaging {
             "message_sent",
             Some(&message.id),
             Some(&task.id),
-            &serde_json::json!({ "to": message.to_display_name, "kind": message.kind }),
+            &serde_json::json!({
+                "to": message.to_display_name,
+                "kind": message.kind,
+                "priority": message.priority,
+            }),
             &now,
         )?;
         append_event(
@@ -390,6 +401,7 @@ impl AgentMessaging {
             &serde_json::json!({
                 "from": message.from_display_name,
                 "kind": message.kind,
+                "priority": message.priority,
                 "display_content": message_display_content(&message.parts),
             }),
             &now,
@@ -494,9 +506,10 @@ impl AgentMessaging {
         let tx = db.transaction()?;
         let task_id = tx
             .query_row(
-                "SELECT id FROM agent_message_tasks
-                 WHERE status = 'queued'
-                 ORDER BY created_at ASC, id ASC
+                "SELECT task.id FROM agent_message_tasks AS task
+                 JOIN agent_messages AS message ON message.id = task.message_id
+                 WHERE task.status = 'queued'
+                 ORDER BY message.priority DESC, task.created_at ASC, task.id ASC
                  LIMIT 1",
                 [],
                 |row| row.get::<_, String>(0),
@@ -785,9 +798,9 @@ fn insert_message(tx: &Transaction<'_>, message: &AgentMessage) -> Result<()> {
          (id, schema_version, context_id, from_agent_id, from_revision_id,
           from_display_name, to_agent_id, to_revision_id, to_display_name, kind,
           parts, correlation_id, reply_to, source_conversation_id,
-          target_conversation_id, project_id, idempotency_key, hop_count, created_at)
+          target_conversation_id, project_id, idempotency_key, hop_count, priority, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                 ?14, ?15, ?16, ?17, ?18, ?19)",
+                 ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
         params![
             message.id,
             message.schema_version,
@@ -807,6 +820,7 @@ fn insert_message(tx: &Transaction<'_>, message: &AgentMessage) -> Result<()> {
             message.project_id,
             message.idempotency_key,
             message.hop_count as i64,
+            message.priority as i64,
             message.created_at,
         ],
     )?;
@@ -911,7 +925,7 @@ fn message_by_id(db: &rusqlite::Connection, id: &str) -> Result<Option<AgentMess
                 from_display_name, to_agent_id, to_revision_id, to_display_name,
                 kind, parts, correlation_id, reply_to, source_conversation_id,
                 target_conversation_id, project_id, idempotency_key, hop_count,
-                created_at
+                priority, created_at
          FROM agent_messages WHERE id = ?1",
         params![id],
         message_from_row,
@@ -942,7 +956,8 @@ fn message_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentMessage> {
         project_id: row.get(15)?,
         idempotency_key: row.get(16)?,
         hop_count: row.get::<_, i64>(17)? as u8,
-        created_at: row.get(18)?,
+        priority: row.get::<_, i64>(18)? != 0,
+        created_at: row.get(19)?,
     })
 }
 
@@ -986,7 +1001,7 @@ fn delivery_by_idempotency_key(
                     from_display_name, to_agent_id, to_revision_id, to_display_name,
                     kind, parts, correlation_id, reply_to, source_conversation_id,
                     target_conversation_id, project_id, idempotency_key, hop_count,
-                    created_at
+                    priority, created_at
              FROM agent_messages WHERE idempotency_key = ?1",
             params![key],
             message_from_row,

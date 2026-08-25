@@ -136,6 +136,11 @@ impl Storage {
             "INTEGER NOT NULL DEFAULT 0",
         )?;
         storage.add_column_if_not_exists(
+            "agent_messages",
+            "priority",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        storage.add_column_if_not_exists(
             "agent_message_tasks",
             "worker_id",
             "TEXT NOT NULL DEFAULT ''",
@@ -543,6 +548,7 @@ impl Storage {
                 project_id TEXT NOT NULL DEFAULT '',
                 idempotency_key TEXT NOT NULL UNIQUE,
                 hop_count INTEGER NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL
             );
 

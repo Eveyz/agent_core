@@ -39,7 +39,8 @@ pub use agent_messaging::dispatcher::{AgentInboxDispatcher, AgentMessageExecutor
 pub use agent_messaging::{
     AGENT_MESSAGE_SCHEMA_V1, AgentConversation, AgentMessage, AgentMessageEvent, AgentMessageTask,
     AgentMessaging, AgentTaskCommand, AgentTaskStatus, ClaimedAgentMessage, DeliveryReceipt,
-    MAX_AGENT_MESSAGE_HOPS, MessageKind, MessageObservation, MessagePart, SendAgentMessage,
+    ActiveAgentRunLease, ActiveAgentRuns, AgentRunLane, MAX_AGENT_MESSAGE_HOPS, MessageKind,
+    MessageObservation, MessagePart, PeerMessageRoute, SendAgentMessage,
 };
 pub use config::{
     ApiMode, Config, MemoryConfig, MemoryMode, ModelConfig, ReflectionConfig, RuntimeOverrides,

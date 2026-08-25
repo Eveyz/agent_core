@@ -39,6 +39,7 @@ fn request(source: &AgentConversation) -> SendAgentMessage {
         reply_to: None,
         idempotency_key: "request-1".into(),
         hop_count: 1,
+        priority: false,
     }
 }
 
@@ -133,6 +134,7 @@ fn reply_reverses_the_route_and_preserves_context_and_correlation() {
             reply_to: Some(original.message.id.clone()),
             idempotency_key: "reply-1".into(),
             hop_count: 2,
+            priority: false,
         })
         .expect("reply");
 
@@ -205,6 +207,7 @@ fn task_state_machine_and_hop_limit_stop_unbounded_agent_chains() {
         reply_to: None,
         idempotency_key: "self-message".into(),
         hop_count: 1,
+        priority: false,
     };
     assert!(
         messaging
@@ -283,4 +286,82 @@ fn interrupted_work_requires_attention_and_can_be_explicitly_retried() {
         .collect::<Vec<_>>();
     assert!(event_types.contains(&"task_needs_attention"));
     assert!(event_types.contains(&"task_queued"));
+}
+
+#[tokio::test]
+async fn priority_peer_message_preempts_an_active_peer_lane() {
+    let active_runs = ActiveAgentRuns::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let lease = active_runs
+        .enter(
+            "debugger",
+            "peer-run-1",
+            AgentRunLane::Peer,
+            cancel.clone(),
+        )
+        .await;
+
+    let decision = active_runs.route_peer_message("debugger", true);
+
+    assert_eq!(
+        decision,
+        PeerMessageRoute::PreemptedPeer {
+            run_id: "peer-run-1".into(),
+        }
+    );
+    assert!(cancel.is_cancelled());
+    assert!(lease.was_preempted());
+    lease.finish();
+}
+
+#[tokio::test]
+async fn peer_messages_never_interrupt_an_active_user_lane() {
+    let active_runs = ActiveAgentRuns::new();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let lease = active_runs
+        .enter(
+            "debugger",
+            "user-run-1",
+            AgentRunLane::User,
+            cancel.clone(),
+        )
+        .await;
+
+    assert_eq!(
+        active_runs.route_peer_message("debugger", true),
+        PeerMessageRoute::DeferredForUser {
+            run_id: "user-run-1".into(),
+        }
+    );
+    assert_eq!(
+        active_runs.route_peer_message("debugger", false),
+        PeerMessageRoute::Queued
+    );
+    assert!(!cancel.is_cancelled());
+    assert!(!lease.was_preempted());
+    lease.finish();
+}
+
+#[test]
+fn priority_delivery_is_claimed_before_older_normal_delivery() {
+    let (_directory, messaging, coder, _) = service_with_agents();
+    let source = messaging
+        .open_conversation(&coder.id, Some("__adhoc_chat__"))
+        .expect("source");
+    let normal = messaging.send(request(&source)).expect("normal delivery");
+    let mut priority_request = request(&source);
+    priority_request.idempotency_key = "priority-request".into();
+    priority_request.priority = true;
+    let priority = messaging
+        .send(priority_request)
+        .expect("priority delivery");
+
+    let claimed = messaging
+        .claim_next("desktop-worker")
+        .expect("claim")
+        .expect("delivery");
+
+    assert_eq!(claimed.task.id, priority.task.id);
+    assert!(claimed.message.priority);
+    assert_ne!(claimed.task.id, normal.task.id);
 }
