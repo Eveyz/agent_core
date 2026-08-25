@@ -106,22 +106,40 @@ impl AgentInboxDispatcher {
             && let Err(error) = swarm.begin_turn(
                 &delivery.message.context_id,
                 &delivery.target_conversation.agent_id,
+                &delivery.task.id,
+                AgentRunLane::Peer,
             )
         {
             lease.finish();
             self.messaging.command(
                 &delivery.task.id,
-                AgentTaskCommand::NeedsAttention { reason: error.to_string() },
+                AgentTaskCommand::NeedsAttention {
+                    reason: error.to_string(),
+                },
             )?;
             return Ok(());
         }
         let execution = self.executor.execute(&delivery, cancel_token).await;
+        if let Some(swarm) = &self.swarm
+            && let Err(error) = swarm.finish_turn(&delivery.message.context_id, &delivery.task.id)
+        {
+            lease.finish();
+            self.messaging.command(
+                &delivery.task.id,
+                AgentTaskCommand::NeedsAttention {
+                    reason: format!("agent executed but turn finalization failed: {error}"),
+                },
+            )?;
+            return Ok(());
+        }
         let was_preempted = lease.was_preempted();
         lease.finish();
         let output = match execution {
             Ok(output) => output,
             Err(error) => {
-                if self.messaging.task(&delivery.task.id)?.status == super::AgentTaskStatus::Cancelled {
+                if self.messaging.task(&delivery.task.id)?.status
+                    == super::AgentTaskStatus::Cancelled
+                {
                     return Ok(());
                 }
                 if let Some(swarm) = &self.swarm {
@@ -170,14 +188,29 @@ impl AgentInboxDispatcher {
                 &delivery.task.id,
                 AgentTaskCommand::Complete { output_message_id },
             )?;
+            if let Some(swarm) = &self.swarm {
+                swarm.finalize_completion(&delivery.message.context_id, &delivery.task.id)?;
+            }
             Ok(())
         })();
         if let Err(error) = completion {
             let reason = format!("agent executed but delivery finalization failed: {error}");
-            self.messaging.command(
-                &delivery.task.id,
-                AgentTaskCommand::NeedsAttention { reason },
-            )?;
+            if self.messaging.task(&delivery.task.id)?.status.is_terminal() {
+                // The reply and task completion are already durable. Keep a
+                // Completing swarm recoverable so startup reconciliation can
+                // promote it instead of turning a successful delivery ambiguous.
+                eprintln!("[agent-messaging] {reason}");
+            } else {
+                self.messaging.command(
+                    &delivery.task.id,
+                    AgentTaskCommand::NeedsAttention {
+                        reason: reason.clone(),
+                    },
+                )?;
+                if let Some(swarm) = &self.swarm {
+                    swarm.mark_needs_attention(&delivery.message.context_id, &reason)?;
+                }
+            }
         }
         Ok(())
     }

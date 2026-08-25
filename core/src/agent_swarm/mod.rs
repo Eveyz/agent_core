@@ -6,6 +6,7 @@ use chrono::Utc;
 use parking_lot::Mutex;
 use rusqlite::{OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::{
     AgentMessage, AgentMessaging, DeliveryReceipt, MessageKind, MessagePart, SendAgentMessage,
@@ -18,6 +19,7 @@ use crate::{
 #[serde(rename_all = "snake_case")]
 pub enum SwarmStatus {
     Running,
+    Completing,
     Completed,
     Cancelled,
     NeedsAttention,
@@ -27,6 +29,7 @@ impl SwarmStatus {
     fn as_str(self) -> &'static str {
         match self {
             Self::Running => "running",
+            Self::Completing => "completing",
             Self::Completed => "completed",
             Self::Cancelled => "cancelled",
             Self::NeedsAttention => "needs_attention",
@@ -36,6 +39,7 @@ impl SwarmStatus {
     fn parse(value: &str) -> std::io::Result<Self> {
         match value {
             "running" => Ok(Self::Running),
+            "completing" => Ok(Self::Completing),
             "completed" => Ok(Self::Completed),
             "cancelled" => Ok(Self::Cancelled),
             "needs_attention" => Ok(Self::NeedsAttention),
@@ -58,11 +62,15 @@ pub struct SwarmRun {
     pub messages_used: u32,
     pub max_turns: u32,
     pub turns_used: u32,
+    pub max_hops: u8,
+    pub hops_used: u8,
     pub summary: String,
     pub error: String,
     pub created_at: String,
     pub updated_at: String,
     pub completed_at: Option<String>,
+    pub completion_task_id: Option<String>,
+    pub completion_turn_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,6 +80,7 @@ pub struct StartSwarm {
     pub goal: String,
     pub max_messages: u32,
     pub max_turns: u32,
+    pub max_hops: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -83,10 +92,13 @@ pub enum SwarmCommand {
         parts: Vec<MessagePart>,
         priority: bool,
         idempotency_key: String,
+        hop_count: u8,
     },
     Complete {
         agent_id: String,
         summary: String,
+        current_task_id: Option<String>,
+        current_turn_id: Option<String>,
     },
     Cancel {
         reason: String,
@@ -95,6 +107,7 @@ pub enum SwarmCommand {
         instruction: String,
         max_messages: Option<u32>,
         max_turns: Option<u32>,
+        max_hops: Option<u8>,
     },
 }
 
@@ -125,6 +138,7 @@ pub struct SwarmObservation {
 pub struct SwarmCoordinator {
     storage: Storage,
     messaging: AgentMessaging,
+    active_runs: crate::ActiveAgentRuns,
     commands: Arc<Mutex<()>>,
 }
 
@@ -132,6 +146,10 @@ pub struct SwarmCoordinator {
 pub struct SwarmToolContext {
     pub run_id: String,
     pub agent_id: String,
+    pub next_hop: u8,
+    pub effect_scope_id: String,
+    pub active_task_id: Option<String>,
+    pub active_turn_id: Option<String>,
     pub coordinator: SwarmCoordinator,
 }
 
@@ -185,6 +203,13 @@ impl Tool for SendAgentMessageTool {
             .get("priority")
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
+        let mut effect = Sha256::new();
+        effect.update(self.context.effect_scope_id.as_bytes());
+        effect.update(self.context.agent_id.as_bytes());
+        effect.update(recipient.id.as_bytes());
+        effect.update(message.as_bytes());
+        effect.update([priority as u8]);
+        let idempotency_key = format!("swarm-tool:{}", hex::encode(effect.finalize()));
         let snapshot = self.context.coordinator.command(
             &self.context.run_id,
             SwarmCommand::Send {
@@ -192,12 +217,14 @@ impl Tool for SendAgentMessageTool {
                 to_agent_id: recipient.id,
                 parts: vec![MessagePart::text(message)],
                 priority,
-                idempotency_key: format!("swarm-tool:{}", uuid::Uuid::new_v4()),
+                idempotency_key: idempotency_key.clone(),
+                hop_count: self.context.next_hop,
             },
         )?;
         let sent = snapshot
             .messages
-            .last()
+            .iter()
+            .find(|message| message.idempotency_key == idempotency_key)
             .context("sent message missing from swarm snapshot")?;
         Ok(serde_json::json!({
             "status": "queued", "message_id": sent.id, "to": sent.to_display_name,
@@ -240,6 +267,8 @@ impl Tool for CompleteSwarmTool {
             SwarmCommand::Complete {
                 agent_id: self.context.agent_id.clone(),
                 summary: summary.to_string(),
+                current_task_id: self.context.active_task_id.clone(),
+                current_turn_id: self.context.active_turn_id.clone(),
             },
         )?;
         Ok(serde_json::to_string(&snapshot.run)?)
@@ -252,10 +281,15 @@ pub fn register_swarm_tools(registry: &mut ToolRegistry, context: SwarmToolConte
 }
 
 impl SwarmCoordinator {
-    pub fn new(storage: Storage, messaging: AgentMessaging) -> Self {
+    pub fn new(
+        storage: Storage,
+        messaging: AgentMessaging,
+        active_runs: crate::ActiveAgentRuns,
+    ) -> Self {
         Self {
             storage,
             messaging,
+            active_runs,
             commands: Arc::new(Mutex::new(())),
         }
     }
@@ -264,7 +298,7 @@ impl SwarmCoordinator {
         if command.goal.trim().is_empty() {
             bail!("swarm goal must not be empty");
         }
-        if command.max_messages == 0 || command.max_turns == 0 {
+        if command.max_messages == 0 || command.max_turns == 0 || command.max_hops == 0 {
             bail!("swarm budgets must be greater than zero");
         }
         agent_registry::get(&self.storage, &command.root_agent_id)
@@ -281,19 +315,24 @@ impl SwarmCoordinator {
             messages_used: 0,
             max_turns: command.max_turns,
             turns_used: 0,
+            max_hops: command.max_hops,
+            hops_used: 0,
             summary: String::new(),
             error: String::new(),
             created_at: now.clone(),
             updated_at: now.clone(),
             completed_at: None,
+            completion_task_id: None,
+            completion_turn_id: None,
         };
         let mut db = self.storage.conn();
         let tx = db.transaction()?;
         tx.execute(
             "INSERT INTO agent_swarm_runs
              (id, project_id, root_agent_id, goal, status, max_messages, messages_used,
-              max_turns, turns_used, summary, error, created_at, updated_at, completed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, 0, '', '', ?8, ?8, NULL)",
+              max_turns, turns_used, max_hops, hops_used, summary, error,
+              created_at, updated_at, completed_at, completion_task_id, completion_turn_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, 0, ?8, 0, '', '', ?9, ?9, NULL, NULL, NULL)",
             params![
                 run.id,
                 run.project_id,
@@ -302,6 +341,7 @@ impl SwarmCoordinator {
                 run.status.as_str(),
                 run.max_messages,
                 run.max_turns,
+                run.max_hops,
                 now
             ],
         )?;
@@ -323,8 +363,19 @@ impl SwarmCoordinator {
     pub fn command(&self, run_id: &str, command: SwarmCommand) -> Result<SwarmSnapshot> {
         let _guard = self.commands.lock();
         let run = self.run(run_id)?;
-        if run.status != SwarmStatus::Running && !matches!(command, SwarmCommand::Intervene { .. })
-        {
+        let command_allowed = match (&run.status, &command) {
+            (SwarmStatus::Running, _) => true,
+            (
+                SwarmStatus::Completing | SwarmStatus::NeedsAttention,
+                SwarmCommand::Cancel { .. },
+            ) => true,
+            (SwarmStatus::NeedsAttention, SwarmCommand::Intervene { .. }) => true,
+            // Let `intervene` own the lifecycle-specific validation so terminal
+            // runs retain the stable "cannot be reopened" error contract.
+            (_, SwarmCommand::Intervene { .. }) => true,
+            _ => false,
+        };
+        if !command_allowed {
             bail!("swarm run '{run_id}' is not running");
         }
         match command {
@@ -334,6 +385,7 @@ impl SwarmCoordinator {
                 parts,
                 priority,
                 idempotency_key,
+                hop_count,
             } => {
                 self.send(
                     &run,
@@ -342,18 +394,29 @@ impl SwarmCoordinator {
                     parts,
                     priority,
                     idempotency_key,
+                    hop_count,
                 )?;
             }
-            SwarmCommand::Complete { agent_id, summary } => {
-                self.complete(&run, &agent_id, &summary)?
-            }
+            SwarmCommand::Complete {
+                agent_id,
+                summary,
+                current_task_id,
+                current_turn_id,
+            } => self.complete(
+                &run,
+                &agent_id,
+                &summary,
+                current_task_id.as_deref(),
+                current_turn_id.as_deref(),
+            )?,
             SwarmCommand::Cancel { reason } => self.cancel(&run, &reason)?,
             SwarmCommand::Intervene {
                 instruction,
                 max_messages,
                 max_turns,
+                max_hops,
             } => {
-                self.intervene(&run, &instruction, max_messages, max_turns)?;
+                self.intervene(&run, &instruction, max_messages, max_turns, max_hops)?;
             }
         }
         self.snapshot(run_id)
@@ -421,7 +484,13 @@ impl SwarmCoordinator {
 
     /// Records the start of a peer-agent turn when `context_id` belongs to a swarm.
     /// Non-swarm message contexts are deliberately ignored for compatibility.
-    pub fn begin_turn(&self, context_id: &str, agent_id: &str) -> Result<()> {
+    pub fn begin_turn(
+        &self,
+        context_id: &str,
+        agent_id: &str,
+        turn_id: &str,
+        lane: crate::AgentRunLane,
+    ) -> Result<()> {
         let _guard = self.commands.lock();
         let Some(run) = self.try_run(context_id)? else {
             return Ok(());
@@ -436,12 +505,97 @@ impl SwarmCoordinator {
         let now = Utc::now().to_rfc3339();
         let mut db = self.storage.conn();
         let tx = db.transaction()?;
+        let inserted = tx.execute(
+            "INSERT OR IGNORE INTO agent_swarm_active_turns
+             (run_id, turn_id, agent_id, lane, started_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![run.id, turn_id, agent_id, run_lane_name(lane), now],
+        )?;
+        if inserted == 0 {
+            tx.commit()?;
+            return Ok(());
+        }
         tx.execute("UPDATE agent_swarm_runs SET turns_used = turns_used + 1, updated_at = ?1 WHERE id = ?2", params![now, run.id])?;
         append_event(
             &tx,
             &run.id,
             "turn_started",
-            &serde_json::json!({ "agent_id": agent_id }),
+            &serde_json::json!({ "agent_id": agent_id, "turn_id": turn_id, "lane": run_lane_name(lane) }),
+            &now,
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn finish_turn(&self, context_id: &str, turn_id: &str) -> Result<()> {
+        let _guard = self.commands.lock();
+        let now = Utc::now().to_rfc3339();
+        let mut db = self.storage.conn();
+        let tx = db.transaction()?;
+        let completion = tx
+            .query_row(
+                "SELECT status, completion_turn_id, summary FROM agent_swarm_runs WHERE id = ?1",
+                params![context_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let removed = tx.execute(
+            "DELETE FROM agent_swarm_active_turns WHERE run_id = ?1 AND turn_id = ?2",
+            params![context_id, turn_id],
+        )?;
+        if removed == 1
+            && completion.as_ref().is_some_and(|(status, completion_turn_id, _)| {
+                status == "completing" && completion_turn_id.as_deref() == Some(turn_id)
+            })
+        {
+            tx.execute(
+                "UPDATE agent_swarm_runs SET status = 'completed', updated_at = ?1, completed_at = ?1 WHERE id = ?2",
+                params![now, context_id],
+            )?;
+            append_event(
+                &tx,
+                context_id,
+                "swarm_completed",
+                &serde_json::json!({
+                    "completion_turn_id": turn_id,
+                    "summary": completion.as_ref().map(|(_, _, summary)| summary.as_str()).unwrap_or_default(),
+                }),
+                &now,
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn finalize_completion(&self, context_id: &str, task_id: &str) -> Result<()> {
+        let _guard = self.commands.lock();
+        let run = self.run(context_id)?;
+        if run.status != SwarmStatus::Completing
+            || run.completion_task_id.as_deref() != Some(task_id)
+        {
+            return Ok(());
+        }
+        let task = self.messaging.task(task_id)?;
+        if task.status != crate::AgentTaskStatus::Completed {
+            bail!("completion task is not complete");
+        }
+        let now = Utc::now().to_rfc3339();
+        let mut db = self.storage.conn();
+        let tx = db.transaction()?;
+        tx.execute(
+            "UPDATE agent_swarm_runs SET status = 'completed', updated_at = ?1, completed_at = ?1 WHERE id = ?2",
+            params![now, context_id],
+        )?;
+        append_event(
+            &tx,
+            context_id,
+            "swarm_completed",
+            &serde_json::json!({ "completion_task_id": task_id, "summary": run.summary }),
             &now,
         )?;
         tx.commit()?;
@@ -450,10 +604,86 @@ impl SwarmCoordinator {
 
     pub fn mark_needs_attention(&self, context_id: &str, reason: &str) -> Result<()> {
         let _guard = self.commands.lock();
-        if self.try_run(context_id)?.is_some() {
-            self.needs_attention(context_id, reason)?;
+        if let Some(run) = self.try_run(context_id)? {
+            match run.status {
+                SwarmStatus::Running | SwarmStatus::Completing | SwarmStatus::NeedsAttention => {
+                    self.needs_attention(context_id, reason)?;
+                }
+                SwarmStatus::Completed | SwarmStatus::Cancelled => {}
+            }
         }
         Ok(())
+    }
+
+    /// Reconciles swarm lifecycle state after the messaging layer has marked
+    /// interrupted deliveries as needing attention during application startup.
+    pub fn recover_interrupted(&self, reason: &str) -> Result<Vec<SwarmRun>> {
+        let _guard = self.commands.lock();
+        let mut db = self.storage.conn();
+        let tx = db.transaction()?;
+        let mut statement = tx.prepare(
+            "SELECT DISTINCT run.id, run.status, completion_task.status
+             FROM agent_swarm_runs AS run
+             LEFT JOIN agent_messages AS message ON message.context_id = run.id
+             LEFT JOIN agent_message_tasks AS task ON task.message_id = message.id
+             LEFT JOIN agent_message_tasks AS completion_task ON completion_task.id = run.completion_task_id
+             LEFT JOIN agent_swarm_active_turns AS turn ON turn.run_id = run.id
+             WHERE (run.status = 'running'
+                    AND (task.status IN ('needs_attention', 'failed') OR turn.turn_id IS NOT NULL))
+                OR run.status = 'completing'",
+        )?;
+        let interrupted = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(statement);
+        let now = Utc::now().to_rfc3339();
+        for (run_id, status, completion_task_status) in &interrupted {
+            let completion_finished =
+                status == "completing" && completion_task_status.as_deref() == Some("completed");
+            if completion_finished {
+                tx.execute(
+                    "UPDATE agent_swarm_runs SET status = 'completed', error = '', updated_at = ?1, completed_at = ?1 WHERE id = ?2",
+                    params![now, run_id],
+                )?;
+                append_event(
+                    &tx,
+                    run_id,
+                    "swarm_completed",
+                    &serde_json::json!({ "recovered": true }),
+                    &now,
+                )?;
+            } else {
+                tx.execute(
+                    "UPDATE agent_swarm_runs
+                     SET status = 'needs_attention', error = ?1, updated_at = ?2
+                     WHERE id = ?3",
+                    params![reason, now, run_id],
+                )?;
+                append_event(
+                    &tx,
+                    run_id,
+                    "swarm_needs_attention",
+                    &serde_json::json!({ "reason": reason, "recovered": true, "completion_interrupted": status == "completing" }),
+                    &now,
+                )?;
+            }
+            tx.execute(
+                "DELETE FROM agent_swarm_active_turns WHERE run_id = ?1",
+                params![run_id],
+            )?;
+        }
+        tx.commit()?;
+        drop(db);
+        interrupted
+            .into_iter()
+            .map(|(run_id, _, _)| self.run(&run_id))
+            .collect()
     }
 
     /// Creates the protocol reply for a completed request and accounts for it
@@ -466,33 +696,51 @@ impl SwarmCoordinator {
     ) -> Result<DeliveryReceipt> {
         let _guard = self.commands.lock();
         let run = self.try_run(&original.context_id)?;
+        let idempotency_key = format!("agent-reply:{}", original.id);
+        let replay = self
+            .messaging
+            .has_delivery_for_idempotency_key(&idempotency_key)?;
         if let Some(run) = &run {
-            if run.status != SwarmStatus::Running {
+            let final_completion_reply = if run.status == SwarmStatus::Completing {
+                let task = self.messaging.delivery(&original.id)?.task;
+                run.completion_task_id.as_deref() == Some(task.id.as_str())
+            } else {
+                false
+            };
+            if run.status != SwarmStatus::Running && !final_completion_reply {
                 bail!("swarm run '{}' is not running", run.id);
             }
-            if run.messages_used >= run.max_messages {
+            if !replay && run.messages_used >= run.max_messages {
                 self.needs_attention(&run.id, "message budget exhausted before reply")?;
                 bail!("swarm message budget exhausted");
             }
+            if !replay && original.hop_count.saturating_add(1) > run.max_hops {
+                self.needs_attention(&run.id, "hop budget exhausted before reply")?;
+                bail!("swarm hop budget exhausted");
+            }
         }
-        let receipt = self.messaging.send(SendAgentMessage {
-            source_conversation_id: source_conversation_id.to_string(),
-            to_agent_id: original.from_agent_id.clone(),
-            kind: MessageKind::Reply,
-            parts: vec![MessagePart::text(output)],
-            context_id: Some(original.context_id.clone()),
-            correlation_id: Some(original.correlation_id.clone()),
-            reply_to: Some(original.id.clone()),
-            idempotency_key: format!("agent-reply:{}", original.id),
-            hop_count: original.hop_count + 1,
-            priority: false,
-        })?;
-        if let Some(run) = run
-            && !receipt.replayed
-        {
-            self.attach_message(&run.id, &receipt.message)?;
-        }
-        Ok(receipt)
+        let next_hop = original.hop_count.saturating_add(1);
+        let run_id = run.map(|run| run.id);
+        self.messaging.send_with_transaction(
+            SendAgentMessage {
+                source_conversation_id: source_conversation_id.to_string(),
+                to_agent_id: original.from_agent_id.clone(),
+                kind: MessageKind::Reply,
+                parts: vec![MessagePart::text(output)],
+                context_id: Some(original.context_id.clone()),
+                correlation_id: Some(original.correlation_id.clone()),
+                reply_to: Some(original.id.clone()),
+                idempotency_key,
+                hop_count: next_hop,
+                priority: false,
+            },
+            |tx, receipt| {
+                if let Some(run_id) = &run_id {
+                    attach_swarm_message(tx, run_id, receipt, next_hop)?;
+                }
+                Ok(())
+            },
+        )
     }
 
     fn send(
@@ -503,10 +751,18 @@ impl SwarmCoordinator {
         parts: Vec<MessagePart>,
         priority: bool,
         idempotency_key: String,
+        hop_count: u8,
     ) -> Result<DeliveryReceipt> {
-        if run.messages_used >= run.max_messages {
+        let replay = self
+            .messaging
+            .has_delivery_for_idempotency_key(&idempotency_key)?;
+        if !replay && run.messages_used >= run.max_messages {
             self.needs_attention(&run.id, "message budget exhausted")?;
             bail!("swarm message budget exhausted");
+        }
+        if !replay && (hop_count == 0 || hop_count > run.max_hops) {
+            self.needs_attention(&run.id, "hop budget exhausted")?;
+            bail!("swarm hop budget exhausted");
         }
         let db = self.storage.conn();
         let is_participant = db
@@ -524,77 +780,49 @@ impl SwarmCoordinator {
         let source = self
             .messaging
             .open_conversation(&from_agent_id, Some(&run.project_id))?;
-        let receipt = self.messaging.send(SendAgentMessage {
-            source_conversation_id: source.id,
-            to_agent_id: to_agent_id.clone(),
-            kind: MessageKind::Request,
-            parts,
-            context_id: Some(run.id.clone()),
-            correlation_id: Some(run.id.clone()),
-            reply_to: None,
-            idempotency_key,
-            hop_count: 1,
-            priority,
-        })?;
-        let now = Utc::now().to_rfc3339();
-        let mut db = self.storage.conn();
-        let tx = db.transaction()?;
-        let joined = tx.execute(
-            "INSERT OR IGNORE INTO agent_swarm_participants (run_id, agent_id, joined_at) VALUES (?1, ?2, ?3)",
-            params![run.id, to_agent_id, now],
-        )?;
-        let attached = tx.execute(
-            "INSERT OR IGNORE INTO agent_swarm_messages (run_id, message_id) VALUES (?1, ?2)",
-            params![run.id, receipt.message.id],
-        )?;
-        if attached > 0 {
-            tx.execute("UPDATE agent_swarm_runs SET messages_used = messages_used + 1, updated_at = ?1 WHERE id = ?2", params![now, run.id])?;
-        }
-        if joined > 0 {
-            append_event(
-                &tx,
-                &run.id,
-                "participant_joined",
-                &serde_json::json!({ "agent_id": to_agent_id }),
-                &now,
-            )?;
-        }
-        if attached > 0 {
-            append_event(
-                &tx,
-                &run.id,
-                "message_sent",
-                &serde_json::json!({ "message_id": receipt.message.id, "from_agent_id": from_agent_id, "to_agent_id": to_agent_id }),
-                &now,
-            )?;
-        }
-        tx.commit()?;
-        Ok(receipt)
+        let run_id = run.id.clone();
+        let event_to_agent_id = to_agent_id.clone();
+        self.messaging.send_with_transaction(
+            SendAgentMessage {
+                source_conversation_id: source.id,
+                to_agent_id,
+                kind: MessageKind::Request,
+                parts,
+                context_id: Some(run.id.clone()),
+                correlation_id: Some(run.id.clone()),
+                reply_to: None,
+                idempotency_key,
+                hop_count,
+                priority,
+            },
+            |tx, receipt| {
+                let now = Utc::now().to_rfc3339();
+                let joined = tx.execute(
+                    "INSERT OR IGNORE INTO agent_swarm_participants (run_id, agent_id, joined_at) VALUES (?1, ?2, ?3)",
+                    params![run_id, event_to_agent_id, now],
+                )?;
+                if joined > 0 {
+                    append_event(
+                        tx,
+                        &run_id,
+                        "participant_joined",
+                        &serde_json::json!({ "agent_id": event_to_agent_id }),
+                        &now,
+                    )?;
+                }
+                attach_swarm_message(tx, &run_id, receipt, hop_count)
+            },
+        )
     }
 
-    fn attach_message(&self, run_id: &str, message: &AgentMessage) -> Result<()> {
-        let now = Utc::now().to_rfc3339();
-        let mut db = self.storage.conn();
-        let tx = db.transaction()?;
-        let inserted = tx.execute(
-            "INSERT OR IGNORE INTO agent_swarm_messages (run_id, message_id) VALUES (?1, ?2)",
-            params![run_id, message.id],
-        )?;
-        if inserted > 0 {
-            tx.execute("UPDATE agent_swarm_runs SET messages_used = messages_used + 1, updated_at = ?1 WHERE id = ?2", params![now, run_id])?;
-            append_event(
-                &tx,
-                run_id,
-                "message_sent",
-                &serde_json::json!({ "message_id": message.id, "from_agent_id": message.from_agent_id, "to_agent_id": message.to_agent_id, "kind": message.kind }),
-                &now,
-            )?;
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    fn complete(&self, run: &SwarmRun, agent_id: &str, summary: &str) -> Result<()> {
+    fn complete(
+        &self,
+        run: &SwarmRun,
+        agent_id: &str,
+        summary: &str,
+        current_task_id: Option<&str>,
+        current_turn_id: Option<&str>,
+    ) -> Result<()> {
         if agent_id != run.root_agent_id {
             bail!("only the root agent can complete a swarm");
         }
@@ -602,22 +830,64 @@ impl SwarmCoordinator {
             bail!("completion summary must not be empty");
         }
         let active = self.messaging.active_tasks_for_context(&run.id)?;
-        if active.len() > 1
-            || active
-                .first()
-                .is_some_and(|task| task.recipient_agent_id != run.root_agent_id)
+        let only_current_root_task = active.len() == 1
+            && current_task_id.is_some_and(|task_id| active[0].id == task_id)
+            && active[0].recipient_agent_id == run.root_agent_id
+            && active[0].status == crate::AgentTaskStatus::Working;
+        if (current_task_id.is_some() && !only_current_root_task)
+            || (current_task_id.is_none() && !active.is_empty())
         {
             bail!("swarm cannot complete while other agent work is still active");
         }
+        if only_current_root_task {
+            let message = self.messaging.message(&active[0].message_id)?;
+            if message.kind == MessageKind::Request {
+                if run.messages_used >= run.max_messages {
+                    bail!("swarm cannot complete without message budget for the final reply");
+                }
+                if message.hop_count.saturating_add(1) > run.max_hops {
+                    bail!("swarm cannot complete without hop budget for the final reply");
+                }
+            }
+        }
+        let active_turns = {
+            let db = self.storage.conn();
+            let mut statement = db.prepare(
+                "SELECT turn_id, agent_id FROM agent_swarm_active_turns WHERE run_id = ?1",
+            )?;
+            statement
+                .query_map(params![run.id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let only_current_root_turn = active_turns.len() == 1
+            && current_turn_id.is_some_and(|turn_id| active_turns[0].0 == turn_id)
+            && active_turns[0].1 == run.root_agent_id;
+        if (current_turn_id.is_some() && !only_current_root_turn)
+            || (current_turn_id.is_none() && !active_turns.is_empty())
+        {
+            bail!("swarm cannot complete while other agent turns are still active");
+        }
         let now = Utc::now().to_rfc3339();
+        let next_status = if current_task_id.is_some() || current_turn_id.is_some() {
+            SwarmStatus::Completing
+        } else {
+            SwarmStatus::Completed
+        };
+        let completion_turn_id = current_task_id.is_none().then_some(current_turn_id).flatten();
         let mut db = self.storage.conn();
         let tx = db.transaction()?;
-        tx.execute("UPDATE agent_swarm_runs SET status = 'completed', summary = ?1, updated_at = ?2, completed_at = ?2 WHERE id = ?3", params![summary, now, run.id])?;
+        tx.execute("UPDATE agent_swarm_runs SET status = ?1, summary = ?2, updated_at = ?3, completed_at = CASE WHEN ?1 = 'completed' THEN ?3 ELSE NULL END, completion_task_id = ?4, completion_turn_id = ?5 WHERE id = ?6", params![next_status.as_str(), summary, now, current_task_id, completion_turn_id, run.id])?;
         append_event(
             &tx,
             &run.id,
-            "swarm_completed",
-            &serde_json::json!({ "agent_id": agent_id, "summary": summary }),
+            if next_status == SwarmStatus::Completed {
+                "swarm_completed"
+            } else {
+                "swarm_completion_requested"
+            },
+            &serde_json::json!({ "agent_id": agent_id, "summary": summary, "current_task_id": current_task_id, "current_turn_id": current_turn_id }),
             &now,
         )?;
         tx.commit()?;
@@ -625,10 +895,24 @@ impl SwarmCoordinator {
     }
 
     fn cancel(&self, run: &SwarmRun, reason: &str) -> Result<()> {
-        self.messaging.cancel_context_tasks(&run.id, reason)?;
         let now = Utc::now().to_rfc3339();
         let mut db = self.storage.conn();
         let tx = db.transaction()?;
+        let cancelled = self
+            .messaging
+            .cancel_context_tasks_in(&tx, &run.id, reason)?;
+        let mut active_statement =
+            tx.prepare("SELECT turn_id, agent_id FROM agent_swarm_active_turns WHERE run_id = ?1")?;
+        let active_turns = active_statement
+            .query_map(params![run.id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(active_statement);
+        tx.execute(
+            "DELETE FROM agent_swarm_active_turns WHERE run_id = ?1",
+            params![run.id],
+        )?;
         tx.execute("UPDATE agent_swarm_runs SET status = 'cancelled', error = ?1, updated_at = ?2, completed_at = ?2 WHERE id = ?3", params![reason, now, run.id])?;
         append_event(
             &tx,
@@ -638,6 +922,17 @@ impl SwarmCoordinator {
             &now,
         )?;
         tx.commit()?;
+        drop(db);
+        for task in cancelled
+            .iter()
+            .filter(|task| task.status == crate::AgentTaskStatus::Working)
+        {
+            self.active_runs
+                .cancel_peer_task(&task.recipient_agent_id, &task.id);
+        }
+        for (turn_id, agent_id) in active_turns {
+            self.active_runs.cancel_run(&agent_id, &turn_id);
+        }
         Ok(())
     }
 
@@ -647,20 +942,31 @@ impl SwarmCoordinator {
         instruction: &str,
         max_messages: Option<u32>,
         max_turns: Option<u32>,
+        max_hops: Option<u8>,
     ) -> Result<()> {
+        if !matches!(
+            run.status,
+            SwarmStatus::Running | SwarmStatus::NeedsAttention
+        ) {
+            bail!("terminal swarm runs cannot be reopened by intervention");
+        }
+        if instruction.trim().is_empty() {
+            bail!("intervention instruction must not be empty");
+        }
         let next_messages = max_messages
             .unwrap_or(run.max_messages)
             .max(run.messages_used);
         let next_turns = max_turns.unwrap_or(run.max_turns).max(run.turns_used);
+        let next_hops = max_hops.unwrap_or(run.max_hops).max(run.hops_used);
         let now = Utc::now().to_rfc3339();
         let mut db = self.storage.conn();
         let tx = db.transaction()?;
-        tx.execute("UPDATE agent_swarm_runs SET status = 'running', max_messages = ?1, max_turns = ?2, error = '', updated_at = ?3, completed_at = NULL WHERE id = ?4", params![next_messages, next_turns, now, run.id])?;
+        tx.execute("UPDATE agent_swarm_runs SET status = 'running', max_messages = ?1, max_turns = ?2, max_hops = ?3, error = '', updated_at = ?4, completed_at = NULL, completion_task_id = NULL, completion_turn_id = NULL WHERE id = ?5", params![next_messages, next_turns, next_hops, now, run.id])?;
         append_event(
             &tx,
             &run.id,
             "user_intervened",
-            &serde_json::json!({ "instruction": instruction, "max_messages": next_messages, "max_turns": next_turns }),
+            &serde_json::json!({ "instruction": instruction, "max_messages": next_messages, "max_turns": next_turns, "max_hops": next_hops }),
             &now,
         )?;
         tx.commit()?;
@@ -687,7 +993,8 @@ impl SwarmCoordinator {
         let db = self.storage.conn();
         db.query_row(
             "SELECT id, project_id, root_agent_id, goal, status, max_messages, messages_used,
-                    max_turns, turns_used, summary, error, created_at, updated_at, completed_at
+                    max_turns, turns_used, max_hops, hops_used, summary, error,
+                    created_at, updated_at, completed_at, completion_task_id, completion_turn_id
              FROM agent_swarm_runs WHERE id = ?1",
             params![run_id],
             run_from_row,
@@ -700,7 +1007,8 @@ impl SwarmCoordinator {
         let db = self.storage.conn();
         db.query_row(
             "SELECT id, project_id, root_agent_id, goal, status, max_messages, messages_used,
-                    max_turns, turns_used, summary, error, created_at, updated_at, completed_at
+                    max_turns, turns_used, max_hops, hops_used, summary, error,
+                    created_at, updated_at, completed_at, completion_task_id, completion_turn_id
              FROM agent_swarm_runs WHERE id = ?1",
             params![run_id],
             run_from_row,
@@ -721,6 +1029,51 @@ fn append_event(
     Ok(())
 }
 
+fn run_lane_name(lane: crate::AgentRunLane) -> &'static str {
+    match lane {
+        crate::AgentRunLane::User => "user",
+        crate::AgentRunLane::Peer => "peer",
+    }
+}
+
+fn attach_swarm_message(
+    tx: &rusqlite::Transaction<'_>,
+    run_id: &str,
+    receipt: &DeliveryReceipt,
+    hop_count: u8,
+) -> Result<()> {
+    if receipt.message.context_id != run_id {
+        bail!("replayed message belongs to a different swarm run");
+    }
+    let inserted = tx.execute(
+        "INSERT OR IGNORE INTO agent_swarm_messages (run_id, message_id) VALUES (?1, ?2)",
+        params![run_id, receipt.message.id],
+    )?;
+    if inserted == 0 {
+        return Ok(());
+    }
+    let now = Utc::now().to_rfc3339();
+    tx.execute(
+        "UPDATE agent_swarm_runs
+         SET messages_used = messages_used + 1,
+             hops_used = MAX(hops_used, ?1), updated_at = ?2
+         WHERE id = ?3",
+        params![hop_count, now, run_id],
+    )?;
+    append_event(
+        tx,
+        run_id,
+        "message_sent",
+        &serde_json::json!({
+            "message_id": receipt.message.id,
+            "from_agent_id": receipt.message.from_agent_id,
+            "to_agent_id": receipt.message.to_agent_id,
+            "kind": receipt.message.kind,
+        }),
+        &now,
+    )
+}
+
 fn run_from_row(row: &Row<'_>) -> rusqlite::Result<SwarmRun> {
     Ok(SwarmRun {
         id: row.get(0)?,
@@ -734,11 +1087,15 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<SwarmRun> {
         messages_used: row.get(6)?,
         max_turns: row.get(7)?,
         turns_used: row.get(8)?,
-        summary: row.get(9)?,
-        error: row.get(10)?,
-        created_at: row.get(11)?,
-        updated_at: row.get(12)?,
-        completed_at: row.get(13)?,
+        max_hops: row.get(9)?,
+        hops_used: row.get(10)?,
+        summary: row.get(11)?,
+        error: row.get(12)?,
+        created_at: row.get(13)?,
+        updated_at: row.get(14)?,
+        completed_at: row.get(15)?,
+        completion_task_id: row.get(16)?,
+        completion_turn_id: row.get(17)?,
     })
 }
 

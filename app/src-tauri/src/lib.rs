@@ -255,6 +255,10 @@ impl agent_core::AgentMessageExecutor for DesktopAgentMessageExecutor {
                     .map(|_| agent_core::SwarmToolContext {
                         run_id: delivery.message.context_id.clone(),
                         agent_id: delivery.target_conversation.agent_id.clone(),
+                        next_hop: delivery.message.hop_count.saturating_add(1),
+                        effect_scope_id: delivery.task.id.clone(),
+                        active_task_id: Some(delivery.task.id.clone()),
+                        active_turn_id: Some(delivery.task.id.clone()),
                         coordinator: self.swarm_coordinator.clone(),
                     }),
             })
@@ -2512,6 +2516,7 @@ async fn run_agent_conversation_turn(
     input_metadata: Option<serde_json::Value>,
     trigger: &str,
     swarm_run_id: Option<String>,
+    swarm_turn_id: Option<String>,
 ) -> Result<agent_core::agent_registry::CustomAgentRunResult, String> {
     let brain = {
         let run_manager = state.run_manager.lock().await;
@@ -2534,15 +2539,46 @@ async fn run_agent_conversation_turn(
         state.session_manager.clone(),
     );
     let cancel_token = agent_core::CancellationToken::new();
+    let active_turn_id = swarm_turn_id
+        .unwrap_or_else(|| format!("user:{}", uuid::Uuid::new_v4()));
     let lease = state
         .active_agent_runs
         .enter(
             conversation.agent_id.clone(),
-            format!("user:{}", uuid::Uuid::new_v4()),
+            active_turn_id.clone(),
             agent_core::AgentRunLane::User,
             cancel_token.clone(),
         )
         .await;
+    if let Some(run_id) = &swarm_run_id {
+        if let Err(error) = state.swarm_coordinator.begin_turn(
+            run_id,
+            &conversation.agent_id,
+            &active_turn_id,
+            agent_core::AgentRunLane::User,
+        ) {
+            lease.finish();
+            return Err(error.to_string());
+        }
+    }
+    let swarm_context = swarm_run_id.as_ref().and_then(|run_id| {
+        state.swarm_coordinator.snapshot(&run_id).ok().map(|snapshot| {
+            agent_core::SwarmToolContext {
+                run_id: run_id.clone(),
+                agent_id: conversation.agent_id.clone(),
+                // A user-authored turn starts a new delegation lineage inside
+                // the existing swarm; peer-delivery turns inherit their hop.
+                next_hop: 1,
+                effect_scope_id: format!(
+                    "user-turn:{}:{}",
+                    conversation.agent_id, snapshot.run.turns_used
+                ),
+                active_task_id: None,
+                active_turn_id: Some(active_turn_id.clone()),
+                coordinator: state.swarm_coordinator.clone(),
+            }
+        })
+    });
     let result = runner
         .run(agent_core::agent_registry::CustomAgentInvocation {
             agent,
@@ -2559,11 +2595,7 @@ async fn run_agent_conversation_turn(
             context_mode: agent_core::agent_registry::CustomAgentContextMode::ResumeSession,
             input_metadata,
             record_history: true,
-            swarm_context: swarm_run_id.map(|run_id| agent_core::SwarmToolContext {
-                run_id,
-                agent_id: conversation.agent_id.clone(),
-                coordinator: state.swarm_coordinator.clone(),
-            }),
+            swarm_context,
         })
         .await;
     lease.finish();
@@ -2655,25 +2687,108 @@ async fn command_agent_swarm(
     run_id: String,
     command: agent_core::SwarmCommand,
 ) -> Result<agent_core::SwarmSnapshot, String> {
-    let coordinator = state.swarm_coordinator.clone();
-    let working = if matches!(&command, agent_core::SwarmCommand::Cancel { .. }) {
-        state
-            .agent_messaging
-            .working_tasks_for_context(&run_id)
-            .map_err(|error| error.to_string())?
-    } else {
-        Vec::new()
+    let intervention = match &command {
+        agent_core::SwarmCommand::Intervene { instruction, .. } => Some(instruction.clone()),
+        _ => None,
     };
-    let result = tokio::task::spawn_blocking(move || coordinator.command(&run_id, command))
+    let coordinator = state.swarm_coordinator.clone();
+    let snapshot = tokio::task::spawn_blocking(move || coordinator.command(&run_id, command))
         .await
         .map_err(|error| format!("command agent swarm task failed: {error}"))?
         .map_err(|error| error.to_string())?;
-    for task in working {
-        state
-            .active_agent_runs
-            .cancel_peer_task(&task.recipient_agent_id, &task.id);
+    let Some(instruction) = intervention else {
+        return Ok(snapshot);
+    };
+    let conversation = state
+        .agent_messaging
+        .open_conversation(&snapshot.run.root_agent_id, Some(&snapshot.run.project_id))
+        .map_err(|error| error.to_string())?;
+    let turn_id = format!("user:{}", uuid::Uuid::new_v4());
+    let result = run_agent_conversation_turn(
+        &state,
+        &conversation,
+        instruction,
+        None,
+        "swarm_intervention",
+        Some(snapshot.run.id.clone()),
+        Some(turn_id.clone()),
+    )
+    .await;
+    let outcome = (|| -> Result<(), String> { match result {
+        Ok(result) => {
+            let current = state
+                .swarm_coordinator
+                .snapshot(&snapshot.run.id)
+                .map_err(|error| error.to_string())?;
+            if current.run.status == agent_core::SwarmStatus::Running
+                && current.run.root_agent_id == conversation.agent_id
+                && current.run.messages_used == snapshot.run.messages_used
+            {
+                let _ = state.swarm_coordinator.command(
+                    &current.run.id,
+                    agent_core::SwarmCommand::Complete {
+                        agent_id: conversation.agent_id,
+                        summary: result.output,
+                        current_task_id: None,
+                        current_turn_id: Some(turn_id.clone()),
+                    },
+                );
+            }
+            Ok(())
+        }
+        Err(error) => {
+            state
+                .swarm_coordinator
+                .mark_needs_attention(&snapshot.run.id, &error)
+                .map_err(|mark_error| mark_error.to_string())?;
+            Err(error)
+        }
+    } })();
+    let finish = state
+        .swarm_coordinator
+        .finish_turn(&snapshot.run.id, &turn_id)
+        .map_err(|error| error.to_string());
+    outcome?;
+    finish?;
+    state
+        .swarm_coordinator
+        .snapshot(&snapshot.run.id)
+        .map_err(|error| error.to_string())
+}
+
+fn start_or_continue_agent_swarm(
+    coordinator: &agent_core::SwarmCoordinator,
+    source: &agent_core::AgentConversation,
+    instruction: &str,
+) -> anyhow::Result<agent_core::SwarmRun> {
+    if let Some(snapshot) =
+        coordinator.latest_for_agent_project(&source.agent_id, &source.project_id)?
+    {
+        if matches!(
+            snapshot.run.status,
+            agent_core::SwarmStatus::Running | agent_core::SwarmStatus::NeedsAttention
+        ) {
+            return Ok(coordinator
+                .command(
+                    &snapshot.run.id,
+                    agent_core::SwarmCommand::Intervene {
+                        instruction: instruction.to_string(),
+                        max_messages: None,
+                        max_turns: None,
+                        max_hops: None,
+                    },
+                )?
+                .run);
+        }
     }
-    Ok(result)
+    coordinator.start(agent_core::StartSwarm {
+        project_id: source.project_id.clone(),
+        root_agent_id: source.agent_id.clone(),
+        goal: instruction.to_string(),
+        max_messages: 12,
+        max_turns: 8,
+        max_hops: 12,
+    })
 }
 
 #[tauri::command]
@@ -2702,20 +2817,9 @@ async fn send_agent_conversation_message(
         if priority {
             return Err("priority is only available for agent messages".to_string());
         }
-        let swarm = state
-            .swarm_coordinator
-            .start(agent_core::StartSwarm {
-                project_id: source.project_id.clone(),
-                root_agent_id: source.agent_id.clone(),
-                goal: input.clone(),
-                max_messages: 12,
-                max_turns: 8,
-            })
+        let swarm = start_or_continue_agent_swarm(&state.swarm_coordinator, &source, &input)
             .map_err(|error| error.to_string())?;
-        state
-            .swarm_coordinator
-            .begin_turn(&swarm.id, &source.agent_id)
-            .map_err(|error| error.to_string())?;
+        let turn_id = format!("user:{}", uuid::Uuid::new_v4());
         let result = run_agent_conversation_turn(
             &state,
             &source,
@@ -2723,36 +2827,44 @@ async fn send_agent_conversation_message(
             None,
             "agent_chat",
             Some(swarm.id.clone()),
+            Some(turn_id.clone()),
         )
         .await;
-        let result = match result {
-            Ok(result) => result,
+        let outcome = (|| -> Result<(), String> { match result {
+            Ok(result) => {
+                let snapshot = state
+                    .swarm_coordinator
+                    .snapshot(&swarm.id)
+                    .map_err(|error| error.to_string())?;
+                if snapshot.run.status == agent_core::SwarmStatus::Running
+                    && snapshot.run.messages_used == 0
+                {
+                    let _ = state.swarm_coordinator.command(
+                        &swarm.id,
+                        agent_core::SwarmCommand::Complete {
+                            agent_id: source.agent_id.clone(),
+                            summary: result.output,
+                            current_task_id: None,
+                            current_turn_id: Some(turn_id.clone()),
+                        },
+                    );
+                }
+                Ok(())
+            }
             Err(error) => {
                 state
                     .swarm_coordinator
                     .mark_needs_attention(&swarm.id, &error)
                     .map_err(|mark_error| mark_error.to_string())?;
-                return Err(error);
+                Err(error)
             }
-        };
-        let snapshot = state
+        } })();
+        let finish = state
             .swarm_coordinator
-            .snapshot(&swarm.id)
-            .map_err(|error| error.to_string())?;
-        if snapshot.run.status == agent_core::SwarmStatus::Running
-            && snapshot.run.messages_used == 0
-        {
-            state
-                .swarm_coordinator
-                .command(
-                    &swarm.id,
-                    agent_core::SwarmCommand::Complete {
-                        agent_id: source.agent_id.clone(),
-                        summary: result.output,
-                    },
-                )
-                .map_err(|error| error.to_string())?;
-        }
+            .finish_turn(&swarm.id, &turn_id)
+            .map_err(|error| error.to_string());
+        outcome?;
+        finish?;
         let view =
             load_agent_conversation_view(
                 messaging,
@@ -2784,24 +2896,19 @@ async fn send_agent_conversation_message(
     let request = {
         let coordinator = state.swarm_coordinator.clone();
         let messaging = messaging.clone();
-        let project_id = source.project_id.clone();
+        let source_conversation = source.clone();
         let source_agent_id = source.agent_id.clone();
         let recipient_id = recipient.id.clone();
         let input = input.clone();
         tokio::task::spawn_blocking(move || {
-            let run = coordinator.start(agent_core::StartSwarm {
-                project_id,
-                root_agent_id: source_agent_id.clone(),
-                goal: input.clone(),
-                max_messages: 12,
-                max_turns: 8,
-            })?;
+            let run = start_or_continue_agent_swarm(&coordinator, &source_conversation, &input)?;
             let snapshot = coordinator.command(&run.id, agent_core::SwarmCommand::Send {
                 from_agent_id: source_agent_id,
                 to_agent_id: recipient_id,
                 parts: vec![agent_core::MessagePart::text(input)],
                 idempotency_key: format!("agent-chat:{}:{}", conversation_id, uuid::Uuid::new_v4()),
                 priority,
+                hop_count: 1,
             })?;
             let message = snapshot
                 .messages
@@ -3692,15 +3799,21 @@ pub fn run() {
                 ),
             );
             let agent_messaging = agent_core::AgentMessaging::new(storage.clone());
+            let active_agent_runs = agent_core::ActiveAgentRuns::new();
             let swarm_coordinator = agent_core::SwarmCoordinator::new(
                 storage.clone(),
                 agent_messaging.clone(),
+                active_agent_runs.clone(),
             );
-            let active_agent_runs = agent_core::ActiveAgentRuns::new();
             if let Err(error) = agent_messaging
                 .recover_interrupted("application restarted during agent execution")
             {
                 eprintln!("[agent-messaging] recovery failed: {error}");
+            }
+            if let Err(error) = swarm_coordinator
+                .recover_interrupted("application restarted during agent execution")
+            {
+                eprintln!("[agent-swarm] recovery failed: {error}");
             }
             let agent_dispatcher = Arc::new(agent_core::AgentInboxDispatcher::new(
                 agent_messaging.clone(),

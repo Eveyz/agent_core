@@ -293,12 +293,7 @@ async fn priority_peer_message_preempts_an_active_peer_lane() {
     let active_runs = ActiveAgentRuns::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let lease = active_runs
-        .enter(
-            "debugger",
-            "peer-run-1",
-            AgentRunLane::Peer,
-            cancel.clone(),
-        )
+        .enter("debugger", "peer-run-1", AgentRunLane::Peer, cancel.clone())
         .await;
 
     let decision = active_runs.route_peer_message("debugger", true);
@@ -319,12 +314,7 @@ async fn peer_messages_never_interrupt_an_active_user_lane() {
     let active_runs = ActiveAgentRuns::new();
     let cancel = tokio_util::sync::CancellationToken::new();
     let lease = active_runs
-        .enter(
-            "debugger",
-            "user-run-1",
-            AgentRunLane::User,
-            cancel.clone(),
-        )
+        .enter("debugger", "user-run-1", AgentRunLane::User, cancel.clone())
         .await;
 
     assert_eq!(
@@ -387,9 +377,7 @@ fn priority_delivery_is_claimed_before_older_normal_delivery() {
     let mut priority_request = request(&source);
     priority_request.idempotency_key = "priority-request".into();
     priority_request.priority = true;
-    let priority = messaging
-        .send(priority_request)
-        .expect("priority delivery");
+    let priority = messaging.send(priority_request).expect("priority delivery");
 
     let claimed = messaging
         .claim_next("desktop-worker")

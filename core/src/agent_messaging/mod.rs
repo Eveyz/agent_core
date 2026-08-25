@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::{agent_registry, memory::storage::Storage};
 
 pub const AGENT_MESSAGE_SCHEMA_V1: &str = "agverse.agent-message@1";
-pub const MAX_AGENT_MESSAGE_HOPS: u8 = 2;
+pub const MAX_AGENT_MESSAGE_HOPS: u8 = 32;
 const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -268,20 +268,39 @@ impl AgentMessaging {
     }
 
     pub fn send(&self, command: SendAgentMessage) -> Result<DeliveryReceipt> {
+        self.send_with_transaction(command, |_, _| Ok(()))
+    }
+
+    pub(crate) fn has_delivery_for_idempotency_key(&self, idempotency_key: &str) -> Result<bool> {
+        let db = self.storage.conn();
+        Ok(delivery_by_idempotency_key(&db, idempotency_key)?.is_some())
+    }
+
+    pub(crate) fn send_with_transaction<F>(
+        &self,
+        command: SendAgentMessage,
+        attach: F,
+    ) -> Result<DeliveryReceipt>
+    where
+        F: FnOnce(&rusqlite::Transaction<'_>, &DeliveryReceipt) -> Result<()>,
+    {
         validate_send_command(&command)?;
         let mut db = self.storage.conn();
         let tx = db.transaction()?;
 
         if let Some((message, task)) = delivery_by_idempotency_key(&tx, &command.idempotency_key)? {
+            validate_replayed_delivery(&command, &message)?;
             let target_conversation = conversation_by_id(&tx, &message.target_conversation_id)?
                 .context("target conversation for replayed message is missing")?;
-            tx.commit()?;
-            return Ok(DeliveryReceipt {
+            let receipt = DeliveryReceipt {
                 message,
                 task,
                 target_conversation,
                 replayed: true,
-            });
+            };
+            attach(&tx, &receipt)?;
+            tx.commit()?;
+            return Ok(receipt);
         }
 
         let source =
@@ -423,14 +442,15 @@ impl AgentMessaging {
             "UPDATE agent_conversations SET updated_at = ?1 WHERE id = ?2",
             params![now, source.id],
         )?;
-        tx.commit()?;
-
-        Ok(DeliveryReceipt {
+        let receipt = DeliveryReceipt {
             message,
             task,
             target_conversation: target,
             replayed: false,
-        })
+        };
+        attach(&tx, &receipt)?;
+        tx.commit()?;
+        Ok(receipt)
     }
 
     pub fn observe(
@@ -516,7 +536,8 @@ impl AgentMessaging {
             "SELECT task.recipient_agent_id
              FROM agent_message_tasks AS task
              JOIN agent_messages AS message ON message.id = task.message_id
-             WHERE task.status = 'queued'
+             LEFT JOIN agent_swarm_runs AS swarm ON swarm.id = message.context_id
+             WHERE task.status = 'queued' AND (swarm.id IS NULL OR swarm.status = 'running')
              GROUP BY task.recipient_agent_id
              ORDER BY MAX(message.priority) DESC, MIN(task.created_at) ASC",
         )?;
@@ -539,7 +560,9 @@ impl AgentMessaging {
             tx.query_row(
                 "SELECT task.id FROM agent_message_tasks AS task
                  JOIN agent_messages AS message ON message.id = task.message_id
+                 LEFT JOIN agent_swarm_runs AS swarm ON swarm.id = message.context_id
                  WHERE task.status = 'queued' AND task.recipient_agent_id = ?1
+                   AND (swarm.id IS NULL OR swarm.status = 'running')
                  ORDER BY message.priority DESC, task.created_at ASC, task.id ASC
                  LIMIT 1",
                 params![recipient_agent_id],
@@ -550,7 +573,8 @@ impl AgentMessaging {
             tx.query_row(
                 "SELECT task.id FROM agent_message_tasks AS task
                  JOIN agent_messages AS message ON message.id = task.message_id
-                 WHERE task.status = 'queued'
+                 LEFT JOIN agent_swarm_runs AS swarm ON swarm.id = message.context_id
+                 WHERE task.status = 'queued' AND (swarm.id IS NULL OR swarm.status = 'running')
                  ORDER BY message.priority DESC, task.created_at ASC, task.id ASC
                  LIMIT 1",
                 [],
@@ -718,18 +742,24 @@ impl AgentMessaging {
         statuses: &[&str],
     ) -> Result<Vec<AgentMessageTask>> {
         let db = self.storage.conn();
-        let placeholders = (0..statuses.len()).map(|index| format!("?{}", index + 2)).collect::<Vec<_>>().join(", ");
-        let sql = format!("SELECT task.id, task.message_id, task.recipient_agent_id,
+        let placeholders = (0..statuses.len())
+            .map(|index| format!("?{}", index + 2))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT task.id, task.message_id, task.recipient_agent_id,
                     task.recipient_conversation_id, task.status, task.output_message_id,
                     task.error, task.attempt_count, task.worker_id, task.created_at,
                     task.updated_at
              FROM agent_message_tasks AS task
              JOIN agent_messages AS message ON message.id = task.message_id
-             WHERE message.context_id = ?1 AND task.status IN ({placeholders})");
+             WHERE message.context_id = ?1 AND task.status IN ({placeholders})"
+        );
         let mut statement = db.prepare(&sql)?;
         let mut values: Vec<&dyn rusqlite::ToSql> = vec![&context_id];
         values.extend(statuses.iter().map(|status| status as &dyn rusqlite::ToSql));
-        Ok(statement.query_map(values.as_slice(), task_from_row)?
+        Ok(statement
+            .query_map(values.as_slice(), task_from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
@@ -741,7 +771,12 @@ impl AgentMessaging {
             .with_context(|| format!("task for agent message '{message_id}' not found"))?;
         let target_conversation = conversation_by_id(&db, &message.target_conversation_id)?
             .context("target conversation for message is missing")?;
-        Ok(DeliveryReceipt { message, task, target_conversation, replayed: false })
+        Ok(DeliveryReceipt {
+            message,
+            task,
+            target_conversation,
+            replayed: false,
+        })
     }
 
     pub fn messages_for_context(&self, context_id: &str) -> Result<Vec<AgentMessage>> {
@@ -760,9 +795,12 @@ impl AgentMessaging {
             .collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    pub(crate) fn cancel_context_tasks(&self, context_id: &str, reason: &str) -> Result<usize> {
-        let mut db = self.storage.conn();
-        let tx = db.transaction()?;
+    pub(crate) fn cancel_context_tasks_in(
+        &self,
+        tx: &rusqlite::Transaction<'_>,
+        context_id: &str,
+        reason: &str,
+    ) -> Result<Vec<AgentMessageTask>> {
         let now = Utc::now().to_rfc3339();
         let mut statement = tx.prepare(
             "SELECT task.id, task.message_id, task.recipient_agent_id,
@@ -792,8 +830,7 @@ impl AgentMessaging {
                 &now,
             )?;
         }
-        tx.commit()?;
-        Ok(tasks.len())
+        Ok(tasks)
     }
 }
 
@@ -810,6 +847,28 @@ fn validate_send_command(command: &SendAgentMessage) -> Result<()> {
     let encoded = serde_json::to_vec(&command.parts)?;
     if encoded.len() > MAX_MESSAGE_BYTES {
         bail!("agent message exceeds the {MAX_MESSAGE_BYTES}-byte limit");
+    }
+    Ok(())
+}
+
+fn validate_replayed_delivery(command: &SendAgentMessage, message: &AgentMessage) -> Result<()> {
+    let same_request = message.source_conversation_id == command.source_conversation_id
+        && message.to_agent_id == command.to_agent_id
+        && message.kind == command.kind
+        && message.parts == command.parts
+        && message.reply_to == command.reply_to
+        && message.hop_count == command.hop_count
+        && message.priority == command.priority
+        && command
+            .context_id
+            .as_ref()
+            .is_none_or(|context_id| context_id == &message.context_id)
+        && command
+            .correlation_id
+            .as_ref()
+            .is_none_or(|correlation_id| correlation_id == &message.correlation_id);
+    if !same_request {
+        bail!("idempotency_key was already used for a different agent message");
     }
     Ok(())
 }

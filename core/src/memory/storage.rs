@@ -141,6 +141,18 @@ impl Storage {
             "INTEGER NOT NULL DEFAULT 0",
         )?;
         storage.add_column_if_not_exists(
+            "agent_swarm_runs",
+            "max_hops",
+            "INTEGER NOT NULL DEFAULT 12",
+        )?;
+        storage.add_column_if_not_exists(
+            "agent_swarm_runs",
+            "hops_used",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        storage.add_column_if_not_exists("agent_swarm_runs", "completion_task_id", "TEXT")?;
+        storage.add_column_if_not_exists("agent_swarm_runs", "completion_turn_id", "TEXT")?;
+        storage.add_column_if_not_exists(
             "agent_message_tasks",
             "worker_id",
             "TEXT NOT NULL DEFAULT ''",
@@ -597,15 +609,28 @@ impl Storage {
                 messages_used INTEGER NOT NULL DEFAULT 0,
                 max_turns INTEGER NOT NULL,
                 turns_used INTEGER NOT NULL DEFAULT 0,
+                max_hops INTEGER NOT NULL DEFAULT 12,
+                hops_used INTEGER NOT NULL DEFAULT 0,
                 summary TEXT NOT NULL DEFAULT '',
                 error TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                completed_at TEXT
+                completed_at TEXT,
+                completion_task_id TEXT,
+                completion_turn_id TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_agent_swarm_runs_project
                 ON agent_swarm_runs(project_id, updated_at);
+
+            CREATE TABLE IF NOT EXISTS agent_swarm_active_turns (
+                run_id TEXT NOT NULL REFERENCES agent_swarm_runs(id) ON DELETE CASCADE,
+                turn_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                lane TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                PRIMARY KEY (run_id, turn_id)
+            );
 
             CREATE TABLE IF NOT EXISTS agent_swarm_participants (
                 run_id TEXT NOT NULL REFERENCES agent_swarm_runs(id) ON DELETE CASCADE,

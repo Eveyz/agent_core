@@ -34,6 +34,7 @@ pub struct ActiveAgentRuns {
 struct AgentSlot {
     permit: Arc<Semaphore>,
     active: Mutex<Option<ActiveAgentRun>>,
+    cancelled_run_ids: Mutex<std::collections::HashSet<String>>,
 }
 
 struct ActiveAgentRun {
@@ -82,6 +83,7 @@ impl ActiveAgentRuns {
                 Arc::new(AgentSlot {
                     permit: Arc::new(Semaphore::new(1)),
                     active: Mutex::new(None),
+                    cancelled_run_ids: Mutex::new(std::collections::HashSet::new()),
                 })
             })
             .clone();
@@ -126,12 +128,38 @@ impl ActiveAgentRuns {
     }
 
     pub fn cancel_peer_task(&self, agent_id: &str, task_id: &str) -> bool {
-        let Some(slot) = self.slots.lock().get(agent_id).cloned() else { return false; };
+        self.cancel_run_inner(agent_id, task_id, true)
+    }
+
+    pub fn cancel_run(&self, agent_id: &str, run_id: &str) -> bool {
+        self.cancel_run_inner(agent_id, run_id, false)
+    }
+
+    fn cancel_run_inner(&self, agent_id: &str, run_id: &str, peer_only: bool) -> bool {
+        let slot = self
+            .slots
+            .lock()
+            .entry(agent_id.to_string())
+            .or_insert_with(|| {
+                Arc::new(AgentSlot {
+                    permit: Arc::new(Semaphore::new(1)),
+                    active: Mutex::new(None),
+                    cancelled_run_ids: Mutex::new(std::collections::HashSet::new()),
+                })
+            })
+            .clone();
         let active = slot.active.lock();
-        let Some(active) = active.as_ref() else { return false; };
-        if active.lane != AgentRunLane::Peer || active.run_id != task_id { return false; }
-        active.cancel.cancel();
-        true
+        if let Some(active) = active.as_ref() {
+            if (!peer_only || active.lane == AgentRunLane::Peer) && active.run_id == run_id {
+                active.cancel.cancel();
+                return true;
+            }
+        }
+        // Keep the active-state lock until the pending cancellation is stored.
+        // `activate` takes the same locks in this order, closing the gap where
+        // activation could otherwise occur between the check and insertion.
+        slot.cancelled_run_ids.lock().insert(run_id.to_string());
+        false
     }
 }
 
@@ -143,12 +171,19 @@ impl ActiveAgentRunLease {
         cancel: CancellationToken,
     ) {
         let run_id = run_id.into();
-        *self.slot.active.lock() = Some(ActiveAgentRun {
+        let mut active = self.slot.active.lock();
+        *active = Some(ActiveAgentRun {
             run_id: run_id.clone(),
             lane,
             cancel,
             preempted: self.preempted.clone(),
         });
+        if self.slot.cancelled_run_ids.lock().remove(&run_id) {
+            if let Some(run) = active.as_ref() {
+                run.cancel.cancel();
+            }
+        }
+        drop(active);
         self.run_id = Some(run_id);
     }
 

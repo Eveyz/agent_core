@@ -83,13 +83,17 @@ export interface AgentConversationView {
 export interface AgentSwarmRun {
   id: string;
   goal: string;
-  status: 'running' | 'completed' | 'cancelled' | 'needs_attention';
+  status: 'running' | 'completing' | 'completed' | 'cancelled' | 'needs_attention';
   max_messages: number;
   messages_used: number;
   max_turns: number;
   turns_used: number;
+  max_hops: number;
+  hops_used: number;
   summary: string;
   error: string;
+  completion_task_id?: string | null;
+  completion_turn_id?: string | null;
 }
 
 export interface AgentSwarmSnapshot {

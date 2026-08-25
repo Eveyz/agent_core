@@ -251,7 +251,10 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
   }, [agents, input, loadConversation, priority, selectedMentions, sending, view]);
 
   const cancelSwarm = useCallback(async () => {
-    if (!view?.swarm || view.swarm.run.status !== "running") return;
+    if (
+      !view?.swarm ||
+      (view.swarm.run.status !== "running" && view.swarm.run.status !== "completing")
+    ) return;
     try {
       const swarm = await invoke<NonNullable<AgentConversationView["swarm"]>>(
         "command_agent_swarm",
@@ -297,8 +300,9 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
           <span>{view.swarm.participant_agent_ids.length} agents</span>
           <span>{view.swarm.run.messages_used}/{view.swarm.run.max_messages} messages</span>
           <span>{view.swarm.run.turns_used}/{view.swarm.run.max_turns} turns</span>
+          <span>{view.swarm.run.hops_used}/{view.swarm.run.max_hops} hops</span>
           {view.swarm.run.error && <span className="agent-swarm-error">{view.swarm.run.error}</span>}
-          {view.swarm.run.status === "running" && (
+          {(view.swarm.run.status === "running" || view.swarm.run.status === "completing") && (
             <button onClick={() => void cancelSwarm()}>Cancel</button>
           )}
         </div>
