@@ -1,3 +1,4 @@
+mod agent_conversation_runtime;
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 mod preview;
 
@@ -28,6 +29,8 @@ struct AppState {
     agent_dispatcher: Arc<agent_core::AgentInboxDispatcher>,
     /// Serializes saved-agent turns and protects user turns from peer preemption.
     active_agent_runs: agent_core::ActiveAgentRuns,
+    /// Routes tool approvals to the saved-agent contact turn that requested them.
+    agent_conversation_runtime: agent_conversation_runtime::AgentConversationRuntime,
     /// Durable orchestration kernel shared by mentions and saved workflows.
     workflow_runtime: Arc<
         agent_core::workflow::runtime::DurableWorkflowRuntime<
@@ -104,6 +107,8 @@ struct AgentConversationView {
     session: FrontendSession,
     messaging: agent_core::MessageObservation,
     swarm: Option<agent_core::SwarmSnapshot>,
+    approvals: Vec<agent_conversation_runtime::AgentConversationApprovalUpdate>,
+    pending_messages: Vec<agent_conversation_runtime::AgentConversationPendingMessage>,
 }
 
 #[derive(serde::Serialize)]
@@ -203,6 +208,8 @@ struct DesktopAgentMessageExecutor {
     session_manager: Arc<agent_core::SessionManager>,
     base_permissions: agent_core::permission::PermissionConfig,
     swarm_coordinator: agent_core::SwarmCoordinator,
+    agent_conversation_runtime: agent_conversation_runtime::AgentConversationRuntime,
+    app_handle: AppHandle,
 }
 
 #[async_trait::async_trait]
@@ -273,6 +280,13 @@ impl agent_core::AgentMessageExecutor for DesktopAgentMessageExecutor {
         });
         let permission_config =
             agent_core::agent_registry::build_permission_config(&agent, &self.base_permissions);
+        let approval_turn = self.agent_conversation_runtime.begin_forwarding_turn(
+            self.app_handle.clone(),
+            delivery.task.id.clone(),
+            delivery.target_conversation.id.clone(),
+            delivery.target_conversation.agent_id.clone(),
+            None,
+        );
         let result = self
             .runner
             .run(agent_core::agent_registry::CustomAgentInvocation {
@@ -283,9 +297,9 @@ impl agent_core::AgentMessageExecutor for DesktopAgentMessageExecutor {
                 workflow_run_id: None,
                 trigger: trigger.to_string(),
                 permission_config,
-                approval_resolver: Some(agent_core::runtime::ApprovalResolver::auto_deny()),
+                approval_resolver: Some(approval_turn.resolver()),
                 cancel_token,
-                event_tx: None,
+                event_tx: Some(approval_turn.event_sender()),
                 subagent_depth: 0,
                 context_mode: agent_core::agent_registry::CustomAgentContextMode::ResumeSession,
                 input_metadata: Some(metadata.clone()),
@@ -306,6 +320,7 @@ impl agent_core::AgentMessageExecutor for DesktopAgentMessageExecutor {
                     }),
             })
             .await;
+        drop(approval_turn);
         match result {
             Ok(result) => Ok(result.output),
             Err(error) => {
@@ -1127,6 +1142,16 @@ async fn cancel_steer(
 /// 1. Run-scoped subagent approval map
 /// 2. Per-Run `ApprovalResolver` (direct path — no actor deadlock)
 /// 3. Command channel broadcast (legacy fallback for paused runs)
+fn approval_choice(choice: &str) -> ApprovalChoice {
+    match choice {
+        "allow_once" => ApprovalChoice::AllowOnce,
+        "allow_session" => ApprovalChoice::AllowSession,
+        "allow_persistent" => ApprovalChoice::AllowPersistent,
+        "deny_persistent" => ApprovalChoice::DenyPersistent,
+        _ => ApprovalChoice::Deny,
+    }
+}
+
 #[tauri::command]
 async fn approve_tool(
     state: State<'_, AppState>,
@@ -1134,13 +1159,7 @@ async fn approve_tool(
     prompt_id: String,
     choice: String,
 ) -> Result<(), String> {
-    let choice_enum = match choice.as_str() {
-        "allow_once" => ApprovalChoice::AllowOnce,
-        "allow_session" => ApprovalChoice::AllowSession,
-        "allow_persistent" => ApprovalChoice::AllowPersistent,
-        "deny_persistent" => ApprovalChoice::DenyPersistent,
-        _ => ApprovalChoice::Deny,
-    };
+    let choice_enum = approval_choice(&choice);
 
     let manager = state.run_manager.lock().await;
 
@@ -1183,6 +1202,24 @@ async fn approve_tool(
         )
         .await
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn approve_agent_conversation_tool(
+    state: State<'_, AppState>,
+    turn_id: String,
+    prompt_id: String,
+    choice: String,
+) -> Result<(), String> {
+    if state.agent_conversation_runtime.resolve_approval(
+        &turn_id,
+        &prompt_id,
+        approval_choice(&choice),
+    ) {
+        Ok(())
+    } else {
+        Err("this agent tool approval is no longer pending".to_string())
+    }
 }
 
 /// Answer a pending `ask_user` clarification request.
@@ -2566,6 +2603,7 @@ async fn get_agent_history(
 async fn load_agent_conversation_view(
     messaging: agent_core::AgentMessaging,
     swarm_coordinator: agent_core::SwarmCoordinator,
+    agent_conversation_runtime: agent_conversation_runtime::AgentConversationRuntime,
     session_manager: Arc<agent_core::SessionManager>,
     conversation: agent_core::AgentConversation,
 ) -> Result<AgentConversationView, String> {
@@ -2581,6 +2619,9 @@ async fn load_agent_conversation_view(
         let swarm = swarm_coordinator
             .latest_for_agent_project(&conversation.agent_id, &conversation.project_id)
             .map_err(|error| error.to_string())?;
+        let approvals = agent_conversation_runtime.pending_for_conversation(&conversation_id);
+        let pending_messages = agent_conversation_runtime
+            .pending_messages_for_conversation(&conversation_id);
         let session = session_manager
             .resume(&session_id)
             .map_err(|error| error.to_string())?
@@ -2590,6 +2631,8 @@ async fn load_agent_conversation_view(
             session: to_frontend_session(session),
             messaging,
             swarm,
+            approvals,
+            pending_messages,
         })
     })
     .await
@@ -2598,6 +2641,7 @@ async fn load_agent_conversation_view(
 
 async fn run_agent_conversation_turn(
     state: &State<'_, AppState>,
+    app_handle: &AppHandle,
     conversation: &agent_core::AgentConversation,
     input: String,
     input_metadata: Option<serde_json::Value>,
@@ -2606,6 +2650,7 @@ async fn run_agent_conversation_turn(
     swarm_turn_id: Option<String>,
     orchestration_context: Option<String>,
     expose_swarm_tools: bool,
+    pending_user_input: Option<String>,
 ) -> Result<agent_core::agent_registry::CustomAgentRunResult, String> {
     let brain = {
         let run_manager = state.run_manager.lock().await;
@@ -2630,6 +2675,15 @@ async fn run_agent_conversation_turn(
     let cancel_token = agent_core::CancellationToken::new();
     let active_turn_id = swarm_turn_id
         .unwrap_or_else(|| format!("user:{}", uuid::Uuid::new_v4()));
+    // Register the contact turn before waiting for the per-agent execution
+    // lane so a queued user message remains observable after switching away.
+    let approval_turn = state.agent_conversation_runtime.begin_forwarding_turn(
+        app_handle.clone(),
+        active_turn_id.clone(),
+        conversation.id.clone(),
+        conversation.agent_id.clone(),
+        pending_user_input,
+    );
     let lease = state
         .active_agent_runs
         .enter(
@@ -2682,9 +2736,9 @@ async fn run_agent_conversation_turn(
             workflow_run_id: None,
             trigger: trigger.to_string(),
             permission_config,
-            approval_resolver: None,
+            approval_resolver: Some(approval_turn.resolver()),
             cancel_token,
-            event_tx: None,
+            event_tx: Some(approval_turn.event_sender()),
             subagent_depth: 0,
             context_mode: agent_core::agent_registry::CustomAgentContextMode::ResumeSession,
             input_metadata,
@@ -2693,6 +2747,7 @@ async fn run_agent_conversation_turn(
             swarm_context,
         })
         .await;
+    drop(approval_turn);
     lease.finish();
     result.map_err(|error| error.to_string())
 }
@@ -2744,6 +2799,7 @@ async fn open_agent_conversation(
     load_agent_conversation_view(
         messaging,
         state.swarm_coordinator.clone(),
+        state.agent_conversation_runtime.clone(),
         state.session_manager.clone(),
         conversation,
     ).await
@@ -2779,6 +2835,7 @@ async fn observe_agent_swarm(
 #[tauri::command]
 async fn command_agent_swarm(
     state: State<'_, AppState>,
+    app_handle: AppHandle,
     run_id: String,
     command: agent_core::SwarmCommand,
 ) -> Result<agent_core::SwarmSnapshot, String> {
@@ -2801,6 +2858,7 @@ async fn command_agent_swarm(
     let turn_id = format!("user:{}", uuid::Uuid::new_v4());
     let result = run_agent_conversation_turn(
         &state,
+        &app_handle,
         &conversation,
         instruction,
         None,
@@ -2809,6 +2867,7 @@ async fn command_agent_swarm(
         Some(turn_id.clone()),
         None,
         true,
+        None,
     )
     .await;
     let outcome = (|| -> Result<(), String> { match result {
@@ -2891,6 +2950,7 @@ fn start_or_continue_agent_swarm(
 #[tauri::command]
 async fn send_agent_conversation_message(
     state: State<'_, AppState>,
+    app_handle: AppHandle,
     conversation_id: String,
     input: String,
     agent_mentions: Option<Vec<agent_core::workflow::runtime::AgentMention>>,
@@ -2937,8 +2997,10 @@ async fn send_agent_conversation_message(
     let swarm = start_or_continue_agent_swarm(&state.swarm_coordinator, &source, &input)
         .map_err(|error| error.to_string())?;
     let turn_id = format!("user:{}", uuid::Uuid::new_v4());
+    let pending_user_input = input.clone();
     let result = run_agent_conversation_turn(
         &state,
+        &app_handle,
         &source,
         input,
         None,
@@ -2947,6 +3009,7 @@ async fn send_agent_conversation_message(
         Some(turn_id.clone()),
         orchestration_context,
         recipient.is_none(),
+        Some(pending_user_input),
     )
     .await;
     let mut deliveries = Vec::new();
@@ -3035,6 +3098,7 @@ async fn send_agent_conversation_message(
     let view = load_agent_conversation_view(
         messaging,
         state.swarm_coordinator.clone(),
+        state.agent_conversation_runtime.clone(),
         state.session_manager.clone(),
         source,
     )
@@ -3872,6 +3936,8 @@ pub fn run() {
             );
             let agent_messaging = agent_core::AgentMessaging::new(storage.clone());
             let active_agent_runs = agent_core::ActiveAgentRuns::new();
+            let agent_conversation_runtime =
+                agent_conversation_runtime::AgentConversationRuntime::default();
             let swarm_coordinator = agent_core::SwarmCoordinator::new(
                 storage.clone(),
                 agent_messaging.clone(),
@@ -3895,6 +3961,8 @@ pub fn run() {
                     session_manager: session_manager.clone(),
                     base_permissions: run_manager.brain().config().permissions.clone(),
                     swarm_coordinator: swarm_coordinator.clone(),
+                    agent_conversation_runtime: agent_conversation_runtime.clone(),
+                    app_handle: app.handle().clone(),
                 }),
                 active_agent_runs.clone(),
                 format!("desktop-{}", uuid::Uuid::new_v4()),
@@ -3940,6 +4008,7 @@ pub fn run() {
                 swarm_coordinator,
                 agent_dispatcher: agent_dispatcher.clone(),
                 active_agent_runs,
+                agent_conversation_runtime,
                 workflow_runtime: workflow_runtime.clone(),
                 workflow_authoring,
                 agent_mentions_enabled,
@@ -4026,7 +4095,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            send_message, approve_tool, answer_input, clear_session_goal, abort_agent, replay_since,
+            send_message, approve_tool, approve_agent_conversation_tool, answer_input,
+            clear_session_goal, abort_agent, replay_since,
             get_session_plans, resume_session_plan, cancel_session_plan, clear_session_plans,
             btw_query,
             pause_run, resume_run, steer_run, cancel_steer, get_run_state,

@@ -78,7 +78,38 @@ export interface AgentConversationView {
     events: AgentMessageEvent[];
   };
   swarm?: AgentSwarmSnapshot | null;
+  approvals?: AgentConversationApprovalRequired[];
+  pending_messages?: AgentConversationPendingMessage[];
 }
+
+export interface AgentConversationPendingMessage {
+  turn_id: string;
+  content: string;
+}
+
+interface AgentConversationApprovalBase {
+  conversation_id: string;
+  agent_id: string;
+  turn_id: string;
+  prompt_id: string;
+}
+
+export interface AgentConversationApprovalRequired extends AgentConversationApprovalBase {
+  event_type: 'required';
+  tool_name: string;
+  tool_input: unknown;
+  danger_level: string;
+  explanation: string;
+}
+
+export interface AgentConversationApprovalResolved extends AgentConversationApprovalBase {
+  event_type: 'resolved';
+  choice: string;
+}
+
+export type AgentConversationApproval =
+  | AgentConversationApprovalRequired
+  | AgentConversationApprovalResolved;
 
 export interface AgentSwarmRun {
   id: string;

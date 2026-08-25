@@ -34,6 +34,7 @@ export function AgentsPage() {
             <AgentDashboard agent={selectedAgent} onBackToChat={() => setSettingsOpen(false)} />
           ) : (
             <AgentConversationChat
+              key={selectedAgent.id}
               agent={selectedAgent}
               onOpenSettings={() => setSettingsOpen(true)}
             />

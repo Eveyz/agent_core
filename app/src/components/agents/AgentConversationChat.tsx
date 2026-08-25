@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import BotIcon from "lucide-react/dist/esm/icons/bot.mjs";
 import SettingsIcon from "lucide-react/dist/esm/icons/settings.mjs";
 import SendIcon from "lucide-react/dist/esm/icons/send.mjs";
@@ -16,6 +17,8 @@ import SparklesIcon from "lucide-react/dist/esm/icons/sparkles.mjs";
 import { useAppSelector } from "../../hooks/useAppDispatch";
 import type {
   AgentConversationMessage,
+  AgentConversationApproval,
+  AgentConversationApprovalRequired,
   AgentConversationSendResult,
   AgentConversationView,
   AgentDef,
@@ -118,8 +121,13 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
   const [priority, setPriority] = useState(false);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [pendingUserMessage, setPendingUserMessage] = useState<string | null>(null);
+  const [pendingApprovals, setPendingApprovals] = useState<AgentConversationApprovalRequired[]>([]);
+  const [resolvingApprovals, setResolvingApprovals] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const historyRef = useRef<HTMLDivElement>(null);
+  const conversationIdRef = useRef<string | null>(null);
+  const loadGenerationRef = useRef(0);
 
   const mentionQuery = useMemo(() => {
     const match = input.match(/(?:^|\s)@([^\s]*)$/u);
@@ -185,6 +193,16 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
       ) ?? [],
     [view?.messaging.events],
   );
+  const hasWorkingPeerTask = useMemo(() => {
+    const seenTasks = new Set<string>();
+    for (const event of [...(view?.messaging.events ?? [])].reverse()) {
+      if (!isTaskEvent(event) || !event.task_id || seenTasks.has(event.task_id)) continue;
+      seenTasks.add(event.task_id);
+      if (event.event_type === "task_working") return true;
+    }
+    return false;
+  }, [view?.messaging.events]);
+  const agentIsWorking = sending || hasWorkingPeerTask;
 
   const deliveryStatus = useCallback(
     (messageId?: string, completedLabel = "Completed") => {
@@ -210,6 +228,7 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
   );
 
   const loadConversation = useCallback(async () => {
+    const generation = ++loadGenerationRef.current;
     setLoading(true);
     setError(null);
     try {
@@ -217,12 +236,16 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
         agentId: agent.id,
         projectId: activeProjectId ?? "__adhoc_chat__",
       });
+      if (generation !== loadGenerationRef.current) return;
+      conversationIdRef.current = result.conversation.id;
       setView(result);
+      setPendingApprovals(result.approvals ?? []);
       window.dispatchEvent(new Event("agent-conversations-changed"));
     } catch (reason) {
+      if (generation !== loadGenerationRef.current) return;
       setError(String(reason));
     } finally {
-      setLoading(false);
+      if (generation === loadGenerationRef.current) setLoading(false);
     }
   }, [activeProjectId, agent.id]);
 
@@ -231,8 +254,44 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
     setInput("");
     setSelectedMentions([]);
     setPriority(false);
+    setSending(false);
+    setPendingUserMessage(null);
+    setPendingApprovals([]);
+    setResolvingApprovals({});
+    conversationIdRef.current = null;
     void loadConversation();
+    return () => {
+      loadGenerationRef.current += 1;
+    };
   }, [loadConversation]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let mounted = true;
+    void listen<AgentConversationApproval>("agent-conversation-approval", (event) => {
+      if (
+        !mounted ||
+        event.payload.agent_id !== agent.id ||
+        event.payload.conversation_id !== conversationIdRef.current
+      ) return;
+      setPendingApprovals((current) => {
+        if (event.payload.event_type === "resolved") {
+          return current.filter((approval) => approval.prompt_id !== event.payload.prompt_id);
+        }
+        return event.payload.event_type === "required" ? [
+          ...current.filter((approval) => approval.prompt_id !== event.payload.prompt_id),
+          event.payload,
+        ] : current;
+      });
+    }).then((dispose) => {
+      if (mounted) unlisten = dispose;
+      else dispose();
+    });
+    return () => {
+      mounted = false;
+      unlisten?.();
+    };
+  }, [agent.id]);
 
   useEffect(() => {
     if (!hasSingleRecipient) setPriority(false);
@@ -251,6 +310,8 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
           projectId: activeProjectId ?? "__adhoc_chat__",
         });
         if (cancelled) return;
+        conversationIdRef.current = result.conversation.id;
+        setPendingApprovals(result.approvals ?? []);
         setView((current) => {
           if (
             current &&
@@ -278,7 +339,7 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
 
   useEffect(() => {
     historyRef.current?.scrollTo({ top: historyRef.current.scrollHeight, behavior: "smooth" });
-  }, [view?.session.messages.length, sending]);
+  }, [view?.session.messages.length, view?.pending_messages?.length, sending]);
 
   const insertMention = useCallback((mentioned: AgentDef) => {
     const token = `@${mentioned.name.trim().replace(/\s+/g, "_")}`;
@@ -338,6 +399,7 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
     }
     const sendPriority = priority && mentions.length === 1;
     setSending(true);
+    setPendingUserMessage(text);
     setError(null);
     setInput("");
     setSelectedMentions([]);
@@ -353,8 +415,10 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
         },
       );
       setView(result.view);
+      setPendingUserMessage(null);
       window.dispatchEvent(new Event("agent-conversations-changed"));
     } catch (reason) {
+      setPendingUserMessage(null);
       setInput(text);
       setPriority(sendPriority);
       setError(String(reason));
@@ -363,6 +427,31 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
       setSending(false);
     }
   }, [agents, input, loadConversation, priority, selectedMentions, sending, view]);
+
+  const respondToApproval = useCallback(async (
+    approval: AgentConversationApprovalRequired,
+    choice: string,
+  ) => {
+    const approvalKey = `${approval.turn_id}:${approval.prompt_id}`;
+    setResolvingApprovals((current) => ({ ...current, [approvalKey]: choice }));
+    try {
+      await invoke("approve_agent_conversation_tool", {
+        turnId: approval.turn_id,
+        promptId: approval.prompt_id,
+        choice,
+      });
+      setPendingApprovals((current) =>
+        current.filter((candidate) => candidate.prompt_id !== approval.prompt_id),
+      );
+    } catch (reason) {
+      setResolvingApprovals((current) => {
+        const next = { ...current };
+        delete next[approvalKey];
+        return next;
+      });
+      setError(String(reason));
+    }
+  }, []);
 
   const cancelSwarm = useCallback(async () => {
     if (
@@ -400,12 +489,12 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
         <div className="agent-conversation-identity">
           <span className="agent-conversation-avatar">
             <BotIcon size={18} />
-            <span className={`agent-presence-dot${sending ? " working" : ""}`} />
+            <span className={`agent-presence-dot${agentIsWorking ? " working" : ""}`} />
           </span>
           <span>
             <strong>{agent.name}</strong>
             <small>
-              <span className="agent-contact-status">{sending ? "Working" : "Ready"}</span>
+              <span className="agent-contact-status">{agentIsWorking ? "Working" : "Ready"}</span>
               <span aria-hidden="true"> · </span>
               {agent.model || "Default model"}
             </small>
@@ -474,7 +563,7 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
             <LoaderIcon className="animate-spin" size={18} /> Opening {agent.name}…
           </div>
         )}
-        {!loading && view?.session.messages.length === 0 && (
+        {!loading && view?.session.messages.length === 0 && !(view.pending_messages?.length) && !pendingUserMessage && (
           <div className="agent-conversation-empty">
             <span className="agent-conversation-empty-avatar">
               <BotIcon size={26} />
@@ -549,6 +638,32 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
             </div>
           );
         })}
+        {pendingUserMessage && (
+          <div className="agent-conversation-user-group pending" data-testid="pending-user-message">
+            <div className="message-row user-row">
+              <div className="user-msg">{pendingUserMessage}</div>
+            </div>
+            <div className="agent-pending-message-status">
+              <LoaderIcon className="animate-spin" size={12} /> Queued · waiting for {agent.name}
+            </div>
+          </div>
+        )}
+        {view?.pending_messages
+          ?.filter((message) => message.content !== pendingUserMessage)
+          .map((message) => (
+            <div
+              className="agent-conversation-user-group pending"
+              data-testid="pending-user-message"
+              key={message.turn_id}
+            >
+              <div className="message-row user-row">
+                <div className="user-msg">{message.content}</div>
+              </div>
+              <div className="agent-pending-message-status">
+                <LoaderIcon className="animate-spin" size={12} /> Queued · waiting for {agent.name}
+              </div>
+            </div>
+          ))}
         {pendingInboundEvents.map((event) => {
           const status = deliveryStatus(event.message_id, "Processed");
           const sender = event.payload.from ? agentsByName.get(event.payload.from) : undefined;
@@ -576,12 +691,38 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
             )}
           </div>
         ))}
-        {sending && (
+        {pendingApprovals.map((approval) => {
+          const approvalKey = `${approval.turn_id}:${approval.prompt_id}`;
+          const resolvingChoice = resolvingApprovals[approvalKey];
+          return (
+          <div className="agent-approval-card" key={approvalKey} aria-busy={Boolean(resolvingChoice)}>
+            <div className="agent-approval-header">
+              <strong>Approval Required: {approval.tool_name || "tool"}</strong>
+              {approval.danger_level && (
+                <span className={`danger-badge danger-${approval.danger_level}`}>
+                  {approval.danger_level}
+                </span>
+              )}
+            </div>
+            <p>{approval.explanation || `${agent.name} wants to use a tool.`}</p>
+            <pre>{typeof approval.tool_input === "string"
+              ? approval.tool_input
+              : JSON.stringify(approval.tool_input ?? {}, null, 2)}</pre>
+            <div className="agent-approval-actions">
+              <button className="btn-deny" disabled={Boolean(resolvingChoice)} aria-pressed={resolvingChoice === "deny"} onClick={() => void respondToApproval(approval, "deny")}>Deny Once</button>
+              <button className="btn-allow" disabled={Boolean(resolvingChoice)} aria-pressed={resolvingChoice === "allow_once"} onClick={() => void respondToApproval(approval, "allow_once")}>Allow Once</button>
+              <button className="btn-allow" disabled={Boolean(resolvingChoice)} aria-pressed={resolvingChoice === "allow_session"} onClick={() => void respondToApproval(approval, "allow_session")}>Allow for this run</button>
+            </div>
+            {resolvingChoice && <small className="agent-approval-resolving">Applying your choice…</small>}
+          </div>
+          );
+        })}
+        {agentIsWorking && (
           <div className="agent-thinking-row">
             <div className="agent-turn-avatar"><LoaderIcon className="animate-spin" size={14} /></div>
             <div>
-              <strong>{resolvedMentions.length > 0 ? "Coordinating agents" : `${agent.name} is working`}</strong>
-              <small>{resolvedMentions.length > 0 ? "Messages and replies will appear as they arrive" : "Thinking and using tools…"}</small>
+              <strong>{sending && resolvedMentions.length > 0 ? "Coordinating agents" : `${agent.name} is working`}</strong>
+              <small>{pendingApprovals.length > 0 ? "Waiting for your approval…" : sending && resolvedMentions.length > 0 ? "Messages and replies will appear as they arrive" : "Thinking and using tools…"}</small>
             </div>
           </div>
         )}

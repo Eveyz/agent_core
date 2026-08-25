@@ -351,6 +351,10 @@ export function AgentConfigTab({ agent }: AgentConfigTabProps) {
                 >
                   {PERMISSION_MODES.map(m => <option key={m} value={m}>{m}</option>)}
                 </select>
+                <p style={{ margin: "7px 0 0", fontSize: "12px", color: "var(--text-muted)", lineHeight: 1.45 }}>
+                  Controls when this agent asks for tool approval. Paranoid and standard ask more
+                  often; developer and permissive allow more operations; yolo runs without prompts.
+                </p>
               </div>
 
               <div>

@@ -7,6 +7,70 @@
   background: var(--bg-main);
 }
 
+.agent-pending-message-status {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 5px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.agent-approval-card {
+  align-self: stretch;
+  margin: 8px 44px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--warning, #f59e0b) 45%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--warning, #f59e0b) 8%, var(--bg-main));
+}
+
+.agent-approval-header,
+.agent-approval-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-approval-card p {
+  margin: 8px 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.agent-approval-card pre {
+  max-height: 180px;
+  margin: 0 0 10px;
+  padding: 10px;
+  overflow: auto;
+  border-radius: 8px;
+  background: var(--overlay-0_04);
+  color: var(--text-main);
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
+.agent-approval-actions {
+  flex-wrap: wrap;
+}
+
+.agent-approval-actions button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.agent-approval-actions button[aria-pressed="true"] {
+  outline: 2px solid currentColor;
+  opacity: 1;
+}
+
+.agent-approval-resolving {
+  display: block;
+  margin-top: 8px;
+  color: var(--text-muted);
+}
+
 .agent-conversation-header {
   height: 58px;
   flex-shrink: 0;

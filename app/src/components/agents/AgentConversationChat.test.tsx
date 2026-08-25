@@ -7,9 +7,16 @@ import type { AgentConversationView, AgentDef } from "../../features/agents/type
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   state: null as unknown,
+  listeners: new Map<string, (event: { payload: unknown }) => void>(),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async (name: string, callback: (event: { payload: unknown }) => void) => {
+    mocks.listeners.set(name, callback);
+    return () => mocks.listeners.delete(name);
+  }),
+}));
 vi.mock("../../hooks/useAppDispatch", () => ({
   useAppSelector: (selector: (state: unknown) => unknown) => selector(mocks.state),
 }));
@@ -142,6 +149,7 @@ describe("AgentConversationChat contact experience", () => {
     };
     mocks.invoke.mockReset();
     mocks.invoke.mockResolvedValue(conversationView());
+    mocks.listeners.clear();
     Object.defineProperty(HTMLElement.prototype, "scrollTo", {
       configurable: true,
       value: vi.fn(),
@@ -209,5 +217,222 @@ describe("AgentConversationChat contact experience", () => {
     expect(container.textContent).toContain("Choose one recipient per message.");
     expect((container.querySelector('[aria-label="Send message"]') as HTMLButtonElement).disabled)
       .toBe(true);
+  });
+
+  it("keeps a sent message visible while the agent turn is still running", async () => {
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "open_agent_conversation") return Promise.resolve(conversationView());
+      if (command === "send_agent_conversation_message") return new Promise(() => {});
+      return Promise.resolve(undefined);
+    });
+    await act(async () => {
+      root.render(<AgentConversationChat agent={coder} onOpenSettings={() => {}} />);
+    });
+
+    const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(textarea, "build the calculator");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      (container.querySelector('[aria-label="Send message"]') as HTMLButtonElement).click();
+    });
+
+    expect(container.textContent).toContain("build the calculator");
+    expect(container.textContent).toContain("Coder is working");
+  });
+
+  it("does not carry a pending contact's working state into another agent", async () => {
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "open_agent_conversation") return Promise.resolve(conversationView());
+      if (command === "send_agent_conversation_message") return new Promise(() => {});
+      return Promise.resolve(undefined);
+    });
+    await act(async () => {
+      root.render(<AgentConversationChat agent={coder} onOpenSettings={() => {}} />);
+    });
+    const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
+    await act(async () => {
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value",
+      )?.set;
+      valueSetter?.call(textarea, "build the calculator");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      (container.querySelector('[aria-label="Send message"]') as HTMLButtonElement).click();
+    });
+    await act(async () => {
+      root.render(<AgentConversationChat agent={debuggerAgent} onOpenSettings={() => {}} />);
+    });
+
+    expect(container.textContent).not.toContain("Debugger is working");
+  });
+
+  it("routes a tool approval to the agent conversation turn that requested it", async () => {
+    await act(async () => {
+      root.render(<AgentConversationChat agent={coder} onOpenSettings={() => {}} />);
+    });
+    await act(async () => {
+      mocks.listeners.get("agent-conversation-approval")?.({
+        payload: {
+          conversation_id: "conversation-coder",
+          agent_id: "coder",
+          turn_id: "turn-coder",
+          event_type: "required",
+          prompt_id: "prompt-repl",
+          tool_name: "repl",
+          tool_input: { code: "1 + 1" },
+          danger_level: "medium",
+          explanation: "Execute Python code",
+        },
+      });
+    });
+
+    expect(container.textContent).toContain("Approval Required: repl");
+    await act(async () => {
+      (container.querySelector("button.btn-allow") as HTMLButtonElement).click();
+    });
+    expect(mocks.invoke).toHaveBeenCalledWith("approve_agent_conversation_tool", {
+      turnId: "turn-coder",
+      promptId: "prompt-repl",
+      choice: "allow_once",
+    });
+  });
+
+  it("locks an approval card after the first choice and does not promise persistent rules", async () => {
+    mocks.invoke.mockImplementation((command: string) => {
+      if (command === "open_agent_conversation") return Promise.resolve(conversationView());
+      if (command === "approve_agent_conversation_tool") return new Promise(() => {});
+      return Promise.resolve(undefined);
+    });
+    await act(async () => {
+      root.render(<AgentConversationChat agent={coder} onOpenSettings={() => {}} />);
+    });
+    await act(async () => {
+      mocks.listeners.get("agent-conversation-approval")?.({
+        payload: {
+          conversation_id: "conversation-coder",
+          agent_id: "coder",
+          turn_id: "turn-coder",
+          event_type: "required",
+          prompt_id: "prompt-shell",
+          tool_name: "shell",
+          tool_input: { command: "pytest" },
+          danger_level: "medium",
+          explanation: "Run tests",
+        },
+      });
+    });
+
+    const allow = [...container.querySelectorAll("button")]
+      .find((button) => button.textContent === "Allow Once") as HTMLButtonElement;
+    await act(async () => allow.click());
+
+    expect(container.textContent).toContain("Applying your choice…");
+    expect(container.textContent).not.toContain("Always Allow");
+    expect(container.textContent).not.toContain("Deny Always");
+    expect([...container.querySelectorAll(".agent-approval-actions button")]
+      .every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+  });
+
+  it("restores a pending sent message after switching away and back", async () => {
+    mocks.invoke.mockImplementation((command: string, args?: { agentId?: string }) => {
+      if (command === "send_agent_conversation_message") return new Promise(() => {});
+      if (command === "open_agent_conversation") {
+        const result = conversationView();
+        if (args?.agentId === "coder") {
+          result.pending_messages = [{ turn_id: "coder-turn", content: "build the calculator" }];
+        }
+        return Promise.resolve(result);
+      }
+      return Promise.resolve(undefined);
+    });
+    await act(async () => {
+      root.render(<AgentConversationChat agent={coder} onOpenSettings={() => {}} />);
+    });
+    await act(async () => {
+      root.render(<AgentConversationChat agent={debuggerAgent} onOpenSettings={() => {}} />);
+    });
+    await act(async () => {
+      root.render(<AgentConversationChat agent={coder} onOpenSettings={() => {}} />);
+    });
+
+    expect(container.textContent).toContain("build the calculator");
+  });
+
+  it("ignores an approval from another project conversation for the same agent", async () => {
+    await act(async () => {
+      root.render(<AgentConversationChat agent={coder} onOpenSettings={() => {}} />);
+    });
+    await act(async () => {
+      mocks.listeners.get("agent-conversation-approval")?.({
+        payload: {
+          conversation_id: "conversation-coder-other-project",
+          agent_id: "coder",
+          turn_id: "other-turn",
+          event_type: "required",
+          prompt_id: "other-approval",
+          tool_name: "shell",
+        },
+      });
+    });
+
+    expect(container.textContent).not.toContain("Approval Required: shell");
+  });
+
+  it("ignores a stale conversation load that resolves after switching projects", async () => {
+    let resolveOld: ((view: AgentConversationView) => void) | undefined;
+    mocks.state = {
+      agents: { agents: [coder, debuggerAgent, reviewerAgent] },
+      project: { activeProjectId: "project-old" },
+    };
+    mocks.invoke.mockImplementation((command: string, args?: { projectId?: string }) => {
+      if (command !== "open_agent_conversation") return Promise.resolve(undefined);
+      if (args?.projectId === "project-old") {
+        return new Promise<AgentConversationView>((resolve) => { resolveOld = resolve; });
+      }
+      const current = conversationView();
+      current.conversation.id = "conversation-coder-new";
+      current.conversation.project_id = "project-new";
+      return Promise.resolve(current);
+    });
+
+    act(() => {
+      root.render(<AgentConversationChat agent={coder} onOpenSettings={() => {}} />);
+    });
+    await act(async () => { await Promise.resolve(); });
+    mocks.state = {
+      agents: { agents: [coder, debuggerAgent, reviewerAgent] },
+      project: { activeProjectId: "project-new" },
+    };
+    await act(async () => {
+      root.render(<AgentConversationChat agent={coder} onOpenSettings={() => {}} />);
+    });
+
+    const stale = conversationView();
+    stale.conversation.id = "conversation-coder-old";
+    stale.conversation.project_id = "project-old";
+    await act(async () => resolveOld?.(stale));
+    await act(async () => {
+      mocks.listeners.get("agent-conversation-approval")?.({
+        payload: {
+          conversation_id: "conversation-coder-old",
+          agent_id: "coder",
+          turn_id: "old-turn",
+          event_type: "required",
+          prompt_id: "old-approval",
+          tool_name: "shell",
+          tool_input: { command: "dangerous-old-project-command" },
+          danger_level: "high",
+          explanation: "Old project approval",
+        },
+      });
+    });
+
+    expect(container.textContent).not.toContain("Old project approval");
   });
 });
