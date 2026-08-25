@@ -587,6 +587,50 @@ impl Storage {
             CREATE INDEX IF NOT EXISTS idx_agent_message_events_conversation
                 ON agent_message_events(conversation_id, sequence);
 
+            CREATE TABLE IF NOT EXISTS agent_swarm_runs (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL DEFAULT '',
+                root_agent_id TEXT NOT NULL,
+                goal TEXT NOT NULL,
+                status TEXT NOT NULL,
+                max_messages INTEGER NOT NULL,
+                messages_used INTEGER NOT NULL DEFAULT 0,
+                max_turns INTEGER NOT NULL,
+                turns_used INTEGER NOT NULL DEFAULT 0,
+                summary TEXT NOT NULL DEFAULT '',
+                error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agent_swarm_runs_project
+                ON agent_swarm_runs(project_id, updated_at);
+
+            CREATE TABLE IF NOT EXISTS agent_swarm_participants (
+                run_id TEXT NOT NULL REFERENCES agent_swarm_runs(id) ON DELETE CASCADE,
+                agent_id TEXT NOT NULL,
+                joined_at TEXT NOT NULL,
+                PRIMARY KEY(run_id, agent_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_swarm_messages (
+                run_id TEXT NOT NULL REFERENCES agent_swarm_runs(id) ON DELETE CASCADE,
+                message_id TEXT NOT NULL REFERENCES agent_messages(id),
+                PRIMARY KEY(run_id, message_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS agent_swarm_events (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL REFERENCES agent_swarm_runs(id) ON DELETE CASCADE,
+                event_type TEXT NOT NULL,
+                payload TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agent_swarm_events_run
+                ON agent_swarm_events(run_id, sequence);
+
             CREATE TABLE IF NOT EXISTS workflows (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,

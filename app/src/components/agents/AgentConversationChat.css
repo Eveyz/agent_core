@@ -71,6 +71,43 @@
   background: var(--bg-hover);
 }
 
+.agent-swarm-strip {
+  min-height: 34px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 6px 20px;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.agent-swarm-status {
+  color: var(--accent);
+  font-weight: 650;
+  text-transform: capitalize;
+}
+
+.agent-swarm-strip.needs_attention .agent-swarm-status,
+.agent-swarm-error {
+  color: var(--warning);
+}
+
+.agent-swarm-strip button {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.agent-swarm-strip button:hover {
+  color: var(--danger);
+}
+
 .agent-conversation-history {
   flex: 1;
   min-height: 0;

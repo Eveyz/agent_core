@@ -77,6 +77,25 @@ export interface AgentConversationView {
     next_sequence: number;
     events: AgentMessageEvent[];
   };
+  swarm?: AgentSwarmSnapshot | null;
+}
+
+export interface AgentSwarmRun {
+  id: string;
+  goal: string;
+  status: 'running' | 'completed' | 'cancelled' | 'needs_attention';
+  max_messages: number;
+  messages_used: number;
+  max_turns: number;
+  turns_used: number;
+  summary: string;
+  error: string;
+}
+
+export interface AgentSwarmSnapshot {
+  run: AgentSwarmRun;
+  participant_agent_ids: string[];
+  messages: Array<{ id: string }>;
 }
 
 export interface AgentMessageEvent {

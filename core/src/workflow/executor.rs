@@ -428,6 +428,7 @@ async fn execute_agent_node(
             context_mode: crate::agent_registry::CustomAgentContextMode::Fresh,
             input_metadata: None,
             record_history: true,
+            swarm_context: None,
         })
         .await?;
     let output = serde_json::json!({

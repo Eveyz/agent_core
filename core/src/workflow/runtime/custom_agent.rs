@@ -100,6 +100,7 @@ impl ActivityAdapter for CustomAgentActivityAdapter {
                 context_mode: CustomAgentContextMode::Fresh,
                 input_metadata: None,
                 record_history: config.record_history,
+                swarm_context: None,
             })
             .await?;
 

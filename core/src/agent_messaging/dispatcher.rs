@@ -31,6 +31,7 @@ pub struct AgentInboxDispatcher {
     worker_id: String,
     wake: Notify,
     recipient_workers: parking_lot::Mutex<HashSet<String>>,
+    swarm: Option<crate::SwarmCoordinator>,
 }
 
 impl AgentInboxDispatcher {
@@ -47,7 +48,13 @@ impl AgentInboxDispatcher {
             worker_id: worker_id.into(),
             wake: Notify::new(),
             recipient_workers: parking_lot::Mutex::new(HashSet::new()),
+            swarm: None,
         }
+    }
+
+    pub fn with_swarm(mut self, swarm: crate::SwarmCoordinator) -> Self {
+        self.swarm = Some(swarm);
+        self
     }
 
     pub fn wake(&self) {
@@ -95,12 +102,31 @@ impl AgentInboxDispatcher {
         cancel_token: CancellationToken,
         lease: super::ActiveAgentRunLease,
     ) -> Result<()> {
+        if let Some(swarm) = &self.swarm
+            && let Err(error) = swarm.begin_turn(
+                &delivery.message.context_id,
+                &delivery.target_conversation.agent_id,
+            )
+        {
+            lease.finish();
+            self.messaging.command(
+                &delivery.task.id,
+                AgentTaskCommand::NeedsAttention { reason: error.to_string() },
+            )?;
+            return Ok(());
+        }
         let execution = self.executor.execute(&delivery, cancel_token).await;
         let was_preempted = lease.was_preempted();
         lease.finish();
         let output = match execution {
             Ok(output) => output,
             Err(error) => {
+                if self.messaging.task(&delivery.task.id)?.status == super::AgentTaskStatus::Cancelled {
+                    return Ok(());
+                }
+                if let Some(swarm) = &self.swarm {
+                    swarm.mark_needs_attention(&delivery.message.context_id, &error.to_string())?;
+                }
                 let command = if was_preempted {
                     AgentTaskCommand::NeedsAttention {
                         reason: format!(
@@ -119,18 +145,22 @@ impl AgentInboxDispatcher {
 
         let completion = (|| -> Result<()> {
             let output_message_id = if delivery.message.kind == MessageKind::Request {
-                let reply = self.messaging.send(SendAgentMessage {
-                    source_conversation_id: delivery.target_conversation.id.clone(),
-                    to_agent_id: delivery.message.from_agent_id.clone(),
-                    kind: MessageKind::Reply,
-                    parts: vec![MessagePart::text(output)],
-                    context_id: Some(delivery.message.context_id.clone()),
-                    correlation_id: Some(delivery.message.correlation_id.clone()),
-                    reply_to: Some(delivery.message.id.clone()),
-                    idempotency_key: format!("agent-reply:{}", delivery.message.id),
-                    hop_count: delivery.message.hop_count + 1,
-                    priority: false,
-                })?;
+                let reply = if let Some(swarm) = &self.swarm {
+                    swarm.reply(&delivery.message, &delivery.target_conversation.id, output)?
+                } else {
+                    self.messaging.send(SendAgentMessage {
+                        source_conversation_id: delivery.target_conversation.id.clone(),
+                        to_agent_id: delivery.message.from_agent_id.clone(),
+                        kind: MessageKind::Reply,
+                        parts: vec![MessagePart::text(output)],
+                        context_id: Some(delivery.message.context_id.clone()),
+                        correlation_id: Some(delivery.message.correlation_id.clone()),
+                        reply_to: Some(delivery.message.id.clone()),
+                        idempotency_key: format!("agent-reply:{}", delivery.message.id),
+                        hop_count: delivery.message.hop_count + 1,
+                        priority: false,
+                    })?
+                };
                 Some(reply.message.id)
             } else {
                 None

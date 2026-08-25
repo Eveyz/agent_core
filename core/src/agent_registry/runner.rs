@@ -58,6 +58,8 @@ pub struct CustomAgentInvocation {
     pub input_metadata: Option<serde_json::Value>,
     /// Whether to record this invocation in saved-agent history.
     pub record_history: bool,
+    /// Durable swarm context; when present, native coordination tools are injected.
+    pub swarm_context: Option<crate::SwarmToolContext>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,6 +142,7 @@ impl CustomAgentRunner {
             context_mode,
             input_metadata,
             record_history,
+            swarm_context,
         } = invocation;
 
         let restored_messages = if context_mode == CustomAgentContextMode::ResumeSession {
@@ -209,6 +212,9 @@ impl CustomAgentRunner {
             &mut registry,
             Some(supervisor.clone()),
         );
+        if let Some(swarm_context) = swarm_context {
+            crate::register_swarm_tools(&mut registry, swarm_context);
+        }
 
         let memory = if agent.memory_enabled > 0 {
             Some(Arc::new(build_agent_memory_store(

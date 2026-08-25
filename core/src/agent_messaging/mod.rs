@@ -694,6 +694,107 @@ impl AgentMessaging {
         message_by_id(&db, message_id)?
             .with_context(|| format!("agent message '{message_id}' not found"))
     }
+
+    pub fn task(&self, task_id: &str) -> Result<AgentMessageTask> {
+        let db = self.storage.conn();
+        task_by_id(&db, task_id)?
+            .with_context(|| format!("agent message task '{task_id}' not found"))
+    }
+
+    pub fn working_tasks_for_context(&self, context_id: &str) -> Result<Vec<AgentMessageTask>> {
+        self.tasks_for_context_statuses(context_id, &["working"])
+    }
+
+    pub fn active_tasks_for_context(&self, context_id: &str) -> Result<Vec<AgentMessageTask>> {
+        self.tasks_for_context_statuses(
+            context_id,
+            &["queued", "working", "input_required", "needs_attention"],
+        )
+    }
+
+    fn tasks_for_context_statuses(
+        &self,
+        context_id: &str,
+        statuses: &[&str],
+    ) -> Result<Vec<AgentMessageTask>> {
+        let db = self.storage.conn();
+        let placeholders = (0..statuses.len()).map(|index| format!("?{}", index + 2)).collect::<Vec<_>>().join(", ");
+        let sql = format!("SELECT task.id, task.message_id, task.recipient_agent_id,
+                    task.recipient_conversation_id, task.status, task.output_message_id,
+                    task.error, task.attempt_count, task.worker_id, task.created_at,
+                    task.updated_at
+             FROM agent_message_tasks AS task
+             JOIN agent_messages AS message ON message.id = task.message_id
+             WHERE message.context_id = ?1 AND task.status IN ({placeholders})");
+        let mut statement = db.prepare(&sql)?;
+        let mut values: Vec<&dyn rusqlite::ToSql> = vec![&context_id];
+        values.extend(statuses.iter().map(|status| status as &dyn rusqlite::ToSql));
+        Ok(statement.query_map(values.as_slice(), task_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn delivery(&self, message_id: &str) -> Result<DeliveryReceipt> {
+        let db = self.storage.conn();
+        let message = message_by_id(&db, message_id)?
+            .with_context(|| format!("agent message '{message_id}' not found"))?;
+        let task = task_by_message_id(&db, message_id)?
+            .with_context(|| format!("task for agent message '{message_id}' not found"))?;
+        let target_conversation = conversation_by_id(&db, &message.target_conversation_id)?
+            .context("target conversation for message is missing")?;
+        Ok(DeliveryReceipt { message, task, target_conversation, replayed: false })
+    }
+
+    pub fn messages_for_context(&self, context_id: &str) -> Result<Vec<AgentMessage>> {
+        let db = self.storage.conn();
+        let mut statement = db.prepare(
+            "SELECT id, schema_version, context_id, from_agent_id, from_revision_id,
+                    from_display_name, to_agent_id, to_revision_id, to_display_name,
+                    kind, parts, correlation_id, reply_to, source_conversation_id,
+                    target_conversation_id, project_id, idempotency_key, hop_count,
+                    priority, created_at
+             FROM agent_messages WHERE context_id = ?1
+             ORDER BY created_at ASC, id ASC",
+        )?;
+        Ok(statement
+            .query_map(params![context_id], message_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub(crate) fn cancel_context_tasks(&self, context_id: &str, reason: &str) -> Result<usize> {
+        let mut db = self.storage.conn();
+        let tx = db.transaction()?;
+        let now = Utc::now().to_rfc3339();
+        let mut statement = tx.prepare(
+            "SELECT task.id, task.message_id, task.recipient_agent_id,
+                    task.recipient_conversation_id, task.status, task.output_message_id,
+                    task.error, task.attempt_count, task.worker_id, task.created_at,
+                    task.updated_at
+             FROM agent_message_tasks AS task
+             JOIN agent_messages AS message ON message.id = task.message_id
+             WHERE message.context_id = ?1
+               AND task.status IN ('queued', 'working', 'input_required', 'needs_attention')",
+        )?;
+        let tasks = statement
+            .query_map(params![context_id], task_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(statement);
+        for task in &tasks {
+            tx.execute(
+                "UPDATE agent_message_tasks SET status = 'cancelled', error = ?1,
+                        worker_id = '', updated_at = ?2 WHERE id = ?3",
+                params![reason, now, task.id],
+            )?;
+            append_task_event(
+                &tx,
+                task,
+                "task_cancelled",
+                &serde_json::json!({ "error": reason, "swarm_cancelled": true }),
+                &now,
+            )?;
+        }
+        tx.commit()?;
+        Ok(tasks.len())
+    }
 }
 
 fn validate_send_command(command: &SendAgentMessage) -> Result<()> {
@@ -1011,6 +1112,22 @@ fn task_by_id(db: &rusqlite::Connection, id: &str) -> Result<Option<AgentMessage
                 created_at, updated_at
          FROM agent_message_tasks WHERE id = ?1",
         params![id],
+        task_from_row,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+fn task_by_message_id(
+    db: &rusqlite::Connection,
+    message_id: &str,
+) -> Result<Option<AgentMessageTask>> {
+    db.query_row(
+        "SELECT id, message_id, recipient_agent_id, recipient_conversation_id,
+                status, output_message_id, error, attempt_count, worker_id,
+                created_at, updated_at
+         FROM agent_message_tasks WHERE message_id = ?1",
+        params![message_id],
         task_from_row,
     )
     .optional()

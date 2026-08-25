@@ -1,4 +1,5 @@
 pub mod agent_messaging;
+pub mod agent_swarm;
 pub mod agent_registry;
 pub mod attachments;
 pub mod background;
@@ -41,6 +42,11 @@ pub use agent_messaging::{
     AgentMessaging, AgentTaskCommand, AgentTaskStatus, ClaimedAgentMessage, DeliveryReceipt,
     ActiveAgentRunLease, ActiveAgentRuns, AgentRunLane, MAX_AGENT_MESSAGE_HOPS, MessageKind,
     MessageObservation, MessagePart, PeerMessageRoute, SendAgentMessage,
+};
+pub use agent_swarm::{
+    CompleteSwarmTool, SendAgentMessageTool, StartSwarm, SwarmCommand, SwarmCoordinator,
+    SwarmEvent, SwarmObservation, SwarmRun, SwarmSnapshot, SwarmStatus, SwarmToolContext,
+    register_swarm_tools,
 };
 pub use config::{
     ApiMode, Config, MemoryConfig, MemoryMode, ModelConfig, ReflectionConfig, RuntimeOverrides,

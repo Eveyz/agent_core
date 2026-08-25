@@ -250,6 +250,19 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
     }
   }, [agents, input, loadConversation, priority, selectedMentions, sending, view]);
 
+  const cancelSwarm = useCallback(async () => {
+    if (!view?.swarm || view.swarm.run.status !== "running") return;
+    try {
+      const swarm = await invoke<NonNullable<AgentConversationView["swarm"]>>(
+        "command_agent_swarm",
+        { runId: view.swarm.run.id, command: { type: "cancel", reason: "Cancelled by user" } },
+      );
+      setView((current) => (current ? { ...current, swarm } : current));
+    } catch (reason) {
+      setError(String(reason));
+    }
+  }, [view]);
+
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (event.nativeEvent.isComposing) return;
@@ -277,6 +290,19 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
           <SettingsIcon size={15} /> Settings
         </button>
       </header>
+
+      {view?.swarm && (
+        <div className={`agent-swarm-strip ${view.swarm.run.status}`}>
+          <span className="agent-swarm-status">Swarm · {view.swarm.run.status.replace("_", " ")}</span>
+          <span>{view.swarm.participant_agent_ids.length} agents</span>
+          <span>{view.swarm.run.messages_used}/{view.swarm.run.max_messages} messages</span>
+          <span>{view.swarm.run.turns_used}/{view.swarm.run.max_turns} turns</span>
+          {view.swarm.run.error && <span className="agent-swarm-error">{view.swarm.run.error}</span>}
+          {view.swarm.run.status === "running" && (
+            <button onClick={() => void cancelSwarm()}>Cancel</button>
+          )}
+        </div>
+      )}
 
       <div className="agent-conversation-history" ref={historyRef}>
         {loading && (

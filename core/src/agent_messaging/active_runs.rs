@@ -124,6 +124,15 @@ impl ActiveAgentRuns {
             }
         }
     }
+
+    pub fn cancel_peer_task(&self, agent_id: &str, task_id: &str) -> bool {
+        let Some(slot) = self.slots.lock().get(agent_id).cloned() else { return false; };
+        let active = slot.active.lock();
+        let Some(active) = active.as_ref() else { return false; };
+        if active.lane != AgentRunLane::Peer || active.run_id != task_id { return false; }
+        active.cancel.cancel();
+        true
+    }
 }
 
 impl ActiveAgentRunLease {
