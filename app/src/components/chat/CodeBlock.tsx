@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import CheckIcon from 'lucide-react/dist/esm/icons/check.mjs';
 import CopyIcon from 'lucide-react/dist/esm/icons/copy.mjs';
-import { highlightCode } from './codeHighlighting';
+import { highlightCode, normalizeHighlightSource } from './codeHighlighting';
 
 // Language display name mapping
 const LANGUAGE_NAMES: Record<string, string> = {
@@ -69,13 +69,14 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({ code, language, className 
   const [highlightedCode, setHighlightedCode] = useState<string>('');
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(true);
+  const displayCode = useMemo(() => normalizeHighlightSource(code), [code]);
 
   useEffect(() => {
     let mounted = true;
     setLoading(true);
 
     const lang = language.toLowerCase() || 'plaintext';
-    highlightCode(code, lang).then((html) => {
+    highlightCode(displayCode, lang).then((html) => {
       if (mounted) {
         setHighlightedCode(html);
         setLoading(false);
@@ -85,16 +86,16 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({ code, language, className 
     return () => {
       mounted = false;
     };
-  }, [code, language]);
+  }, [displayCode, language]);
 
   const handleCopy = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(code);
+      await navigator.clipboard.writeText(displayCode);
       setCopied(true);
     } catch (error) {
       console.error('Failed to copy:', error);
     }
-  }, [code]);
+  }, [displayCode]);
 
   useEffect(() => {
     if (!copied) return;
@@ -114,7 +115,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({ code, language, className 
           </button>
         </div>
         <div className="code-block-content">
-          <pre><code>{code}</code></pre>
+          <pre><code>{displayCode}</code></pre>
         </div>
       </div>
     );

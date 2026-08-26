@@ -19,6 +19,7 @@ import { FeaturedMapCards } from './FeaturedMapCards';
 import { extractWebSourcesFromBlocks } from './webSources';
 import { extractMapFeaturesFromBlocks } from './mapSources';
 import { isSubagentTool, groupBlocksIntoItems, basename, parseEditSummary, parseUnifiedDiff, isTrivialAssistantText } from './turnHelpers';
+import { stripContextStatus } from '../../utils/chatUtils';
 import { getFileIcon } from '../layout/FileTree';
 import { useTranslation } from 'react-i18next';
 import { isActiveRecoveryNotice, translateRecoveryMessage } from './recoveryNotice';
@@ -214,9 +215,11 @@ function FilesChangedCard({ files }: { files: FileChangeItem[] }) {
 export const AgentTurnUI = memo(function AgentTurnUI({
   entry,
   onSend,
+  variant = 'default',
 }: {
   entry: ChatEntry;
   onSend?: (msg: string | { text: string }) => void;
+  variant?: 'default' | 'conversation';
 }) {
   const { t } = useTranslation();
   const agentTrace = useSelector((state: RootState) => state.settings.agentTrace);
@@ -373,8 +376,11 @@ export const AgentTurnUI = memo(function AgentTurnUI({
     [entry.blocks],
   );
 
-  // Show duration even when the turn had no tools/thinking — only the timer/summary.
-  const showTurnHeader = hasIntermediateSteps || isProcessing || !!totalTimeText;
+  // Swarm conversations own the in-flight chrome (name + Working · elapsed).
+  const compactProcessing = variant === 'conversation';
+  const showTurnHeader = compactProcessing
+    ? isDone && (hasIntermediateSteps || !!totalTimeText)
+    : hasIntermediateSteps || isProcessing || !!totalTimeText;
 
   return (
     <div className="agent-turn">
@@ -415,14 +421,15 @@ export const AgentTurnUI = memo(function AgentTurnUI({
       )}
 
       {renderItems.map((item, idx) => {
+        const assistantText = item.type === 'assistant' ? stripContextStatus(item.data.text || '') : '';
         const isFinalAssistant = lastIterIdx === -1 || idx > lastIterIdx;
         // Expanded (or still streaming): show all assistant narrations.
         // Collapsed when done: only the final answer.
         const showAssistant =
           item.type === 'assistant' &&
           (isProcessing || !collapsed || isFinalAssistant) &&
-          !isTrivialAssistantText(item.data.text || '') &&
-          (!!item.data.text?.trim() || item.data.isStreaming);
+          !isTrivialAssistantText(assistantText) &&
+          (!!assistantText.trim() || item.data.isStreaming);
 
         return (
           <React.Fragment key={item.type === 'iteration' ? item.data.id : `block-${idx}`}>
@@ -430,13 +437,13 @@ export const AgentTurnUI = memo(function AgentTurnUI({
               showAssistant && (
                 isFinalAssistant ? (
                   <AssistantMarkdownContent
-                    content={item.data.text}
+                    content={assistantText}
                     className="assistant-msg"
                     isStreaming={!!item.data.isStreaming}
                   />
                 ) : (
                   <ProgressNarration
-                    text={item.data.text}
+                    text={assistantText}
                     isStreaming={!!item.data.isStreaming}
                   />
                 )
@@ -532,7 +539,12 @@ export const AgentTurnUI = memo(function AgentTurnUI({
         <FilesChangedCard files={turnFilesChanged} />
       )}
 
-      <TurnFooter entry={entry} sources={webSources} mapFeatures={mapFeatures} />
+      <TurnFooter
+        entry={entry}
+        sources={webSources}
+        mapFeatures={mapFeatures}
+        showProcessingIndicator={!compactProcessing}
+      />
     </div>
   );
 });

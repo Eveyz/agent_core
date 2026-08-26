@@ -3,8 +3,8 @@ use agent_core::runtime::ApprovalResolver;
 use agent_core::types::AgentEvent;
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tauri::Emitter;
 
 #[derive(Clone)]
@@ -106,12 +106,26 @@ impl AgentConversationRuntime {
         agent_id: String,
         pending_input: Option<String>,
     ) -> AgentConversationForwardingTurn {
-        let turn = self.begin_turn(turn_id.clone(), conversation_id, agent_id, pending_input);
+        let turn = self.begin_turn(
+            turn_id.clone(),
+            conversation_id.clone(),
+            agent_id.clone(),
+            pending_input,
+        );
         let resolver = turn.resolver();
         let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
         let runtime = self.clone();
         tauri::async_runtime::spawn(async move {
             while let Some(event) = event_rx.recv().await {
+                let _ = app_handle.emit(
+                    "agent-conversation-event",
+                    serde_json::json!({
+                        "conversation_id": conversation_id,
+                        "agent_id": agent_id,
+                        "turn_id": turn_id,
+                        "event": &event,
+                    }),
+                );
                 if let Some(update) = runtime.observe_event(&turn_id, event) {
                     let _ = app_handle.emit("agent-conversation-approval", update);
                 }
@@ -335,11 +349,9 @@ mod tests {
             AgentConversationApprovalUpdate::Required { agent_id, tool_name, .. }
                 if agent_id == "debugger" && tool_name == "shell"
         ));
-        assert!(
-            runtime
-                .pending_for_conversation("coder-conversation")
-                .is_empty()
-        );
+        assert!(runtime
+            .pending_for_conversation("coder-conversation")
+            .is_empty());
     }
 
     #[test]
@@ -359,18 +371,14 @@ mod tests {
                 .map(|message| message.content.as_str()),
             Some("build the calculator")
         );
-        assert!(
-            runtime
-                .pending_messages_for_conversation("debugger-conversation")
-                .is_empty()
-        );
+        assert!(runtime
+            .pending_messages_for_conversation("debugger-conversation")
+            .is_empty());
 
         drop(turn);
-        assert!(
-            runtime
-                .pending_messages_for_conversation("coder-conversation")
-                .is_empty()
-        );
+        assert!(runtime
+            .pending_messages_for_conversation("coder-conversation")
+            .is_empty());
     }
 
     #[test]

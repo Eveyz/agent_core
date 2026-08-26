@@ -16,7 +16,6 @@ import XIcon from "lucide-react/dist/esm/icons/x.mjs";
 import SparklesIcon from "lucide-react/dist/esm/icons/sparkles.mjs";
 import { useAppSelector } from "../../hooks/useAppDispatch";
 import type {
-  AgentConversationMessage,
   AgentConversationApproval,
   AgentConversationApprovalRequired,
   AgentConversationSendResult,
@@ -29,30 +28,25 @@ import {
   resolveAgentMentions,
   type SelectedAgentMention,
 } from "../chat/agentMentions";
+import { AgentTurnUI } from "../chat/AgentTurn";
 import { AssistantMarkdownContent } from "../chat/AssistantMarkdownContent";
+import { ElapsedTime } from "../chat/ProcessingTimer";
+import type { ChatEntry } from "../../features/chat/types";
+import {
+  applyConversationAgentEvent,
+  createLiveTurn,
+  groupConversationItems,
+  liveTurnEntry,
+  messageMetadata,
+  placeOutboundReplyReceipts,
+  type LiveConversationTurn,
+} from "./conversationTurns";
+import { stripContextStatus } from "../../utils/chatUtils";
 import "./AgentConversationChat.css";
 
 interface AgentConversationChatProps {
   agent: AgentDef;
   onOpenSettings: () => void;
-}
-
-interface AgentMessageMetadata {
-  direction?: "outbound_request" | "inbound" | "inbound_reply";
-  message_id?: string;
-  from_agent_id?: string;
-  from_display_name?: string;
-  to_agent_id?: string;
-  to_display_name?: string;
-  display_content?: string;
-  kind?: string;
-  priority?: boolean;
-}
-
-function messageMetadata(message: AgentConversationMessage): AgentMessageMetadata | null {
-  const value = message.metadata?.agent_messaging;
-  if (!value || typeof value !== "object") return null;
-  return value as AgentMessageMetadata;
 }
 
 type AgentTaskEvent = Extract<AgentMessageEvent, { event_type: `task_${string}` }>;
@@ -83,6 +77,42 @@ interface PeerMessageCardProps {
   pending?: boolean;
 }
 
+function AgentTurnFrame({
+  name,
+  working,
+  entry,
+}: {
+  name: string;
+  working: boolean;
+  entry: ChatEntry;
+}) {
+  return (
+    <div className="agent-assistant-turn">
+      <div className={`agent-turn-avatar${working ? " working" : ""}`}>
+        <BotIcon size={14} />
+        {working && <span className="agent-presence-dot working" />}
+      </div>
+      <div className="agent-turn-content">
+        <div className="agent-turn-meta">
+          <div className="agent-turn-author">{name}</div>
+          {working && (
+            <div className="agent-turn-status" data-testid="agent-turn-status">
+              Working
+              {entry.startTime ? (
+                <>
+                  <span aria-hidden="true"> · </span>
+                  <ElapsedTime startTime={entry.startTime} endTime={entry.endTime} />
+                </>
+              ) : null}
+            </div>
+          )}
+        </div>
+        <AgentTurnUI entry={entry} variant="conversation" />
+      </div>
+    </div>
+  );
+}
+
 function PeerMessageCard({
   senderName,
   senderColor,
@@ -105,8 +135,33 @@ function PeerMessageCard({
           <span>{kind === "reply" ? "Reply" : "Message"} from {senderName}</span>
           {priority && <span className="agent-protocol-priority"><ZapIcon size={11} /> Priority</span>}
         </div>
-        <div className="agent-peer-message-content">{content}</div>
+        <div className="agent-peer-message-content">
+          <AssistantMarkdownContent
+            className="assistant-msg agent-peer-markdown"
+            content={stripContextStatus(content)}
+          />
+        </div>
         {status && <div className="agent-protocol-status">{status}</div>}
+      </div>
+    </div>
+  );
+}
+
+interface ReplyReceiptProps {
+  fromName: string;
+  toName?: string;
+  status?: string | null;
+}
+
+function ReplyReceipt({ fromName, toName, status }: ReplyReceiptProps) {
+  return (
+    <div className="agent-reply-receipt-row">
+      <div className="agent-reply-receipt">
+        <CheckCircleIcon size={13} />
+        <span>
+          {fromName} replied to {toName || "the requesting agent"}
+        </span>
+        {status && <small>· {status}</small>}
       </div>
     </div>
   );
@@ -125,9 +180,11 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
   const [pendingApprovals, setPendingApprovals] = useState<AgentConversationApprovalRequired[]>([]);
   const [resolvingApprovals, setResolvingApprovals] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
+  const [liveTurn, setLiveTurn] = useState<LiveConversationTurn | null>(null);
   const historyRef = useRef<HTMLDivElement>(null);
   const conversationIdRef = useRef<string | null>(null);
   const loadGenerationRef = useRef(0);
+  const liveStartedMessageCountRef = useRef(0);
 
   const mentionQuery = useMemo(() => {
     const match = input.match(/(?:^|\s)@([^\s]*)$/u);
@@ -202,7 +259,7 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
     }
     return false;
   }, [view?.messaging.events]);
-  const agentIsWorking = sending || hasWorkingPeerTask;
+  const agentIsWorking = sending || hasWorkingPeerTask || Boolean(liveTurn && !liveTurn.endTime);
 
   const deliveryStatus = useCallback(
     (messageId?: string, completedLabel = "Completed") => {
@@ -258,6 +315,8 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
     setPendingUserMessage(null);
     setPendingApprovals([]);
     setResolvingApprovals({});
+    setLiveTurn(null);
+    liveStartedMessageCountRef.current = 0;
     conversationIdRef.current = null;
     void loadConversation();
     return () => {
@@ -294,6 +353,34 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
   }, [agent.id]);
 
   useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let mounted = true;
+    void listen<{
+      conversation_id: string;
+      agent_id: string;
+      turn_id: string;
+      event: unknown;
+    }>("agent-conversation-event", (event) => {
+      if (
+        !mounted ||
+        event.payload.agent_id !== agent.id ||
+        event.payload.conversation_id !== conversationIdRef.current
+      ) return;
+      setLiveTurn((current) => applyConversationAgentEvent(
+        current ?? createLiveTurn(event.payload.turn_id),
+        event.payload.event,
+      ));
+    }).then((dispose) => {
+      if (mounted) unlisten = dispose;
+      else dispose();
+    });
+    return () => {
+      mounted = false;
+      unlisten?.();
+    };
+  }, [agent.id]);
+
+  useEffect(() => {
     if (!hasSingleRecipient) setPriority(false);
   }, [hasSingleRecipient]);
 
@@ -312,6 +399,9 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
         if (cancelled) return;
         conversationIdRef.current = result.conversation.id;
         setPendingApprovals(result.approvals ?? []);
+        if (result.session.messages.length > liveStartedMessageCountRef.current) {
+          setLiveTurn(null);
+        }
         setView((current) => {
           if (
             current &&
@@ -338,8 +428,15 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
   }, [activeProjectId, agent.id, sending, view?.conversation.id]);
 
   useEffect(() => {
+    if ((sending || hasWorkingPeerTask) && !liveTurn) {
+      liveStartedMessageCountRef.current = view?.session.messages.length ?? 0;
+      setLiveTurn(createLiveTurn("pending"));
+    }
+  }, [hasWorkingPeerTask, liveTurn, sending, view?.session.messages.length]);
+
+  useEffect(() => {
     historyRef.current?.scrollTo({ top: historyRef.current.scrollHeight, behavior: "smooth" });
-  }, [view?.session.messages.length, view?.pending_messages?.length, sending]);
+  }, [liveTurn, sending, view?.pending_messages?.length, view?.session.messages.length]);
 
   const insertMention = useCallback((mentioned: AgentDef) => {
     const token = `@${mentioned.name.trim().replace(/\s+/g, "_")}`;
@@ -373,21 +470,26 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
   const participantAgents = useMemo(
     () =>
       view?.swarm?.participant_agent_ids
-        .map((agentId) => agentsById.get(agentId))
+        ?.map((agentId) => agentsById.get(agentId))
         .filter((candidate): candidate is AgentDef => Boolean(candidate)) ?? [],
     [agentsById, view?.swarm?.participant_agent_ids],
   );
 
-  const swarmStatus = view?.swarm?.run.status;
-  const swarmStatusLabel = swarmStatus
-    ? {
-        running: "Active",
-        completing: "Finishing",
-        completed: "Completed",
-        cancelled: "Cancelled",
-        needs_attention: "Needs attention",
-      }[swarmStatus]
-    : null;
+  const swarmCanCancel =
+    view?.swarm?.run.status === "running" || view?.swarm?.run.status === "completing";
+  const showStop = swarmCanCancel && !sending && !input.trim();
+
+  const conversationItems = useMemo(
+    () => groupConversationItems(view?.session.messages ?? []),
+    [view?.session.messages],
+  );
+  const placedReplies = useMemo(
+    () => placeOutboundReplyReceipts(conversationItems, outboundReplyEvents),
+    [conversationItems, outboundReplyEvents],
+  );
+  const showLiveTurn = liveTurn != null;
+  const liveReplyReceipts = showLiveTurn ? placedReplies.leftover : [];
+  const historyLeftoverReceipts = showLiveTurn ? [] : placedReplies.leftover;
 
   const send = useCallback(async () => {
     const text = input.trim();
@@ -400,6 +502,7 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
     const sendPriority = priority && mentions.length === 1;
     setSending(true);
     setPendingUserMessage(text);
+    liveStartedMessageCountRef.current = view.session.messages.length;
     setError(null);
     setInput("");
     setSelectedMentions([]);
@@ -416,9 +519,11 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
       );
       setView(result.view);
       setPendingUserMessage(null);
+      setLiveTurn(null);
       window.dispatchEvent(new Event("agent-conversations-changed"));
     } catch (reason) {
       setPendingUserMessage(null);
+      setLiveTurn(null);
       setInput(text);
       setPriority(sendPriority);
       setError(String(reason));
@@ -456,7 +561,9 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
   const cancelSwarm = useCallback(async () => {
     if (
       !view?.swarm ||
-      (view.swarm.run.status !== "running" && view.swarm.run.status !== "completing")
+      (view.swarm.run.status !== "running"
+        && view.swarm.run.status !== "completing"
+        && view.swarm.run.status !== "cancelling")
     ) return;
     try {
       const swarm = await invoke<NonNullable<AgentConversationView["swarm"]>>(
@@ -487,25 +594,22 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
     >
       <header className="agent-conversation-header">
         <div className="agent-conversation-identity">
-          <span className="agent-conversation-avatar">
+          <span className={`agent-conversation-avatar${agentIsWorking ? " working" : ""}`}>
             <BotIcon size={18} />
             <span className={`agent-presence-dot${agentIsWorking ? " working" : ""}`} />
           </span>
           <span>
             <strong>{agent.name}</strong>
             <small>
-              <span className="agent-contact-status">{agentIsWorking ? "Working" : "Ready"}</span>
+              <span className={`agent-contact-status${agentIsWorking ? " working" : ""}`}>
+                {agentIsWorking ? "Working" : "Ready"}
+              </span>
               <span aria-hidden="true"> · </span>
               {agent.model || "Default model"}
             </small>
           </span>
         </div>
         <div className="agent-conversation-header-actions">
-          {view?.swarm && (
-            <span className={`agent-header-swarm-pill ${view.swarm.run.status}`}>
-              <NetworkIcon size={13} /> {swarmStatusLabel}
-            </span>
-          )}
           <button
             className="agent-conversation-settings"
             onClick={onOpenSettings}
@@ -516,46 +620,6 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
           </button>
         </div>
       </header>
-
-      {view?.swarm && (
-        <section className={`agent-swarm-strip ${view.swarm.run.status}`} aria-label="Swarm status">
-          <div className="agent-swarm-summary">
-            <span className="agent-swarm-icon"><NetworkIcon size={15} /></span>
-            <span className="agent-swarm-copy">
-              <strong>Agent Swarm · {swarmStatusLabel}</strong>
-              <small>{view.swarm.run.goal}</small>
-            </span>
-          </div>
-          <div className="agent-swarm-participants" title={`${participantAgents.length} participants`}>
-            {participantAgents.slice(0, 5).map((participant) => (
-              <span
-                key={participant.id}
-                className="agent-swarm-participant"
-                style={{ "--participant-color": participant.color || "var(--accent)" } as React.CSSProperties}
-                title={participant.name}
-              >
-                <BotIcon size={12} />
-              </span>
-            ))}
-            <span className="agent-swarm-participant-count">
-              <UsersIcon size={12} /> {view.swarm.participant_agent_ids.length}
-            </span>
-          </div>
-          <div className="agent-swarm-budgets">
-            <span title="Messages used"><b>{view.swarm.run.messages_used}</b>/{view.swarm.run.max_messages} msg</span>
-            <span title="Turns used"><b>{view.swarm.run.turns_used}</b>/{view.swarm.run.max_turns} turns</span>
-            <span title="Maximum hop reached"><b>{view.swarm.run.hops_used}</b>/{view.swarm.run.max_hops} hops</span>
-          </div>
-          {view.swarm.run.error && (
-            <span className="agent-swarm-error"><AlertTriangleIcon size={13} /> {view.swarm.run.error}</span>
-          )}
-          {(view.swarm.run.status === "running" || view.swarm.run.status === "completing") && (
-            <button className="agent-swarm-cancel" onClick={() => void cancelSwarm()}>
-              <StopCircleIcon size={13} /> Stop
-            </button>
-          )}
-        </section>
-      )}
 
       <div className="agent-conversation-history" ref={historyRef}>
         {loading && (
@@ -589,32 +653,32 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
             </div>
           </div>
         )}
-        {view?.session.messages.map((message, index) => {
-          const metadata = messageMetadata(message);
-          if (message.role === "tool" || !message.content.trim()) return null;
-          if (metadata?.direction === "inbound" || metadata?.direction === "inbound_reply") {
-            const status = deliveryStatus(metadata.message_id, "Processed");
-            const sender = metadata.from_agent_id ? agentsById.get(metadata.from_agent_id) : undefined;
+        {conversationItems.map((item) => {
+          if (item.type === "peer") {
+            const metadata = messageMetadata(item.message);
+            const status = deliveryStatus(metadata?.message_id, "Processed");
+            const sender = metadata?.from_agent_id ? agentsById.get(metadata.from_agent_id) : undefined;
             return (
               <PeerMessageCard
-                key={`${index}-${metadata.message_id ?? "peer"}`}
-                senderName={metadata.from_display_name || sender?.name || "Agent"}
+                key={item.key}
+                senderName={metadata?.from_display_name || sender?.name || "Agent"}
                 senderColor={sender?.color}
-                content={metadata.display_content || message.content}
-                kind={metadata.direction === "inbound_reply" ? "reply" : "message"}
-                priority={Boolean(metadata.priority)}
+                content={metadata?.display_content || item.message.content}
+                kind={metadata?.direction === "inbound_reply" ? "reply" : "message"}
+                priority={Boolean(metadata?.priority)}
                 status={status}
               />
             );
           }
-          if (message.role === "user") {
+          if (item.type === "user") {
+            const metadata = messageMetadata(item.message);
             const status = metadata?.direction === "outbound_request"
               ? deliveryStatus(metadata.message_id, "Replied")
               : null;
             return (
-              <div className="agent-conversation-user-group" key={`${index}-user`}>
+              <div className="agent-conversation-user-group" key={item.key}>
                 <div className="message-row user-row">
-                  <div className="user-msg">{message.content}</div>
+                  <div className="user-msg">{item.message.content}</div>
                 </div>
                 {metadata?.direction === "outbound_request" && (
                   <div className={`agent-delivery-card${status?.startsWith("Failed") || status?.startsWith("Needs") ? " error" : ""}`}>
@@ -626,18 +690,33 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
               </div>
             );
           }
+          const receipts = placedReplies.byTurnKey.get(item.key) ?? [];
           return (
-            <div className="agent-assistant-turn" key={`${index}-assistant`}>
-              <div className="agent-turn-avatar"><BotIcon size={14} /></div>
-              <div className="agent-turn-content">
-                <div className="agent-turn-author">{agent.name}</div>
-                <div className="agent-conversation-assistant">
-                  <AssistantMarkdownContent content={message.content} />
-                </div>
-              </div>
+            <div key={item.key} className="agent-turn-with-receipts">
+              <AgentTurnFrame
+                name={agent.name}
+                working={false}
+                entry={item.entry}
+              />
+              {receipts.map((event) => (
+                <ReplyReceipt
+                  key={`reply-${event.message_id ?? event.payload.to}`}
+                  fromName={agent.name}
+                  toName={event.payload.to}
+                  status={deliveryStatus(event.message_id, "Delivered")}
+                />
+              ))}
             </div>
           );
         })}
+        {historyLeftoverReceipts.map((event) => (
+          <ReplyReceipt
+            key={`reply-leftover-${event.message_id ?? event.payload.to}`}
+            fromName={agent.name}
+            toName={event.payload.to}
+            status={deliveryStatus(event.message_id, "Delivered")}
+          />
+        ))}
         {pendingUserMessage && (
           <div className="agent-conversation-user-group pending" data-testid="pending-user-message">
             <div className="message-row user-row">
@@ -680,17 +759,23 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
             />
           );
         })}
-        {outboundReplyEvents.map((event) => (
-          <div className="agent-reply-receipt" key={`reply-${event.message_id}`}>
-            <CheckCircleIcon size={13} />
-            <span>
-              {agent.name} replied to {event.payload.to || "the requesting agent"}
-            </span>
-            {deliveryStatus(event.message_id, "Delivered") && (
-              <small>· {deliveryStatus(event.message_id, "Delivered")}</small>
-            )}
+        {showLiveTurn && liveTurn && (
+          <div className="agent-turn-with-receipts">
+            <AgentTurnFrame
+              name={agent.name}
+              working
+              entry={liveTurnEntry(liveTurn)}
+            />
+            {liveReplyReceipts.map((event) => (
+              <ReplyReceipt
+                key={`reply-live-${event.message_id ?? event.payload.to}`}
+                fromName={agent.name}
+                toName={event.payload.to}
+                status={deliveryStatus(event.message_id, "Delivered")}
+              />
+            ))}
           </div>
-        ))}
+        )}
         {pendingApprovals.map((approval) => {
           const approvalKey = `${approval.turn_id}:${approval.prompt_id}`;
           const resolvingChoice = resolvingApprovals[approvalKey];
@@ -717,15 +802,6 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
           </div>
           );
         })}
-        {agentIsWorking && (
-          <div className="agent-thinking-row">
-            <div className="agent-turn-avatar"><LoaderIcon className="animate-spin" size={14} /></div>
-            <div>
-              <strong>{sending && resolvedMentions.length > 0 ? "Coordinating agents" : `${agent.name} is working`}</strong>
-              <small>{pendingApprovals.length > 0 ? "Waiting for your approval…" : sending && resolvedMentions.length > 0 ? "Messages and replies will appear as they arrive" : "Thinking and using tools…"}</small>
-            </div>
-          </div>
-        )}
       </div>
 
       <div className="agent-conversation-composer">
@@ -805,16 +881,51 @@ export function AgentConversationChat({ agent, onOpenSettings }: AgentConversati
                 <ZapIcon size={12} /> Priority
               </button>
               <button
-                className="agent-conversation-send"
-                onClick={() => void send()}
-                disabled={!input.trim() || loading || sending || hasTooManyRecipients}
-                aria-label="Send message"
+                className={`agent-conversation-send${showStop ? " stop" : ""}`}
+                onClick={() => showStop ? void cancelSwarm() : void send()}
+                disabled={
+                  showStop
+                    ? loading
+                    : !input.trim() || loading || sending || hasTooManyRecipients
+                }
+                aria-label={showStop ? "Stop swarm" : "Send message"}
               >
-                {sending ? <LoaderIcon className="animate-spin" size={15} /> : <SendIcon size={15} />}
+                {sending
+                  ? <LoaderIcon className="animate-spin" size={15} />
+                  : showStop
+                    ? <StopCircleIcon size={15} />
+                    : <SendIcon size={15} />}
               </button>
             </div>
           </div>
         </div>
+        {view?.swarm && (
+          <div className="agent-swarm-metrics" aria-label="Swarm usage">
+            <div className="agent-swarm-participants" title={`${participantAgents.length} participants`}>
+              {participantAgents.slice(0, 5).map((participant) => (
+                <span
+                  key={participant.id}
+                  className="agent-swarm-participant"
+                  style={{ "--participant-color": participant.color || "var(--accent)" } as React.CSSProperties}
+                  title={participant.name}
+                >
+                  <BotIcon size={12} />
+                </span>
+              ))}
+              <span className="agent-swarm-participant-count">
+                <UsersIcon size={12} /> {view.swarm.participant_agent_ids.length}
+              </span>
+            </div>
+            <div className="agent-swarm-budgets">
+              <span title="Messages used"><b>{view.swarm.run.messages_used}</b>/{view.swarm.run.max_messages} msg</span>
+              <span title="Turns used"><b>{view.swarm.run.turns_used}</b>/{view.swarm.run.max_turns} turns</span>
+              <span title="Maximum hop reached"><b>{view.swarm.run.hops_used}</b>/{view.swarm.run.max_hops} hops</span>
+            </div>
+            {view.swarm.run.error && (
+              <span className="agent-swarm-error"><AlertTriangleIcon size={13} /> {view.swarm.run.error}</span>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

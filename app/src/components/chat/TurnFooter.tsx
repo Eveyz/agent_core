@@ -22,10 +22,12 @@ const TurnFooter = memo(function TurnFooter({
   entry,
   sources = [],
   mapFeatures = [],
+  showProcessingIndicator = true,
 }: {
   entry: ChatEntry;
   sources?: WebSource[];
   mapFeatures?: MapFeature[];
+  showProcessingIndicator?: boolean;
 }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
@@ -173,6 +175,7 @@ const TurnFooter = memo(function TurnFooter({
   }, [entry.blocks, isProcessing, streamFingerprint, idleMs, t]);
 
   if (isProcessing) {
+    if (!showProcessingIndicator) return null;
     return (
       <div className="turn-footer turn-footer-processing">
         <div className="black-hole-spinner" style={{ width: 12, height: 12 }} />

@@ -15,6 +15,16 @@ function shikiRenderOptions(lang: string) {
   };
 }
 
+/** Drop fence padding so a one-line result is not rendered as a tall empty block. */
+export function normalizeHighlightSource(code: string): string {
+  return code.replace(/^\n+/, '').replace(/\n+$/, '');
+}
+
+function isPlainLanguage(lang: string): boolean {
+  const normalized = (lang || 'plaintext').toLowerCase();
+  return normalized === 'plaintext' || normalized === 'text' || normalized === '';
+}
+
 let highlighterPromise: Promise<Highlighter> | null = null;
 
 function getShikiHighlighter(): Promise<Highlighter> {
@@ -33,7 +43,7 @@ const loadingLangs = new Map<string, Promise<void>>();
 
 async function ensureLanguage(highlighter: Highlighter, lang: string): Promise<boolean> {
   const normalized = (lang || 'plaintext').toLowerCase();
-  if (normalized === 'plaintext' || normalized === 'text' || normalized === '') return true;
+  if (isPlainLanguage(normalized)) return true;
   if (highlighter.getLoadedLanguages().includes(normalized)) return true;
   let inflight = loadingLangs.get(normalized);
   if (!inflight) {
@@ -82,24 +92,41 @@ function runDrain(): void {
   const batch = highlightQueue.splice(0, HIGHLIGHT_BATCH_SIZE);
   if (batch.length === 0) return;
 
+  const shikiJobs: HighlightJob[] = [];
+  for (const job of batch) {
+    const code = normalizeHighlightSource(job.code);
+    const normalized = (job.lang || 'plaintext').toLowerCase();
+    if (isPlainLanguage(normalized)) {
+      if (job.format === 'html') job.resolve(plainHtml(code));
+      else job.resolve(plainTokens(code));
+      continue;
+    }
+    shikiJobs.push(job);
+  }
+  if (shikiJobs.length === 0) {
+    if (highlightQueue.length > 0) scheduleDrain();
+    return;
+  }
+
   getShikiHighlighter().then(async (highlighter) => {
-    for (const job of batch) {
+    for (const job of shikiJobs) {
+      const code = normalizeHighlightSource(job.code);
       try {
         const normalized = (job.lang || 'plaintext').toLowerCase();
         const supported = await ensureLanguage(highlighter, normalized);
         if (job.format === 'html') {
           job.resolve(supported
-            ? highlighter.codeToHtml(job.code, shikiRenderOptions(normalized))
-            : plainHtml(job.code));
+            ? highlighter.codeToHtml(code, shikiRenderOptions(normalized))
+            : plainHtml(code));
         } else {
           job.resolve(supported
-            ? highlighter.codeToTokens(job.code, shikiRenderOptions(normalized))
-            : plainTokens(job.code));
+            ? highlighter.codeToTokens(code, shikiRenderOptions(normalized))
+            : plainTokens(code));
         }
       } catch (error) {
         console.error('Shiki highlighting error:', error);
-        if (job.format === 'html') job.resolve(plainHtml(job.code));
-        else job.resolve(plainTokens(job.code));
+        if (job.format === 'html') job.resolve(plainHtml(code));
+        else job.resolve(plainTokens(code));
       }
     }
     if (highlightQueue.length > 0) scheduleDrain();

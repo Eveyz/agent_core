@@ -16,6 +16,9 @@ export function getActiveSessionTitle(projectState: RootState['project']): strin
  */
 export function stripContextStatus(text: string): string {
   let out = text.replace(/<context_status>[\s\S]*?<\/context_status>/gi, '');
+  // Models sometimes emit a malformed self-closing attribute form instead of a tag pair.
+  out = out.replace(/<context_status\s*=\s*\{[\s\S]*?\}\s*>/gi, '');
+  out = out.replace(/(?:^|\n)[ \t]*(?:上下文状态|Context status)\s*[:：][ \t]*/gi, '\n');
   // Cut from the first handoff trailer heading through the end.
   out = out.replace(
     /\n{1,2}(?:Evidence|Missing context|Unresolved|Transcript)\s*:[\s\S]*$/i,
@@ -23,7 +26,7 @@ export function stripContextStatus(text: string): string {
   );
   // Bare trailing label with no body (model echo / empty tool summary).
   out = out.replace(/\n{1,2}Evidence\s*:\s*$/i, '');
-  return out.replace(/\n{3,}/g, '\n\n').trimEnd();
+  return out.replace(/\n{3,}/g, '\n\n').trim();
 }
 
 /** Subagent blocks are a subset of TurnBlock (no nested subagent_ref). */

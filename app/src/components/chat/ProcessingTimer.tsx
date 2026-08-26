@@ -1,7 +1,7 @@
 import { useState, useEffect, memo } from 'react';
 import { formatTime } from '../../utils/format';
 
-const ProcessingTimer = memo(function ProcessingTimer({
+export const ElapsedTime = memo(function ElapsedTime({
   startTime,
   endTime,
 }: {
@@ -19,9 +19,22 @@ const ProcessingTimer = memo(function ProcessingTimer({
   }, [startTime, endTime]);
 
   if (!startTime) return null;
-  if (endTime) return <span>Processed {formatTime(endTime - startTime)}</span>;
-  const diff = now - startTime;
-  return <span>Processed {formatTime(diff)}</span>;
+  return <>{formatTime(Math.max(0, (endTime ?? now) - startTime))}</>;
+});
+
+const ProcessingTimer = memo(function ProcessingTimer({
+  startTime,
+  endTime,
+}: {
+  startTime?: number;
+  endTime?: number;
+}) {
+  if (!startTime) return null;
+  return (
+    <span>
+      Processed <ElapsedTime startTime={startTime} endTime={endTime} />
+    </span>
+  );
 });
 
 export default ProcessingTimer;
