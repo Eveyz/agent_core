@@ -23,8 +23,8 @@ use super::{
     legacy::classify_agent_effect,
     mention::intersect_permission_ceiling,
     model::{
-        EffectPolicy, NodeKey, NodeKind, NodeSpec, ResourceClaim, RetryPolicy, RunScope,
-        ValueExpr, WorkflowEventKind, WorkflowPolicy, WorkflowRevisionId, WorkflowSpec,
+        EffectPolicy, NodeKey, NodeKind, NodeSpec, ResourceClaim, RetryPolicy, RunScope, ValueExpr,
+        WorkflowEventKind, WorkflowPolicy, WorkflowRevisionId, WorkflowSpec,
     },
     reducer::validate_spec,
     store::WorkflowStore,
@@ -124,8 +124,13 @@ pub struct ApplyWorkflowDraft {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkflowScope {
-    Session { session_id: String },
-    Project { project_id: String, workspace: String },
+    Session {
+        session_id: String,
+    },
+    Project {
+        project_id: String,
+        workspace: String,
+    },
     User,
 }
 
@@ -153,12 +158,7 @@ impl WorkflowScope {
                 workspace.clone(),
                 String::new(),
             ),
-            Self::User => (
-                "user",
-                String::new(),
-                String::new(),
-                String::new(),
-            ),
+            Self::User => ("user", String::new(), String::new(), String::new()),
         }
     }
 
@@ -624,151 +624,151 @@ impl WorkflowAuthoringService {
 
         let (workflow_id, draft_id, version, scope, lifecycle) =
             if let Some(draft_id) = request.draft_id {
-            let existing = transaction
-                .query_row(
-                    r#"
+                let existing = transaction
+                    .query_row(
+                        r#"
                     SELECT d.workflow_id, d.version, f.scope_kind, f.scope_id,
                            f.workspace, f.owner_session_id, f.lifecycle, d.status
                     FROM workflow_authoring_drafts d
                     JOIN workflow_authoring_definitions f ON f.id = d.workflow_id
                     WHERE d.id = ?1
                     "#,
-                    params![draft_id],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, i64>(1)? as u64,
-                            WorkflowScope::from_columns(
-                                row.get(2)?,
-                                row.get(3)?,
-                                row.get(4)?,
-                                row.get(5)?,
-                            ),
-                            row.get::<_, String>(6)?,
-                            row.get::<_, String>(7)?,
-                        ))
-                    },
-                )
-                .optional()?
-                .ok_or_else(|| anyhow::anyhow!("workflow draft not found: {draft_id}"))?;
-            let expected = request.expected_version.ok_or_else(|| {
-                anyhow::anyhow!("expected_version is required when updating a workflow draft")
-            })?;
-            if existing.1 != expected {
-                bail!(
-                    "workflow draft version conflict: expected {}, actual {}",
-                    expected,
-                    existing.1
-                );
-            }
-            let (draft_id, next_version) = if existing.4 == "published" {
-                let derived_draft_id = uuid::Uuid::new_v4().to_string();
-                transaction.execute(
-                    r#"
+                        params![draft_id],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, i64>(1)? as u64,
+                                WorkflowScope::from_columns(
+                                    row.get(2)?,
+                                    row.get(3)?,
+                                    row.get(4)?,
+                                    row.get(5)?,
+                                ),
+                                row.get::<_, String>(6)?,
+                                row.get::<_, String>(7)?,
+                            ))
+                        },
+                    )
+                    .optional()?
+                    .ok_or_else(|| anyhow::anyhow!("workflow draft not found: {draft_id}"))?;
+                let expected = request.expected_version.ok_or_else(|| {
+                    anyhow::anyhow!("expected_version is required when updating a workflow draft")
+                })?;
+                if existing.1 != expected {
+                    bail!(
+                        "workflow draft version conflict: expected {}, actual {}",
+                        expected,
+                        existing.1
+                    );
+                }
+                let (draft_id, next_version) = if existing.4 == "published" {
+                    let derived_draft_id = uuid::Uuid::new_v4().to_string();
+                    transaction.execute(
+                        r#"
                     INSERT INTO workflow_authoring_drafts
                         (id, workflow_id, version, status, draft_spec, compiled_spec,
                          program_hash, created_at, updated_at)
                     VALUES (?1, ?2, 1, 'valid', ?3, ?4, ?5, ?6, ?6)
                     "#,
-                    params![
-                        derived_draft_id,
-                        existing.0,
-                        draft_json,
-                        compiled_json,
-                        program_hash,
-                        now,
-                    ],
-                )?;
-                (derived_draft_id, 1)
-            } else {
-                let next_version = existing.1 + 1;
-                transaction.execute(
-                    r#"
+                        params![
+                            derived_draft_id,
+                            existing.0,
+                            draft_json,
+                            compiled_json,
+                            program_hash,
+                            now,
+                        ],
+                    )?;
+                    (derived_draft_id, 1)
+                } else {
+                    let next_version = existing.1 + 1;
+                    transaction.execute(
+                        r#"
                     UPDATE workflow_authoring_drafts
                     SET version = ?2, status = 'valid', draft_spec = ?3,
                         compiled_spec = ?4, program_hash = ?5, updated_at = ?6
                     WHERE id = ?1
                     "#,
+                        params![
+                            draft_id,
+                            next_version as i64,
+                            draft_json,
+                            compiled_json,
+                            program_hash,
+                            now,
+                        ],
+                    )?;
+                    (draft_id, next_version)
+                };
+                transaction.execute(
+                    r#"
+                UPDATE workflow_authoring_definitions
+                SET name = ?2, description = ?3, updated_at = ?4
+                WHERE id = ?1
+                "#,
+                    params![
+                        existing.0,
+                        request.workflow.name,
+                        request.workflow.description,
+                        now,
+                    ],
+                )?;
+                (
+                    existing.0,
+                    draft_id,
+                    next_version,
+                    existing.2,
+                    lifecycle_from_str(&existing.3),
+                )
+            } else {
+                if request.expected_version.is_some() {
+                    bail!("expected_version must be omitted when creating a workflow draft");
+                }
+                let workflow_id = uuid::Uuid::new_v4().to_string();
+                let draft_id = uuid::Uuid::new_v4().to_string();
+                let (scope_kind, scope_id, workspace, owner_session_id) = initial_scope.columns();
+                let lifecycle = if matches!(initial_scope, WorkflowScope::Session { .. }) {
+                    WorkflowLifecycle::Transient
+                } else {
+                    WorkflowLifecycle::Draft
+                };
+                transaction.execute(
+                    r#"
+                INSERT INTO workflow_authoring_definitions
+                    (id, name, description, lifecycle, scope_kind, scope_id,
+                     workspace, owner_session_id, created_at, updated_at)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+                "#,
+                    params![
+                        workflow_id,
+                        request.workflow.name,
+                        request.workflow.description,
+                        lifecycle_as_str(lifecycle),
+                        scope_kind,
+                        scope_id,
+                        workspace,
+                        owner_session_id,
+                        now,
+                    ],
+                )?;
+                transaction.execute(
+                    r#"
+                INSERT INTO workflow_authoring_drafts
+                    (id, workflow_id, version, status, draft_spec, compiled_spec,
+                     program_hash, created_at, updated_at)
+                VALUES (?1, ?2, 1, 'valid', ?3, ?4, ?5, ?6, ?6)
+                "#,
                     params![
                         draft_id,
-                        next_version as i64,
+                        workflow_id,
                         draft_json,
                         compiled_json,
                         program_hash,
                         now,
                     ],
                 )?;
-                (draft_id, next_version)
+                (workflow_id, draft_id, 1, initial_scope, lifecycle)
             };
-            transaction.execute(
-                r#"
-                UPDATE workflow_authoring_definitions
-                SET name = ?2, description = ?3, updated_at = ?4
-                WHERE id = ?1
-                "#,
-                params![
-                    existing.0,
-                    request.workflow.name,
-                    request.workflow.description,
-                    now,
-                ],
-            )?;
-            (
-                existing.0,
-                draft_id,
-                next_version,
-                existing.2,
-                lifecycle_from_str(&existing.3),
-            )
-        } else {
-            if request.expected_version.is_some() {
-                bail!("expected_version must be omitted when creating a workflow draft");
-            }
-            let workflow_id = uuid::Uuid::new_v4().to_string();
-            let draft_id = uuid::Uuid::new_v4().to_string();
-            let (scope_kind, scope_id, workspace, owner_session_id) = initial_scope.columns();
-            let lifecycle = if matches!(initial_scope, WorkflowScope::Session { .. }) {
-                WorkflowLifecycle::Transient
-            } else {
-                WorkflowLifecycle::Draft
-            };
-            transaction.execute(
-                r#"
-                INSERT INTO workflow_authoring_definitions
-                    (id, name, description, lifecycle, scope_kind, scope_id,
-                     workspace, owner_session_id, created_at, updated_at)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
-                "#,
-                params![
-                    workflow_id,
-                    request.workflow.name,
-                    request.workflow.description,
-                    lifecycle_as_str(lifecycle),
-                    scope_kind,
-                    scope_id,
-                    workspace,
-                    owner_session_id,
-                    now,
-                ],
-            )?;
-            transaction.execute(
-                r#"
-                INSERT INTO workflow_authoring_drafts
-                    (id, workflow_id, version, status, draft_spec, compiled_spec,
-                     program_hash, created_at, updated_at)
-                VALUES (?1, ?2, 1, 'valid', ?3, ?4, ?5, ?6, ?6)
-                "#,
-                params![
-                    draft_id,
-                    workflow_id,
-                    draft_json,
-                    compiled_json,
-                    program_hash,
-                    now,
-                ],
-            )?;
-            (workflow_id, draft_id, 1, initial_scope, lifecycle)
-        };
 
         let receipt = WorkflowDraftReceipt {
             workflow_id,
@@ -885,11 +885,7 @@ impl WorkflowAuthoringService {
                 (request_id, operation, response, created_at)
             VALUES (?1, 'save_draft', ?2, ?3)
             "#,
-            params![
-                request.request_id,
-                serde_json::to_string(&receipt)?,
-                now
-            ],
+            params![request.request_id, serde_json::to_string(&receipt)?, now],
         )?;
         transaction.commit()?;
         drop(conn);
@@ -925,39 +921,34 @@ impl WorkflowAuthoringService {
             ORDER BY f.updated_at DESC
             "#,
         )?;
-        let rows = statement.query_map(params![project_id], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                WorkflowScope::from_columns(
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                ),
-                lifecycle_from_str(&row.get::<_, String>(7)?),
-                row.get::<_, String>(8)?,
-                row.get::<_, String>(9)?,
-                row.get::<_, i64>(10)? as u64,
-                row.get::<_, String>(11)?,
-                row.get::<_, String>(12)?,
-                row.get::<_, String>(13)?,
-                row.get::<_, String>(14)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+        let rows = statement
+            .query_map(params![project_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    WorkflowScope::from_columns(row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?),
+                    lifecycle_from_str(&row.get::<_, String>(7)?),
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, i64>(10)? as u64,
+                    row.get::<_, String>(11)?,
+                    row.get::<_, String>(12)?,
+                    row.get::<_, String>(13)?,
+                    row.get::<_, String>(14)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         drop(statement);
         drop(conn);
         let revisions = self.list_revisions()?;
-        let latest_by_workflow =
-            revisions
-                .into_iter()
-                .fold(BTreeMap::<String, PublishedWorkflowReceipt>::new(), |mut map, receipt| {
-                    map.entry(receipt.workflow_id.clone())
-                        .or_insert(receipt);
-                    map
-                });
+        let latest_by_workflow = revisions.into_iter().fold(
+            BTreeMap::<String, PublishedWorkflowReceipt>::new(),
+            |mut map, receipt| {
+                map.entry(receipt.workflow_id.clone()).or_insert(receipt);
+                map
+            },
+        );
         let mut entries = Vec::new();
         for row in rows {
             let (
@@ -1040,13 +1031,14 @@ impl WorkflowAuthoringService {
             let compiled = if let Some(program) = package.program {
                 cap_workflow_permission(program, caller_permission)?
             } else {
-                self.compile(&package.draft, caller_permission).with_context(|| {
-                    format!(
-                        "validate project workflow '{}' from {}",
-                        package.definition.name,
-                        package_path.display()
-                    )
-                })?
+                self.compile(&package.draft, caller_permission)
+                    .with_context(|| {
+                        format!(
+                            "validate project workflow '{}' from {}",
+                            package.definition.name,
+                            package_path.display()
+                        )
+                    })?
             };
             validate_spec(&compiled)?;
             let compiled_json = serde_json::to_string(&compiled)?;
@@ -1133,7 +1125,8 @@ impl WorkflowAuthoringService {
                 if revisions_directory.is_dir() {
                     for revision_file in fs::read_dir(&revisions_directory)? {
                         let revision_file = revision_file?.path();
-                        if revision_file.extension().and_then(|value| value.to_str()) != Some("json")
+                        if revision_file.extension().and_then(|value| value.to_str())
+                            != Some("json")
                         {
                             continue;
                         }
@@ -1159,7 +1152,8 @@ impl WorkflowAuthoringService {
                             package_revision.receipt.revision_number,
                             &hash[..16]
                         ));
-                        self.revision_store.publish_revision(&revision_id, &program)?;
+                        self.revision_store
+                            .publish_revision(&revision_id, &program)?;
                         let conn = self.storage.conn();
                         conn.execute(
                             r#"
@@ -1192,7 +1186,8 @@ impl WorkflowAuthoringService {
                         revision_number,
                         &program_hash[..16]
                     ));
-                    self.revision_store.publish_revision(&revision_id, &compiled)?;
+                    self.revision_store
+                        .publish_revision(&revision_id, &compiled)?;
                     let conn = self.storage.conn();
                     conn.execute(
                         r#"
@@ -1329,9 +1324,11 @@ impl WorkflowAuthoringService {
             );
         }
         let project_directory = match &entry.scope {
-            WorkflowScope::Project { workspace, .. } => {
-                Some(project_workflow_directory(workspace, &entry.name, workflow_id)?)
-            }
+            WorkflowScope::Project { workspace, .. } => Some(project_workflow_directory(
+                workspace,
+                &entry.name,
+                workflow_id,
+            )?),
             _ => None,
         };
         let mut conn = self.storage.conn();
@@ -1383,11 +1380,7 @@ impl WorkflowAuthoringService {
         let workflow_id = uuid::Uuid::new_v4().to_string();
         let draft_id = uuid::Uuid::new_v4().to_string();
         let program_hash = hash_json(&program)?;
-        let revision_id = WorkflowRevisionId(format!(
-            "{}:r1:{}",
-            workflow_id,
-            &program_hash[..16]
-        ));
+        let revision_id = WorkflowRevisionId(format!("{}:r1:{}", workflow_id, &program_hash[..16]));
         self.revision_store
             .publish_revision(&revision_id, &program)?;
         let now = Utc::now().to_rfc3339();
@@ -1778,13 +1771,10 @@ fn cap_workflow_permission(
     for node in &mut program.nodes {
         if let NodeKind::Activity { kind, config } = &mut node.kind {
             if kind == CUSTOM_AGENT_ACTIVITY_KIND {
-                let mut frozen: FrozenCustomAgentConfig =
-                    serde_json::from_value(config.clone())
-                        .context("invalid frozen custom-agent config in project workflow")?;
-                frozen.permission = intersect_permission_ceiling(
-                    caller_permission,
-                    frozen.permission,
-                );
+                let mut frozen: FrozenCustomAgentConfig = serde_json::from_value(config.clone())
+                    .context("invalid frozen custom-agent config in project workflow")?;
+                frozen.permission =
+                    intersect_permission_ceiling(caller_permission, frozen.permission);
                 *config = serde_json::to_value(frozen)?;
             }
         }
@@ -1831,11 +1821,7 @@ fn ensure_column(
     Ok(())
 }
 
-fn project_workflow_directory(
-    workspace: &str,
-    name: &str,
-    workflow_id: &str,
-) -> Result<PathBuf> {
+fn project_workflow_directory(workspace: &str, name: &str, workflow_id: &str) -> Result<PathBuf> {
     let workspace = Path::new(workspace);
     if workspace.as_os_str().is_empty() || !workspace.is_absolute() {
         bail!("project workflow workspace must be an absolute path");
@@ -1856,10 +1842,10 @@ fn project_workflow_directory(
     }
     let slug = slug.trim_matches('-');
     let slug = if slug.is_empty() { "workflow" } else { slug };
-    Ok(workspace
-        .join(".agverse")
-        .join("workflows")
-        .join(format!("{slug}-{}", &workflow_id[..8.min(workflow_id.len())])))
+    Ok(workspace.join(".agverse").join("workflows").join(format!(
+        "{slug}-{}",
+        &workflow_id[..8.min(workflow_id.len())]
+    )))
 }
 
 fn write_json_atomically(path: &Path, value: &impl Serialize) -> Result<()> {
@@ -1867,7 +1853,11 @@ fn write_json_atomically(path: &Path, value: &impl Serialize) -> Result<()> {
         .parent()
         .ok_or_else(|| anyhow::anyhow!("workflow path has no parent: {}", path.display()))?;
     fs::create_dir_all(parent)?;
-    let temporary = parent.join(format!(".{}.{}.tmp", path.file_name().unwrap_or_default().to_string_lossy(), uuid::Uuid::new_v4()));
+    let temporary = parent.join(format!(
+        ".{}.{}.tmp",
+        path.file_name().unwrap_or_default().to_string_lossy(),
+        uuid::Uuid::new_v4()
+    ));
     let encoded = serde_json::to_vec_pretty(value)?;
     fs::write(&temporary, encoded)
         .with_context(|| format!("write temporary workflow file {}", temporary.display()))?;
@@ -2234,10 +2224,7 @@ mod tests {
             })
             .expect("publish");
         assert_eq!(
-            service
-                .catalog(Some("project-a"), false)
-                .expect("catalog")[0]
-                .lifecycle,
+            service.catalog(Some("project-a"), false).expect("catalog")[0].lifecycle,
             WorkflowLifecycle::Published
         );
         assert_eq!(

@@ -284,7 +284,12 @@ impl McpClientManager {
     ///
     /// If the server's transport has died, tries to reconnect with exponential
     /// backoff (up to 3 attempts: 100ms, 500ms, 2s) before failing.
-    pub async fn call_tool(&mut self, server: &str, tool_name: &str, args: Value) -> Result<String> {
+    pub async fn call_tool(
+        &mut self,
+        server: &str,
+        tool_name: &str,
+        args: Value,
+    ) -> Result<String> {
         let need_reconnect = {
             let conn = self
                 .connections
@@ -295,7 +300,8 @@ impl McpClientManager {
 
         if need_reconnect {
             tracing::warn!(server = %server, "MCP server died, attempting reconnect");
-            self.reconnect_server(server).await
+            self.reconnect_server(server)
+                .await
                 .map_err(|e| anyhow::anyhow!("MCP server '{}' reconnect failed: {}", server, e))?;
         }
 
@@ -362,7 +368,8 @@ impl McpClientManager {
                     tracing::warn!(server = %server, attempt, max_retries, "MCP reconnect failed: {}", e);
                     last_err = Some(e);
                     if attempt < max_retries {
-                        let delay = std::time::Duration::from_millis(100 * 2u64.pow(attempt as u32 - 1));
+                        let delay =
+                            std::time::Duration::from_millis(100 * 2u64.pow(attempt as u32 - 1));
                         tokio::time::sleep(delay).await;
                     }
                 }
@@ -489,7 +496,8 @@ fn normalize_resolve_names_queries(queries: Value) -> Value {
             Value::Object(mut map) => {
                 if map.contains_key("text") {
                     Value::Object(map)
-                } else if let Some(Value::String(q)) = map.remove("query").or_else(|| map.remove("name"))
+                } else if let Some(Value::String(q)) =
+                    map.remove("query").or_else(|| map.remove("name"))
                 {
                     map.insert("text".to_string(), Value::String(q));
                     Value::Object(map)

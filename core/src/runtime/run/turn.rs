@@ -1,22 +1,20 @@
 //! Turn execution — model interaction, streaming collection, and turn dispatch.
 
 use anyhow::Result;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
+use crate::client::ClientCacheHint;
 use crate::runtime::agent_loop::{
     CollectedStream, LoopPolicy, ModelCall, StreamCallbacks, StreamPartial,
 };
-use crate::runtime::tool_orchestrator::ToolOrchestrator;
-use crate::client::ClientCacheHint;
 use crate::runtime::event::{CacheStatus, Envelope, RunEvent};
 use crate::runtime::guard::EventGuard;
+use crate::runtime::tool_orchestrator::ToolOrchestrator;
 use crate::types::{Message, MessageDelta};
 
-use super::{
-    CACHE_IDLE_WARN_SECS, ModelTurnFailure, RecoveryOutcome, Run, RunError, TurnOutcome,
-};
+use super::{CACHE_IDLE_WARN_SECS, ModelTurnFailure, RecoveryOutcome, Run, RunError, TurnOutcome};
 
 impl Run {
     pub(super) async fn run_turn(&mut self, turn_index: usize) -> Result<TurnOutcome, RunError> {
@@ -93,16 +91,15 @@ impl Run {
                 let message_id = partial
                     .message_id
                     .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-                let partial_message =
-                    if partial.text.trim().is_empty() && partial.thinking.trim().is_empty() {
-                        None
-                    } else {
-                        let content = crate::hygiene::wrap_thinking(
-                            &partial.thinking,
-                            partial.text.trim_end(),
-                        );
-                        Some(Message::assistant(&content))
-                    };
+                let partial_message = if partial.text.trim().is_empty()
+                    && partial.thinking.trim().is_empty()
+                {
+                    None
+                } else {
+                    let content =
+                        crate::hygiene::wrap_thinking(&partial.thinking, partial.text.trim_end());
+                    Some(Message::assistant(&content))
+                };
                 if let Some(message) = partial_message.as_ref() {
                     let visible = message.content.as_deref().unwrap_or_default();
                     self.append_conversation(Message::assistant(&format!(
@@ -138,7 +135,8 @@ impl Run {
 
         // Emit cache telemetry and update cumulative metrics
         if cache_usage.total() > 0 {
-            self.cache_metrics.record(cache_usage.hit_tokens, cache_usage.miss_tokens);
+            self.cache_metrics
+                .record(cache_usage.hit_tokens, cache_usage.miss_tokens);
             self.emit(RunEvent::CacheInfo {
                 hit_tokens: cache_usage.hit_tokens,
                 miss_tokens: cache_usage.miss_tokens,
@@ -199,10 +197,11 @@ impl Run {
                     // embedding model takes. The lock is then only held for
                     // the lightweight I/O + index update.
                     let model = { mem.lock().embedding_model().cloned() };
-                    let embedding = model
-                        .map(|model| model.embed_single(&text).unwrap_or_default());
+                    let embedding =
+                        model.map(|model| model.embed_single(&text).unwrap_or_default());
                     let m = mem.lock();
-                    let memory_session_id = self.session_id.as_deref().unwrap_or_else(|| m.session_id());
+                    let memory_session_id =
+                        self.session_id.as_deref().unwrap_or_else(|| m.session_id());
                     reflected_session_id = Some(memory_session_id.to_string());
                     let _ = m.store_conversation_for_session_precomputed(
                         memory_session_id,
@@ -238,13 +237,12 @@ impl Run {
                         }; // lock released here — consolidate() runs without it
                         // Run O(n²) dedup on tokio's blocking thread pool
                         // so it doesn't tie up an async worker for seconds.
-                        let result = tokio::task::spawn_blocking(move || {
-                            consolidator.consolidate()
-                        })
-                        .await
-                        .unwrap_or_else(|e| {
-                            Err(anyhow::anyhow!("consolidation panicked: {e}"))
-                        });
+                        let result =
+                            tokio::task::spawn_blocking(move || consolidator.consolidate())
+                                .await
+                                .unwrap_or_else(|e| {
+                                    Err(anyhow::anyhow!("consolidation panicked: {e}"))
+                                });
                         if let Ok(report) = result {
                             if report.deduped_recall > 0 || report.deduped_archival > 0 {
                                 tracing::info!(
@@ -353,7 +351,7 @@ impl Run {
                     turn_id: turn_id.clone(),
                     parent_call_id: None,
                     ts: chrono::Utc::now(),
-            event: RunEvent::ToolEnded {
+                    event: RunEvent::ToolEnded {
                         subagent_id: None,
                         call_id: cid.clone(),
                         name: String::new(),
@@ -401,7 +399,7 @@ impl Run {
                             turn_id: turn_id.clone(),
                             parent_call_id: Some(parent_call_id.to_string()),
                             ts: chrono::Utc::now(),
-            event: run_ev,
+                            event: run_ev,
                         });
                     }
                 })
@@ -477,10 +475,7 @@ impl Run {
             // PLAN-0016: spill oversized incidental output, store truncated + path
             // so resume does not re-inflate multi-MB shell logs into the model window.
             // Live UI already received the full body via ToolEnded above.
-            let spill_path = crate::paths::tool_spill_path(
-                self.session_id.as_deref(),
-                &call.id,
-            );
+            let spill_path = crate::paths::tool_spill_path(self.session_id.as_deref(), &call.id);
             let stored = crate::hygiene::prepare_tool_result_for_storage(
                 Some(call.function.name.as_str()),
                 result,
@@ -527,11 +522,10 @@ impl Run {
                     .active_step_id
                     .clone()
                     .or_else(|| {
-                        self.brain.todo_lists.with_active_mut(
-                            self.session_id.as_deref(),
-                            |l| l.ensure_active_step(),
-                        )
-                        .flatten()
+                        self.brain
+                            .todo_lists
+                            .with_active_mut(self.session_id.as_deref(), |l| l.ensure_active_step())
+                            .flatten()
                     })
                     .unwrap_or_else(|| "?".into());
                 let reason = if saw_abort {
@@ -687,7 +681,9 @@ impl Run {
                         "Failed to connect to remote model (stream failed), retrying in {}s (attempt {}/{})",
                         delay_ms / 1000,
                         attempt + 1,
-                        LoopPolicy::interactive().max_stream_attempts().saturating_sub(1),
+                        LoopPolicy::interactive()
+                            .max_stream_attempts()
+                            .saturating_sub(1),
                     ),
                 });
             };
@@ -762,10 +758,7 @@ impl Run {
     pub(super) fn save_session_snapshot(&mut self) {
         self.refresh_context_snapshot();
 
-        let generation = self
-            .session_snapshot_gen
-            .fetch_add(1, Ordering::Relaxed)
-            + 1;
+        let generation = self.session_snapshot_gen.fetch_add(1, Ordering::Relaxed) + 1;
         let gen_arc = self.session_snapshot_gen.clone();
         let snapshot_lock = self.session_snapshot_lock.clone();
 
@@ -896,14 +889,8 @@ mod snapshot_tests {
             let path = path.clone();
             std::thread::spawn(move || {
                 queued.wait();
-                write_snapshot_if_current(
-                    &path,
-                    &[Message::user("stale")],
-                    1,
-                    &generation,
-                    &lock,
-                )
-                .unwrap();
+                write_snapshot_if_current(&path, &[Message::user("stale")], 1, &generation, &lock)
+                    .unwrap();
             })
         };
 
@@ -921,7 +908,13 @@ mod snapshot_tests {
 
 fn format_user_friendly_error(err: &str) -> String {
     let lower = err.to_lowercase();
-    if lower.contains("503") || lower.contains("service unavailable") || lower.contains("502") || lower.contains("bad gateway") || lower.contains("504") || lower.contains("gateway timeout") {
+    if lower.contains("503")
+        || lower.contains("service unavailable")
+        || lower.contains("502")
+        || lower.contains("bad gateway")
+        || lower.contains("504")
+        || lower.contains("gateway timeout")
+    {
         "The AI model service is temporarily unavailable or overloaded (returned a server 503/502 error). I tried to connect several times but it is still not responding. Please try again in a minute; this is usually a brief issue on the provider's side.".to_string()
     } else if lower.contains("429") || lower.contains("rate limit") {
         "The AI model service is currently rate-limiting requests (HTTP 429). I retried several times but it is still busy — please wait a moment and try again.".to_string()

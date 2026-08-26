@@ -57,10 +57,7 @@ pub fn summarize_suite(
 }
 
 fn compute_harness_health(runs: &[RunLedger]) -> HarnessHealth {
-    let gated: Vec<_> = runs
-        .iter()
-        .filter(|r| !r.expect_harness_fail)
-        .collect();
+    let gated: Vec<_> = runs.iter().filter(|r| !r.expect_harness_fail).collect();
     let n = gated.len().max(1) as f64;
     let tag_rate = |tag: &str| {
         gated
@@ -91,10 +88,7 @@ fn compute_harness_health(runs: &[RunLedger]) -> HarnessHealth {
 fn compute_scorecard(runs: &[RunLedger]) -> Vec<ScorecardRow> {
     let mut by_bucket: HashMap<String, Vec<&RunLedger>> = HashMap::new();
     for r in runs {
-        let b = r
-            .bucket
-            .clone()
-            .unwrap_or_else(|| "ALL".to_string());
+        let b = r.bucket.clone().unwrap_or_else(|| "ALL".to_string());
         by_bucket.entry(b).or_default().push(r);
     }
     // Always include ALL
@@ -169,8 +163,7 @@ pub fn write_report(summary: &SuiteSummary, out_dir: &Path) -> Result<()> {
     for run in &summary.runs {
         let path = runs_dir.join(format!("{}.json", sanitize(&run.task_id)));
         let json = serde_json::to_string_pretty(run)?;
-        std::fs::write(&path, json)
-            .with_context(|| format!("write {}", path.display()))?;
+        std::fs::write(&path, json).with_context(|| format!("write {}", path.display()))?;
     }
 
     let summary_path = out_dir.join("summary.json");
@@ -234,7 +227,10 @@ pub fn matrix_from_summaries(suite: &str, kind: &str, summaries: &[SuiteSummary]
 pub fn render_report_md(summary: &SuiteSummary) -> String {
     let mut out = String::new();
     out.push_str("# Harness Eval Report\n\n");
-    out.push_str(&format!("suite: {} ({} tasks)\n", summary.suite, summary.n_tasks));
+    out.push_str(&format!(
+        "suite: {} ({} tasks)\n",
+        summary.suite, summary.n_tasks
+    ));
     out.push_str(&format!("mode: {}\n", summary.mode.as_str()));
     out.push_str(&format!(
         "model: {}/{}\n",
@@ -414,7 +410,13 @@ fn mean_f64(values: &[f64]) -> f64 {
 
 fn sanitize(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 

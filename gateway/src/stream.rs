@@ -13,30 +13,24 @@ pub fn envelope_to_sse_events(env: &Envelope) -> Vec<Event> {
     match &env.event {
         RunEvent::StateChanged { to, .. } => {
             out.push(
-                Event::default()
-                    .event("status")
-                    .id(id.clone())
-                    .data(
-                        json!({
-                            "runId": env.run_id,
-                            "status": map_status(to),
-                        })
-                        .to_string(),
-                    ),
+                Event::default().event("status").id(id.clone()).data(
+                    json!({
+                        "runId": env.run_id,
+                        "status": map_status(to),
+                    })
+                    .to_string(),
+                ),
             );
         }
         RunEvent::RunStarted => {
             out.push(
-                Event::default()
-                    .event("status")
-                    .id(id.clone())
-                    .data(
-                        json!({
-                            "runId": env.run_id,
-                            "status": "RUNNING",
-                        })
-                        .to_string(),
-                    ),
+                Event::default().event("status").id(id.clone()).data(
+                    json!({
+                        "runId": env.run_id,
+                        "status": "RUNNING",
+                    })
+                    .to_string(),
+                ),
             );
         }
         RunEvent::ModelStreaming { delta, .. } | RunEvent::MessageUpdate { delta, .. } => {
@@ -67,18 +61,15 @@ pub fn envelope_to_sse_events(env: &Envelope) -> Vec<Event> {
             ..
         } => {
             out.push(
-                Event::default()
-                    .event("tool_call")
-                    .id(id.clone())
-                    .data(
-                        json!({
-                            "callId": call_id,
-                            "name": name,
-                            "status": "running",
-                            "args": args,
-                        })
-                        .to_string(),
-                    ),
+                Event::default().event("tool_call").id(id.clone()).data(
+                    json!({
+                        "callId": call_id,
+                        "name": name,
+                        "status": "running",
+                        "args": args,
+                    })
+                    .to_string(),
+                ),
             );
         }
         RunEvent::ToolEnded {
@@ -89,76 +80,62 @@ pub fn envelope_to_sse_events(env: &Envelope) -> Vec<Event> {
             ..
         } => {
             out.push(
-                Event::default()
-                    .event("tool_call")
-                    .id(id.clone())
-                    .data(
-                        json!({
-                            "callId": call_id,
-                            "name": name,
-                            "status": if *is_error { "error" } else { "completed" },
-                            "result": result,
-                        })
-                        .to_string(),
-                    ),
+                Event::default().event("tool_call").id(id.clone()).data(
+                    json!({
+                        "callId": call_id,
+                        "name": name,
+                        "status": if *is_error { "error" } else { "completed" },
+                        "result": result,
+                    })
+                    .to_string(),
+                ),
             );
         }
         RunEvent::RunCompleted { final_text } => {
             out.push(
-                Event::default()
-                    .event("result")
-                    .id(id.clone())
-                    .data(
-                        json!({
-                            "runId": env.run_id,
-                            "status": "FINISHED",
-                            "text": final_text,
-                        })
-                        .to_string(),
-                    ),
+                Event::default().event("result").id(id.clone()).data(
+                    json!({
+                        "runId": env.run_id,
+                        "status": "FINISHED",
+                        "text": final_text,
+                    })
+                    .to_string(),
+                ),
             );
             out.push(Event::default().event("done").data("{}"));
         }
         RunEvent::RunCancelled { reason } => {
             out.push(
-                Event::default()
-                    .event("result")
-                    .id(id.clone())
-                    .data(
-                        json!({
-                            "runId": env.run_id,
-                            "status": "CANCELLED",
-                            "text": reason,
-                        })
-                        .to_string(),
-                    ),
+                Event::default().event("result").id(id.clone()).data(
+                    json!({
+                        "runId": env.run_id,
+                        "status": "CANCELLED",
+                        "text": reason,
+                    })
+                    .to_string(),
+                ),
             );
             out.push(Event::default().event("done").data("{}"));
         }
         RunEvent::RunFailed { error } => {
             out.push(
-                Event::default()
-                    .event("error")
-                    .id(id.clone())
-                    .data(
-                        json!({
-                            "code": "run_failed",
-                            "message": error,
-                        })
-                        .to_string(),
-                    ),
+                Event::default().event("error").id(id.clone()).data(
+                    json!({
+                        "code": "run_failed",
+                        "message": error,
+                    })
+                    .to_string(),
+                ),
             );
             out.push(
-                Event::default()
-                    .event("result")
-                    .data(
-                        json!({
-                            "runId": env.run_id,
-                            "status": "FAILED",
-                            "text": error,
-                        })
-                        .to_string(),
-                    ),
+                Event::default().event("result").data(
+                    json!({
+                        "runId": env.run_id,
+                        "status": "FAILED",
+                        "text": error,
+                    })
+                    .to_string(),
+                ),
             );
             out.push(Event::default().event("done").data("{}"));
         }
@@ -217,16 +194,13 @@ pub fn envelope_to_sse_events(env: &Envelope) -> Vec<Event> {
         _ => {
             if let Ok(raw) = serde_json::to_value(env) {
                 out.push(
-                    Event::default()
-                        .event("interaction_update")
-                        .id(id)
-                        .data(
-                            json!({
-                                "type": "envelope",
-                                "envelope": raw,
-                            })
-                            .to_string(),
-                        ),
+                    Event::default().event("interaction_update").id(id).data(
+                        json!({
+                            "type": "envelope",
+                            "envelope": raw,
+                        })
+                        .to_string(),
+                    ),
                 );
             }
         }

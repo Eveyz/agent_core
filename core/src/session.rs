@@ -1056,7 +1056,7 @@ impl SessionManager {
                 let name = msg.name.as_deref().unwrap_or("");
                 let model = msg.model.as_deref().unwrap_or("");
                 let metadata = serde_json::to_string(&merge_ephemeral_into_metadata(msg))
-                .unwrap_or_else(|_| "{}".to_string());
+                    .unwrap_or_else(|_| "{}".to_string());
 
                 tx.execute(
                     "INSERT OR REPLACE INTO session_messages (session_id, prompt_id, msg_index, role, content, tool_calls, tool_call_id, name, model, metadata, created_at) \
@@ -1067,9 +1067,7 @@ impl SessionManager {
             }
         }
 
-        if !mark_ended
-            && let Some(prompt_id) = binding_prompt_id
-        {
+        if !mark_ended && let Some(prompt_id) = binding_prompt_id {
             tx.execute(
                 "UPDATE prompts SET status = 'running', ended_at = NULL WHERE id = ?1",
                 rusqlite::params![prompt_id],
@@ -1078,8 +1076,7 @@ impl SessionManager {
 
         if let Some((checkpoint_model_id, model_window)) = model_window_checkpoint {
             let source_prefix_sha256 = Self::transcript_prefix_sha256(messages)?;
-            let messages_json =
-                serde_json::to_string(&messages_for_snapshot(model_window))?;
+            let messages_json = serde_json::to_string(&messages_for_snapshot(model_window))?;
             tx.execute(
                 "INSERT INTO session_model_windows
                     (session_id, source_message_count, source_prefix_sha256, model_id, messages_json, updated_at)

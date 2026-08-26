@@ -486,7 +486,7 @@ impl RunEvent {
                     _ => crate::permission::ApprovalChoice::AllowOnce,
                 };
                 RunEvent::ApprovalResolved { prompt_id, choice }
-            },
+            }
             AgentEvent::InputRequested {
                 prompt_id,
                 title,
@@ -587,7 +587,6 @@ impl RunEvent {
             // ContextCompacted doesn't exist in AgentEvent — Run emits it directly
         })
     }
-
 }
 
 #[cfg(test)]

@@ -85,7 +85,10 @@ impl HNSWIndex {
 
     /// Number of entries in the fallback list.
     pub fn fallback_count(&self) -> usize {
-        self.fallback.read().expect("HNSW fallback lock poisoned").len()
+        self.fallback
+            .read()
+            .expect("HNSW fallback lock poisoned")
+            .len()
     }
 
     /// Search for the top_k nearest neighbors to the query embedding.

@@ -7,7 +7,7 @@
 use crate::config::ApiMode;
 use crate::types::{ImageAttachment, Message, ReasoningState, Role, ToolDefinition};
 use base64::Engine;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 /// Build the JSON body for the resolved API mode.
 pub fn build_provider_body(
@@ -23,17 +23,15 @@ pub fn build_provider_body(
     supports_images: bool,
 ) -> Value {
     match api_mode {
-        ApiMode::ChatCompletions => {
-            build_chat_completions_body(
-                model_id,
-                messages,
-                tools,
-                stream,
-                temperature,
-                max_tokens,
-                supports_images,
-            )
-        }
+        ApiMode::ChatCompletions => build_chat_completions_body(
+            model_id,
+            messages,
+            tools,
+            stream,
+            temperature,
+            max_tokens,
+            supports_images,
+        ),
         ApiMode::Responses => build_responses_body(
             model_id,
             messages,
@@ -161,9 +159,7 @@ fn build_chat_completions_body(
 }
 
 fn message_has_images(msg: &Message) -> bool {
-    msg.images
-        .as_ref()
-        .is_some_and(|images| !images.is_empty())
+    msg.images.as_ref().is_some_and(|images| !images.is_empty())
 }
 
 fn chat_completions_message_value(msg: &Message, include_images: bool) -> Value {
@@ -336,7 +332,8 @@ fn build_responses_body(
                                 "encrypted_content": blob,
                             });
                             if let Some(ref summary) = reasoning.summary {
-                                item["summary"] = json!([{ "type": "summary_text", "text": summary }]);
+                                item["summary"] =
+                                    json!([{ "type": "summary_text", "text": summary }]);
                             }
                             input.push(item);
                         }
@@ -564,7 +561,9 @@ fn extract_think_tag(content: &str) -> Option<(String, String)> {
     let after = &content[start + OPEN.len()..];
     let end = after.find(CLOSE)?;
     let think = after[..end].to_string();
-    let rest = after[end + CLOSE.len()..].trim_start_matches('\n').to_string();
+    let rest = after[end + CLOSE.len()..]
+        .trim_start_matches('\n')
+        .to_string();
     Some((think, rest))
 }
 
@@ -620,15 +619,14 @@ mod tests {
             .iter()
             .find(|i| i.get("type").and_then(|t| t.as_str()) == Some("reasoning"))
             .expect("reasoning item");
-        assert_eq!(
-            reasoning_item["encrypted_content"].as_str(),
-            Some(blob)
+        assert_eq!(reasoning_item["encrypted_content"].as_str(), Some(blob));
+        assert!(
+            body["include"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v.as_str() == Some("reasoning.encrypted_content"))
         );
-        assert!(body["include"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|v| v.as_str() == Some("reasoning.encrypted_content")));
     }
 
     #[test]
@@ -692,19 +690,25 @@ mod tests {
 
     #[test]
     fn endpoint_paths() {
-        assert!(endpoint_for(ApiMode::ChatCompletions, "https://api.openai.com/v1")
-            .ends_with("/chat/completions"));
-        assert!(endpoint_for(ApiMode::Responses, "https://api.openai.com/v1")
-            .ends_with("/responses"));
-        assert!(endpoint_for(ApiMode::AnthropicMessages, "https://api.anthropic.com")
-            .ends_with("/v1/messages"));
+        assert!(
+            endpoint_for(ApiMode::ChatCompletions, "https://api.openai.com/v1")
+                .ends_with("/chat/completions")
+        );
+        assert!(
+            endpoint_for(ApiMode::Responses, "https://api.openai.com/v1").ends_with("/responses")
+        );
+        assert!(
+            endpoint_for(ApiMode::AnthropicMessages, "https://api.anthropic.com")
+                .ends_with("/v1/messages")
+        );
     }
 
     #[test]
     fn chat_completions_omits_reasoning_field() {
         let mut msg = Message::assistant("<think>r</think>\nhi");
         msg.reasoning = Some(ReasoningState::from_text("r"));
-        let body = build_chat_completions_body("deepseek-chat", &[msg], &[], true, None, None, false);
+        let body =
+            build_chat_completions_body("deepseek-chat", &[msg], &[], true, None, None, false);
         let ser = serde_json::to_string(&body["messages"][0]).unwrap();
         assert!(!ser.contains("encrypted_content"));
         assert!(ser.contains("<think>"));

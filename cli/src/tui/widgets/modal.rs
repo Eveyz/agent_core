@@ -60,7 +60,9 @@ impl<'a> Widget for Modal<'a> {
                 let mut lines = vec![
                     Line::from(Span::styled(
                         " Select Model ",
-                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
                     )),
                     Line::from(format!(" Filter: {filter}_")),
                     Line::raw(""),
@@ -88,7 +90,9 @@ impl<'a> Widget for Modal<'a> {
                     .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(TOOL_COLOR))
                     .style(Style::default().bg(CODE_BG));
-                Paragraph::new(Text::from(lines)).block(block).render(area, buf);
+                Paragraph::new(Text::from(lines))
+                    .block(block)
+                    .render(area, buf);
             }
             ModalState::ModelForm {
                 provider,
@@ -115,7 +119,9 @@ impl<'a> Widget for Modal<'a> {
                 let mut lines = vec![
                     Line::from(Span::styled(
                         " Register New Model ",
-                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
                     )),
                     Line::raw(""),
                 ];
@@ -140,7 +146,9 @@ impl<'a> Widget for Modal<'a> {
                     .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(TOOL_COLOR))
                     .style(Style::default().bg(CODE_BG));
-                Paragraph::new(Text::from(lines)).block(block).render(area, buf);
+                Paragraph::new(Text::from(lines))
+                    .block(block)
+                    .render(area, buf);
             }
             _ => {}
         }
@@ -168,7 +176,9 @@ impl<'a> Widget for AnswerModal<'a> {
         let lines = vec![
             Line::from(Span::styled(
                 " Input Required ",
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             )),
             Line::raw(""),
             Line::raw(prompt.to_string()),
@@ -185,7 +195,9 @@ impl<'a> Widget for AnswerModal<'a> {
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(TOOL_COLOR))
             .style(Style::default().bg(CODE_BG));
-        Paragraph::new(Text::from(lines)).block(block).render(area, buf);
+        Paragraph::new(Text::from(lines))
+            .block(block)
+            .render(area, buf);
     }
 }
 
@@ -210,7 +222,9 @@ impl<'a> Widget for RewindModal<'a> {
         let mut lines = vec![
             Line::from(Span::styled(
                 " Rewind ",
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             )),
             Line::raw(""),
         ];
@@ -236,7 +250,9 @@ impl<'a> Widget for RewindModal<'a> {
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(TOOL_COLOR))
             .style(Style::default().bg(CODE_BG));
-        Paragraph::new(Text::from(lines)).block(block).render(area, buf);
+        Paragraph::new(Text::from(lines))
+            .block(block)
+            .render(area, buf);
     }
 }
 
@@ -249,7 +265,9 @@ impl Widget for QuitConfirmModal {
         let lines = vec![
             Line::from(Span::styled(
                 " Quit? ",
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             )),
             Line::raw(""),
             Line::raw("  Press y / Enter to quit, Esc to cancel."),
@@ -259,7 +277,9 @@ impl Widget for QuitConfirmModal {
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(Color::Rgb(224, 108, 117)))
             .style(Style::default().bg(CODE_BG));
-        Paragraph::new(Text::from(lines)).block(block).render(area, buf);
+        Paragraph::new(Text::from(lines))
+            .block(block)
+            .render(area, buf);
     }
 }
 

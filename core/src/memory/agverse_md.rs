@@ -149,10 +149,7 @@ pub fn prepare_for_injection(content: &str, opts: &InjectOptions) -> String {
     // Pending: exclude by default, or keep only the newest N lines.
     if let Some(pending_body) = sections.remove(PENDING_SECTION) {
         if opts.pending_inject_max > 0 {
-            let lines: Vec<&str> = pending_body
-                .lines()
-                .filter(|l| is_bullet(l))
-                .collect();
+            let lines: Vec<&str> = pending_body.lines().filter(|l| is_bullet(l)).collect();
             let keep = lines
                 .iter()
                 .rev()
@@ -291,7 +288,9 @@ pub fn classify_fact(section: &str, text: &str) -> FactDisposition {
 
 fn line_ref_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)\b[\w./-]+\.(rs|ts|tsx|js|py|toml|md):\d+\b").expect("regex"))
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)\b[\w./-]+\.(rs|ts|tsx|js|py|toml|md):\d+\b").expect("regex")
+    })
 }
 
 fn is_transient_fact(text: &str) -> bool {
@@ -381,8 +380,23 @@ fn significant_words(text: &str) -> std::collections::HashSet<String> {
         .filter(|w| {
             !matches!(
                 *w,
-                "the" | "and" | "for" | "with" | "from" | "that" | "this" | "are" | "was"
-                    | "were" | "have" | "has" | "not" | "but" | "via" | "into" | "only"
+                "the"
+                    | "and"
+                    | "for"
+                    | "with"
+                    | "from"
+                    | "that"
+                    | "this"
+                    | "are"
+                    | "was"
+                    | "were"
+                    | "have"
+                    | "has"
+                    | "not"
+                    | "but"
+                    | "via"
+                    | "into"
+                    | "only"
             )
         })
         .map(str::to_string)
@@ -418,7 +432,11 @@ fn append_pending(content: String, section: &str, text: &str) -> String {
     let today = Utc::now().format("%Y-%m-%d");
     let line = format!("- [{section}|{today}] {text}\n");
     // Insert at end of Pending section.
-    insert_bullet_in_section(&result, PENDING_SECTION, line.trim_start_matches("- ").trim())
+    insert_bullet_in_section(
+        &result,
+        PENDING_SECTION,
+        line.trim_start_matches("- ").trim(),
+    )
 }
 
 fn insert_bullet_in_section(content: &str, section: &str, text: &str) -> String {
@@ -580,7 +598,11 @@ pub fn trim_to_soft_limit(content: &str, soft_limit: usize) -> (String, usize) {
     }
     let (preamble, mut sections) = parse_sections(content);
     let mut trimmed = 0;
-    const TRIM_ORDER: &[&str] = &["Architecture Decisions", "Project Overview", "Tech Stack & Commands"];
+    const TRIM_ORDER: &[&str] = &[
+        "Architecture Decisions",
+        "Project Overview",
+        "Tech Stack & Commands",
+    ];
 
     for section in TRIM_ORDER {
         while rebuild_markdown(&preamble, &sections).chars().count() > soft_limit {
@@ -754,9 +776,7 @@ fn is_bullet(line: &str) -> bool {
 }
 
 fn bullet_text(line: &str) -> &str {
-    line.trim()
-        .trim_start_matches(['-', '*'])
-        .trim()
+    line.trim().trim_start_matches(['-', '*']).trim()
 }
 
 fn truncate_chars(s: &str, max: usize) -> String {
@@ -796,7 +816,9 @@ mod tests {
     fn prepare_respects_budget() {
         let mut md = String::from("# User Preferences\n- short pref\n\n# Architecture Decisions\n");
         for i in 0..80 {
-            md.push_str(&format!("- decision number {i} with lots of padding text to inflate size\n"));
+            md.push_str(&format!(
+                "- decision number {i} with lots of padding text to inflate size\n"
+            ));
         }
         let out = prepare_for_injection(
             &md,
@@ -826,7 +848,10 @@ mod tests {
             FactDisposition::ArchivalOnly
         );
         assert_eq!(
-            classify_fact("User Preferences", "User prefers English responses matching input language"),
+            classify_fact(
+                "User Preferences",
+                "User prefers English responses matching input language"
+            ),
             FactDisposition::AlwaysOn
         );
     }
@@ -883,6 +908,9 @@ mod tests {
     #[test]
     fn scope_routing() {
         assert_eq!(scope_for_section("User Preferences"), FactScope::Global);
-        assert_eq!(scope_for_section("Architecture Decisions"), FactScope::Project);
+        assert_eq!(
+            scope_for_section("Architecture Decisions"),
+            FactScope::Project
+        );
     }
 }

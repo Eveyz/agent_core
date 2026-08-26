@@ -1,9 +1,9 @@
 use std::{collections::HashMap, sync::Arc};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use parking_lot::Mutex;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{OptionalExtension, params};
 use sha2::Digest;
 
 use super::model::{
@@ -46,7 +46,7 @@ pub trait WorkflowStore: Send + Sync + 'static {
     ) -> Result<Vec<WorkflowEvent>>;
     fn recoverable_runs(&self) -> Result<Vec<RunId>>;
     fn publish_revision(&self, revision_id: &WorkflowRevisionId, spec: &WorkflowSpec)
-        -> Result<()>;
+    -> Result<()>;
     fn load_revision(&self, revision_id: &WorkflowRevisionId) -> Result<WorkflowSpec>;
 }
 
@@ -527,7 +527,7 @@ fn status_projection(event: &WorkflowEventKind) -> Option<&'static str> {
 mod tests {
     use std::collections::BTreeMap;
 
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     use super::*;
     use crate::{

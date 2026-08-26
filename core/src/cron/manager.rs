@@ -1,6 +1,5 @@
 use tokio_cron_scheduler::JobScheduler;
 
-
 pub struct CronScheduler {
     scheduler: JobScheduler,
 }

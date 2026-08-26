@@ -1,6 +1,6 @@
+pub mod providers;
 pub mod resilience;
 pub mod streaming;
-pub mod providers;
 
 use crate::client::resilience::{CircuitBreaker, CircuitBreakerConfig, calculate_backoff};
 use crate::config::{ApiMode, ModelConfig, RuntimeOverrides};
@@ -267,7 +267,8 @@ impl OpenAIClient {
         messages: &[Message],
         tools: &[ToolDefinition],
     ) -> Result<impl futures::Stream<Item = Result<StreamEvent>>> {
-        self.chat_completion_stream_with_hint(messages, tools, None).await
+        self.chat_completion_stream_with_hint(messages, tools, None)
+            .await
     }
 
     /// Like [`chat_completion_stream`](Self::chat_completion_stream) but carries
@@ -278,13 +279,8 @@ impl OpenAIClient {
         tools: &[ToolDefinition],
         cache_hint: Option<ClientCacheHint>,
     ) -> Result<impl futures::Stream<Item = Result<StreamEvent>>> {
-        self.chat_completion_stream_with_hint_and_required_tool(
-            messages,
-            tools,
-            cache_hint,
-            None,
-        )
-        .await
+        self.chat_completion_stream_with_hint_and_required_tool(messages, tools, cache_hint, None)
+            .await
     }
 
     /// Stream a completion while requiring the provider to call one named
@@ -363,14 +359,13 @@ impl OpenAIClient {
             let mut network_attempts = 0usize;
 
             loop {
-                if rate_limit_attempts >= rate_limit_max_retries || network_attempts >= network_max_retries {
+                if rate_limit_attempts >= rate_limit_max_retries
+                    || network_attempts >= network_max_retries
+                {
                     break;
                 }
 
-                let mut req = current_client
-                    .http
-                    .post(&url)
-                    .json(body);
+                let mut req = current_client.http.post(&url).json(body);
 
                 // Anthropic Messages uses x-api-key + version header, not Bearer.
                 if current_client.model.resolved_api_mode() == ApiMode::AnthropicMessages {
@@ -405,8 +400,9 @@ impl OpenAIClient {
                             .and_then(|v| v.parse::<u64>().ok())
                             .map(Duration::from_secs);
 
-                        let delay = retry_after
-                            .unwrap_or_else(|| calculate_backoff(rate_limit_attempts as u32, base_delay, max_delay));
+                        let delay = retry_after.unwrap_or_else(|| {
+                            calculate_backoff(rate_limit_attempts as u32, base_delay, max_delay)
+                        });
                         tracing::warn!(
                             "Model {} 429 rate limited, attempt {}/{}, retrying in {:?}",
                             current_client.model.model_id,
@@ -426,7 +422,8 @@ impl OpenAIClient {
                             ));
                             break;
                         }
-                        let delay = calculate_backoff(network_attempts as u32, base_delay, max_delay);
+                        let delay =
+                            calculate_backoff(network_attempts as u32, base_delay, max_delay);
                         tracing::warn!(
                             "Model {} server error {}, attempt {}/{}, retrying in {:?}",
                             current_client.model.model_id,
@@ -449,7 +446,8 @@ impl OpenAIClient {
                         };
                         final_error = Some(anyhow::anyhow!(
                             "The AI model service rejected the request (HTTP {}). This is usually a configuration problem — e.g. an invalid API key, model name, or request parameter. Details: {}",
-                            status, detail
+                            status,
+                            detail
                         ));
                         break;
                     }
@@ -463,7 +461,8 @@ impl OpenAIClient {
                             ));
                             break;
                         }
-                        let delay = calculate_backoff(network_attempts as u32, base_delay, max_delay);
+                        let delay =
+                            calculate_backoff(network_attempts as u32, base_delay, max_delay);
                         tracing::warn!(
                             "Model {} network error: {}, attempt {}/{}, retrying in {:?}",
                             current_client.model.model_id,

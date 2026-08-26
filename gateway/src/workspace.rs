@@ -2,8 +2,8 @@
 
 use crate::error::ApiError;
 use crate::models::{EnvInput, RepoInput};
-use crate::store::{workspaces_dir, WorkspaceRecord};
-use anyhow::{bail, Context, Result};
+use crate::store::{WorkspaceRecord, workspaces_dir};
+use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
@@ -77,9 +77,9 @@ async fn provision_git(
     env: Option<&EnvInput>,
     repos: &[RepoInput],
 ) -> Result<ProvisionedWorkspace, ApiError> {
-    let repo = repos.first().ok_or_else(|| {
-        ApiError::BadRequest("repos[0] is required for git workspaces".into())
-    })?;
+    let repo = repos
+        .first()
+        .ok_or_else(|| ApiError::BadRequest("repos[0] is required for git workspaces".into()))?;
 
     let dest = if let Some(cwd) = env.and_then(|e| e.cwd.as_ref()) {
         let p = PathBuf::from(cwd);
@@ -109,9 +109,8 @@ async fn provision_git(
             )));
         }
     } else {
-        std::fs::create_dir_all(dest.parent().unwrap_or(Path::new("/"))).map_err(|e| {
-            ApiError::Internal(format!("mkdir {}: {e}", dest.display()))
-        })?;
+        std::fs::create_dir_all(dest.parent().unwrap_or(Path::new("/")))
+            .map_err(|e| ApiError::Internal(format!("mkdir {}: {e}", dest.display())))?;
     }
 
     if !dest.join(".git").exists() {
@@ -133,11 +132,7 @@ async fn provision_git(
 }
 
 async fn clone_repo(url: &str, starting_ref: Option<&str>, dest: &Path) -> Result<()> {
-    let mut args = vec![
-        "clone".to_string(),
-        "--depth".to_string(),
-        "1".to_string(),
-    ];
+    let mut args = vec!["clone".to_string(), "--depth".to_string(), "1".to_string()];
     if let Some(r) = starting_ref {
         args.push("--branch".to_string());
         args.push(r.to_string());
@@ -178,17 +173,21 @@ pub fn resolve_artifact_path(workspace: &Path, relative: &str) -> Result<PathBuf
 
     let root = workspace.join("artifacts");
     let full = root.join(relative);
-    let root_canon = root.canonicalize().map_err(|_| {
-        ApiError::NotFound("artifacts directory not found".into())
-    })?;
-    let full_canon = full.canonicalize().map_err(|_| {
-        ApiError::NotFound(format!("artifact not found: {relative}"))
-    })?;
+    let root_canon = root
+        .canonicalize()
+        .map_err(|_| ApiError::NotFound("artifacts directory not found".into()))?;
+    let full_canon = full
+        .canonicalize()
+        .map_err(|_| ApiError::NotFound(format!("artifact not found: {relative}")))?;
     if !full_canon.starts_with(&root_canon) {
-        return Err(ApiError::BadRequest("artifact path escapes workspace".into()));
+        return Err(ApiError::BadRequest(
+            "artifact path escapes workspace".into(),
+        ));
     }
     if !full_canon.is_file() {
-        return Err(ApiError::NotFound(format!("artifact not found: {relative}")));
+        return Err(ApiError::NotFound(format!(
+            "artifact not found: {relative}"
+        )));
     }
     Ok(full_canon)
 }

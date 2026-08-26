@@ -30,7 +30,12 @@ pub fn compute_layout(area: Rect, input_h: u16) -> LayoutAreas {
     let main_top = area.y + status_h;
 
     let status_area = Rect::new(area.x, area.y, area.width, status_h);
-    let main_area = Rect::new(area.x, main_top, area.width, main_bottom.saturating_sub(main_top));
+    let main_area = Rect::new(
+        area.x,
+        main_top,
+        area.width,
+        main_bottom.saturating_sub(main_top),
+    );
     let input_area = Rect::new(area.x, area.y + input_top, area.width, input_h);
 
     LayoutAreas {
@@ -92,7 +97,10 @@ fn render_modal(frame: &mut Frame, state: &AppState, area: Rect) {
             frame.render_widget(super::widgets::modal::AnswerModal::new(state), area);
         }
         ModalState::SessionList { .. } => {
-            frame.render_widget(super::widgets::session_list::SessionListModal::new(state), area);
+            frame.render_widget(
+                super::widgets::session_list::SessionListModal::new(state),
+                area,
+            );
         }
         ModalState::Help => {
             frame.render_widget(super::widgets::help::HelpModal, area);
@@ -119,7 +127,10 @@ fn render_conversation(frame: &mut Frame, state: &AppState, area: Rect) {
     let scroll_from_top = max_scroll.saturating_sub(scroll);
 
     let hovered = state.hovered_subagent.as_deref();
-    let content_area = area.inner(Margin { vertical: 0, horizontal: 1 });
+    let content_area = area.inner(Margin {
+        vertical: 0,
+        horizontal: 1,
+    });
     render_blocks(
         frame,
         &state.cache.blocks,
@@ -137,7 +148,10 @@ fn render_scrollbar(frame: &mut Frame, area: Rect, max_scroll: usize, position: 
     if max_scroll == 0 {
         return;
     }
-    let scrollbar_area = area.inner(Margin { vertical: 0, horizontal: 0 });
+    let scrollbar_area = area.inner(Margin {
+        vertical: 0,
+        horizontal: 0,
+    });
     let mut scrollbar_state = ScrollbarState::new(max_scroll).position(position);
     frame.render_stateful_widget(
         Scrollbar::new(ScrollbarOrientation::VerticalRight)
@@ -225,9 +239,24 @@ fn render_blocks(
             BlockKind::Response(_) => {
                 frame.render_widget(bw::ResponseBlock::new(&block.lines, *skip), block_area);
             }
-            BlockKind::Tool { name, args, result, expanded, .. } => {
+            BlockKind::Tool {
+                name,
+                args,
+                result,
+                expanded,
+                ..
+            } => {
                 frame.render_widget(
-                    bw::ToolBlock::new(&block.lines, name, args, result, frame_count, *skip, *expanded, is_focused),
+                    bw::ToolBlock::new(
+                        &block.lines,
+                        name,
+                        args,
+                        result,
+                        frame_count,
+                        *skip,
+                        *expanded,
+                        is_focused,
+                    ),
                     block_area,
                 );
             }
@@ -258,8 +287,9 @@ pub fn rebuild_cache(state: &mut AppState, width: u16) {
     let w = width as usize;
     let entry_count = state.entries.len();
 
-    let should_rebuild_entries =
-        state.cache.rendered_entry_count != entry_count || state.cache.width != width || state.force_cache_rebuild;
+    let should_rebuild_entries = state.cache.rendered_entry_count != entry_count
+        || state.cache.width != width
+        || state.force_cache_rebuild;
 
     if should_rebuild_entries {
         let mut entry_blocks: Vec<CachedBlock> = Vec::new();
@@ -296,7 +326,10 @@ pub fn rebuild_cache(state: &mut AppState, width: u16) {
     }
     blocks_out.extend(state.cache.streaming_blocks.iter().cloned());
 
-    let streaming_empty = state.streaming.as_ref().map_or(true, |s| s.blocks.is_empty());
+    let streaming_empty = state
+        .streaming
+        .as_ref()
+        .map_or(true, |s| s.blocks.is_empty());
     if state.agent_running && streaming_empty {
         if !blocks_out.is_empty() {
             blocks_out.push(CachedBlock::spacing());
@@ -346,7 +379,18 @@ fn render_subagent_detail(frame: &mut Frame, state: &AppState, area: Rect) {
     let subagent_scroll = state.subagent_scroll.min(max_scroll);
     let scroll_from_top = max_scroll.saturating_sub(subagent_scroll);
 
-    let content_area = area.inner(Margin { vertical: 0, horizontal: 1 });
-    render_blocks(frame, &blks, state.frame_count, None, None, scroll_from_top, content_area);
+    let content_area = area.inner(Margin {
+        vertical: 0,
+        horizontal: 1,
+    });
+    render_blocks(
+        frame,
+        &blks,
+        state.frame_count,
+        None,
+        None,
+        scroll_from_top,
+        content_area,
+    );
     render_scrollbar(frame, area, max_scroll, scroll_from_top);
 }

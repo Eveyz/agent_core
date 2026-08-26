@@ -91,10 +91,7 @@ pub fn route_recall_intent(message: Option<&str>) -> RecallIntent {
 }
 
 /// Map router intent to runtime action for a given memory mode.
-pub fn intent_for_mode(
-    intent: RecallIntent,
-    mode: crate::config::MemoryMode,
-) -> RecallIntent {
+pub fn intent_for_mode(intent: RecallIntent, mode: crate::config::MemoryMode) -> RecallIntent {
     match (intent, mode) {
         (RecallIntent::None, _) => RecallIntent::None,
         (RecallIntent::Hint, _) => RecallIntent::Hint,
@@ -104,8 +101,7 @@ pub fn intent_for_mode(
 }
 
 /// Short hint injected into active memory (cache-friendly, ~20 tokens).
-pub const RECALL_HINT: &str =
-    "[Memory hint: This question may need past context. Call conversation_search before answering if you are unsure.]";
+pub const RECALL_HINT: &str = "[Memory hint: This question may need past context. Call conversation_search before answering if you are unsure.]";
 
 /// Format recall hits for injection into the active memory segment.
 pub fn format_recall_results(records: &[RecallRecord], max_chars: usize) -> String {

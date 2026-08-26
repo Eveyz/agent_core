@@ -177,10 +177,11 @@ mod tests {
             }))
             .await;
         assert!(res.is_err());
-        assert!(res
-            .unwrap_err()
-            .to_string()
-            .contains("old_string not found"));
+        assert!(
+            res.unwrap_err()
+                .to_string()
+                .contains("old_string not found")
+        );
     }
 
     #[tokio::test]

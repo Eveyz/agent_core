@@ -76,7 +76,8 @@ pub struct Brain {
     pub(crate) base_tool_registry: Arc<Mutex<ToolRegistry>>,
     /// Tool registration callbacks applied to every per-Run ToolRegistry.
     /// CLI pushes callbacks here (e.g. MCP tools) so they flow into every Run.
-    extra_tool_fns: Arc<Mutex<Vec<Box<dyn Fn(&mut ToolRegistry, &ExtraToolContext) + Send + Sync>>>>,
+    extra_tool_fns:
+        Arc<Mutex<Vec<Box<dyn Fn(&mut ToolRegistry, &ExtraToolContext) + Send + Sync>>>>,
     /// Runtime temperature override (applied to each Run's client).
     pub(crate) temperature_override: Option<f64>,
     /// Runtime max_tokens override (applied to each Run's client).
@@ -162,8 +163,8 @@ impl Brain {
         let block_max_chars = mem_config
             .map(|m| m.default_block_max_chars)
             .unwrap_or(2000);
-        let embedding_enabled = cfg!(feature = "embeddings")
-            && mem_config.map(|m| m.embedding_enabled).unwrap_or(true);
+        let embedding_enabled =
+            cfg!(feature = "embeddings") && mem_config.map(|m| m.embedding_enabled).unwrap_or(true);
         let salience_config = mem_config.and_then(|m| m.salience.as_ref());
 
         let result = if embedding_enabled {
@@ -782,19 +783,39 @@ default = { model_id = "mock" }
             .unwrap()
             .unwrap();
         assert_eq!(
-            first_manager.lock().find_by_name("shared").unwrap().description,
+            first_manager
+                .lock()
+                .find_by_name("shared")
+                .unwrap()
+                .description,
             "first"
         );
         assert_eq!(
-            second_manager.lock().find_by_name("shared").unwrap().description,
+            second_manager
+                .lock()
+                .find_by_name("shared")
+                .unwrap()
+                .description,
             "second"
         );
 
-        first_manager.lock().activate_for(Some("session-a"), "shared");
-        second_manager.lock().activate_for(Some("session-a"), "shared");
+        first_manager
+            .lock()
+            .activate_for(Some("session-a"), "shared");
+        second_manager
+            .lock()
+            .activate_for(Some("session-a"), "shared");
         brain.clear_skill_session("session-a");
-        assert!(!first_manager.lock().is_active_for(Some("session-a"), "shared"));
-        assert!(!second_manager.lock().is_active_for(Some("session-a"), "shared"));
+        assert!(
+            !first_manager
+                .lock()
+                .is_active_for(Some("session-a"), "shared")
+        );
+        assert!(
+            !second_manager
+                .lock()
+                .is_active_for(Some("session-a"), "shared")
+        );
 
         let new_skill = first.path().join(".agents/skills/new-skill");
         std::fs::create_dir_all(&new_skill).unwrap();
@@ -833,11 +854,15 @@ default = { model_id = "mock" }
     fn ask_registry_omits_todo_and_write_tools() {
         let brain = Brain::from_config(test_config()).unwrap();
         let registry = brain.build_tool_registry(AgentMode::Ask);
-        for name in ["todo_write", "todo_read", "todo_update", "write_file", "edit", "shell"] {
-            assert!(
-                !registry.has(name),
-                "Ask registry must not expose {name}"
-            );
+        for name in [
+            "todo_write",
+            "todo_read",
+            "todo_update",
+            "write_file",
+            "edit",
+            "shell",
+        ] {
+            assert!(!registry.has(name), "Ask registry must not expose {name}");
         }
         assert!(registry.has("read_file"));
     }
@@ -849,10 +874,7 @@ default = { model_id = "mock" }
         assert!(registry.has("write_file"));
         assert!(registry.has("read_file"));
         for name in ["todo_write", "todo_read", "edit", "shell"] {
-            assert!(
-                !registry.has(name),
-                "Plan registry must not expose {name}"
-            );
+            assert!(!registry.has(name), "Plan registry must not expose {name}");
         }
     }
 

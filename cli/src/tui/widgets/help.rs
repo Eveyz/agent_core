@@ -37,7 +37,9 @@ impl Widget for HelpModal {
         let body = crate::commands::help_text();
         let mut lines: Vec<Line> = vec![Line::from(Span::styled(
             " Help ",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         ))];
         lines.push(Line::raw(""));
         for l in body.lines().take(16) {
@@ -53,6 +55,8 @@ impl Widget for HelpModal {
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(TOOL_COLOR))
             .style(Style::default().bg(CODE_BG));
-        Paragraph::new(Text::from(lines)).block(block).render(area, buf);
+        Paragraph::new(Text::from(lines))
+            .block(block)
+            .render(area, buf);
     }
 }

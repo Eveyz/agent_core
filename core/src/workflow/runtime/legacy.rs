@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::{
     agent_registry,
@@ -10,7 +10,7 @@ use crate::{
 };
 
 use super::{
-    custom_agent::{FrozenCustomAgentConfig, CUSTOM_AGENT_ACTIVITY_KIND},
+    custom_agent::{CUSTOM_AGENT_ACTIVITY_KIND, FrozenCustomAgentConfig},
     mention::intersect_permission_ceiling,
     model::{
         EffectPolicy, FailurePolicy, NodeKey, NodeKind, NodeSpec, ResourceClaim, RetryPolicy,

@@ -54,7 +54,11 @@ pub enum BlockKind {
     Spacing,
     Separator(String),
     User(String),
-    Thought { id: u64, text: String, expanded: bool },
+    Thought {
+        id: u64,
+        text: String,
+        expanded: bool,
+    },
     Response(String),
     Tool {
         id: u64,
@@ -165,7 +169,9 @@ pub const APPROVAL_CHOICES: &[(&str, &str)] = &[
 ];
 
 pub fn approval_choice_for_index(idx: usize) -> ApprovalChoice {
-    crate::commands::approval_from_choice_key(APPROVAL_CHOICES[idx.min(APPROVAL_CHOICES.len() - 1)].0)
+    crate::commands::approval_from_choice_key(
+        APPROVAL_CHOICES[idx.min(APPROVAL_CHOICES.len() - 1)].0,
+    )
 }
 
 // ── Autocomplete ──────────────────────────────────────────────────────
@@ -349,7 +355,8 @@ impl AppState {
 
     pub fn recompute_context_pct(&mut self) {
         if self.max_context_tokens > 0 {
-            self.context_pct = (self.tokens as f64 / self.max_context_tokens as f64 * 100.0).min(999.0);
+            self.context_pct =
+                (self.tokens as f64 / self.max_context_tokens as f64 * 100.0).min(999.0);
         }
     }
 
@@ -538,7 +545,10 @@ impl AppState {
                 };
             }
             UiRequest::RewindList { points } => {
-                self.modal = ModalState::RewindList { points, selected: 0 };
+                self.modal = ModalState::RewindList {
+                    points,
+                    selected: 0,
+                };
             }
         }
     }
@@ -678,7 +688,10 @@ impl AppState {
         if ids.is_empty() {
             return;
         }
-        let next = match self.focused_block_id.and_then(|id| ids.iter().position(|&x| x == id)) {
+        let next = match self
+            .focused_block_id
+            .and_then(|id| ids.iter().position(|&x| x == id))
+        {
             Some(i) if i + 1 < ids.len() => ids[i + 1],
             Some(_) => *ids.last().unwrap(),
             None => *ids.last().unwrap(),
@@ -691,7 +704,10 @@ impl AppState {
         if ids.is_empty() {
             return;
         }
-        let prev = match self.focused_block_id.and_then(|id| ids.iter().position(|&x| x == id)) {
+        let prev = match self
+            .focused_block_id
+            .and_then(|id| ids.iter().position(|&x| x == id))
+        {
             Some(i) if i > 0 => ids[i - 1],
             Some(_) => ids[0],
             None => *ids.first().unwrap(),
@@ -733,7 +749,12 @@ impl AppState {
                     TurnBlock::Thought { id: bid, text, .. } if *bid == id => {
                         return Some(("thought".into(), text.clone()));
                     }
-                    TurnBlock::Tool { id: bid, name, result, .. } if *bid == id => {
+                    TurnBlock::Tool {
+                        id: bid,
+                        name,
+                        result,
+                        ..
+                    } if *bid == id => {
                         let body = result
                             .as_ref()
                             .map(|r| r.text.clone())
@@ -835,7 +856,9 @@ impl AppState {
                 self.push_error_notice(format!("Run failed: {error}"));
                 self.mark_dirty_force();
             }
-            RunEvent::Notice { message, severity, .. } => {
+            RunEvent::Notice {
+                message, severity, ..
+            } => {
                 if severity == "error" {
                     self.push_error_notice(message);
                 } else {
@@ -859,8 +882,12 @@ impl AppState {
 
             RunEvent::ModelCallStarted | RunEvent::ModelCallEnded { .. } => {}
 
-            RunEvent::ModelStreaming { subagent_id, delta, .. }
-            | RunEvent::MessageUpdate { subagent_id, delta, .. } => {
+            RunEvent::ModelStreaming {
+                subagent_id, delta, ..
+            }
+            | RunEvent::MessageUpdate {
+                subagent_id, delta, ..
+            } => {
                 self.apply_delta(subagent_id.as_deref(), delta);
             }
             RunEvent::MessageStart { .. } | RunEvent::MessageEnd { .. } => {}
@@ -871,7 +898,12 @@ impl AppState {
             }
 
             RunEvent::ToolPreparing { .. } => {}
-            RunEvent::ToolStarted { subagent_id, call_id, name, args } => {
+            RunEvent::ToolStarted {
+                subagent_id,
+                call_id,
+                name,
+                args,
+            } => {
                 if self.agent_running {
                     self.agent_state = "running tools".into();
                 }
@@ -898,8 +930,19 @@ impl AppState {
                 self.mark_dirty_force();
             }
             RunEvent::ToolUpdate { .. } => {}
-            RunEvent::ToolEnded { subagent_id, call_id: _, name, result, is_error } => {
-                let updated = self.update_tool_result(subagent_id.as_deref(), &name, result.clone(), is_error);
+            RunEvent::ToolEnded {
+                subagent_id,
+                call_id: _,
+                name,
+                result,
+                is_error,
+            } => {
+                let updated = self.update_tool_result(
+                    subagent_id.as_deref(),
+                    &name,
+                    result.clone(),
+                    is_error,
+                );
                 if !updated {
                     let id = self.alloc_block_id();
                     self.push_block_to(
@@ -908,14 +951,18 @@ impl AppState {
                             id,
                             name: name.clone(),
                             args: String::new(),
-                            result: Some(ToolResult { text: result.clone(), is_error }),
+                            result: Some(ToolResult {
+                                text: result.clone(),
+                                is_error,
+                            }),
                             expanded: false,
                         },
                     );
                 }
                 if let Some(sid) = subagent_id.as_deref() {
                     let icon = if is_error { "✗" } else { "✓" };
-                    let detail = tool_detail(&name, &serde_json::from_str(&result).unwrap_or_default());
+                    let detail =
+                        tool_detail(&name, &serde_json::from_str(&result).unwrap_or_default());
                     let activity = if detail.is_empty() {
                         format!("🔧 {icon} {name}")
                     } else {
@@ -947,7 +994,12 @@ impl AppState {
             }
             RunEvent::ApprovalResolved { .. } => {}
 
-            RunEvent::InputRequested { prompt_id, title, question, questions } => {
+            RunEvent::InputRequested {
+                prompt_id,
+                title,
+                question,
+                questions,
+            } => {
                 let prompt = title
                     .or(question)
                     .or_else(|| questions.first().map(|q| q.prompt.clone()))
@@ -982,7 +1034,11 @@ impl AppState {
                 self.mark_dirty();
             }
 
-            RunEvent::SubagentStarted { subagent_id, role_name, task } => {
+            RunEvent::SubagentStarted {
+                subagent_id,
+                role_name,
+                task,
+            } => {
                 if self.find_subagent(&subagent_id).is_some() {
                     return;
                 }
@@ -1001,13 +1057,21 @@ impl AppState {
                 self.push_block_to(None, block);
                 self.mark_dirty();
             }
-            RunEvent::SubagentEnded { subagent_id, success, iterations_used } => {
+            RunEvent::SubagentEnded {
+                subagent_id,
+                success,
+                iterations_used,
+            } => {
                 self.finalize_subagent(&subagent_id, success, iterations_used);
                 self.mark_dirty_force();
             }
 
-            RunEvent::ProcessSpawned { label, .. } => self.push_notice(format!("▶ spawned: {label}")),
-            RunEvent::ProcessKilled { reason, .. } => self.push_notice(format!("■ process killed: {reason}")),
+            RunEvent::ProcessSpawned { label, .. } => {
+                self.push_notice(format!("▶ spawned: {label}"))
+            }
+            RunEvent::ProcessKilled { reason, .. } => {
+                self.push_notice(format!("■ process killed: {reason}"))
+            }
 
             // Out of scope for A (goal/plan/workflow), or purely telemetry.
             RunEvent::RunCreated { .. }
@@ -1048,7 +1112,11 @@ impl AppState {
     fn append_text_delta(&mut self, subagent_id: Option<&str>, thinking: bool, text: &str) {
         let make_block = |id: u64| {
             if thinking {
-                TurnBlock::Thought { id, text: String::new(), expanded: false }
+                TurnBlock::Thought {
+                    id,
+                    text: String::new(),
+                    expanded: false,
+                }
             } else {
                 TurnBlock::Response(String::new())
             }
@@ -1080,12 +1148,17 @@ impl AppState {
         let target: &mut Vec<TurnBlock> = match subagent_id {
             None => {
                 if self.streaming.is_none() {
-                    self.streaming = Some(Streaming { turn: 0, blocks: Vec::new() });
+                    self.streaming = Some(Streaming {
+                        turn: 0,
+                        blocks: Vec::new(),
+                    });
                 }
                 &mut self.streaming.as_mut().unwrap().blocks
             }
             Some(sid) => {
-                if let Some(blocks) = find_subagent_children_mut(&mut self.streaming, &mut self.entries, sid) {
+                if let Some(blocks) =
+                    find_subagent_children_mut(&mut self.streaming, &mut self.entries, sid)
+                {
                     blocks
                 } else {
                     return;
@@ -1096,13 +1169,17 @@ impl AppState {
         if let Some(id) = new_id {
             target.push(make_block(id));
             match target.last_mut() {
-                Some(TurnBlock::Thought { text: existing, .. }) if thinking => existing.push_str(text),
+                Some(TurnBlock::Thought { text: existing, .. }) if thinking => {
+                    existing.push_str(text)
+                }
                 Some(TurnBlock::Response(existing)) if !thinking => existing.push_str(text),
                 _ => {}
             }
         } else {
             match target.last_mut() {
-                Some(TurnBlock::Thought { text: existing, .. }) if thinking => existing.push_str(text),
+                Some(TurnBlock::Thought { text: existing, .. }) if thinking => {
+                    existing.push_str(text)
+                }
                 Some(TurnBlock::Response(existing)) if !thinking => existing.push_str(text),
                 _ => {}
             }
@@ -1115,7 +1192,10 @@ impl AppState {
                 if let Some(s) = &mut self.streaming {
                     s.blocks.push(block);
                 } else {
-                    self.entries.push(Entry::Turn { turn: 0, blocks: vec![block] });
+                    self.entries.push(Entry::Turn {
+                        turn: 0,
+                        blocks: vec![block],
+                    });
                 }
             }
             Some(sid) => {
@@ -1131,7 +1211,10 @@ impl AppState {
     fn flush_streaming(&mut self) {
         if let Some(s) = self.streaming.take() {
             if !s.blocks.is_empty() {
-                self.entries.push(Entry::Turn { turn: s.turn, blocks: s.blocks });
+                self.entries.push(Entry::Turn {
+                    turn: s.turn,
+                    blocks: s.blocks,
+                });
             }
         }
     }
@@ -1147,9 +1230,15 @@ impl AppState {
     ) -> bool {
         let updater = |blocks: &mut Vec<TurnBlock>| -> bool {
             for b in blocks.iter_mut().rev() {
-                if let TurnBlock::Tool { name: n, result: r, .. } = b {
+                if let TurnBlock::Tool {
+                    name: n, result: r, ..
+                } = b
+                {
                     if n == name && r.is_none() {
-                        *r = Some(ToolResult { text: result.clone(), is_error });
+                        *r = Some(ToolResult {
+                            text: result.clone(),
+                            is_error,
+                        });
                         return true;
                     }
                 }
@@ -1216,7 +1305,10 @@ impl AppState {
             for b in blocks {
                 if let TurnBlock::Subagent(sa) = b {
                     if sa.id == id {
-                        let elapsed = sa.started_at.map(|t| t.elapsed().as_millis() as u64).unwrap_or(0);
+                        let elapsed = sa
+                            .started_at
+                            .map(|t| t.elapsed().as_millis() as u64)
+                            .unwrap_or(0);
                         sa.done = true;
                         sa.success = success;
                         sa.iterations = iterations;
@@ -1375,7 +1467,11 @@ pub enum Entry {
 
 #[derive(Clone)]
 pub enum TurnBlock {
-    Thought { id: u64, text: String, expanded: bool },
+    Thought {
+        id: u64,
+        text: String,
+        expanded: bool,
+    },
     Response(String),
     Tool {
         id: u64,
@@ -1429,7 +1525,11 @@ pub fn truncate_activity(s: &str, max_chars: usize) -> String {
 fn tool_detail(tool_name: &str, args: &serde_json::Value) -> String {
     let s = |v: &serde_json::Value| v.as_str().unwrap_or("").to_string();
     let first_non_empty = |a: &str, b: &str| -> String {
-        if a.is_empty() { b.to_string() } else { a.to_string() }
+        if a.is_empty() {
+            b.to_string()
+        } else {
+            a.to_string()
+        }
     };
     match tool_name {
         "webfetch" => s(&args["url"]),
@@ -1444,7 +1544,11 @@ fn tool_detail(tool_name: &str, args: &serde_json::Value) -> String {
         "grep" => {
             let pat = s(&args["pattern"]);
             let path = s(&args["path"]);
-            if path.is_empty() { pat } else { format!("{pat} in {path}") }
+            if path.is_empty() {
+                pat
+            } else {
+                format!("{pat} in {path}")
+            }
         }
         "subagent_spawn" | "subagent_spawn_all" => String::new(),
         _ => String::new(),

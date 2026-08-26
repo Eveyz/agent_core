@@ -73,8 +73,7 @@ fn from_row(row: &rusqlite::Row) -> rusqlite::Result<AgentHistoryEntry> {
     })
 }
 
-const SELECT_COLS: &str =
-    "id, agent_id, session_id, workflow_run_id, trigger, input, output, \
+const SELECT_COLS: &str = "id, agent_id, session_id, workflow_run_id, trigger, input, output, \
      iterations_used, success, model_used, token_input, token_output, \
      process_time_ms, created_at";
 

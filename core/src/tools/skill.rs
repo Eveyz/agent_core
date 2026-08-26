@@ -62,7 +62,10 @@ impl Tool for SkillSearchTool {
         for (skill, source) in mgr.list_with_sources() {
             let matched = skill.name.to_lowercase().contains(&query)
                 || skill.description.to_lowercase().contains(&query)
-                || skill.tags.iter().any(|tag| tag.to_lowercase().contains(&query))
+                || skill
+                    .tags
+                    .iter()
+                    .any(|tag| tag.to_lowercase().contains(&query))
                 || skill
                     .triggers
                     .iter()
@@ -508,6 +511,9 @@ mod tests {
             .execute(serde_json::json!({"query": "fresh"}))
             .await
             .unwrap();
-        assert!(after.contains("fresh"), "expected rescan to find new skill, got: {after}");
+        assert!(
+            after.contains("fresh"),
+            "expected rescan to find new skill, got: {after}"
+        );
     }
 }

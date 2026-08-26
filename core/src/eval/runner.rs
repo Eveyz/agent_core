@@ -13,17 +13,13 @@ use crate::runtime::event::{Envelope, RunEvent};
 use crate::runtime::{Brain, RunManager};
 use crate::types::Message;
 
-use super::collector::{collect_ledger, load_trace_jsonl, CollectOpts};
-use super::grader::{grade, GradeOutcome};
-use super::ledger::{
-    EvalMode, HarnessConfig, ModelInfo, RunLedger, SuiteSummary,
-};
-use super::mock_llm::{start_mock_server, MockScript, MockServer};
-use super::prices::{estimate_cost_usd, load_price_table, PriceTable};
+use super::collector::{CollectOpts, collect_ledger, load_trace_jsonl};
+use super::grader::{GradeOutcome, grade};
+use super::ledger::{EvalMode, HarnessConfig, ModelInfo, RunLedger, SuiteSummary};
+use super::mock_llm::{MockScript, MockServer, start_mock_server};
+use super::prices::{PriceTable, estimate_cost_usd, load_price_table};
 use super::reporter::{summarize_suite, write_report};
-use super::task::{
-    materialize_workspace, ApprovalPolicy, EvalSuite, EvalTask, TaskDriver,
-};
+use super::task::{ApprovalPolicy, EvalSuite, EvalTask, TaskDriver, materialize_workspace};
 use super::taxonomy;
 
 #[derive(Debug, Clone)]
@@ -61,10 +57,11 @@ pub async fn run_suite(opts: EvalRunOptions) -> Result<EvalRunResult> {
                 PathBuf::from("evals/prices/openai_2026_07.toml"),
                 PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("../evals/prices/openai_2026_07.toml"),
-                opts.suite_dir
-                    .join("../../prices/openai_2026_07.toml"),
+                opts.suite_dir.join("../../prices/openai_2026_07.toml"),
             ];
-            candidates.into_iter().find_map(|p| load_price_table(&p).ok())
+            candidates
+                .into_iter()
+                .find_map(|p| load_price_table(&p).ok())
         }
     };
 
@@ -152,11 +149,7 @@ async fn run_trace_task(
     harness: &HarnessConfig,
     model_info: &ModelInfo,
 ) -> Result<RunLedger> {
-    let rel = task
-        .manifest
-        .trace
-        .as_deref()
-        .unwrap_or("trace.jsonl");
+    let rel = task.manifest.trace.as_deref().unwrap_or("trace.jsonl");
     let path = task.dir.join(rel);
     let events = load_trace_jsonl(&path)?;
     let traces_dir = opts.out_dir.join("traces");

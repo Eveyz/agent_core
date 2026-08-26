@@ -2,7 +2,7 @@
 
 use crate::bootstrap::resolve_config_path;
 use agent_core::{
-    client::OpenAIClient, default_config_path, resolve_env_value, Config, Message, ModelConfig,
+    Config, Message, ModelConfig, client::OpenAIClient, default_config_path, resolve_env_value,
 };
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -167,7 +167,10 @@ mod tests {
 
     #[test]
     fn keeps_env_refs() {
-        assert_eq!(redact_secret("${OPENAI_API_KEY}"), "${OPENAI_API_KEY} (env ref)");
+        assert_eq!(
+            redact_secret("${OPENAI_API_KEY}"),
+            "${OPENAI_API_KEY} (env ref)"
+        );
     }
 
     #[test]

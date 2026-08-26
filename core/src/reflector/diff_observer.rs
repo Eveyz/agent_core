@@ -81,11 +81,12 @@ impl DiffObserver {
                             use similar::TextDiff;
                             let diff = TextDiff::from_lines(&snap_content, &curr_content);
                             let mut diff_bytes = Vec::new();
-                            let _ = diff.unified_diff()
+                            let _ = diff
+                                .unified_diff()
                                 .header(&orig_path_str, &orig_path_str)
                                 .context_radius(3)
                                 .to_writer(&mut diff_bytes);
-                            
+
                             if let Ok(diff_str) = String::from_utf8(diff_bytes) {
                                 diffs.push(UserEditDiffEvent {
                                     file_path: orig_path_str,
@@ -97,7 +98,7 @@ impl DiffObserver {
                 }
             }
         }
-        
+
         // Prune the snapshot after checking
         let _ = std::fs::remove_dir_all(&snapshot_dir);
 

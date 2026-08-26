@@ -36,7 +36,9 @@ impl WorkflowContext {
     }
 
     pub fn set_output(&self, node_id: &str, output: serde_json::Value) {
-        self.node_outputs.write().insert(node_id.to_string(), output);
+        self.node_outputs
+            .write()
+            .insert(node_id.to_string(), output);
     }
 
     pub fn get_output(&self, node_id: &str) -> Option<serde_json::Value> {
@@ -55,11 +57,7 @@ impl WorkflowContext {
     /// - one key per incoming edge (keyed by edge label or source node id),
     /// - `_shared`: the shared state,
     /// - `_workflow_input`: the original input.
-    pub fn resolve_input(
-        &self,
-        _node_id: &str,
-        incoming: &[&EdgeDef],
-    ) -> serde_json::Value {
+    pub fn resolve_input(&self, _node_id: &str, incoming: &[&EdgeDef]) -> serde_json::Value {
         let outputs = self.node_outputs.read();
         let mut input = serde_json::Map::new();
 
@@ -125,9 +123,9 @@ pub struct RouterConfig {
 impl RouterConfig {
     /// Parse a router config from a node's config JSON (the `router` field).
     pub fn from_node_config(config: &serde_json::Value) -> Option<Self> {
-        config.get("router").map(|r| {
-            serde_json::from_value(r.clone()).unwrap_or_default()
-        })
+        config
+            .get("router")
+            .map(|r| serde_json::from_value(r.clone()).unwrap_or_default())
     }
 
     /// Decide which downstream node ids to execute based on `output`.
@@ -410,7 +408,10 @@ mod tests {
             default: vec!["reject".into()],
         };
         // 95 matches the first rule
-        assert_eq!(cfg.route(&serde_json::json!({"score": 95})), vec!["promote"]);
+        assert_eq!(
+            cfg.route(&serde_json::json!({"score": 95})),
+            vec!["promote"]
+        );
         // 70 matches the second rule (first doesn't match)
         assert_eq!(cfg.route(&serde_json::json!({"score": 70})), vec!["review"]);
         // 30 matches neither → default
@@ -423,7 +424,10 @@ mod tests {
             rules: vec![],
             default: vec!["next".into()],
         };
-        assert_eq!(cfg.route(&serde_json::json!({"anything": true})), vec!["next"]);
+        assert_eq!(
+            cfg.route(&serde_json::json!({"anything": true})),
+            vec!["next"]
+        );
     }
 
     #[test]

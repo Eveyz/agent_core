@@ -28,7 +28,9 @@ use self::storage::Storage;
 
 pub use self::lifecycle::LifecycleReport;
 pub use self::recall::MemoryStats;
-pub use self::recall_gate::{RecallIntent, format_recall_results, intent_for_mode, route_recall_intent, RECALL_HINT};
+pub use self::recall_gate::{
+    RECALL_HINT, RecallIntent, format_recall_results, intent_for_mode, route_recall_intent,
+};
 pub use self::salience::{MemoryCategory, SalienceConfig, SalienceScorer, ScoredRecord};
 pub struct MemoryManager {
     core: CoreMemory,
@@ -55,7 +57,14 @@ impl MemoryManager {
         default_block_max_chars: usize,
         salience_config: Option<&SalienceConfig>,
     ) -> Result<Self> {
-        Self::new_with_indexes(db_path, embedding_model_name, default_block_max_chars, salience_config, None, None)
+        Self::new_with_indexes(
+            db_path,
+            embedding_model_name,
+            default_block_max_chars,
+            salience_config,
+            None,
+            None,
+        )
     }
 
     /// Full constructor with optional BM25 and HNSW indexes.
@@ -106,7 +115,13 @@ impl MemoryManager {
         default_block_max_chars: usize,
         salience_config: Option<&SalienceConfig>,
     ) -> Result<Self> {
-        Self::without_embedding_with_indexes(db_path, default_block_max_chars, salience_config, None, None)
+        Self::without_embedding_with_indexes(
+            db_path,
+            default_block_max_chars,
+            salience_config,
+            None,
+            None,
+        )
     }
 
     /// Without-embedding constructor with optional BM25 and HNSW indexes.
@@ -329,7 +344,12 @@ impl MemoryManager {
         content: &str,
         precomputed: Option<&[f32]>,
     ) -> Result<String> {
-        self.store_conversation_for_session_precomputed(&self.session_id, role, content, precomputed)
+        self.store_conversation_for_session_precomputed(
+            &self.session_id,
+            role,
+            content,
+            precomputed,
+        )
     }
 
     pub fn store_conversation_for_session_precomputed(
@@ -426,7 +446,8 @@ impl MemoryManager {
         query: &str,
         top_k: usize,
     ) -> Result<Vec<recall::RecallRecord>> {
-        self.recall.search_by_keyword_for_session(session_id, query, top_k)
+        self.recall
+            .search_by_keyword_for_session(session_id, query, top_k)
     }
 
     /// Pure BM25 keyword search — no embedding model needed.
@@ -476,10 +497,9 @@ impl MemoryManager {
         let mut stmt = db
             .prepare_cached(&sql)
             .context("failed to prepare bm25 search query")?;
-        let rows = stmt.query_map(
-            param_refs.as_slice(),
-            |row| recall::RecallMemory::parse_recall_row_static(row),
-        )?;
+        let rows = stmt.query_map(param_refs.as_slice(), |row| {
+            recall::RecallMemory::parse_recall_row_static(row)
+        })?;
 
         // Collect records, sort into BM25 order, truncate
         let rank: std::collections::HashMap<String, usize> = bm25_ids
@@ -555,10 +575,9 @@ impl MemoryManager {
             let mut stmt = db
                 .prepare_cached(&sql)
                 .context("failed to prepare bm25+salience query")?;
-            let rows = stmt.query_map(
-                param_refs.as_slice(),
-                |row| recall::RecallMemory::parse_recall_row_static(row),
-            )?;
+            let rows = stmt.query_map(param_refs.as_slice(), |row| {
+                recall::RecallMemory::parse_recall_row_static(row)
+            })?;
 
             let mut scored: Vec<(f32, recall::RecallRecord)> = Vec::new();
 
@@ -568,27 +587,18 @@ impl MemoryManager {
 
                 let hours_since = chrono::DateTime::parse_from_rfc3339(&record.created_at)
                     .ok()
-                    .map(|dt| {
-                        (now - dt.with_timezone(&chrono::Utc))
-                            .num_hours()
-                            .max(0) as f32
-                    })
+                    .map(|dt| (now - dt.with_timezone(&chrono::Utc)).num_hours().max(0) as f32)
                     .unwrap_or(0.0);
 
-                let score = scorer.hybrid_score(
-                    s_rrf,
-                    hours_since,
-                    record.importance,
-                    record.category,
-                );
+                let score =
+                    scorer.hybrid_score(s_rrf, hours_since, record.importance, record.category);
                 scored.push((score, record));
             }
 
             scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
             scored.truncate(top_k);
 
-            let results: Vec<recall::RecallRecord> =
-                scored.into_iter().map(|(_, r)| r).collect();
+            let results: Vec<recall::RecallRecord> = scored.into_iter().map(|(_, r)| r).collect();
             let bump_ids: Vec<String> = results.iter().map(|r| r.id.clone()).collect();
             (results, bump_ids)
         }; // db + stmt + rows dropped here
@@ -624,11 +634,7 @@ impl MemoryManager {
         let fused = rrf::fuse_normalized(&lists, 60);
 
         // Phase 3: Truncate to 100 candidates
-        let candidates: Vec<String> = fused
-            .into_iter()
-            .take(100)
-            .map(|(id, _)| id)
-            .collect();
+        let candidates: Vec<String> = fused.into_iter().take(100).map(|(id, _)| id).collect();
 
         if candidates.is_empty() {
             return Ok(Vec::new());
@@ -658,8 +664,12 @@ impl MemoryManager {
                 .map(|s| s as &dyn rusqlite::types::ToSql)
                 .collect();
 
-            let mut stmt = db.prepare(&sql).context("failed to prepare hybrid search query")?;
-            let rows = stmt.query_map(param_refs.as_slice(), |row| recall::RecallMemory::parse_recall_row_static(row))?;
+            let mut stmt = db
+                .prepare(&sql)
+                .context("failed to prepare hybrid search query")?;
+            let rows = stmt.query_map(param_refs.as_slice(), |row| {
+                recall::RecallMemory::parse_recall_row_static(row)
+            })?;
 
             let rrf_map: std::collections::HashMap<String, f32> = candidates
                 .iter()
@@ -718,11 +728,7 @@ impl MemoryManager {
         let lists = vec![bm25_ids, hnsw_ids];
         let fused = rrf::fuse_normalized(&lists, 60);
 
-        let candidates: Vec<String> = fused
-            .into_iter()
-            .take(100)
-            .map(|(id, _)| id)
-            .collect();
+        let candidates: Vec<String> = fused.into_iter().take(100).map(|(id, _)| id).collect();
 
         if candidates.is_empty() {
             return Ok(Vec::new());
@@ -752,7 +758,9 @@ impl MemoryManager {
                 .collect();
 
             let mut stmt = db.prepare(&sql)?;
-            let rows = stmt.query_map(param_refs.as_slice(), |row| recall::RecallMemory::parse_recall_row_static(row))?;
+            let rows = stmt.query_map(param_refs.as_slice(), |row| {
+                recall::RecallMemory::parse_recall_row_static(row)
+            })?;
 
             let rrf_map: std::collections::HashMap<String, f32> = candidates
                 .iter()
@@ -799,7 +807,11 @@ impl MemoryManager {
     }
 
     /// Search archival memory.
-    pub fn search_archival(&self, query: &str, top_k: usize) -> Result<Vec<archival::ArchivalRecord>> {
+    pub fn search_archival(
+        &self,
+        query: &str,
+        top_k: usize,
+    ) -> Result<Vec<archival::ArchivalRecord>> {
         self.archival.search(query, top_k)
     }
 
@@ -890,10 +902,9 @@ impl MemoryManager {
             .collect();
 
         let mut stmt = db.prepare(&sql)?;
-        let rows = stmt.query_map(
-            param_refs.as_slice(),
-            |row| recall::RecallMemory::parse_recall_row_static(row),
-        )?;
+        let rows = stmt.query_map(param_refs.as_slice(), |row| {
+            recall::RecallMemory::parse_recall_row_static(row)
+        })?;
 
         let rank: std::collections::HashMap<String, usize> = bm25_ids
             .iter()
@@ -932,11 +943,8 @@ mod tests {
     fn setup_test_memory() -> (TempDir, MemoryManager) {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("test.db");
-        let memory = MemoryManager::without_embedding(
-            db_path.to_str().unwrap(),
-            4096,
-            None,
-        ).unwrap();
+        let memory =
+            MemoryManager::without_embedding(db_path.to_str().unwrap(), 4096, None).unwrap();
         (dir, memory)
     }
 
@@ -953,7 +961,9 @@ mod tests {
     #[test]
     fn test_store_and_search_archival() {
         let (_dir, memory) = setup_test_memory();
-        memory.store_archival("Rust is a systems programming language", None).unwrap();
+        memory
+            .store_archival("Rust is a systems programming language", None)
+            .unwrap();
         let results = memory.search_archival("Rust", 5).unwrap();
         assert!(!results.is_empty());
     }
@@ -986,11 +996,15 @@ mod tests {
     #[test]
     fn test_store_and_recall_returns_role_and_content() {
         let (_dir, memory) = setup_test_memory();
-        memory.store_conversation("user", "open the pod bay doors").unwrap();
+        memory
+            .store_conversation("user", "open the pod bay doors")
+            .unwrap();
         let results = memory.search_conversation("doors", 5).unwrap();
-        assert!(results.iter().any(|r| {
-            r.content.contains("pod bay doors") || r.content.contains("doors")
-        }));
+        assert!(
+            results
+                .iter()
+                .any(|r| { r.content.contains("pod bay doors") || r.content.contains("doors") })
+        );
     }
 
     #[test]

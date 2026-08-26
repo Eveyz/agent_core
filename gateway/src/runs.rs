@@ -2,26 +2,24 @@
 
 use crate::auth::AuthUser;
 use crate::error::ApiError;
-use crate::models::{
-    AnswerRequest, ApproveRequest, CreateRunRequest, ListRunsResponse, RunView,
-};
+use crate::models::{AnswerRequest, ApproveRequest, CreateRunRequest, ListRunsResponse, RunView};
 use crate::state::AppState;
 use crate::store::{AgentRecord, RunRecord};
 use crate::stream::{envelope_to_sse_events, map_status};
+use agent_core::RunState;
 use agent_core::permission::ApprovalChoice;
 use agent_core::runtime::command::RunCommand;
 use agent_core::runtime::event::RunEvent;
-use agent_core::RunState;
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::Json;
 use chrono::Utc;
 use futures::stream::{self, Stream};
 use serde::Deserialize;
 use std::convert::Infallible;
 use std::time::Duration;
-use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::BroadcastStream;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,11 +55,7 @@ pub async fn start_run_on_agent(
     let sm = state.session_manager.clone();
     let sid = record.id.clone();
     let history = tokio::task::spawn_blocking(move || {
-        Ok::<_, anyhow::Error>(
-            sm.resume(&sid)?
-                .map(|s| s.messages)
-                .unwrap_or_default(),
-        )
+        Ok::<_, anyhow::Error>(sm.resume(&sid)?.map(|s| s.messages).unwrap_or_default())
     })
     .await
     .map_err(|e| ApiError::Internal(e.to_string()))?
@@ -146,14 +140,12 @@ fn spawn_run_watcher(state: AppState, agent_id: String, run_id: String) {
                     // Try to pull final text from the event log.
                     let text = {
                         let rm = state.run_manager.lock().await;
-                        rm.load_run_log(&run_id)
-                            .ok()
-                            .and_then(|envs| {
-                                envs.into_iter().rev().find_map(|e| match e.event {
-                                    RunEvent::RunCompleted { final_text } => Some(final_text),
-                                    _ => None,
-                                })
+                        rm.load_run_log(&run_id).ok().and_then(|envs| {
+                            envs.into_iter().rev().find_map(|e| match e.event {
+                                RunEvent::RunCompleted { final_text } => Some(final_text),
+                                _ => None,
                             })
+                        })
                     };
                     ("FINISHED", text)
                 }
@@ -161,14 +153,12 @@ fn spawn_run_watcher(state: AppState, agent_id: String, run_id: String) {
                 RunState::Failed => {
                     let text = {
                         let rm = state.run_manager.lock().await;
-                        rm.load_run_log(&run_id)
-                            .ok()
-                            .and_then(|envs| {
-                                envs.into_iter().rev().find_map(|e| match e.event {
-                                    RunEvent::RunFailed { error } => Some(error),
-                                    _ => None,
-                                })
+                        rm.load_run_log(&run_id).ok().and_then(|envs| {
+                            envs.into_iter().rev().find_map(|e| match e.event {
+                                RunEvent::RunFailed { error } => Some(error),
+                                _ => None,
                             })
+                        })
                     };
                     ("FAILED", text)
                 }
@@ -235,10 +225,7 @@ pub async fn list_runs(
     };
     items.truncate(limit);
 
-    Ok(Json(ListRunsResponse {
-        items,
-        next_cursor,
-    }))
+    Ok(Json(ListRunsResponse { items, next_cursor }))
 }
 
 async fn live_run_view(state: &AppState, r: &RunRecord) -> RunView {
@@ -327,10 +314,7 @@ pub async fn stream_run(
         rm.subscribe(&run_id).await.ok()
     };
 
-    let replay_events: Vec<Event> = replay
-        .iter()
-        .flat_map(envelope_to_sse_events)
-        .collect();
+    let replay_events: Vec<Event> = replay.iter().flat_map(envelope_to_sse_events).collect();
 
     let replay_stream = stream::iter(replay_events.into_iter().map(Ok::<_, Infallible>));
 

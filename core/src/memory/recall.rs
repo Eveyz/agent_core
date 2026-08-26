@@ -190,8 +190,8 @@ impl RecallMemory {
             if let Ok(mut stmt) = db.prepare_cached(
                 "SELECT rowid FROM recall_memory_fts WHERE recall_memory_fts MATCH ?1 LIMIT ?2",
             ) {
-                if let Ok(rows) =
-                    stmt.query_map(rusqlite::params![fts_query, fts_limit as i64], |row| {
+                if let Ok(rows) = stmt
+                    .query_map(rusqlite::params![fts_query, fts_limit as i64], |row| {
                         row.get::<_, i64>(0)
                     })
                 {
@@ -206,11 +206,9 @@ impl RecallMemory {
         if let Ok(mut stmt) =
             db.prepare_cached("SELECT rowid FROM recall_memory ORDER BY created_at DESC LIMIT ?1")
         {
-            if let Ok(rows) =
-                stmt.query_map(rusqlite::params![recent_limit as i64], |row| {
-                    row.get::<_, i64>(0)
-                })
-            {
+            if let Ok(rows) = stmt.query_map(rusqlite::params![recent_limit as i64], |row| {
+                row.get::<_, i64>(0)
+            }) {
                 for row in rows.flatten() {
                     candidates.insert(row);
                 }
@@ -395,7 +393,9 @@ impl RecallMemory {
 
         // Phase 1: Collect candidates via FTS5 + recent records
         let rowids = match session_id {
-            Some(session_id) => Self::collect_session_candidates(&db, session_id, query_text, 50, 100),
+            Some(session_id) => {
+                Self::collect_session_candidates(&db, session_id, query_text, 50, 100)
+            }
             None => Self::collect_candidates(&db, query_text, 50, 100),
         };
 
@@ -419,10 +419,8 @@ impl RecallMemory {
             placeholders
         );
 
-        let params: Vec<&dyn rusqlite::ToSql> = rowids
-            .iter()
-            .map(|r| r as &dyn rusqlite::ToSql)
-            .collect();
+        let params: Vec<&dyn rusqlite::ToSql> =
+            rowids.iter().map(|r| r as &dyn rusqlite::ToSql).collect();
 
         let mut stmt = db.prepare(&sql)?;
         let rows = stmt.query_map(params.as_slice(), |row| Self::parse_recall_row(row))?;
@@ -466,8 +464,9 @@ impl RecallMemory {
         query: &str,
         top_k: usize,
     ) -> Result<Vec<super::salience::ScoredRecord>> {
-        let model = self.embedding_model.as_ref()
-            .ok_or_else(|| anyhow::anyhow!("embedding model not available; search_scored requires embedding"))?;
+        let model = self.embedding_model.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("embedding model not available; search_scored requires embedding")
+        })?;
         let query_embedding = model.embed_single(query)?;
 
         let db = self.storage.conn();
@@ -496,10 +495,8 @@ impl RecallMemory {
             placeholders
         );
 
-        let params: Vec<&dyn rusqlite::ToSql> = rowids
-            .iter()
-            .map(|r| r as &dyn rusqlite::ToSql)
-            .collect();
+        let params: Vec<&dyn rusqlite::ToSql> =
+            rowids.iter().map(|r| r as &dyn rusqlite::ToSql).collect();
 
         let mut stmt = db.prepare(&sql)?;
         let now = Utc::now();
@@ -519,7 +516,8 @@ impl RecallMemory {
         })?;
 
         for row in rows {
-            let (id, content, embedding, importance, memory_strength, category_str, created_at) = row?;
+            let (id, content, embedding, importance, memory_strength, category_str, created_at) =
+                row?;
 
             let semantic = cosine_similarity(&query_embedding, &embedding);
 
@@ -529,12 +527,16 @@ impl RecallMemory {
                 .unwrap_or(0.0);
 
             let category = MemoryCategory::from_str(&category_str);
-            let recall = self
-                .scorer
-                .recall_score(hours_since, memory_strength, importance, category);
-            let total =
+            let recall =
                 self.scorer
-                    .retrieval_score(semantic, hours_since, memory_strength, importance, category);
+                    .recall_score(hours_since, memory_strength, importance, category);
+            let total = self.scorer.retrieval_score(
+                semantic,
+                hours_since,
+                memory_strength,
+                importance,
+                category,
+            );
 
             scored.push((
                 total,
@@ -736,7 +738,9 @@ impl RecallMemory {
                 .unwrap_or(0.0);
 
             let category = MemoryCategory::from_str(&category_str);
-            let recall = self.scorer.recall_score(hours_since, strength, importance, category);
+            let recall = self
+                .scorer
+                .recall_score(hours_since, strength, importance, category);
             if recall < min_score {
                 to_delete.push(id);
             }

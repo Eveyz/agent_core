@@ -34,11 +34,11 @@ use std::path::{Path, PathBuf};
 use crate::client::OpenAIClient;
 use crate::types::Message;
 
-pub mod digester;
 pub mod diff_observer;
+pub mod digester;
 pub mod suggestion;
 
-pub use digester::{Digester, DigesterRule, DigestEvent, DigestEventKind};
+pub use digester::{DigestEvent, DigestEventKind, Digester, DigesterRule};
 pub use suggestion::{
     SAFE_AUTO_APPLY, SECURITY_FIELDS, Suggestion, SuggestionAction, SuggestionKind,
 };
@@ -116,7 +116,10 @@ impl Reflector {
                     args: None,
                     is_error: false,
                     message: None,
-                    turn_index: env.get("index").and_then(|v| v.as_u64()).map(|n| n as usize),
+                    turn_index: env
+                        .get("index")
+                        .and_then(|v| v.as_u64())
+                        .map(|n| n as usize),
                     ts,
                 }),
                 "tool_started" => Some(DigestEvent {
@@ -132,7 +135,10 @@ impl Reflector {
                     kind: DigestEventKind::ToolEnd,
                     tool_name: env.get("name").and_then(|v| v.as_str()).map(String::from),
                     args: None,
-                    is_error: env.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false),
+                    is_error: env
+                        .get("is_error")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
                     message: None,
                     turn_index: None,
                     ts,
@@ -142,7 +148,10 @@ impl Reflector {
                     tool_name: None,
                     args: None,
                     is_error: true,
-                    message: env.get("message").and_then(|v| v.as_str()).map(String::from),
+                    message: env
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .map(String::from),
                     turn_index: None,
                     ts,
                 }),

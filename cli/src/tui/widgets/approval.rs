@@ -1,4 +1,4 @@
-use crate::tui::state::{AppState, APPROVAL_CHOICES};
+use crate::tui::state::{APPROVAL_CHOICES, AppState};
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
@@ -68,12 +68,17 @@ impl<'a> Widget for ApprovalModal<'a> {
         let mut lines = vec![
             Line::from(Span::styled(
                 " Approval Required ",
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             )),
             Line::raw(""),
             Line::from(vec![
                 Span::raw("Tool: "),
-                Span::styled(tool_name.clone(), Style::default().fg(TOOL_COLOR).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    tool_name.clone(),
+                    Style::default().fg(TOOL_COLOR).add_modifier(Modifier::BOLD),
+                ),
                 Span::raw("  "),
                 Span::styled(
                     format!("[{danger_level}]"),
@@ -86,7 +91,8 @@ impl<'a> Widget for ApprovalModal<'a> {
         }
         lines.push(Line::raw(explanation.clone()));
         lines.push(Line::raw(""));
-        let args = serde_json::to_string_pretty(tool_input).unwrap_or_else(|_| tool_input.to_string());
+        let args =
+            serde_json::to_string_pretty(tool_input).unwrap_or_else(|_| tool_input.to_string());
         for l in args.lines().take(6) {
             lines.push(Line::from(Span::styled(
                 l.to_string(),
@@ -97,7 +103,10 @@ impl<'a> Widget for ApprovalModal<'a> {
         for (i, (key, label)) in APPROVAL_CHOICES.iter().enumerate() {
             let prefix = if i == selected { "▶ " } else { "  " };
             let style = if i == selected {
-                Style::default().fg(Color::Black).bg(TOOL_COLOR).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(TOOL_COLOR)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::White)
             };
@@ -117,6 +126,8 @@ impl<'a> Widget for ApprovalModal<'a> {
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(TOOL_COLOR))
             .style(Style::default().bg(CODE_BG));
-        Paragraph::new(Text::from(lines)).block(block).render(area, buf);
+        Paragraph::new(Text::from(lines))
+            .block(block)
+            .render(area, buf);
     }
 }

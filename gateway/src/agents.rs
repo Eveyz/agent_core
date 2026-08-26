@@ -9,8 +9,8 @@ use crate::runs::start_run_on_agent;
 use crate::state::AppState;
 use crate::store::AgentRecord;
 use crate::workspace;
-use axum::extract::{Path, Query, State};
 use axum::Json;
+use axum::extract::{Path, Query, State};
 use chrono::Utc;
 use serde::Deserialize;
 
@@ -42,7 +42,9 @@ pub async fn create_agent(
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     if state.agent_store.get(&agent_id)?.is_some() {
-        return Err(ApiError::Conflict(format!("agent {agent_id} already exists")));
+        return Err(ApiError::Conflict(format!(
+            "agent {agent_id} already exists"
+        )));
     }
 
     // Optional model switch for this process (affects subsequent runs).

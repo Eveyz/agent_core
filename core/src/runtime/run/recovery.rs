@@ -65,8 +65,7 @@ impl Run {
                         let new_client = crate::client::OpenAIClient::new(model_config.clone());
                         let max_tokens = new_client.model.max_context_tokens;
                         self.client = new_client;
-                        self.recovery_ctx =
-                            RecoveryContext::new(&model, max_tokens);
+                        self.recovery_ctx = RecoveryContext::new(&model, max_tokens);
                         tracing::info!(
                             model = %model,
                             "switched model mid-run, continuing"

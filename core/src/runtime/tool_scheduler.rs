@@ -331,8 +331,7 @@ mod tests {
                 "skill.reporting.export".to_string()
             )]
         );
-        let (sanitized, _) =
-            classify_resources("skill_reporting_export", &serde_json::json!({}));
+        let (sanitized, _) = classify_resources("skill_reporting_export", &serde_json::json!({}));
         assert_eq!(
             sanitized,
             vec![ResourceKey::BashProgram(

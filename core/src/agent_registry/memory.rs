@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::sync::Arc;
 
-use crate::memory::embedding::{cosine_similarity, embedding_to_bytes, EmbeddingModel};
+use crate::memory::embedding::{EmbeddingModel, cosine_similarity, embedding_to_bytes};
 use crate::memory::salience::{MemoryCategory, SalienceConfig, SalienceScorer};
 use crate::memory::storage::Storage;
 
@@ -169,10 +169,9 @@ impl AgentMemoryStore {
                  WHERE fts.agent_memory_fts MATCH ?1 AND am.memory_key = ?2 \
                  LIMIT 50",
             ) {
-                if let Ok(rows) = stmt.query_map(
-                    rusqlite::params![fts, memory_key],
-                    |row| row.get::<_, i64>(0),
-                ) {
+                if let Ok(rows) = stmt.query_map(rusqlite::params![fts, memory_key], |row| {
+                    row.get::<_, i64>(0)
+                }) {
                     for row in rows.flatten() {
                         candidates.push(row);
                     }
@@ -185,9 +184,9 @@ impl AgentMemoryStore {
             "SELECT rowid FROM agent_memory WHERE memory_key = ?1 \
              ORDER BY created_at DESC LIMIT 100",
         ) {
-            if let Ok(rows) = stmt.query_map(rusqlite::params![memory_key], |row| {
-                row.get::<_, i64>(0)
-            }) {
+            if let Ok(rows) =
+                stmt.query_map(rusqlite::params![memory_key], |row| row.get::<_, i64>(0))
+            {
                 for row in rows.flatten() {
                     if !candidates.contains(&row) {
                         candidates.push(row);
@@ -354,15 +353,17 @@ fn build_fts_query(text: &str) -> Option<String> {
         return None;
     }
 
-    Some(terms.iter().map(|t| format!("{t}*")).collect::<Vec<_>>().join(" OR "))
+    Some(
+        terms
+            .iter()
+            .map(|t| format!("{t}*"))
+            .collect::<Vec<_>>()
+            .join(" OR "),
+    )
 }
 
 /// Collect candidate rowids for a memory_key via FTS5 + recent records.
-fn collect_candidates(
-    db: &rusqlite::Connection,
-    memory_key: &str,
-    query_text: &str,
-) -> Vec<i64> {
+fn collect_candidates(db: &rusqlite::Connection, memory_key: &str, query_text: &str) -> Vec<i64> {
     let mut candidates: Vec<i64> = Vec::new();
 
     if let Some(fts_query) = build_fts_query(query_text) {
@@ -385,9 +386,8 @@ fn collect_candidates(
         "SELECT rowid FROM agent_memory WHERE memory_key = ?1 \
          ORDER BY created_at DESC LIMIT 100",
     ) {
-        if let Ok(rows) = stmt.query_map(rusqlite::params![memory_key], |row| {
-            row.get::<_, i64>(0)
-        }) {
+        if let Ok(rows) = stmt.query_map(rusqlite::params![memory_key], |row| row.get::<_, i64>(0))
+        {
             for row in rows.flatten() {
                 if !candidates.contains(&row) {
                     candidates.push(row);

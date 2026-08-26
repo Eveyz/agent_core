@@ -28,10 +28,7 @@ pub enum MockStep {
     },
     /// Delay the HTTP response so tests can deterministically interrupt an
     /// in-flight model request before any SSE event arrives.
-    DelayedText {
-        text: String,
-        delay_ms: u64,
-    },
+    DelayedText { text: String, delay_ms: u64 },
     /// Send one text delta, pause, then finish the response.
     StreamingText {
         first: String,
@@ -354,10 +351,7 @@ mod tests {
             .unwrap();
         let status = resp.status();
         let body = resp.text().await.unwrap();
-        assert!(
-            status.is_success(),
-            "mock server returned {status}: {body}"
-        );
+        assert!(status.is_success(), "mock server returned {status}: {body}");
         assert!(body.contains("hello"));
         assert!(body.contains("[DONE]"));
         server.shutdown().await;

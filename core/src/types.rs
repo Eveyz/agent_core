@@ -87,7 +87,9 @@ impl ReasoningState {
 
     /// True when an opaque provider blob must be round-tripped unchanged.
     pub fn has_opaque_blob(&self) -> bool {
-        self.encrypted_content.as_ref().is_some_and(|s| !s.is_empty())
+        self.encrypted_content
+            .as_ref()
+            .is_some_and(|s| !s.is_empty())
             || self.signature.as_ref().is_some_and(|s| !s.is_empty())
     }
 }
@@ -95,7 +97,10 @@ impl ReasoningState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
-    #[serde(serialize_with = "serialize_content", deserialize_with = "deserialize_content")]
+    #[serde(
+        serialize_with = "serialize_content",
+        deserialize_with = "deserialize_content"
+    )]
     pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
@@ -208,10 +213,16 @@ pub struct CacheUsage {
 }
 
 impl CacheUsage {
-    pub fn total(&self) -> u64 { self.hit_tokens + self.miss_tokens }
+    pub fn total(&self) -> u64 {
+        self.hit_tokens + self.miss_tokens
+    }
     pub fn hit_rate(&self) -> f64 {
         let total = self.total();
-        if total == 0 { 0.0 } else { self.hit_tokens as f64 / total as f64 }
+        if total == 0 {
+            0.0
+        } else {
+            self.hit_tokens as f64 / total as f64
+        }
     }
 }
 

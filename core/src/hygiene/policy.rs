@@ -304,10 +304,8 @@ fn summarize_args(arguments: &str) -> String {
             for (_key, value) in map.iter_mut() {
                 if let serde_json::Value::String(s) = value {
                     if s.len() > TOOL_ARG_STRING_MAX_CHARS {
-                        *value = serde_json::Value::String(format!(
-                            "[truncated {} chars]",
-                            s.len()
-                        ));
+                        *value =
+                            serde_json::Value::String(format!("[truncated {} chars]", s.len()));
                     }
                 }
             }
@@ -437,8 +435,7 @@ mod tests {
     #[test]
     fn incidental_spill_path_in_marker() {
         let big = big_incidental();
-        let out =
-            truncate_content_with_spill(Some("shell"), &big, Some("/tmp/spill.txt")).unwrap();
+        let out = truncate_content_with_spill(Some("shell"), &big, Some("/tmp/spill.txt")).unwrap();
         assert!(out.contains("/tmp/spill.txt"));
         assert!(out.contains("read_file"));
     }

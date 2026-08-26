@@ -2,8 +2,8 @@
 
 use crate::state::CliState;
 use agent_core::{
-    load_or_init_default, tasks, Brain, McpClientManager, PermissionMode, RunManager,
-    SessionManager, TaskBoard, TodoList, ToolExecutionMode,
+    Brain, McpClientManager, PermissionMode, RunManager, SessionManager, TaskBoard, TodoList,
+    ToolExecutionMode, load_or_init_default, tasks,
 };
 use parking_lot::Mutex;
 use std::path::Path;
@@ -137,15 +137,13 @@ pub async fn bootstrap_runtime(opts: BootstrapOptions) -> anyhow::Result<CliStat
         agent_core::workflow::runtime::CustomAgentActivityAdapter::new(custom_agent_runner),
     )
         as Arc<dyn agent_core::workflow::runtime::ActivityAdapter>])?;
-    let workflow_store = Arc::new(
-        agent_core::workflow::runtime::SqliteWorkflowStore::new(session_storage.clone())?,
-    );
-    let workflow_runtime = Arc::new(
-        agent_core::workflow::runtime::DurableWorkflowRuntime::new(
-            workflow_store.clone(),
-            workflow_activities,
-        ),
-    );
+    let workflow_store = Arc::new(agent_core::workflow::runtime::SqliteWorkflowStore::new(
+        session_storage.clone(),
+    )?);
+    let workflow_runtime = Arc::new(agent_core::workflow::runtime::DurableWorkflowRuntime::new(
+        workflow_store.clone(),
+        workflow_activities,
+    ));
     let workflow_authoring = Arc::new(
         agent_core::workflow::runtime::WorkflowAuthoringService::new(
             session_storage,
@@ -187,9 +185,7 @@ pub fn parse_tool_mode(s: &str) -> anyhow::Result<ToolExecutionMode> {
     match s.to_lowercase().as_str() {
         "parallel" | "par" => Ok(ToolExecutionMode::Parallel),
         "sequential" | "seq" => Ok(ToolExecutionMode::Sequential),
-        other => anyhow::bail!(
-            "invalid tool mode '{other}'. Use: parallel|sequential"
-        ),
+        other => anyhow::bail!("invalid tool mode '{other}'. Use: parallel|sequential"),
     }
 }
 

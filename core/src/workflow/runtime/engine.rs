@@ -6,7 +6,7 @@ use std::{
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::Utc;
-use futures::{stream::FuturesUnordered, StreamExt};
+use futures::{StreamExt, stream::FuturesUnordered};
 use parking_lot::Mutex;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -20,7 +20,7 @@ use super::{
         WorkflowCommand, WorkflowEventKind, WorkflowSource,
     },
     reducer::{ready_nodes, replay, resolve_value, validate_spec},
-    store::{is_history_conflict, CreateStoredRun, WorkflowStore},
+    store::{CreateStoredRun, WorkflowStore, is_history_conflict},
 };
 
 #[async_trait]
@@ -529,15 +529,13 @@ impl<S: WorkflowStore> DurableWorkflowRuntime<S> {
                     },
                 }
             }
-            NodeKind::ForEach { .. } => {
-                PreparedExecution::Immediate(ActivityOutcome::Failed {
-                    error: format!(
-                        "workflow node kind is not enabled in V1: {}",
-                        node_kind_name(&node.kind)
-                    ),
-                    retryable: false,
-                })
-            }
+            NodeKind::ForEach { .. } => PreparedExecution::Immediate(ActivityOutcome::Failed {
+                error: format!(
+                    "workflow node kind is not enabled in V1: {}",
+                    node_kind_name(&node.kind)
+                ),
+                retryable: false,
+            }),
         };
         Ok((
             PreparedNode {
@@ -558,7 +556,8 @@ impl<S: WorkflowStore> DurableWorkflowRuntime<S> {
         prepared: PreparedNode,
     ) -> (NodeSpec, u32, Result<ActivityOutcome>) {
         let cancellation = prepared.cancel_token.clone();
-        let child_handles_cancellation = matches!(&prepared.execution, PreparedExecution::Child { .. });
+        let child_handles_cancellation =
+            matches!(&prepared.execution, PreparedExecution::Child { .. });
         let execution = async {
             match prepared.execution {
                 PreparedExecution::Activity { kind, invocation } => {
@@ -1084,8 +1083,8 @@ mod tests {
     use std::{
         collections::BTreeMap,
         sync::{
-            atomic::{AtomicUsize, Ordering},
             Arc,
+            atomic::{AtomicUsize, Ordering},
         },
         time::Duration,
     };
@@ -1314,10 +1313,12 @@ mod tests {
 
         assert_eq!(observation.snapshot.status, RunStatus::Succeeded);
         assert_eq!(observation.snapshot.output, json!(42));
-        assert!(observation
-            .events
-            .iter()
-            .any(|event| { matches!(event.kind, WorkflowEventKind::NodeCompleted { .. }) }));
+        assert!(
+            observation
+                .events
+                .iter()
+                .any(|event| { matches!(event.kind, WorkflowEventKind::NodeCompleted { .. }) })
+        );
     }
 
     #[tokio::test]
@@ -1722,14 +1723,18 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
         };
         assert_eq!(observed.snapshot.status, RunStatus::Succeeded);
-        assert!(observed
-            .events
-            .iter()
-            .any(|event| matches!(event.kind, WorkflowEventKind::TimerScheduled { .. })));
-        assert!(observed
-            .events
-            .iter()
-            .any(|event| matches!(event.kind, WorkflowEventKind::TimerFired { .. })));
+        assert!(
+            observed
+                .events
+                .iter()
+                .any(|event| matches!(event.kind, WorkflowEventKind::TimerScheduled { .. }))
+        );
+        assert!(
+            observed
+                .events
+                .iter()
+                .any(|event| matches!(event.kind, WorkflowEventKind::TimerFired { .. }))
+        );
     }
 
     #[tokio::test]

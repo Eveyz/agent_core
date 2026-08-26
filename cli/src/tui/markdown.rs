@@ -371,12 +371,12 @@ fn merge_style(base: Style, addition: Style) -> Style {
 fn heading_color(level: pulldown_cmark::HeadingLevel) -> Color {
     use pulldown_cmark::HeadingLevel;
     match level {
-        HeadingLevel::H1 => Color::Rgb(97, 175, 239),   // blue
-        HeadingLevel::H2 => Color::Rgb(86, 182, 194),   // cyan
-        HeadingLevel::H3 => Color::Rgb(152, 195, 121),  // green
-        HeadingLevel::H4 => Color::Rgb(229, 192, 123),  // yellow
-        HeadingLevel::H5 => Color::Rgb(198, 120, 221),  // magenta
-        HeadingLevel::H6 => Color::Rgb(171, 178, 191),  // gray
+        HeadingLevel::H1 => Color::Rgb(97, 175, 239),  // blue
+        HeadingLevel::H2 => Color::Rgb(86, 182, 194),  // cyan
+        HeadingLevel::H3 => Color::Rgb(152, 195, 121), // green
+        HeadingLevel::H4 => Color::Rgb(229, 192, 123), // yellow
+        HeadingLevel::H5 => Color::Rgb(198, 120, 221), // magenta
+        HeadingLevel::H6 => Color::Rgb(171, 178, 191), // gray
     }
 }
 
@@ -393,12 +393,13 @@ pub fn render_syntect_block(language: &str, code: &str, width: usize) -> Vec<Lin
         let line = line.trim_end_matches(['\n', '\r']);
         if let Ok(ranges) = highlighter.highlight_line(line, &SYNTAX_SET) {
             // Collect highlighted spans
-            let mut spans: Vec<Span> = vec![
-                Span::styled("  ", Style::default().bg(CODE_BG)),
-            ];
+            let mut spans: Vec<Span> = vec![Span::styled("  ", Style::default().bg(CODE_BG))];
             for (style, text) in ranges {
                 let fg = syntect_color_to_ratatui(style.foreground);
-                spans.push(Span::styled(text.to_string(), Style::default().fg(fg).bg(CODE_BG)));
+                spans.push(Span::styled(
+                    text.to_string(),
+                    Style::default().fg(fg).bg(CODE_BG),
+                ));
             }
             let line_w: usize = spans.iter().map(|s| s.width()).sum();
             let fill = fill_width.saturating_sub(line_w);
@@ -410,12 +411,31 @@ pub fn render_syntect_block(language: &str, code: &str, width: usize) -> Vec<Lin
     }
 
     // Label bar — like tool block, with CODE_BG full width, no border
-    let title = format!(" {}", if language.is_empty() { "code" } else { language });
+    let title = format!(
+        " {}",
+        if language.is_empty() {
+            "code"
+        } else {
+            language
+        }
+    );
     let title_line = {
         let title_fill = fill_width.saturating_sub(title.width() + 4);
         vec![
-            Span::styled("  📋", Style::default().fg(Color::Yellow).bg(CODE_BG).add_modifier(Modifier::BOLD)),
-            Span::styled(title, Style::default().fg(Color::Yellow).bg(CODE_BG).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  📋",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .bg(CODE_BG)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                title,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .bg(CODE_BG)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" ".repeat(title_fill), Style::default().bg(CODE_BG)),
         ]
     };
@@ -425,7 +445,10 @@ pub fn render_syntect_block(language: &str, code: &str, width: usize) -> Vec<Lin
         let sep_fill = fill_width.saturating_sub(sep.width() + 4);
         vec![
             Span::styled("  ", Style::default().bg(CODE_BG)),
-            Span::styled(sep, Style::default().fg(Color::Rgb(92, 99, 112)).bg(CODE_BG)),
+            Span::styled(
+                sep,
+                Style::default().fg(Color::Rgb(92, 99, 112)).bg(CODE_BG),
+            ),
             Span::styled(" ".repeat(sep_fill), Style::default().bg(CODE_BG)),
         ]
     };

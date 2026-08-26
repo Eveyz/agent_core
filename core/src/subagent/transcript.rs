@@ -2,9 +2,9 @@ use crate::types::Message;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::io::Write;
-use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -178,7 +178,8 @@ impl TranscriptRecorder {
             options.write(true).create_new(true);
             #[cfg(unix)]
             options.mode(0o600);
-            let mut file = options.open(&temporary)
+            let mut file = options
+                .open(&temporary)
                 .with_context(|| format!("create transcript checkpoint {}", temporary.display()))?;
             file.write_all(&bytes)
                 .with_context(|| format!("write transcript checkpoint {}", temporary.display()))?;
@@ -272,7 +273,13 @@ mod tests {
         let path = recorder
             .finalize(&[Message::user("secret")], TranscriptOutcome::Succeeded)
             .unwrap();
-        assert_eq!(std::fs::metadata(&root).unwrap().permissions().mode() & 0o777, 0o700);
-        assert_eq!(std::fs::metadata(path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 }

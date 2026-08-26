@@ -4,8 +4,8 @@ use crate::auth::AuthUser;
 use crate::error::ApiError;
 use crate::models::{ApiKeyInfo, ListModelsResponse, ModelInfo};
 use crate::state::AppState;
-use axum::extract::State;
 use axum::Json;
+use axum::extract::State;
 
 pub async fn api_key_info(
     auth: AuthUser,

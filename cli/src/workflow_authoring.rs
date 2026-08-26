@@ -26,9 +26,15 @@ pub fn authoring_prompt(goal: &str) -> String {
         format!("The user's workflow goal is:\n{goal}")
     };
     let lifecycle = match intent {
-        "save" => "After applying the complete draft, save it with workflow_save_draft. Do not publish it.",
-        "publish" => "After applying the complete draft, save it with workflow_save_draft and then publish the saved draft with workflow_publish.",
-        _ => "Keep the draft temporary. Do not publish or save unless the user explicitly changes their request.",
+        "save" => {
+            "After applying the complete draft, save it with workflow_save_draft. Do not publish it."
+        }
+        "publish" => {
+            "After applying the complete draft, save it with workflow_save_draft and then publish the saved draft with workflow_publish."
+        }
+        _ => {
+            "Keep the draft temporary. Do not publish or save unless the user explicitly changes their request."
+        }
     };
     format!(
         "You are in workflow authoring mode. Design a reusable, explicit DAG for the durable \

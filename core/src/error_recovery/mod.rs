@@ -118,14 +118,33 @@ impl RecoveryEngine {
             // Network-level errors — stream drops, timeouts, connection resets.
             // These benefit from a longer base delay (1s) since the underlying
             // infrastructure may need more time to stabilize.
-            let is_network_error = ["timeout", "connection", "reset",
-                "broken pipe", "connection refused", "eof",
-                "unexpected eof", "dns"].iter()
-                .any(|kw| error.contains(kw));
+            let is_network_error = [
+                "timeout",
+                "connection",
+                "reset",
+                "broken pipe",
+                "connection refused",
+                "eof",
+                "unexpected eof",
+                "dns",
+            ]
+            .iter()
+            .any(|kw| error.contains(kw));
 
-            let is_server_error = ["500", "502", "503", "504", "server error",
-                "empty response", "no useful events", "sse stream", "stream error", "stream"].iter()
-                .any(|kw| error.contains(kw));
+            let is_server_error = [
+                "500",
+                "502",
+                "503",
+                "504",
+                "server error",
+                "empty response",
+                "no useful events",
+                "sse stream",
+                "stream error",
+                "stream",
+            ]
+            .iter()
+            .any(|kw| error.contains(kw));
 
             if is_network_error || is_server_error {
                 if let Some(ref fallback) = self.fallback_model
@@ -192,10 +211,7 @@ impl RetryReason {
 
 #[derive(Debug, Clone)]
 pub enum RecoveryAction {
-    Retry {
-        delay_ms: u64,
-        reason: RetryReason,
-    },
+    Retry { delay_ms: u64, reason: RetryReason },
     EscalateTokens { new_max_tokens: u32 },
     SwitchModel { model: String },
     CompactContext { target_ratio: f64 },
@@ -273,7 +289,11 @@ mod tests {
     fn test_context_too_long_keyword_variants_compact() {
         // Both "too long" and "context length" should map to CompactContext.
         let engine = RecoveryEngine::new();
-        for kw in ["context too long", "maximum context length", "context length exceeded"] {
+        for kw in [
+            "context too long",
+            "maximum context length",
+            "context length exceeded",
+        ] {
             let mut ctx = RecoveryContext::new("model", 4096);
             ctx.record_error(kw);
             match engine.determine_strategy(&ctx) {

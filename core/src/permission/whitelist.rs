@@ -161,7 +161,8 @@ impl WhitelistManager {
         };
 
         let content = std::fs::read_to_string(&config_path)?;
-        let mut doc = content.parse::<DocumentMut>()
+        let mut doc = content
+            .parse::<DocumentMut>()
             .map_err(|e| anyhow::anyhow!("failed to parse config TOML: {e}"))?;
 
         // Collect persistent entries
@@ -208,7 +209,9 @@ impl WhitelistManager {
         use toml_edit::Entry;
         match doc.entry("permissions") {
             Entry::Occupied(mut o) => {
-                let perm_table = o.get_mut().as_table_mut()
+                let perm_table = o
+                    .get_mut()
+                    .as_table_mut()
                     .ok_or_else(|| anyhow::anyhow!("config.toml: [permissions] is not a table"))?;
                 perm_table.insert("whitelist", Item::ArrayOfTables(whitelist_arr));
             }

@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -11,7 +11,7 @@ use crate::{
 };
 
 use super::{
-    custom_agent::{FrozenCustomAgentConfig, CUSTOM_AGENT_ACTIVITY_KIND},
+    custom_agent::{CUSTOM_AGENT_ACTIVITY_KIND, FrozenCustomAgentConfig},
     legacy::classify_agent_effect,
     model::{
         EffectPolicy, NodeKey, NodeKind, NodeSpec, ResourceClaim, RetryPolicy, ValueExpr,

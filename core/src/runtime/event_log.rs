@@ -104,7 +104,10 @@ impl EventLog {
         self.entries.push(env.clone());
 
         if !self.writable {
-            anyhow::bail!("event log directory is not writable: {}", self.path.display());
+            anyhow::bail!(
+                "event log directory is not writable: {}",
+                self.path.display()
+            );
         }
 
         // Rotate if the file has grown too large
@@ -258,7 +261,8 @@ mod tests {
                 session_id: None,
                 prompt_id: None,
             },
-        }).unwrap();
+        })
+        .unwrap();
         log.append(Envelope {
             seq: 1,
             event_id: "e1".into(),
@@ -268,7 +272,8 @@ mod tests {
             parent_call_id: None,
             ts: chrono::Utc::now(),
             event: RunEvent::RunStarted,
-        }).unwrap();
+        })
+        .unwrap();
 
         assert_eq!(log.len(), 2);
 
@@ -298,7 +303,8 @@ mod tests {
                     session_id: None,
                     prompt_id: None,
                 },
-            }).unwrap();
+            })
+            .unwrap();
             log.append(Envelope {
                 seq: 1,
                 event_id: "e1".into(),
@@ -307,11 +313,12 @@ mod tests {
                 turn_id: None,
                 parent_call_id: None,
                 ts: chrono::Utc::now(),
-            event: RunEvent::StateChanged {
+                event: RunEvent::StateChanged {
                     from: RunState::Created,
                     to: RunState::Running,
                 },
-            }).unwrap();
+            })
+            .unwrap();
             log.append(Envelope {
                 seq: 2,
                 event_id: "e2".into(),
@@ -320,10 +327,11 @@ mod tests {
                 turn_id: None,
                 parent_call_id: None,
                 ts: chrono::Utc::now(),
-            event: RunEvent::RunCompleted {
+                event: RunEvent::RunCompleted {
                     final_text: "done".into(),
                 },
-            }).unwrap();
+            })
+            .unwrap();
         }
 
         // Load them back
@@ -347,8 +355,9 @@ mod tests {
                 turn_id: None,
                 parent_call_id: None,
                 ts: chrono::Utc::now(),
-            event: RunEvent::RunStarted,
-            }).unwrap();
+                event: RunEvent::RunStarted,
+            })
+            .unwrap();
             let mut log2 = EventLog::new("run-b", dir.path().to_str().unwrap());
             log2.append(Envelope {
                 seq: 0,
@@ -358,8 +367,9 @@ mod tests {
                 turn_id: None,
                 parent_call_id: None,
                 ts: chrono::Utc::now(),
-            event: RunEvent::RunStarted,
-            }).unwrap();
+                event: RunEvent::RunStarted,
+            })
+            .unwrap();
         }
 
         let runs = EventLog::list_runs(dir.path().to_str().unwrap()).unwrap();
@@ -394,7 +404,10 @@ mod tests {
             event: RunEvent::RunStarted,
         };
         let sorted = validate_and_sort(vec![event(2, "e2"), event(1, "e1")]).unwrap();
-        assert_eq!(sorted.iter().map(|event| event.seq).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(
+            sorted.iter().map(|event| event.seq).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
         assert!(validate_and_sort(vec![event(1, "e1"), event(1, "different")]).is_err());
     }
 }

@@ -101,7 +101,9 @@ pub enum UiRequest {
 
 #[derive(Debug, Clone)]
 pub enum CommandOutcome {
-    Handled { messages: Vec<CmdMessage> },
+    Handled {
+        messages: Vec<CmdMessage>,
+    },
     Quit,
     NeedsUi(UiRequest),
     Unknown(String),
@@ -459,7 +461,10 @@ fn dispatch_sync_prefixed(
     }
 
     // Known compound prefix but incomplete?
-    if ALL_COMMANDS.iter().any(|(c, _)| input.starts_with(c) || c.starts_with(input)) {
+    if ALL_COMMANDS
+        .iter()
+        .any(|(c, _)| input.starts_with(c) || c.starts_with(input))
+    {
         // fall through
     }
     CommandOutcome::Unknown(input.to_string())
@@ -496,9 +501,7 @@ pub async fn dispatch_async(
         &sync,
         CommandOutcome::Handled { messages } if messages.first().map(|m| m.text() == "__ASYNC__").unwrap_or(false)
     ) {
-        return CommandOutcome::err(format!(
-            "Command '{input}' requires arguments. Try /help."
-        ));
+        return CommandOutcome::err(format!("Command '{input}' requires arguments. Try /help."));
     }
     sync
 }
@@ -683,9 +686,7 @@ fn parse_perm_mode(s: &str) -> Result<PermissionMode, String> {
         "developer" => Ok(PermissionMode::Developer),
         "permissive" => Ok(PermissionMode::Permissive),
         "yolo" => Ok(PermissionMode::Yolo),
-        _ => Err(
-            "Usage: /perm mode paranoid|standard|developer|permissive|yolo".into(),
-        ),
+        _ => Err("Usage: /perm mode paranoid|standard|developer|permissive|yolo".into()),
     }
 }
 
@@ -853,9 +854,7 @@ fn session_sync(state: &mut CliState, rest: &str) -> CommandOutcome {
                 Err(e) => CommandOutcome::err(format!("{e}")),
             }
         }
-        _ => CommandOutcome::err(
-            "Usage: /session save|resume|delete|rename|archive|search",
-        ),
+        _ => CommandOutcome::err("Usage: /session save|resume|delete|rename|archive|search"),
     }
 }
 
@@ -903,11 +902,7 @@ fn resume_session(state: &mut CliState, id: &str) -> CommandOutcome {
     }
 }
 
-pub fn format_status(
-    state: &CliState,
-    enable_permission: bool,
-    enable_hooks: bool,
-) -> String {
+pub fn format_status(state: &CliState, enable_permission: bool, enable_hooks: bool) -> String {
     let model = state.brain().current_model_name();
     let running = if state.current_run_id.is_some() {
         "Running"

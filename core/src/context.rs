@@ -835,11 +835,11 @@ impl ContextEngine {
                 if tokens > 0 {
                     segments.push(ContextSegmentUsage {
                         key: key.to_string(),
-                    label: label.to_string(),
-                    tokens,
-                });
-            }
-        };
+                        label: label.to_string(),
+                        tokens,
+                    });
+                }
+            };
         push(&mut segments, "system", "System prompt", system_tokens);
         push(&mut segments, "tools", "Tool definitions", tools_tokens);
         push(&mut segments, "rules", "Rules / memory", rules_tokens);

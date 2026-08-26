@@ -1,7 +1,7 @@
 //! Non-interactive one-shot agent run (Harbor / CI).
 
-use crate::bootstrap::{parse_permission_mode, resolve_config_path, BootstrapOptions};
 use crate::bootstrap::bootstrap_runtime;
+use crate::bootstrap::{BootstrapOptions, parse_permission_mode, resolve_config_path};
 use agent_core::{
     ApprovalChoice, MessageDelta, PermissionMode, RunCommand, RunEvent, ToolExecutionMode,
 };
@@ -49,14 +49,7 @@ pub async fn run_oneshot(args: OneshotArgs) -> anyhow::Result<ExitCode> {
     let created = if let Some(dir) = workdir {
         state
             .run_manager
-            .create_run_with_workdir(
-                &args.instruction,
-                None,
-                Some(dir),
-                Vec::new(),
-                None,
-                false,
-            )
+            .create_run_with_workdir(&args.instruction, None, Some(dir), Vec::new(), None, false)
             .await?
     } else {
         state

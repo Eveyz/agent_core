@@ -20,13 +20,18 @@ impl ApiMode {
     pub fn infer(base_url: &str, model_id: &str) -> Self {
         let url = base_url.to_lowercase();
         let model = model_id.to_lowercase();
-        if url.contains("anthropic.com") || url.contains("api.anthropic") || model.contains("claude")
+        if url.contains("anthropic.com")
+            || url.contains("api.anthropic")
+            || model.contains("claude")
         {
             return Self::AnthropicMessages;
         }
         // Explicit opt-in via model id prefix or responses-style endpoints.
-        if url.contains("/responses") || model.starts_with("o1") || model.starts_with("o3")
-            || model.starts_with("o4") || model.contains("codex")
+        if url.contains("/responses")
+            || model.starts_with("o1")
+            || model.starts_with("o3")
+            || model.starts_with("o4")
+            || model.contains("codex")
         {
             return Self::Responses;
         }
@@ -157,10 +162,7 @@ impl ModelConfig {
     /// Uses the config override when set; otherwise the curated registry
     /// (unknown / unmatched model ids default to `false`).
     pub fn supports_images(&self) -> bool {
-        crate::model_capabilities::resolve_supports_images(
-            &self.model_id,
-            self.supports_images,
-        )
+        crate::model_capabilities::resolve_supports_images(&self.model_id, self.supports_images)
     }
 
     /// Resolved API mode (explicit config or inferred).
@@ -172,8 +174,10 @@ impl ModelConfig {
     /// Fill context / max_output from the curated model capability registry when
     /// the config is still at the provider default (or max_tokens is unset).
     pub fn apply_capability_defaults(&mut self) {
-        self.max_context_tokens =
-            crate::model_capabilities::resolve_context_tokens(&self.model_id, self.max_context_tokens);
+        self.max_context_tokens = crate::model_capabilities::resolve_context_tokens(
+            &self.model_id,
+            self.max_context_tokens,
+        );
         if self.max_tokens.is_none() {
             self.max_tokens =
                 crate::model_capabilities::resolve_max_output_tokens(&self.model_id, None);
@@ -289,8 +293,12 @@ pub struct Bm25Config {
     pub b: f32,
 }
 
-fn default_bm25_k1() -> f32 { 1.2 }
-fn default_bm25_b() -> f32 { 0.75 }
+fn default_bm25_k1() -> f32 {
+    1.2
+}
+fn default_bm25_b() -> f32 {
+    0.75
+}
 
 /// Configuration for HNSW approximate nearest neighbor search.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -303,7 +311,9 @@ pub struct HnswConfig {
     pub ef_search: usize,
 }
 
-fn default_hnsw_ef() -> usize { 150 }
+fn default_hnsw_ef() -> usize {
+    150
+}
 
 fn default_memory_mode() -> String {
     "standard".to_string()
@@ -491,9 +501,10 @@ impl Config {
     }
 
     pub fn get_model(&self, name: &str) -> Option<&ModelConfig> {
-        self.models
-            .get(name)
-            .or_else(|| self.resolve_model_name(name).and_then(|key| self.models.get(&key)))
+        self.models.get(name).or_else(|| {
+            self.resolve_model_name(name)
+                .and_then(|key| self.models.get(&key))
+        })
     }
 
     /// Match a model key ignoring invisible Unicode characters (e.g. U+200B).
@@ -511,7 +522,9 @@ impl Config {
     pub fn default_model(&self) -> Result<&ModelConfig> {
         let resolved = self
             .resolve_model_name(&self.default_model)
-            .with_context(|| format!("default model '{}' not found in config", self.default_model))?;
+            .with_context(|| {
+                format!("default model '{}' not found in config", self.default_model)
+            })?;
         self.models
             .get(&resolved)
             .with_context(|| format!("default model '{}' not found in config", self.default_model))
@@ -527,7 +540,9 @@ impl Config {
                     base_url: provider.base_url.clone(),
                     api_key: provider.api_key.clone(),
                     model_id: entry.model_id.clone(),
-                    max_context_tokens: entry.max_context_tokens.unwrap_or(provider.max_context_tokens),
+                    max_context_tokens: entry
+                        .max_context_tokens
+                        .unwrap_or(provider.max_context_tokens),
                     temperature: entry.temperature.or(provider.temperature),
                     max_tokens: entry.max_tokens.or(provider.max_tokens),
                     react_enabled: provider.react_enabled,
@@ -746,9 +761,7 @@ pub fn default_scaffold_config() -> Config {
 ///
 /// `path` defaults to [`default_config_path`] (`~/.agverse/config.toml`).
 pub fn load_or_init_default(path: Option<&std::path::Path>) -> Result<(Config, PathBuf)> {
-    let config_path = path
-        .map(PathBuf::from)
-        .unwrap_or_else(default_config_path);
+    let config_path = path.map(PathBuf::from).unwrap_or_else(default_config_path);
     let agverse_dir = crate::paths::get_agverse_dir();
     if let Err(e) = std::fs::create_dir_all(&agverse_dir) {
         tracing::warn!(
@@ -867,7 +880,7 @@ llama = { model_id = "llama3-8b" }
 "#,
         );
         let config = Config::load(path.to_str().unwrap()).unwrap();
-        
+
         let ds = config.get_model("deepseek/chat").unwrap();
         assert_eq!(ds.max_context_tokens, 64000);
 
@@ -949,7 +962,8 @@ consolidation_enabled = false
         assert_eq!(mem.embedding_model, "my-model");
         assert_eq!(mem.max_core_blocks, 3);
         assert_eq!(mem.default_block_max_chars, 1000);
-        assert!(!mem.consolidation_enabled);    }
+        assert!(!mem.consolidation_enabled);
+    }
 
     #[test]
     fn test_default_model_not_found() {

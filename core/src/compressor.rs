@@ -105,7 +105,12 @@ impl TurnSummary {
     pub fn to_context_string(&self) -> String {
         let mut parts = Vec::new();
 
-        if let Some(goal) = self.goal.as_ref().map(|g| g.trim()).filter(|g| !g.is_empty()) {
+        if let Some(goal) = self
+            .goal
+            .as_ref()
+            .map(|g| g.trim())
+            .filter(|g| !g.is_empty())
+        {
             parts.push(format!("Goal: {goal}"));
         }
 
@@ -120,13 +125,25 @@ impl TurnSummary {
         if !self.files.wrote.is_empty() {
             file_lines.push(format!(
                 "  wrote: {}",
-                self.files.wrote.iter().take(MAX_FILES_PER_BUCKET).cloned().collect::<Vec<_>>().join(", ")
+                self.files
+                    .wrote
+                    .iter()
+                    .take(MAX_FILES_PER_BUCKET)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
         if !self.files.read.is_empty() {
             file_lines.push(format!(
                 "  read: {}",
-                self.files.read.iter().take(MAX_FILES_PER_BUCKET).cloned().collect::<Vec<_>>().join(", ")
+                self.files
+                    .read
+                    .iter()
+                    .take(MAX_FILES_PER_BUCKET)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
         }
         if !self.files.deleted.is_empty() {
@@ -153,7 +170,10 @@ impl TurnSummary {
         }
 
         if !self.facts.is_empty() {
-            parts.push(format!("Key facts:\n{}", bullet_list(&self.facts, MAX_FACTS)));
+            parts.push(format!(
+                "Key facts:\n{}",
+                bullet_list(&self.facts, MAX_FACTS)
+            ));
         }
 
         if !self.notes.is_empty() {
@@ -176,11 +196,7 @@ impl TurnSummary {
         }
         if trimmed.starts_with("[Compressed turns") {
             // Best-effort: treat remaining body as free text notes.
-            let body = trimmed
-                .lines()
-                .skip(1)
-                .collect::<Vec<_>>()
-                .join("\n");
+            let body = trimmed.lines().skip(1).collect::<Vec<_>>().join("\n");
             if body.trim().is_empty() {
                 return Some(Self::default());
             }
@@ -376,8 +392,11 @@ pub fn merge_summary(
 
     let mut read = merge_path_lists(&old.files.read, &delta.files.read, MAX_FILES_PER_BUCKET);
     let mut wrote = merge_path_lists(&old.files.wrote, &delta.files.wrote, MAX_FILES_PER_BUCKET);
-    let mut deleted =
-        merge_path_lists(&old.files.deleted, &delta.files.deleted, MAX_FILES_PER_BUCKET);
+    let mut deleted = merge_path_lists(
+        &old.files.deleted,
+        &delta.files.deleted,
+        MAX_FILES_PER_BUCKET,
+    );
 
     if let Some(led) = ledger {
         read = merge_path_lists(&read, &led.read, MAX_FILES_PER_BUCKET);
@@ -432,7 +451,9 @@ pub fn find_rolling_summary(messages: &[Message]) -> Option<TurnSummary> {
         if m.role != crate::types::Role::Assistant {
             return None;
         }
-        m.content.as_deref().and_then(TurnSummary::parse_from_message)
+        m.content
+            .as_deref()
+            .and_then(TurnSummary::parse_from_message)
     })
 }
 
@@ -874,8 +895,8 @@ mod tests {
             name: None,
             model: None,
             metadata: None,
-        reasoning: None,
-        images: None,
+            reasoning: None,
+            images: None,
         }
     }
 
@@ -888,8 +909,8 @@ mod tests {
             name: Some(name.to_string()),
             model: None,
             metadata: None,
-        reasoning: None,
-        images: None,
+            reasoning: None,
+            images: None,
         }
     }
 
@@ -997,11 +1018,13 @@ mod tests {
                 msgs[1 + i * 2].tool_calls.as_ref().unwrap()[0].id,
                 format!("active_{i}")
             );
-            assert!(msgs[2 + i * 2]
-                .content
-                .as_ref()
-                .unwrap()
-                .contains(&format!("unique-{i}")));
+            assert!(
+                msgs[2 + i * 2]
+                    .content
+                    .as_ref()
+                    .unwrap()
+                    .contains(&format!("unique-{i}"))
+            );
         }
     }
 
@@ -1181,10 +1204,9 @@ mod tests {
         let mut ledger = crate::runtime::FileLedger::new();
         ledger.record_wrote("new.rs");
         Compressor::upsert_ledger_into_rolling_summary(&mut messages, &ledger);
-        let merged = TurnSummary::parse_from_message(
-            messages[0].content.as_deref().expect("content"),
-        )
-        .expect("parse");
+        let merged =
+            TurnSummary::parse_from_message(messages[0].content.as_deref().expect("content"))
+                .expect("parse");
         assert!(merged.files.wrote.iter().any(|p| p == "old.rs"));
         assert!(merged.files.wrote.iter().any(|p| p == "new.rs"));
         assert!(merged.files.read.iter().any(|p| p == "docs.md"));

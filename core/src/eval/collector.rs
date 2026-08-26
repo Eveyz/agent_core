@@ -7,9 +7,7 @@ use chrono::{DateTime, Utc};
 
 use crate::runtime::event::{Envelope, RunEvent};
 
-use super::ledger::{
-    EvalMode, HarnessConfig, ModelInfo, RunLedger, RunMetrics, RunResult,
-};
+use super::ledger::{EvalMode, HarnessConfig, ModelInfo, RunLedger, RunMetrics, RunResult};
 use super::taxonomy;
 
 /// Options for building a ledger from events.
@@ -150,9 +148,7 @@ pub fn collect_ledger(envelopes: &[Envelope], opts: CollectOpts) -> RunLedger {
                 metrics.tool_calls += 1;
             }
             RunEvent::ToolEnded {
-                call_id,
-                is_error,
-                ..
+                call_id, is_error, ..
             } => {
                 open_tools.remove(call_id);
                 if let Some(t0) = tool_start_ts.remove(call_id) {
@@ -186,8 +182,7 @@ pub fn collect_ledger(envelopes: &[Envelope], opts: CollectOpts) -> RunLedger {
                     push_tag(&mut fail_tags, "steer_after_terminal");
                 }
             }
-            RunEvent::SteerCancelled { steer_id, .. }
-            | RunEvent::SteerFailed { steer_id, .. } => {
+            RunEvent::SteerCancelled { steer_id, .. } | RunEvent::SteerFailed { steer_id, .. } => {
                 queued_steer_ts.remove(steer_id);
                 injected_or_cancelled_steers.insert(steer_id.clone());
                 queued_steers.remove(steer_id);
@@ -244,12 +239,12 @@ pub fn collect_ledger(envelopes: &[Envelope], opts: CollectOpts) -> RunLedger {
     }
 
     // Derive wall time
-    metrics.wall_ms = opts.wall_ms_override.unwrap_or_else(|| {
-        match (started_at, terminal_at) {
+    metrics.wall_ms = opts
+        .wall_ms_override
+        .unwrap_or_else(|| match (started_at, terminal_at) {
             (Some(a), Some(b)) => ms_between(a, b),
             _ => 0,
-        }
-    });
+        });
     metrics.model_ms = model_ms_acc;
     metrics.tool_ms = tool_ms_acc;
     metrics.turns = turn_started.max(turn_ended);
@@ -364,8 +359,8 @@ pub fn load_trace_jsonl(path: &std::path::Path) -> anyhow::Result<Vec<Envelope>>
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let env: Envelope = serde_json::from_str(line)
-            .map_err(|e| anyhow::anyhow!("trace line {}: {e}", i + 1))?;
+        let env: Envelope =
+            serde_json::from_str(line).map_err(|e| anyhow::anyhow!("trace line {}: {e}", i + 1))?;
         out.push(env);
     }
     Ok(out)
@@ -409,11 +404,15 @@ mod tests {
     #[test]
     fn happy_path_collects_metrics() {
         let events = vec![
-            env(0, 1000, RunEvent::RunCreated {
-                id: "run-1".into(),
-                session_id: None,
-                prompt_id: None,
-            }),
+            env(
+                0,
+                1000,
+                RunEvent::RunCreated {
+                    id: "run-1".into(),
+                    session_id: None,
+                    prompt_id: None,
+                },
+            ),
             env(1, 1000, RunEvent::RunStarted),
             env(2, 1001, RunEvent::TurnStarted { index: 0 }),
             env(3, 1001, RunEvent::ModelCallStarted),
@@ -502,20 +501,26 @@ mod tests {
         let ledger = collect_ledger(&events, CollectOpts::default());
         assert!(!ledger.result.pass);
         assert!(ledger.result.fail_tags.iter().any(|t| t == "tool_unpaired"));
-        assert!(ledger
-            .result
-            .fail_tags
-            .iter()
-            .any(|t| t == "hung_no_terminal"));
+        assert!(
+            ledger
+                .result
+                .fail_tags
+                .iter()
+                .any(|t| t == "hung_no_terminal")
+        );
     }
 
     #[test]
     fn detects_seq_gap() {
         let events = vec![
             env(0, 1, RunEvent::RunStarted),
-            env(5, 2, RunEvent::RunCompleted {
-                final_text: "x".into(),
-            }),
+            env(
+                5,
+                2,
+                RunEvent::RunCompleted {
+                    final_text: "x".into(),
+                },
+            ),
         ];
         let ledger = collect_ledger(&events, CollectOpts::default());
         assert!(ledger.result.fail_tags.iter().any(|t| t == "seq_gap"));

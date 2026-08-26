@@ -84,10 +84,7 @@ fn build_dependency_context(board: &TaskBoard, task_id: &str) -> String {
     ctx
 }
 
-fn claim_task(
-    board: &Arc<Mutex<TaskBoard>>,
-    id: &str,
-) -> anyhow::Result<(String, String)> {
+fn claim_task(board: &Arc<Mutex<TaskBoard>>, id: &str) -> anyhow::Result<(String, String)> {
     let mut board = board.lock();
     let task = board
         .get(id)
@@ -538,14 +535,18 @@ impl Drop for TaskExecutionGuard {
             .get(&self.id)
             .is_some_and(|task| *task.status() == TaskStatus::InProgress)
         {
-            let recovery = self.recovery.as_ref().and_then(|(runtime_id, path)| {
-                path.exists().then(|| {
-                    format!(
-                        "\nRuntime ID: {runtime_id}\nPartial transcript: {}",
-                        path.display()
-                    )
+            let recovery = self
+                .recovery
+                .as_ref()
+                .and_then(|(runtime_id, path)| {
+                    path.exists().then(|| {
+                        format!(
+                            "\nRuntime ID: {runtime_id}\nPartial transcript: {}",
+                            path.display()
+                        )
+                    })
                 })
-            }).unwrap_or_default();
+                .unwrap_or_default();
             let _ = board.update(
                 &self.id,
                 TaskStatus::Failed,

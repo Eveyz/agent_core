@@ -84,11 +84,9 @@ impl Tool for AskUserTool {
         // Fallback path: validate args and return a structured error so the
         // model can retry rather than hanging forever without a UI.
         match crate::runtime::input::parse_ask_user_args(&args) {
-            Ok(_) => Ok(
-                "ask_user was invoked without a live input channel. \
+            Ok(_) => Ok("ask_user was invoked without a live input channel. \
                  Re-issue ask_user on the next turn so the UI can collect answers."
-                    .to_string(),
-            ),
+                .to_string()),
             Err(e) => Err(anyhow::anyhow!(e)),
         }
     }

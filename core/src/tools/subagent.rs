@@ -732,14 +732,23 @@ Args: tasks (array of {id, task, tools?, max_iterations?})"
                 }
                 Ok((id, Err(e), _)) => {
                     let handoff = e.handoff(id);
-                    output.push_str(&format!("[{}] {}\n{}\n\n", idx + 1, id, handoff.render_for_parent()));
+                    output.push_str(&format!(
+                        "[{}] {}\n{}\n\n",
+                        idx + 1,
+                        id,
+                        handoff.render_for_parent()
+                    ));
                 }
                 Err(e) => {
                     let handoff = crate::subagent::handoff::SubagentHandoff::from_error(
                         format!("batch-join-{}", idx + 1),
                         e.to_string(),
                     );
-                    output.push_str(&format!("[{}]\n{}\n\n", idx + 1, handoff.render_for_parent()));
+                    output.push_str(&format!(
+                        "[{}]\n{}\n\n",
+                        idx + 1,
+                        handoff.render_for_parent()
+                    ));
                 }
             }
         }
@@ -942,14 +951,20 @@ impl std::fmt::Display for SpawnFailure {
 
 impl From<anyhow::Error> for SpawnFailure {
     fn from(error: anyhow::Error) -> Self {
-        Self { runtime_id: None, transcript_ref: None, error }
+        Self {
+            runtime_id: None,
+            transcript_ref: None,
+            error,
+        }
     }
 }
 
 impl SpawnFailure {
     fn handoff(&self, fallback_id: &str) -> crate::subagent::handoff::SubagentHandoff {
         crate::subagent::handoff::SubagentHandoff::from_error_with_transcript(
-            self.runtime_id.clone().unwrap_or_else(|| fallback_id.to_string()),
+            self.runtime_id
+                .clone()
+                .unwrap_or_else(|| fallback_id.to_string()),
             self.error.to_string(),
             self.transcript_ref.clone(),
         )

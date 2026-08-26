@@ -97,11 +97,8 @@ pub async fn preview_start(
     state: State<'_, AppState>,
     request: PreviewStartRequest,
 ) -> Result<PreviewDescriptor, String> {
-    let root = resolve_workspace_path(
-        &state,
-        &request.workspace_id,
-        request.session_id.as_deref(),
-    )?;
+    let root =
+        resolve_workspace_path(&state, &request.workspace_id, request.session_id.as_deref())?;
     state
         .preview_manager
         .start(root, request)
@@ -110,10 +107,7 @@ pub async fn preview_start(
 }
 
 #[tauri::command]
-pub async fn preview_stop(
-    state: State<'_, AppState>,
-    preview_id: Uuid,
-) -> Result<(), String> {
+pub async fn preview_stop(state: State<'_, AppState>, preview_id: Uuid) -> Result<(), String> {
     state
         .preview_manager
         .stop(preview_id)
@@ -134,18 +128,12 @@ pub async fn preview_restart(
 }
 
 #[tauri::command]
-pub fn preview_get(
-    state: State<'_, AppState>,
-    preview_id: Uuid,
-) -> Option<PreviewDescriptor> {
+pub fn preview_get(state: State<'_, AppState>, preview_id: Uuid) -> Option<PreviewDescriptor> {
     state.preview_manager.get(preview_id)
 }
 
 #[tauri::command]
-pub fn preview_list(
-    state: State<'_, AppState>,
-    workspace_id: String,
-) -> Vec<PreviewDescriptor> {
+pub fn preview_list(state: State<'_, AppState>, workspace_id: String) -> Vec<PreviewDescriptor> {
     state.preview_manager.list(&workspace_id)
 }
 

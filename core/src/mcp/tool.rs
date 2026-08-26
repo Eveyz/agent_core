@@ -160,7 +160,8 @@ mod tests {
 
     #[test]
     fn hint_is_not_duplicated() {
-        let once = annotate_map_tool_description("amap-maps", "maps_text_search", "Search POIs".into());
+        let once =
+            annotate_map_tool_description("amap-maps", "maps_text_search", "Search POIs".into());
         let twice = annotate_map_tool_description("amap-maps", "maps_text_search", once.clone());
         assert_eq!(once.matches("interactive map and place cards").count(), 1);
         assert_eq!(twice, once);
@@ -174,4 +175,3 @@ mod tests {
         assert!(!is_map_display_tool("parallel-search", "web_search"));
     }
 }
-

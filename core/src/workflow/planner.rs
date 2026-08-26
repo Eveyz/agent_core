@@ -5,7 +5,7 @@
 //! while stages must execute sequentially (every node in stage N+1 depends only
 //! on nodes in stages ≤ N). Cycles are detected and rejected.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::collections::{HashMap, HashSet};
 
 use super::definition::{EdgeDef, NodeDef};
@@ -79,8 +79,7 @@ pub fn plan(nodes: &[NodeDef], edges: &[EdgeDef]) -> Result<ExecutionPlan> {
             .collect();
 
         if stage_nodes.is_empty() {
-            let cycle_members: Vec<String> =
-                remaining.iter().map(|s| s.to_string()).collect();
+            let cycle_members: Vec<String> = remaining.iter().map(|s| s.to_string()).collect();
             return Err(anyhow!(
                 "workflow contains a cycle among nodes: [{}]",
                 cycle_members.join(", ")
@@ -106,19 +105,19 @@ pub fn plan(nodes: &[NodeDef], edges: &[EdgeDef]) -> Result<ExecutionPlan> {
 }
 
 /// Return the incoming edges for a node (for input resolution).
-pub fn incoming_edges<'a>(
-    node_id: &str,
-    edges: &'a [EdgeDef],
-) -> Vec<&'a EdgeDef> {
-    edges.iter().filter(|e| e.target_node_id == node_id).collect()
+pub fn incoming_edges<'a>(node_id: &str, edges: &'a [EdgeDef]) -> Vec<&'a EdgeDef> {
+    edges
+        .iter()
+        .filter(|e| e.target_node_id == node_id)
+        .collect()
 }
 
 /// Return the outgoing edges for a node.
-pub fn outgoing_edges<'a>(
-    node_id: &str,
-    edges: &'a [EdgeDef],
-) -> Vec<&'a EdgeDef> {
-    edges.iter().filter(|e| e.source_node_id == node_id).collect()
+pub fn outgoing_edges<'a>(node_id: &str, edges: &'a [EdgeDef]) -> Vec<&'a EdgeDef> {
+    edges
+        .iter()
+        .filter(|e| e.source_node_id == node_id)
+        .collect()
 }
 
 #[cfg(test)]
@@ -157,7 +156,11 @@ mod tests {
 
     #[test]
     fn linear_graph_one_node_per_stage() {
-        let nodes = vec![node("a", NodeType::Input), node("b", NodeType::Agent), node("c", NodeType::Output)];
+        let nodes = vec![
+            node("a", NodeType::Input),
+            node("b", NodeType::Agent),
+            node("c", NodeType::Output),
+        ];
         let edges = vec![edge("a", "b"), edge("b", "c")];
         let plan = plan(&nodes, &edges).unwrap();
         assert_eq!(plan.stages.len(), 3);

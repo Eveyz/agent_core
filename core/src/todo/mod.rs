@@ -161,9 +161,11 @@ impl TodoList {
             let norm = normalize_desc(&desc);
             let mut item = TodoItem::new(&id, &desc);
 
-            if let Some((idx, prev)) = old.iter().enumerate().find(|(j, o)| {
-                !used_old[*j] && normalize_desc(&o.description) == norm
-            }) {
+            if let Some((idx, prev)) = old
+                .iter()
+                .enumerate()
+                .find(|(j, o)| !used_old[*j] && normalize_desc(&o.description) == norm)
+            {
                 used_old[idx] = true;
                 item.status = prev.status;
                 item.completed_at = prev.completed_at;
@@ -172,7 +174,10 @@ impl TodoList {
             self.items.push(item);
         }
 
-        let has_ip = self.items.iter().any(|i| i.status == TodoStatus::InProgress);
+        let has_ip = self
+            .items
+            .iter()
+            .any(|i| i.status == TodoStatus::InProgress);
         if !has_ip {
             if let Some(ready_id) = self
                 .ready_items()
@@ -286,17 +291,11 @@ impl TodoList {
     }
 
     pub fn all_completed(&self) -> bool {
-        !self.items.is_empty()
-            && self
-                .items
-                .iter()
-                .all(|i| i.status == TodoStatus::Completed)
+        !self.items.is_empty() && self.items.iter().all(|i| i.status == TodoStatus::Completed)
     }
 
     pub fn has_incomplete(&self) -> bool {
-        self.items
-            .iter()
-            .any(|i| i.status != TodoStatus::Completed)
+        self.items.iter().any(|i| i.status != TodoStatus::Completed)
     }
 
     pub fn summary(&self) -> String {
@@ -518,11 +517,7 @@ impl SessionPlanStore {
 
     fn same_prompt(plan: &Plan, prompt_id: Option<&str>) -> bool {
         let want = Self::prompt_key(prompt_id);
-        let got = plan
-            .source_prompt_id
-            .as_deref()
-            .unwrap_or("")
-            .to_string();
+        let got = plan.source_prompt_id.as_deref().unwrap_or("").to_string();
         want == got
     }
 
@@ -564,7 +559,9 @@ impl SessionPlanStore {
     ) -> R {
         let key = Self::scope_key(session_id);
         let mut map = self.by_session.lock();
-        let state = map.entry(key.clone()).or_insert_with(SessionPlanState::empty);
+        let state = map
+            .entry(key.clone())
+            .or_insert_with(SessionPlanState::empty);
         self.ensure_loaded(&key, state);
         f(&key, state)
     }
@@ -624,11 +621,7 @@ impl SessionPlanStore {
     }
 
     /// Read-only access to active items via callback.
-    pub fn with_active<R>(
-        &self,
-        session_id: Option<&str>,
-        f: impl FnOnce(&TodoList) -> R,
-    ) -> R {
+    pub fn with_active<R>(&self, session_id: Option<&str>, f: impl FnOnce(&TodoList) -> R) -> R {
         self.with_session_mut(session_id, |_, state| {
             if let Some(p) = state.plans.iter().find(|p| p.status == PlanStatus::Active) {
                 f(&p.items)
@@ -682,9 +675,10 @@ impl SessionPlanStore {
     /// True if session has an incomplete active plan or any parked plan.
     pub fn has_resumable_work(&self, session_id: Option<&str>) -> bool {
         self.with_session_mut(session_id, |_, state| {
-            let active_incomplete = state.plans.iter().any(|p| {
-                p.status == PlanStatus::Active && p.items.has_incomplete()
-            });
+            let active_incomplete = state
+                .plans
+                .iter()
+                .any(|p| p.status == PlanStatus::Active && p.items.has_incomplete());
             let any_parked = state.plans.iter().any(|p| p.status == PlanStatus::Parked);
             active_incomplete || any_parked
         })
@@ -765,16 +759,17 @@ impl SessionPlanStore {
     }
 
     /// Activate a parked plan whose title equals (or uniquely contains) `title`.
-    pub fn activate_by_title(&self, session_id: Option<&str>, title: &str) -> Result<String, String> {
+    pub fn activate_by_title(
+        &self,
+        session_id: Option<&str>,
+        title: &str,
+    ) -> Result<String, String> {
         let needle = title.trim();
         if needle.is_empty() {
             return Err("empty plan title".into());
         }
         let parked = self.parked(session_id);
-        let exact: Vec<_> = parked
-            .iter()
-            .filter(|p| p.title == needle)
-            .collect();
+        let exact: Vec<_> = parked.iter().filter(|p| p.title == needle).collect();
         let id = if exact.len() == 1 {
             exact[0].id.clone()
         } else {
@@ -788,7 +783,7 @@ impl SessionPlanStore {
                 _ => {
                     return Err(format!(
                         "Multiple parked plans match '{needle}' — pick one with /plan resume <id>"
-                    ))
+                    ));
                 }
             }
         };
@@ -865,10 +860,7 @@ impl SessionPlanStore {
                 let id = parked[0].id.clone();
                 let title = parked[0].title.clone();
                 match self.activate(session_id, &id) {
-                    Ok(()) => ContinueResolution::Activated {
-                        plan_id: id,
-                        title,
-                    },
+                    Ok(()) => ContinueResolution::Activated { plan_id: id, title },
                     Err(_) => ContinueResolution::NothingParked,
                 }
             }
@@ -952,21 +944,16 @@ impl SessionPlanStore {
             }
 
             if let Some(idx) = active_idx {
-                let had_progress = state.plans[idx].items.items.iter().any(|i| {
-                    matches!(
-                        i.status,
-                        TodoStatus::Completed | TodoStatus::InProgress
-                    )
-                });
+                let had_progress =
+                    state.plans[idx].items.items.iter().any(|i| {
+                        matches!(i.status, TodoStatus::Completed | TodoStatus::InProgress)
+                    });
                 let incomplete = state.plans[idx].items.has_incomplete();
 
                 // Same-plan merge when there is progress and caller didn't force a new plan.
                 // Heuristic: if every new description matches an existing one (or vice versa
                 // substantial overlap), merge; otherwise park + create.
-                let overlap = description_overlap(
-                    &state.plans[idx].items.items,
-                    &descriptions,
-                );
+                let overlap = description_overlap(&state.plans[idx].items.items, &descriptions);
                 if had_progress && incomplete && overlap < 0.4 {
                     // New job — park current, create new active.
                     state.plans[idx].status = PlanStatus::Parked;
@@ -984,9 +971,7 @@ impl SessionPlanStore {
                     let ctx = plan.items.to_context_string();
                     self.flush_plan(key, &plan);
                     state.plans.push(plan);
-                    return Ok(format!(
-                        "[prior plan parked; new plan created]\n{ctx}"
-                    ));
+                    return Ok(format!("[prior plan parked; new plan created]\n{ctx}"));
                 }
 
                 if had_progress {
@@ -1006,7 +991,10 @@ impl SessionPlanStore {
                 state.plans[idx].updated_at = Utc::now();
                 let plan = state.plans[idx].clone();
                 self.flush_plan(key, &plan);
-                return Ok(format!("[plan created]\n{}", plan.items.to_context_string()));
+                return Ok(format!(
+                    "[plan created]\n{}",
+                    plan.items.to_context_string()
+                ));
             }
 
             let mut list = TodoList::new();
@@ -1318,7 +1306,9 @@ pub fn is_object_bearing_continue(text: &str) -> bool {
         "继续",
         "接着",
     ];
-    prefixes.iter().any(|p| t.starts_with(p) && t.len() > p.len() + 1)
+    prefixes
+        .iter()
+        .any(|p| t.starts_with(p) && t.len() > p.len() + 1)
 }
 
 pub fn is_plan_park_cmd(text: &str) -> bool {
@@ -1533,12 +1523,7 @@ mod tests {
     fn park_and_continue_single() {
         let store = SessionPlanStore::new();
         store
-            .write_plan(
-                Some("s1"),
-                vec!["A".into(), "B".into()],
-                false,
-                None,
-            )
+            .write_plan(Some("s1"), vec!["A".into(), "B".into()], false, None)
             .unwrap();
         assert!(store.park_active(Some("s1")));
         assert!(store.active_list(Some("s1")).items.is_empty());
@@ -1590,11 +1575,13 @@ mod tests {
             )
             .unwrap();
         assert_eq!(store.parked(Some("s")).len(), 1);
-        assert!(store
-            .active_list(Some("s"))
-            .items
-            .iter()
-            .any(|i| i.description.contains("Charts")));
+        assert!(
+            store
+                .active_list(Some("s"))
+                .items
+                .iter()
+                .any(|i| i.description.contains("Charts"))
+        );
     }
 
     #[test]
@@ -1693,10 +1680,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert_eq!(
-            store.snapshot(Some("sess1")).active_plan_id.is_some(),
-            true
-        );
+        assert_eq!(store.snapshot(Some("sess1")).active_plan_id.is_some(), true);
 
         // New store instance = process restart.
         let store2 = SessionPlanStore::with_storage(Some(storage));
@@ -1779,12 +1763,7 @@ mod tests {
             )
             .unwrap();
         store
-            .write_plan(
-                Some("s"),
-                vec!["B1".into()],
-                false,
-                Some("prompt-b"),
-            )
+            .write_plan(Some("s"), vec!["B1".into()], false, Some("prompt-b"))
             .unwrap();
         assert_eq!(store.parked(Some("s")).len(), 1);
         assert_eq!(
@@ -1795,11 +1774,13 @@ mod tests {
             store.active_source_prompt_id(Some("s")).as_deref(),
             Some("prompt-b")
         );
-        assert!(store
-            .active_list(Some("s"))
-            .items
-            .iter()
-            .any(|i| i.description == "B1"));
+        assert!(
+            store
+                .active_list(Some("s"))
+                .items
+                .iter()
+                .any(|i| i.description == "B1")
+        );
     }
 
     #[test]
@@ -1848,10 +1829,7 @@ mod tests {
         store2.park_active(Some("s"));
         match store2.resolve_continue(Some("s")) {
             ContinueResolution::Activated { .. } => {
-                assert_eq!(
-                    store2.active_list(Some("s")).items[0].description,
-                    "Only"
-                );
+                assert_eq!(store2.active_list(Some("s")).items[0].description, "Only");
             }
             other => panic!("expected Activated, got {other:?}"),
         }
@@ -1874,12 +1852,7 @@ mod tests {
 
         let store = SessionPlanStore::with_storage(Some(storage.clone()));
         store
-            .write_plan(
-                Some("sess1"),
-                vec!["A1".into()],
-                false,
-                Some("prompt-a"),
-            )
+            .write_plan(Some("sess1"), vec!["A1".into()], false, Some("prompt-a"))
             .unwrap();
         store.park_active(Some("sess1"));
         store

@@ -301,14 +301,7 @@ impl PermissionPolicy {
         host: Option<&str>,
     ) -> PermissionDecision {
         let paths: Vec<&str> = path.into_iter().collect();
-        self.check_scoped(
-            tool_name,
-            tool_input_json,
-            command,
-            &paths,
-            host,
-            None,
-        )
+        self.check_scoped(tool_name, tool_input_json, command, &paths, host, None)
     }
 
     /// Check a fully extracted invocation using the same cwd that execution
@@ -346,9 +339,8 @@ impl PermissionPolicy {
         // Whether a built-in safety rule unconditionally denies this call
         // (currently: destructive shell commands). Such denies must not be
         // bypassed by `auto_allow_up_to` — they are evaluated below at Layer 5.
-        let builtin_deny =
-            crate::runtime::platform_shell::is_shell_tool(tool_name)
-                && danger == DangerLevel::Destructive;
+        let builtin_deny = crate::runtime::platform_shell::is_shell_tool(tool_name)
+            && danger == DangerLevel::Destructive;
 
         // Layer 0: Yolo mode — everything allowed
         if self.mode == PermissionMode::Yolo {
@@ -760,7 +752,6 @@ impl PermissionPolicy {
         &self.sandbox_paths
     }
 }
-
 
 include!("command_analysis.inc.rs");
 

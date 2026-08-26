@@ -256,8 +256,18 @@ pub fn create(storage: &Storage, wf: &WorkflowDef) -> Result<WorkflowDef> {
 /// Fetch a full workflow (header + nodes + edges).
 pub fn get(storage: &Storage, id: &str) -> Result<WorkflowDef> {
     let db = storage.conn();
-    let (name, description, input_schema, trust_mode, max_concurrent, on_node_failure, config, created_at, updated_at) =
-        db.query_row(
+    let (
+        name,
+        description,
+        input_schema,
+        trust_mode,
+        max_concurrent,
+        on_node_failure,
+        config,
+        created_at,
+        updated_at,
+    ) = db
+        .query_row(
             "SELECT name, description, input_schema, trust_mode, max_concurrent, \
              on_node_failure, config, created_at, updated_at FROM workflows WHERE id = ?1",
             params![id],
@@ -356,8 +366,14 @@ pub fn save(storage: &Storage, wf: &WorkflowDef) -> Result<WorkflowDef> {
                 now,
             ],
         )?;
-        tx.execute("DELETE FROM workflow_nodes WHERE workflow_id = ?1", params![wf.id])?;
-        tx.execute("DELETE FROM workflow_edges WHERE workflow_id = ?1", params![wf.id])?;
+        tx.execute(
+            "DELETE FROM workflow_nodes WHERE workflow_id = ?1",
+            params![wf.id],
+        )?;
+        tx.execute(
+            "DELETE FROM workflow_edges WHERE workflow_id = ?1",
+            params![wf.id],
+        )?;
         insert_nodes(&tx, &wf.id, &wf.nodes, &now)?;
         insert_edges(&tx, &wf.id, &wf.edges, &now)?;
         tx.commit()?;
@@ -475,9 +491,8 @@ fn load_edges(db: &rusqlite::Connection, workflow_id: &str) -> Result<Vec<EdgeDe
             target_handle: row.get(5)?,
             label: row.get(6)?,
             condition: row.get(7)?,
-            data_mapping: serde_json::from_str(&data_mapping).unwrap_or_else(|_| {
-                serde_json::json!({"pass_through": true})
-            }),
+            data_mapping: serde_json::from_str(&data_mapping)
+                .unwrap_or_else(|_| serde_json::json!({"pass_through": true})),
             created_at: row.get(9)?,
         })
     })?;
@@ -564,16 +579,21 @@ pub fn finish_run(
         "UPDATE workflow_runs SET status = ?2, output = ?3, error = ?4, \
          total_token_input = ?5, total_token_output = ?6, finished_at = ?7 \
          WHERE id = ?1",
-        params![run_id, status, output_str, error, token_input, token_output, now],
+        params![
+            run_id,
+            status,
+            output_str,
+            error,
+            token_input,
+            token_output,
+            now
+        ],
     )?;
     Ok(())
 }
 
 /// Record a per-node result.
-pub fn record_node_result(
-    storage: &Storage,
-    result: &WorkflowRunNodeResult,
-) -> Result<()> {
+pub fn record_node_result(storage: &Storage, result: &WorkflowRunNodeResult) -> Result<()> {
     let input_str = serde_json::to_string(&result.input)?;
     let output_str = serde_json::to_string(&result.output)?;
     let db = storage.conn();

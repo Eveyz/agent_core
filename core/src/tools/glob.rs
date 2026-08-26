@@ -39,9 +39,15 @@ impl Tool for GlobTool {
     }
 
     async fn execute(&self, args: Value) -> Result<String> {
-        let pattern = args["pattern"].as_str().context("missing 'pattern'")?.to_string();
+        let pattern = args["pattern"]
+            .as_str()
+            .context("missing 'pattern'")?
+            .to_string();
         let base_path = args["path"].as_str().unwrap_or(".").to_string();
-        let working_dir = args.get("_working_dir").and_then(|v| v.as_str()).map(str::to_string);
+        let working_dir = args
+            .get("_working_dir")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         let max_results = args["max_results"].as_u64().unwrap_or(100) as usize;
 
         // glob::glob is synchronous and blocking — run it on a blocking thread.
@@ -71,7 +77,10 @@ impl Tool for GlobTool {
                     Ok(path) => {
                         let display_path = if let Ok(rel) = path.strip_prefix(&base) {
                             rel.display().to_string()
-                        } else if let Ok(rel) = path.strip_prefix(std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))) {
+                        } else if let Ok(rel) = path.strip_prefix(
+                            std::env::current_dir()
+                                .unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                        ) {
                             rel.display().to_string()
                         } else {
                             path.display().to_string()
@@ -103,7 +112,7 @@ mod tests {
     fn create_test_files() -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
         let dir = std::env::temp_dir().join("glob_tool_tests");
         std::fs::create_dir_all(&dir).unwrap();
-        
+
         let sub = dir.join("nested");
         std::fs::create_dir_all(&sub).unwrap();
 

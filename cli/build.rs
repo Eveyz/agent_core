@@ -1,6 +1,7 @@
 fn main() {
     let hash = git_stdout(&["rev-parse", "--short=12", "HEAD"]).unwrap_or_else(|| "unknown".into());
-    let date = git_stdout(&["show", "-s", "--format=%cs", "HEAD"]).unwrap_or_else(|| "unknown".into());
+    let date =
+        git_stdout(&["show", "-s", "--format=%cs", "HEAD"]).unwrap_or_else(|| "unknown".into());
     let profile = std::env::var("PROFILE").unwrap_or_else(|_| "unknown".into());
 
     println!("cargo:rustc-env=GIT_COMMIT_HASH={hash}");

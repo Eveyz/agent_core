@@ -10,8 +10,8 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+use crate::agent_registry::history::{AgentHistoryEntry, list as history_list};
 use crate::memory::storage::Storage;
-use crate::agent_registry::history::{list as history_list, AgentHistoryEntry};
 
 /// A generated skill draft awaiting human review.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,11 +105,7 @@ pub fn get_draft(drafts_dir: &Path, name: &str) -> Result<SkillDraft> {
 }
 
 /// Approve a draft: move it from `drafts_dir` to `skills_dir`.
-pub fn approve_draft(
-    drafts_dir: &Path,
-    skills_dir: &Path,
-    name: &str,
-) -> Result<()> {
+pub fn approve_draft(drafts_dir: &Path, skills_dir: &Path, name: &str) -> Result<()> {
     let src = drafts_dir.join(format!("{name}.md"));
     if !src.exists() {
         anyhow::bail!("draft '{name}' not found");
@@ -127,8 +123,7 @@ pub fn reject_draft(drafts_dir: &Path, name: &str) -> Result<()> {
     if !path.exists() {
         anyhow::bail!("draft '{name}' not found");
     }
-    std::fs::remove_file(&path)
-        .with_context(|| format!("failed to delete draft: {:?}", path))?;
+    std::fs::remove_file(&path).with_context(|| format!("failed to delete draft: {:?}", path))?;
     Ok(())
 }
 
@@ -145,7 +140,12 @@ fn analyze_and_generate(history: &[AgentHistoryEntry], agent_id: &str) -> Vec<Sk
     // Pattern 1: Recurring failure patterns.
     let failures: Vec<&AgentHistoryEntry> = history.iter().filter(|h| !h.success).collect();
     if failures.len() >= 2 {
-        let common = extract_common_keywords(&failures.iter().map(|h| h.input.as_str()).collect::<Vec<_>>());
+        let common = extract_common_keywords(
+            &failures
+                .iter()
+                .map(|h| h.input.as_str())
+                .collect::<Vec<_>>(),
+        );
         if !common.is_empty() {
             let name = format!("{}-failure-recovery", slugify(agent_id));
             drafts.push(SkillDraft {
@@ -171,10 +171,8 @@ fn analyze_and_generate(history: &[AgentHistoryEntry], agent_id: &str) -> Vec<Sk
     }
 
     // Pattern 2: High-iteration executions (may benefit from a shortcut skill).
-    let high_iter: Vec<&AgentHistoryEntry> = history
-        .iter()
-        .filter(|h| h.iterations_used >= 10)
-        .collect();
+    let high_iter: Vec<&AgentHistoryEntry> =
+        history.iter().filter(|h| h.iterations_used >= 10).collect();
     if high_iter.len() >= 2 {
         let avg_iters = high_iter.iter().map(|h| h.iterations_used).sum::<u32>() as f64
             / high_iter.len() as f64;
@@ -231,9 +229,9 @@ fn extract_common_keywords(texts: &[&str]) -> Vec<String> {
     use std::collections::HashMap;
     let mut word_counts: HashMap<String, usize> = HashMap::new();
     let stop_words: &[&str] = &[
-        "the", "a", "an", "to", "and", "or", "in", "on", "at", "for", "of", "is",
-        "are", "was", "were", "be", "been", "this", "that", "it", "with", "as",
-        "by", "from", "please", "can", "you", "i", "me", "my", "we", "do", "task",
+        "the", "a", "an", "to", "and", "or", "in", "on", "at", "for", "of", "is", "are", "was",
+        "were", "be", "been", "this", "that", "it", "with", "as", "by", "from", "please", "can",
+        "you", "i", "me", "my", "we", "do", "task",
     ];
 
     for text in texts {
@@ -309,7 +307,8 @@ fn parse_draft_md(path: &Path) -> Result<SkillDraft> {
         anyhow::bail!("invalid frontmatter");
     }
 
-    let mut frontmatter: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut frontmatter: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     for line in &mut lines {
         let line = line.trim();
         if line == "---" {
@@ -341,10 +340,7 @@ fn parse_draft_md(path: &Path) -> Result<SkillDraft> {
     Ok(SkillDraft {
         name,
         description: frontmatter.get("description").cloned().unwrap_or_default(),
-        rationale: frontmatter
-            .get("rationale")
-            .cloned()
-            .unwrap_or_default(),
+        rationale: frontmatter.get("rationale").cloned().unwrap_or_default(),
         body,
         triggers,
         agent_id: frontmatter.get("agent_id").cloned().unwrap_or_default(),
@@ -352,10 +348,7 @@ fn parse_draft_md(path: &Path) -> Result<SkillDraft> {
             .get("samples_analyzed")
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(0),
-        generated_at: frontmatter
-            .get("generated_at")
-            .cloned()
-            .unwrap_or_default(),
+        generated_at: frontmatter.get("generated_at").cloned().unwrap_or_default(),
     })
 }
 
@@ -406,8 +399,8 @@ fn format_task_patterns_body(keywords: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_registry::history::{AgentHistoryEntry, record};
     use crate::memory::storage::Storage;
-    use crate::agent_registry::history::{record, AgentHistoryEntry};
     use tempfile::TempDir;
 
     fn make_storage() -> Storage {
@@ -464,7 +457,11 @@ mod tests {
         let storage = make_storage();
         let dir = TempDir::new().unwrap();
         for _ in 0..3 {
-            record(&storage, &make_entry("a1", "complex refactoring task code", true, 15)).unwrap();
+            record(
+                &storage,
+                &make_entry("a1", "complex refactoring task code", true, 15),
+            )
+            .unwrap();
         }
         let result = generate_drafts(&storage, "a1", dir.path(), 50).unwrap();
         assert!(result.drafts.iter().any(|d| d.name.contains("efficiency")));

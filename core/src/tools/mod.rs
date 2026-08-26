@@ -1,6 +1,5 @@
 pub mod archival_memory;
 pub mod ask_user;
-pub mod shell;
 pub mod core_memory;
 pub mod edit;
 pub mod glob;
@@ -9,6 +8,7 @@ pub mod read_file;
 pub mod recall_memory;
 pub mod repl;
 pub mod script;
+pub mod shell;
 pub mod skill;
 pub mod subagent;
 pub mod tavily_search;
@@ -150,8 +150,7 @@ impl ToolRegistry {
         let internal_name = tool.name().to_string();
         let api_name = tool.api_name();
         self.tools.insert(internal_name.clone(), tool);
-        self.api_name_to_internal
-            .insert(api_name, internal_name);
+        self.api_name_to_internal.insert(api_name, internal_name);
     }
 
     pub fn has(&self, name: &str) -> bool {

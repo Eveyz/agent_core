@@ -6,7 +6,7 @@ use agent_core::tools::Tool;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use parking_lot::Mutex;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::manager::PreviewManager;
 use super::path_policy::normalize_entrypoint;
@@ -80,10 +80,7 @@ impl Tool for PreviewTool {
             .map_err(|e| anyhow::anyhow!("invalid entrypoint '{entrypoint_raw}': {e}"))?;
 
         // Replace an existing preview for this workspace/session instead of failing on quota.
-        if let Some(existing_id) = self
-            .preview_manager
-            .find_active(&workspace_id, session_id)
-        {
+        if let Some(existing_id) = self.preview_manager.find_active(&workspace_id, session_id) {
             self.preview_manager
                 .stop(existing_id)
                 .await
@@ -130,13 +127,12 @@ mod tests {
         std::fs::create_dir_all(&session_cwd).unwrap();
         let canonical = session_cwd.canonicalize().unwrap();
 
-        let (workspace_id, root) =
-            super::super::resolve_preview_workspace(
-                &canonical.to_string_lossy(),
-                Some(session_id),
-                &pm,
-            )
-            .unwrap();
+        let (workspace_id, root) = super::super::resolve_preview_workspace(
+            &canonical.to_string_lossy(),
+            Some(session_id),
+            &pm,
+        )
+        .unwrap();
 
         assert_eq!(workspace_id, "__adhoc_chat__");
         assert_eq!(root, canonical);
@@ -149,12 +145,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let canonical = dir.path().canonicalize().unwrap();
 
-        let (workspace_id, root) = super::super::resolve_preview_workspace(
-            &canonical.to_string_lossy(),
-            None,
-            &pm,
-        )
-        .unwrap();
+        let (workspace_id, root) =
+            super::super::resolve_preview_workspace(&canonical.to_string_lossy(), None, &pm)
+                .unwrap();
 
         assert_eq!(workspace_id, "__adhoc_chat__");
         assert_eq!(root, canonical);

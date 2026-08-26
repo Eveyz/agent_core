@@ -862,12 +862,7 @@ impl RunManager {
     }
 
     /// Interrupt the active turn, inject a user steer, and continue the same Run.
-    pub async fn steer_run(
-        &self,
-        run_id: &str,
-        steer_id: String,
-        message: String,
-    ) -> Result<()> {
+    pub async fn steer_run(&self, run_id: &str, steer_id: String, message: String) -> Result<()> {
         let runs = self.runs.lock().await;
         let handle = runs
             .get(run_id)
@@ -1242,10 +1237,13 @@ default = {{ model_id = "mock", max_context_tokens = 100000 }}
 
         let brain = Brain::from_config(test_config()).unwrap();
         let manager = RunManager::new(brain);
-        let messages =
-            session_manager.model_context_messages_for_usage(&session_id, "mock");
+        let messages = session_manager.model_context_messages_for_usage(&session_id, "mock");
 
-        assert_eq!(messages.len(), 3, "compacted window + post-checkpoint message");
+        assert_eq!(
+            messages.len(),
+            3,
+            "compacted window + post-checkpoint message"
+        );
         assert_eq!(messages[0].content.as_deref(), Some("recent user"));
         assert_eq!(messages[2].content.as_deref(), Some(follow_up));
 
@@ -1259,9 +1257,10 @@ default = {{ model_id = "mock", max_context_tokens = 100000 }}
 
     #[tokio::test]
     async fn compaction_checkpoint_is_durable_before_terminal_and_prevents_next_run_reexpansion() {
-        use crate::eval::mock_llm::{start_mock_server, MockScript, MockStep};
+        use crate::eval::mock_llm::{MockScript, MockStep, start_mock_server};
 
-        let summary_json = r#"{"goal":"test","decisions":[],"files":{},"errors_open":[],"facts":[],"notes":[]}"#;
+        let summary_json =
+            r#"{"goal":"test","decisions":[],"files":{},"errors_open":[],"facts":[],"notes":[]}"#;
         let mock = start_mock_server(MockScript {
             steps: vec![
                 MockStep::Text {
@@ -1438,7 +1437,7 @@ default = {{ model_id = "mock", max_context_tokens = 100000 }}
 
     #[tokio::test]
     async fn steer_interrupts_an_in_flight_model_request_and_continues_same_run() {
-        use crate::eval::mock_llm::{start_mock_server, MockScript, MockStep};
+        use crate::eval::mock_llm::{MockScript, MockStep, start_mock_server};
 
         let mock = start_mock_server(MockScript {
             steps: vec![
@@ -1463,10 +1462,7 @@ default = {{ model_id = "mock", max_context_tokens = 100000 }}
             .unwrap()
             .run_id;
         let mut events = manager.subscribe(&run_id).await.unwrap();
-        manager
-            .command(&run_id, RunCommand::Start)
-            .await
-            .unwrap();
+        manager.command(&run_id, RunCommand::Start).await.unwrap();
 
         loop {
             if matches!(
@@ -1520,9 +1516,7 @@ default = {{ model_id = "mock", max_context_tokens = 100000 }}
 
     #[tokio::test]
     async fn steer_interrupts_an_in_flight_tool_and_pairs_its_terminal_event() {
-        use crate::eval::mock_llm::{
-            MockScript, MockStep, MockToolCall, start_mock_server,
-        };
+        use crate::eval::mock_llm::{MockScript, MockStep, MockToolCall, start_mock_server};
 
         let mock = start_mock_server(MockScript {
             steps: vec![
@@ -1555,10 +1549,7 @@ default = {{ model_id = "mock", max_context_tokens = 100000 }}
             .unwrap()
             .run_id;
         let mut events = manager.subscribe(&run_id).await.unwrap();
-        manager
-            .command(&run_id, RunCommand::Start)
-            .await
-            .unwrap();
+        manager.command(&run_id, RunCommand::Start).await.unwrap();
 
         loop {
             if matches!(
@@ -1625,10 +1616,7 @@ default = {{ model_id = "mock", max_context_tokens = 100000 }}
             .unwrap()
             .run_id;
         let mut events = manager.subscribe(&run_id).await.unwrap();
-        manager
-            .command(&run_id, RunCommand::Start)
-            .await
-            .unwrap();
+        manager.command(&run_id, RunCommand::Start).await.unwrap();
 
         loop {
             if matches!(
@@ -1693,10 +1681,7 @@ default = {{ model_id = "mock", max_context_tokens = 100000 }}
             .unwrap()
             .run_id;
         let mut events = manager.subscribe(&run_id).await.unwrap();
-        manager
-            .command(&run_id, RunCommand::Start)
-            .await
-            .unwrap();
+        manager.command(&run_id, RunCommand::Start).await.unwrap();
         loop {
             if matches!(
                 events.recv().await.unwrap().event,

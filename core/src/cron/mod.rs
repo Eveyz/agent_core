@@ -2,7 +2,7 @@ pub mod manager;
 pub use manager::CronScheduler;
 
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection, Result as SqlResult};
+use rusqlite::{Connection, Result as SqlResult, params};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,7 +90,9 @@ impl CronjobStore {
             let skills_str: String = row.get(6)?;
             let skills: Vec<String> = serde_json::from_str(&skills_str).unwrap_or_default();
             let created_at_str: String = row.get(11)?;
-            let created_at = DateTime::parse_from_rfc3339(&created_at_str).unwrap_or_default().with_timezone(&Utc);
+            let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+                .unwrap_or_default()
+                .with_timezone(&Utc);
 
             Ok(CronJob {
                 id: row.get(0)?,

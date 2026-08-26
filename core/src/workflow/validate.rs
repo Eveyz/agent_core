@@ -116,10 +116,7 @@ pub fn validate(wf: &WorkflowDef) -> ValidationResult {
             issues.push(ValidationIssue {
                 severity: Severity::Error,
                 code: "missing_agent".to_string(),
-                message: format!(
-                    "Agent node '{}' has no agent assigned",
-                    node.label
-                ),
+                message: format!("Agent node '{}' has no agent assigned", node.label),
                 node_ids: vec![node.id.clone()],
             });
         }
@@ -160,7 +157,7 @@ pub fn validate(wf: &WorkflowDef) -> ValidationResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::definition::{EdgeDef, TrustMode, OnNodeFailure, NodeDef};
+    use crate::workflow::definition::{EdgeDef, NodeDef, OnNodeFailure, TrustMode};
 
     fn make_wf(nodes: Vec<NodeDef>, edges: Vec<EdgeDef>) -> WorkflowDef {
         WorkflowDef {
@@ -220,13 +217,21 @@ mod tests {
     fn empty_workflow_is_invalid() {
         let result = validate(&make_wf(vec![], vec![]));
         assert!(!result.valid);
-        assert!(result.issues.iter().any(|issue| issue.code == "empty_workflow"));
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|issue| issue.code == "empty_workflow")
+        );
     }
 
     #[test]
     fn cycle_detected() {
         let wf = make_wf(
-            vec![node("a", NodeType::Agent, "a1"), node("b", NodeType::Agent, "b1")],
+            vec![
+                node("a", NodeType::Agent, "a1"),
+                node("b", NodeType::Agent, "b1"),
+            ],
             vec![edge("a", "b"), edge("b", "a")],
         );
         let result = validate(&wf);
@@ -236,10 +241,7 @@ mod tests {
 
     #[test]
     fn missing_agent_detected() {
-        let wf = make_wf(
-            vec![node("a", NodeType::Agent, "")],
-            vec![],
-        );
+        let wf = make_wf(vec![node("a", NodeType::Agent, "")], vec![]);
         let result = validate(&wf);
         assert!(!result.valid);
         assert!(result.issues.iter().any(|i| i.code == "missing_agent"));

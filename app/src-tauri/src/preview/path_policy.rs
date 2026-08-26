@@ -112,9 +112,7 @@ pub fn canonicalize_with_policy(
     root: &Path,
     options: PathPolicyOptions,
 ) -> Result<PathBuf, PathPolicyError> {
-    let canonical_root = root
-        .canonicalize()
-        .map_err(|_| PathPolicyError::NotFound)?;
+    let canonical_root = root.canonicalize().map_err(|_| PathPolicyError::NotFound)?;
 
     if !candidate.exists() {
         return Err(PathPolicyError::NotFound);
@@ -270,8 +268,8 @@ mod tests {
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(&outside, &link).unwrap();
-            let err = resolve_under_root(&root, "escape.txt", PathPolicyOptions::default())
-                .unwrap_err();
+            let err =
+                resolve_under_root(&root, "escape.txt", PathPolicyOptions::default()).unwrap_err();
             assert_eq!(err, PathPolicyError::OutsideRoot);
         }
     }

@@ -97,7 +97,11 @@ async fn run_app(terminal: &mut ratatui::DefaultTerminal, cli: Arc<Mutex<CliStat
                     Event::Paste(data) => {
                         use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
                         for ch in data.chars() {
-                            let code = if ch == '\n' { KeyCode::Enter } else { KeyCode::Char(ch) };
+                            let code = if ch == '\n' {
+                                KeyCode::Enter
+                            } else {
+                                KeyCode::Char(ch)
+                            };
                             let _ = tx.send(AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE)));
                         }
                     }
@@ -194,7 +198,9 @@ async fn run_app(terminal: &mut ratatui::DefaultTerminal, cli: Arc<Mutex<CliStat
                     true
                 } else if state.agent_running {
                     match state.cache.last_rebuild {
-                        Some(last) => Instant::now().duration_since(last) >= STREAMING_REBUILD_THROTTLE,
+                        Some(last) => {
+                            Instant::now().duration_since(last) >= STREAMING_REBUILD_THROTTLE
+                        }
                         None => true,
                     }
                 } else {
@@ -269,7 +275,8 @@ async fn handle_pending_command(cli: &Arc<Mutex<CliState>>, state: &mut AppState
         }
 
         let outcome = if needs_async {
-            commands::dispatch_async(&mut s, slash, state.enable_permission, state.enable_hooks).await
+            commands::dispatch_async(&mut s, slash, state.enable_permission, state.enable_hooks)
+                .await
         } else {
             commands::dispatch_sync(&mut s, slash, state.enable_permission, state.enable_hooks)
         };
@@ -323,7 +330,11 @@ async fn handle_pending_command(cli: &Arc<Mutex<CliState>>, state: &mut AppState
             state.enable_permission,
             state.enable_hooks,
         );
-        state.session_short = s.session_id.as_deref().map(short_id).unwrap_or_else(|| "(new)".into());
+        state.session_short = s
+            .session_id
+            .as_deref()
+            .map(short_id)
+            .unwrap_or_else(|| "(new)".into());
         state.tokens = s.context_history.len() * 4;
         drop(s);
         apply_outcome(state, outcome);
@@ -368,9 +379,13 @@ async fn apply_register_model(cli: &Arc<Mutex<CliState>>, state: &mut AppState, 
     }
     let path = agent_core::paths::get_agverse_dir().join("config.toml");
     if let Err(e) = cfg.save(&path.to_string_lossy()) {
-        state.push_notice(format!("Model '{model_name}' registered; config save failed: {e}"));
+        state.push_notice(format!(
+            "Model '{model_name}' registered; config save failed: {e}"
+        ));
     } else {
-        state.push_notice(format!("Model registered: {model_name} — saved to config.toml"));
+        state.push_notice(format!(
+            "Model registered: {model_name} — saved to config.toml"
+        ));
     }
     state.model = s.brain().current_model_name().to_string();
 }

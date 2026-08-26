@@ -30,8 +30,8 @@
 //! 2. Cancel → `cancel_and_cleanup()` kills processes + aborts tasks
 //! 3. Drop (RAII) → supervisor + join_set + cancel all fire automatically
 
-pub mod approval;
 pub mod agent_loop;
+pub mod approval;
 pub mod brain;
 pub mod command;
 pub mod event;
@@ -53,20 +53,20 @@ pub mod tool_scheduler;
 pub use agent_loop::{CollectedStream, CompactMode, LoopPolicy, StreamPartial};
 pub use approval::ApprovalResolver;
 pub use brain::{Brain, ExtraToolContext};
-pub use file_ledger::FileLedger;
-pub use command::{RunCommand, SteerEntry, STEER_MID_RUN_PREFIX};
+pub use command::{RunCommand, STEER_MID_RUN_PREFIX, SteerEntry};
 pub use event::{CacheMetrics, CacheStatus, ChildId, Envelope, RunEvent, RunEventEmit, RunId};
 pub use event_log::EventLog;
 pub use execution::{ExecutionPhase, ExecutionState};
+pub use file_ledger::FileLedger;
 pub use guard::EventGuard;
 pub use input::{
     ClarificationAnswers, ClarificationOption, ClarificationQuestion, ClarificationRequest,
     InputResolver,
 };
-pub use intent::{parse_user_intent, UserIntent};
+pub use intent::{UserIntent, parse_user_intent};
 pub use manager::{CreateRunRequest, CreateRunResult, RunHandle, RunManager};
+pub use platform_shell::{is_shell_tool, shell_command, shell_label, shell_program};
 pub use run::Run;
 pub use state::RunState;
 pub use steering::SteeringController;
-pub use platform_shell::{is_shell_tool, shell_command, shell_label, shell_program};
 pub use supervisor::{ProcessSupervisor, SupervisedChild};

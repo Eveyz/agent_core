@@ -1,4 +1,4 @@
-use super::{AgentMemoryIdentity, ResultStrategy, MAX_SUBAGENT_DEPTH};
+use super::{AgentMemoryIdentity, MAX_SUBAGENT_DEPTH, ResultStrategy};
 use crate::permission::PermissionConfig;
 use anyhow::Result;
 use std::path::PathBuf;
@@ -6,7 +6,9 @@ use std::path::PathBuf;
 pub const SUBAGENT_PROMPT_SCHEMA: &str = "subagent-prompt/v1";
 pub fn output_contract(strategy: ResultStrategy) -> &'static str {
     match strategy {
-        ResultStrategy::Full => "Return complete evidence and artifact references. End with <context_status>{\"sufficient\":true|false,\"missing\":[...],\"unresolved\":[...]}</context_status>.",
+        ResultStrategy::Full => {
+            "Return complete evidence and artifact references. End with <context_status>{\"sufficient\":true|false,\"missing\":[...],\"unresolved\":[...]}</context_status>."
+        }
         ResultStrategy::Summary => {
             "Return concise findings, missing context, and artifact references. End with <context_status>{\"sufficient\":true|false,\"missing\":[...],\"unresolved\":[...]}</context_status>."
         }

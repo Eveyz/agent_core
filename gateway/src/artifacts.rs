@@ -5,8 +5,8 @@ use crate::error::ApiError;
 use crate::models::{ArtifactItem, DownloadArtifactResponse, ListArtifactsResponse};
 use crate::state::AppState;
 use crate::workspace::resolve_artifact_path;
-use axum::extract::{Path, Query, State};
 use axum::Json;
+use axum::extract::{Path, Query, State};
 use chrono::{Duration, Utc};
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -108,7 +108,7 @@ pub async fn artifact_content(
     Query(q): Query<DownloadQuery>,
 ) -> Result<axum::response::Response, ApiError> {
     use axum::body::Body;
-    use axum::http::{header, StatusCode};
+    use axum::http::{StatusCode, header};
     use axum::response::IntoResponse;
 
     let record = state
@@ -124,9 +124,8 @@ pub async fn artifact_content(
     let mime = mime_guess_from_path(&full);
     res.headers_mut().insert(
         header::CONTENT_TYPE,
-        header::HeaderValue::from_str(&mime).unwrap_or_else(|_| {
-            header::HeaderValue::from_static("application/octet-stream")
-        }),
+        header::HeaderValue::from_str(&mime)
+            .unwrap_or_else(|_| header::HeaderValue::from_static("application/octet-stream")),
     );
     Ok(res)
 }

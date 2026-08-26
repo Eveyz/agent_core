@@ -103,7 +103,9 @@ line-numbered view). Refuses files larger than 1 MB and detects binary files."
 
         // Binary probe: reject on NUL bytes.
         if content.as_bytes().contains(&0u8) {
-            bail!("File appears to be binary (contains NUL bytes). read_file only handles text files.");
+            bail!(
+                "File appears to be binary (contains NUL bytes). read_file only handles text files."
+            );
         }
 
         let mut out = String::new();
@@ -208,7 +210,10 @@ mod tests {
     #[tokio::test]
     async fn reads_full_small_file_with_line_numbers() {
         let p = write_tmp("small.txt", "alpha\nbeta\ngamma\n");
-        let out = ReadFileTool.execute(json!({"path": p.to_string_lossy()})).await.unwrap();
+        let out = ReadFileTool
+            .execute(json!({"path": p.to_string_lossy()}))
+            .await
+            .unwrap();
         assert!(out.contains("[Lines 1-3 in"));
         assert!(out.contains("     1\talpha"));
         assert!(out.contains("     2\tbeta"));
@@ -237,7 +242,10 @@ mod tests {
     async fn default_limit_caps_at_300_with_hint() {
         let content: String = (1..=500).map(|i| format!("line {i}\n")).collect();
         let p = write_tmp("big.txt", &content);
-        let out = ReadFileTool.execute(json!({"path": p.to_string_lossy()})).await.unwrap();
+        let out = ReadFileTool
+            .execute(json!({"path": p.to_string_lossy()}))
+            .await
+            .unwrap();
         assert!(out.contains("[Lines 1-300 in"));
         assert!(out.contains("line 300"));
         assert!(!out.contains("line 301"));
@@ -261,7 +269,9 @@ mod tests {
     #[tokio::test]
     async fn rejects_binary_nul_bytes() {
         let p = write_tmp("bin.dat", "ab\x00cd\nef\n");
-        let res = ReadFileTool.execute(json!({"path": p.to_string_lossy()})).await;
+        let res = ReadFileTool
+            .execute(json!({"path": p.to_string_lossy()}))
+            .await;
         assert!(res.is_err());
         let msg = res.unwrap_err().to_string();
         assert!(msg.contains("binary"));
@@ -274,7 +284,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("bad.txt");
         std::fs::write(&p, b"valid\n\xff\xfe\nmore\n").unwrap();
-        let res = ReadFileTool.execute(json!({"path": p.to_string_lossy()})).await;
+        let res = ReadFileTool
+            .execute(json!({"path": p.to_string_lossy()}))
+            .await;
         assert!(res.is_err());
     }
 
@@ -282,7 +294,9 @@ mod tests {
     async fn rejects_oversize_file_without_reading() {
         // Write a 2 MB file.
         let p = write_tmp("huge.txt", &"x".repeat(2 * 1_048_576));
-        let res = ReadFileTool.execute(json!({"path": p.to_string_lossy()})).await;
+        let res = ReadFileTool
+            .execute(json!({"path": p.to_string_lossy()}))
+            .await;
         assert!(res.is_err());
         let msg = res.unwrap_err().to_string();
         assert!(msg.contains("too large"));
@@ -293,8 +307,7 @@ mod tests {
     async fn rejects_zero_offset() {
         let p = write_tmp("z.txt", "x\n");
         let res = ReadFileTool
-            .execute(json!({"path": p.to_string_lossy(), "offset": 0})
-            )
+            .execute(json!({"path": p.to_string_lossy(), "offset": 0}))
             .await;
         assert!(res.is_err());
     }
@@ -306,18 +319,14 @@ mod tests {
             .execute(json!({"path": p.to_string_lossy()}))
             .await
             .unwrap();
-        assert_eq!(
-            out,
-            format!("[Lines 0-0 in '{}']\n", p.to_string_lossy())
-        );
+        assert_eq!(out, format!("[Lines 0-0 in '{}']\n", p.to_string_lossy()));
     }
 
     #[tokio::test]
     async fn offset_beyond_end_returns_empty_range() {
         let p = write_tmp("short.txt", "only\none\n");
         let res = ReadFileTool
-            .execute(json!({"path": p.to_string_lossy(), "offset": 999})
-            )
+            .execute(json!({"path": p.to_string_lossy(), "offset": 999}))
             .await;
         // No lines collected and file is non-empty → no error, empty body under header.
         let out = res.unwrap();
@@ -330,8 +339,7 @@ mod tests {
         let content: String = (1..=1500).map(|i| format!("l{i}\n")).collect();
         let p = write_tmp("aligned.txt", &content);
         let out = ReadFileTool
-            .execute(json!({"path": p.to_string_lossy(), "offset": 1000, "limit": 10})
-            )
+            .execute(json!({"path": p.to_string_lossy(), "offset": 1000, "limit": 10}))
             .await
             .unwrap();
         assert!(out.contains("  1000\tl1000"));
@@ -343,9 +351,12 @@ mod tests {
         // One line bigger than MAX_OUTPUT_CHARS but file under 1 MB.
         let line = "x".repeat(MAX_OUTPUT_CHARS + 5000);
         let p = write_tmp("oneline.txt", &line);
-        let out = ReadFileTool.execute(json!({"path": p.to_string_lossy()})).await.unwrap();
-       assert!(out.contains("[Lines 1-1 in"));
-       assert!(out.contains("truncated"));
+        let out = ReadFileTool
+            .execute(json!({"path": p.to_string_lossy()}))
+            .await
+            .unwrap();
+        assert!(out.contains("[Lines 1-1 in"));
+        assert!(out.contains("truncated"));
         // Single-line file: no following lines, so the cap notes omitted
         // line content rather than offering an offset continuation.
         assert!(out.contains("remaining content of this line omitted"));

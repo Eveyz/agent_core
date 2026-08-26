@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
+use crate::permission::PermissionConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use crate::permission::PermissionConfig;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]

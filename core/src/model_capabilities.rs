@@ -173,9 +173,14 @@ fn exact_match(id: &str) -> Option<ModelCapabilities> {
         "deepseek-chat" | "deepseek-v3" | "deepseek-v3.1" | "deepseek-v3.2" => {
             ModelCapabilities::owned(64_000, Some(8_192), false, &[], PRESETS_64K, false)
         }
-        "deepseek-reasoner" | "deepseek-r1" | "deepseek-r1-0528" => {
-            ModelCapabilities::owned(64_000, Some(8_192), true, EFFORT_STANDARD, PRESETS_64K, false)
-        }
+        "deepseek-reasoner" | "deepseek-r1" | "deepseek-r1-0528" => ModelCapabilities::owned(
+            64_000,
+            Some(8_192),
+            true,
+            EFFORT_STANDARD,
+            PRESETS_64K,
+            false,
+        ),
         "deepseek-v4-flash" | "deepseek-v4" | "deepseek-v4-flash-202605" => {
             // TokenHub / NVIDIA NIM (2026): 1M context
             ModelCapabilities::owned(
@@ -197,15 +202,9 @@ fn exact_match(id: &str) -> Option<ModelCapabilities> {
         ),
 
         // ── NVIDIA Nemotron (docs.api.nvidia.com, 2026) ──────────────
-        "nemotron-3-nano-30b-a3b" | "nvidia-nemotron-3-nano-30b-a3b" => {
-            nemotron3_1m(true)
-        }
-        "nemotron-3-super-120b-a12b" | "nvidia-nemotron-3-super-120b-a12b" => {
-            nemotron3_1m(false)
-        }
-        "nemotron-3-ultra-550b-a55b" | "nvidia-nemotron-3-ultra-550b-a55b" => {
-            nemotron3_1m(false)
-        }
+        "nemotron-3-nano-30b-a3b" | "nvidia-nemotron-3-nano-30b-a3b" => nemotron3_1m(true),
+        "nemotron-3-super-120b-a12b" | "nvidia-nemotron-3-super-120b-a12b" => nemotron3_1m(false),
+        "nemotron-3-ultra-550b-a55b" | "nvidia-nemotron-3-ultra-550b-a55b" => nemotron3_1m(false),
         "llama-3.3-nemotron-super-49b-v1"
         | "llama-3.3-nemotron-super-49b-v1.5"
         | "nvidia-llama-3.3-nemotron-super-49b-v1" => ModelCapabilities::owned(
@@ -216,15 +215,16 @@ fn exact_match(id: &str) -> Option<ModelCapabilities> {
             PRESETS_128K,
             false,
         ),
-        "llama-3.1-nemotron-ultra-253b-v1"
-        | "nvidia-llama-3.1-nemotron-ultra-253b-v1" => ModelCapabilities::owned(
-            131_072,
-            Some(16_384),
-            true,
-            EFFORT_STANDARD,
-            PRESETS_128K,
-            false,
-        ),
+        "llama-3.1-nemotron-ultra-253b-v1" | "nvidia-llama-3.1-nemotron-ultra-253b-v1" => {
+            ModelCapabilities::owned(
+                131_072,
+                Some(16_384),
+                true,
+                EFFORT_STANDARD,
+                PRESETS_128K,
+                false,
+            )
+        }
         "llama-3.1-nemotron-nano-8b-v1"
         | "nvidia-nemotron-nano-9b-v2"
         | "nemotron-mini-4b-instruct" => ModelCapabilities::owned(
@@ -261,14 +261,9 @@ fn exact_match(id: &str) -> Option<ModelCapabilities> {
             PRESETS_256K,
             false,
         ),
-        "kimi-k2-instruct" | "kimi-k2" => ModelCapabilities::owned(
-            128_000,
-            Some(8_192),
-            false,
-            &[],
-            PRESETS_128K,
-            false,
-        ),
+        "kimi-k2-instruct" | "kimi-k2" => {
+            ModelCapabilities::owned(128_000, Some(8_192), false, &[], PRESETS_128K, false)
+        }
         "kimi-k2-thinking" | "kimi-k2-thinking-turbo" => ModelCapabilities::owned(
             256_000,
             Some(32_768),
@@ -354,24 +349,17 @@ fn exact_match(id: &str) -> Option<ModelCapabilities> {
                 false,
             )
         }
-        "glm-4.5" | "glm-4.5-air" | "glm-4.5-airx" | "glm-4.5-flash" => {
-            ModelCapabilities::owned(
-                128_000,
-                Some(96_000),
-                true,
-                EFFORT_STANDARD,
-                PRESETS_128K,
-                false,
-            )
-        }
-        "glm-4-long" => ModelCapabilities::owned(
-            1_000_000,
-            Some(4_096),
-            false,
-            &[],
-            PRESETS_1M,
+        "glm-4.5" | "glm-4.5-air" | "glm-4.5-airx" | "glm-4.5-flash" => ModelCapabilities::owned(
+            128_000,
+            Some(96_000),
+            true,
+            EFFORT_STANDARD,
+            PRESETS_128K,
             false,
         ),
+        "glm-4-long" => {
+            ModelCapabilities::owned(1_000_000, Some(4_096), false, &[], PRESETS_1M, false)
+        }
 
         // Claude exact
         "claude-3-5-sonnet" | "claude-3-5-sonnet-20241022" | "claude-3-5-sonnet-latest" => {
@@ -400,9 +388,7 @@ fn exact_match(id: &str) -> Option<ModelCapabilities> {
         "gpt-5" | "gpt-5-mini" | "gpt-5-nano" | "gpt-5.1" | "gpt-5.2" | "gpt-5.4" => {
             openai_reasoning(400_000, PRESETS_1M)
         }
-        "o1" | "o1-preview" | "o1-mini" | "o1-pro" => {
-            openai_reasoning(200_000, PRESETS_200K)
-        }
+        "o1" | "o1-preview" | "o1-mini" | "o1-pro" => openai_reasoning(200_000, PRESETS_200K),
         "o3" | "o3-mini" | "o3-pro" => openai_reasoning(200_000, PRESETS_200K),
         "o4-mini" => openai_reasoning(200_000, PRESETS_200K),
 
@@ -413,12 +399,22 @@ fn exact_match(id: &str) -> Option<ModelCapabilities> {
         "gemini-1.5-pro" | "gemini-1.5-pro-latest" => {
             ModelCapabilities::owned(2_000_000, Some(8_192), false, &[], PRESETS_GEMINI, false)
         }
-        "gemini-2.0-flash" | "gemini-2.5-flash" => {
-            ModelCapabilities::owned(1_000_000, Some(65_536), true, EFFORT_STANDARD, PRESETS_GEMINI, true)
-        }
-        "gemini-2.5-pro" => {
-            ModelCapabilities::owned(1_000_000, Some(65_536), true, EFFORT_STANDARD, PRESETS_GEMINI, false)
-        }
+        "gemini-2.0-flash" | "gemini-2.5-flash" => ModelCapabilities::owned(
+            1_000_000,
+            Some(65_536),
+            true,
+            EFFORT_STANDARD,
+            PRESETS_GEMINI,
+            true,
+        ),
+        "gemini-2.5-pro" => ModelCapabilities::owned(
+            1_000_000,
+            Some(65_536),
+            true,
+            EFFORT_STANDARD,
+            PRESETS_GEMINI,
+            false,
+        ),
 
         // Llama exact (preserve legacy heuristic for bare llama3-*)
         "llama3-8b" | "llama3-70b" | "llama-3-8b" | "llama-3-70b" => {
@@ -715,7 +711,9 @@ fn family_match(id: &str) -> Option<ModelCapabilities> {
             false,
         ));
     }
-    if id.contains("gpt-4o") || id.contains("gpt-4-turbo") || id.contains("gpt-4-1106")
+    if id.contains("gpt-4o")
+        || id.contains("gpt-4-turbo")
+        || id.contains("gpt-4-1106")
         || id.contains("gpt-4-0125")
     {
         return Some(ModelCapabilities::owned(
@@ -773,7 +771,11 @@ fn family_match(id: &str) -> Option<ModelCapabilities> {
         if id.contains("pro") && (id.contains("1.5") || id.contains("2.0") || id.contains("2.5")) {
             let thinking = id.contains("2.5") || id.contains("2.0");
             return Some(ModelCapabilities::owned(
-                if id.contains("1.5-pro") { 2_000_000 } else { 1_000_000 },
+                if id.contains("1.5-pro") {
+                    2_000_000
+                } else {
+                    1_000_000
+                },
                 Some(65_536),
                 thinking,
                 if thinking { EFFORT_STANDARD } else { &[] },
@@ -901,14 +903,7 @@ fn nemotron3_1m(supports_fast: bool) -> ModelCapabilities {
 }
 
 fn openai_reasoning(context: usize, presets: &[usize]) -> ModelCapabilities {
-    ModelCapabilities::owned(
-        context,
-        Some(100_000),
-        true,
-        EFFORT_OPENAI,
-        presets,
-        false,
-    )
+    ModelCapabilities::owned(context, Some(100_000), true, EFFORT_OPENAI, presets, false)
 }
 
 /// Format a token count for UI badges (`128K`, `1M`, `200K`).
@@ -971,7 +966,9 @@ mod tests {
 
         // Nemotron Omni / VL are multimodal; base Nemotron 3 is text-only
         assert!(lookup_capabilities("nemotron-3-nano-omni-30b-a3b").supports_images);
-        assert!(lookup_capabilities("nvidia/nemotron-3-nano-omni-30b-a3b-reasoning").supports_images);
+        assert!(
+            lookup_capabilities("nvidia/nemotron-3-nano-omni-30b-a3b-reasoning").supports_images
+        );
         assert!(!lookup_capabilities("nemotron-3-ultra-550b-a55b").supports_images);
         assert!(!lookup_capabilities("nvidia/nemotron-3-super-120b-a12b").supports_images);
         assert!(!lookup_capabilities("nemotron-3-nano-30b-a3b").supports_images);
@@ -1023,10 +1020,7 @@ mod tests {
 
     #[test]
     fn resolve_max_output() {
-        assert_eq!(
-            resolve_max_output_tokens("gpt-4o", None),
-            Some(16_384)
-        );
+        assert_eq!(resolve_max_output_tokens("gpt-4o", None), Some(16_384));
         assert_eq!(resolve_max_output_tokens("gpt-4o", Some(100)), Some(100));
     }
 

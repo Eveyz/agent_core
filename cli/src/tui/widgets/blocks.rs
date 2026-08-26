@@ -427,7 +427,9 @@ pub fn turn_block_to_blocks(
                 thought_block_lines(text, width, &pad)
             } else {
                 let preview: String = text.chars().take(80).collect();
-                vec![ratatui::text::Line::from(format!("{pad}💭 Thought (collapsed): {preview}…  [t]"))]
+                vec![ratatui::text::Line::from(format!(
+                    "{pad}💭 Thought (collapsed): {preview}…  [t]"
+                ))]
             };
             let height = compute_block_height(&lines, width as u16);
             blocks.push(CachedBlock {
@@ -454,7 +456,11 @@ pub fn turn_block_to_blocks(
             });
         }
         TurnBlock::Tool {
-            id, name, args, result, expanded,
+            id,
+            name,
+            args,
+            result,
+            expanded,
         } => {
             let lines = if *expanded {
                 tool_block_lines(name, args, result, inner_width, &pad)
@@ -551,7 +557,7 @@ pub fn subagent_detail_blocks(
         kind: crate::tui::state::BlockKind::System(String::new()),
         wrapped_height: header_height,
         subagent_id: None,
-                block_id: None,
+        block_id: None,
         lines: header_lines,
     });
 
@@ -605,7 +611,7 @@ pub fn subagent_detail_blocks(
             kind: crate::tui::state::BlockKind::Notice(String::new()),
             wrapped_height: status_height,
             subagent_id: None,
-                block_id: None,
+            block_id: None,
             lines: status_lines,
         });
     } else {
@@ -618,7 +624,7 @@ pub fn subagent_detail_blocks(
             kind: crate::tui::state::BlockKind::Error(String::new()),
             wrapped_height: err_height,
             subagent_id: None,
-                block_id: None,
+            block_id: None,
             lines: err_lines,
         });
     }
@@ -840,22 +846,20 @@ impl<'a> Widget for ToolBlock<'a> {
         // Content background
         buf.set_style(content_area, Style::default().bg(CODE_BG));
 
-        let title_lines = vec![
-            Line::from(vec![
-                Span::raw("  "),
-                Span::styled(
-                    icon.to_string(),
-                    Style::default().fg(title_fg).add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" "),
-                Span::styled(
-                    self.name,
-                    Style::default().fg(title_fg).add_modifier(Modifier::BOLD),
-                ),
-                Span::raw("  "),
-                Span::styled(truncated_args, Style::default().fg(Color::Rgb(75, 82, 99))),
-            ]),
-        ];
+        let title_lines = vec![Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                icon.to_string(),
+                Style::default().fg(title_fg).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                self.name,
+                Style::default().fg(title_fg).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            Span::styled(truncated_args, Style::default().fg(Color::Rgb(75, 82, 99))),
+        ])];
         Paragraph::new(Text::from(title_lines))
             .wrap(Wrap { trim: false })
             .scroll((self.skip, 0))

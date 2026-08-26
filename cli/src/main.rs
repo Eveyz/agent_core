@@ -14,9 +14,10 @@ use agent_core::{
     ToolExecutionMode,
 };
 use bootstrap::{
-    bootstrap_runtime, parse_permission_mode, parse_tool_mode, resolve_config_path, BootstrapOptions,
+    BootstrapOptions, bootstrap_runtime, parse_permission_mode, parse_tool_mode,
+    resolve_config_path,
 };
-use oneshot::{run_oneshot, OneshotArgs};
+use oneshot::{OneshotArgs, run_oneshot};
 use state::CliState;
 
 use anyhow::Context;
@@ -38,7 +39,6 @@ const STDIN_MAX_BYTES: usize = 1024 * 1024;
 /// Slash completion uses `commands::ALL_COMMANDS` (single source of truth).
 
 struct CommandCompleter;
-
 
 impl Highlighter for CommandCompleter {}
 impl Hinter for CommandCompleter {
@@ -173,9 +173,7 @@ fn read_piped_stdin() -> anyhow::Result<Option<String>> {
     let mut chunk = [0u8; 8192];
     let mut stdin = io::stdin().lock();
     loop {
-        let n = stdin
-            .read(&mut chunk)
-            .context("failed to read stdin")?;
+        let n = stdin.read(&mut chunk).context("failed to read stdin")?;
         if n == 0 {
             break;
         }
@@ -350,7 +348,6 @@ struct EvalRunCommand {
     ablate: Option<String>,
 }
 
-
 async fn run_tui_mode(args: &Args) -> anyhow::Result<()> {
     let permission = match args.permission.as_deref() {
         Some(s) => Some(parse_permission_mode(s)?),
@@ -391,8 +388,8 @@ async fn run_eval_command(cmd: EvalCommand) -> anyhow::Result<()> {
 
 async fn run_eval_suite(run: EvalRunCommand) -> anyhow::Result<()> {
     use agent_core::{
-        matrix_from_summaries, resolve_suite_dir, run_suite, write_matrix, EvalMode, EvalRunOptions,
-        SuiteSummary,
+        EvalMode, EvalRunOptions, SuiteSummary, matrix_from_summaries, resolve_suite_dir,
+        run_suite, write_matrix,
     };
     use chrono::Utc;
 
@@ -467,22 +464,50 @@ async fn run_eval_suite(run: EvalRunCommand) -> anyhow::Result<()> {
             .filter(|s| !s.is_empty())
             .collect();
         let mut summaries = Vec::new();
-        let baselines = vec![
-            ("baseline", run.permission.clone().unwrap_or_else(|| "yolo".into()), true, run.max_iterations.unwrap_or(20)),
-        ];
+        let baselines = vec![(
+            "baseline",
+            run.permission.clone().unwrap_or_else(|| "yolo".into()),
+            true,
+            run.max_iterations.unwrap_or(20),
+        )];
         let mut variants = baselines;
         for axis in &axes {
             match axis.as_str() {
                 "permission" => {
-                    variants.push(("permission=standard", "standard".into(), true, run.max_iterations.unwrap_or(20)));
-                    variants.push(("permission=yolo", "yolo".into(), true, run.max_iterations.unwrap_or(20)));
+                    variants.push((
+                        "permission=standard",
+                        "standard".into(),
+                        true,
+                        run.max_iterations.unwrap_or(20),
+                    ));
+                    variants.push((
+                        "permission=yolo",
+                        "yolo".into(),
+                        true,
+                        run.max_iterations.unwrap_or(20),
+                    ));
                 }
                 "compression" => {
-                    variants.push(("compress=off", run.permission.clone().unwrap_or_else(|| "yolo".into()), false, run.max_iterations.unwrap_or(20)));
+                    variants.push((
+                        "compress=off",
+                        run.permission.clone().unwrap_or_else(|| "yolo".into()),
+                        false,
+                        run.max_iterations.unwrap_or(20),
+                    ));
                 }
                 "max_iterations" => {
-                    variants.push(("max_iter=5", run.permission.clone().unwrap_or_else(|| "yolo".into()), true, 5));
-                    variants.push(("max_iter=10", run.permission.clone().unwrap_or_else(|| "yolo".into()), true, 10));
+                    variants.push((
+                        "max_iter=5",
+                        run.permission.clone().unwrap_or_else(|| "yolo".into()),
+                        true,
+                        5,
+                    ));
+                    variants.push((
+                        "max_iter=10",
+                        run.permission.clone().unwrap_or_else(|| "yolo".into()),
+                        true,
+                        10,
+                    ));
                 }
                 other => eprintln!("unknown ablate axis: {other}"),
             }
@@ -520,7 +545,10 @@ async fn run_eval_suite(run: EvalRunCommand) -> anyhow::Result<()> {
             &summaries,
         );
         write_matrix(&matrix, &out_root)?;
-        eprintln!("Wrote ablation matrix to {}", out_root.join("matrix.md").display());
+        eprintln!(
+            "Wrote ablation matrix to {}",
+            out_root.join("matrix.md").display()
+        );
         return Ok(());
     }
 
@@ -635,49 +663,48 @@ async fn run_main() -> anyhow::Result<ExitCode> {
     let use_styles = std::io::stdout().is_terminal();
     println!("=== Ageverse CLI ===\n");
 
-    let (permission, enable_hooks, tool_mode, enable_permission) =
-        if args.interactive_setup {
-            print!("Enable permission system? (Y/n): ");
-            io::stdout().flush()?;
-            let mut input = String::new();
-            io::stdin().read_line(&mut input)?;
-            let enable_permission = input.trim().to_lowercase() != "n";
+    let (permission, enable_hooks, tool_mode, enable_permission) = if args.interactive_setup {
+        print!("Enable permission system? (Y/n): ");
+        io::stdout().flush()?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let enable_permission = input.trim().to_lowercase() != "n";
 
-            print!("Enable hook system? (Y/n): ");
-            io::stdout().flush()?;
-            let mut input = String::new();
-            io::stdin().read_line(&mut input)?;
-            let enable_hooks = input.trim().to_lowercase() != "n";
+        print!("Enable hook system? (Y/n): ");
+        io::stdout().flush()?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let enable_hooks = input.trim().to_lowercase() != "n";
 
-            print!("Tool execution mode (parallel/sequential) [parallel]: ");
-            io::stdout().flush()?;
-            let mut input = String::new();
-            io::stdin().read_line(&mut input)?;
-            let tool_mode = match input.trim().to_lowercase().as_str() {
-                "sequential" | "seq" => ToolExecutionMode::Sequential,
-                _ => ToolExecutionMode::Parallel,
-            };
-
-            let permission = if enable_permission {
-                None
-            } else {
-                Some(PermissionMode::Yolo)
-            };
-            (permission, enable_hooks, tool_mode, enable_permission)
-        } else {
-            let permission = match args.permission.as_deref() {
-                Some(s) => Some(parse_permission_mode(s)?),
-                None => None,
-            };
-            let tool_mode = match args.tool_mode.as_deref() {
-                Some(s) => parse_tool_mode(s)?,
-                None => ToolExecutionMode::Parallel,
-            };
-            // Permission "enabled" when we did not force Yolo via --permission yolo
-            // (config mode still applies when permission is None).
-            let enable_permission = !matches!(permission, Some(PermissionMode::Yolo));
-            (permission, args.hooks, tool_mode, enable_permission)
+        print!("Tool execution mode (parallel/sequential) [parallel]: ");
+        io::stdout().flush()?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let tool_mode = match input.trim().to_lowercase().as_str() {
+            "sequential" | "seq" => ToolExecutionMode::Sequential,
+            _ => ToolExecutionMode::Parallel,
         };
+
+        let permission = if enable_permission {
+            None
+        } else {
+            Some(PermissionMode::Yolo)
+        };
+        (permission, enable_hooks, tool_mode, enable_permission)
+    } else {
+        let permission = match args.permission.as_deref() {
+            Some(s) => Some(parse_permission_mode(s)?),
+            None => None,
+        };
+        let tool_mode = match args.tool_mode.as_deref() {
+            Some(s) => parse_tool_mode(s)?,
+            None => ToolExecutionMode::Parallel,
+        };
+        // Permission "enabled" when we did not force Yolo via --permission yolo
+        // (config mode still applies when permission is None).
+        let enable_permission = !matches!(permission, Some(PermissionMode::Yolo));
+        (permission, args.hooks, tool_mode, enable_permission)
+    };
 
     let mut state = bootstrap_runtime(BootstrapOptions {
         config_path: resolve_config_path(args.config.as_deref()),
@@ -750,13 +777,8 @@ async fn run_main() -> anyhow::Result<ExitCode> {
         }
 
         if input.starts_with('/') {
-            let outcome = commands::dispatch_async(
-                &mut state,
-                &input,
-                enable_permission,
-                enable_hooks,
-            )
-            .await;
+            let outcome =
+                commands::dispatch_async(&mut state, &input, enable_permission, enable_hooks).await;
             let workflow_goal = state.pending_workflow_request.take();
             if apply_repl_outcome(&state, outcome, enable_permission, enable_hooks) {
                 break;
@@ -854,12 +876,7 @@ fn print_tool_line(
 
 /// Run agent inline — aborts are handled via `cancel_token` which is
 /// checked inside `collect_stream` on every chunk and between turns.
-async fn run_agent(
-    state: &mut CliState,
-    input: &str,
-    use_styles: bool,
-    authoring_mode: bool,
-) {
+async fn run_agent(state: &mut CliState, input: &str, use_styles: bool, authoring_mode: bool) {
     let session_id = state.session_id.clone();
     let history = std::mem::take(&mut state.context_history);
     let workspace = std::env::current_dir()
@@ -886,7 +903,10 @@ async fn run_agent(
         .await
     {
         Ok(result) => result,
-        Err(e) => { eprintln!("Error creating run: {e}"); return; }
+        Err(e) => {
+            eprintln!("Error creating run: {e}");
+            return;
+        }
     };
     let run_id = created.run_id;
     // Canonical prompt id from the shared backend (same as Tauri).
@@ -899,7 +919,11 @@ async fn run_agent(
     }
     let mut event_rx = match state.run_manager.subscribe(&run_id).await {
         Ok(rx) => rx,
-        Err(e) => { eprintln!("Error subscribing: {e}"); state.current_run_id = None; return; }
+        Err(e) => {
+            eprintln!("Error subscribing: {e}");
+            state.current_run_id = None;
+            return;
+        }
     };
     let in_thinking = std::sync::atomic::AtomicBool::new(false);
     let in_agent_text = std::sync::atomic::AtomicBool::new(false);
@@ -917,14 +941,24 @@ async fn run_agent(
                 match envelope.event {
                     RunEvent::TurnStarted { index } => {
                         if index > 1 {
-                            println!("\n  {}─── Turn {index} ───{}", dim(use_styles), reset(use_styles));
+                            println!(
+                                "\n  {}─── Turn {index} ───{}",
+                                dim(use_styles),
+                                reset(use_styles)
+                            );
                         }
                     }
                     RunEvent::ModelStreaming { delta, .. } => match delta {
                         MessageDelta::Text(t) => {
                             if !in_agent_text.load(std::sync::atomic::Ordering::Relaxed) {
                                 println!();
-                                print!("  {}{}>>{} {}", bold(use_styles), green(use_styles), reset(use_styles), reset(use_styles));
+                                print!(
+                                    "  {}{}>>{} {}",
+                                    bold(use_styles),
+                                    green(use_styles),
+                                    reset(use_styles),
+                                    reset(use_styles)
+                                );
                                 in_agent_text.store(true, std::sync::atomic::Ordering::Relaxed);
                             }
                             print!("{}{}", t, reset(use_styles));
@@ -933,7 +967,13 @@ async fn run_agent(
                         MessageDelta::Thinking(t) => {
                             if !in_thinking.load(std::sync::atomic::Ordering::Relaxed) {
                                 println!();
-                                print!("  {}{}💭 Think{} {}", bold(use_styles), yellow(use_styles), reset(use_styles), dim(use_styles));
+                                print!(
+                                    "  {}{}💭 Think{} {}",
+                                    bold(use_styles),
+                                    yellow(use_styles),
+                                    reset(use_styles),
+                                    dim(use_styles)
+                                );
                                 in_thinking.store(true, std::sync::atomic::Ordering::Relaxed);
                             }
                             print!("{}{}{}", dim(use_styles), t, reset(use_styles));
@@ -946,9 +986,19 @@ async fn run_agent(
                             print_tool_line(&name, &serde_json::Value::Null, &r, false, use_styles);
                         }
                     }
-                    RunEvent::ApprovalRequired { prompt_id, tool_name, tool_input: _, explanation, .. } => {
+                    RunEvent::ApprovalRequired {
+                        prompt_id,
+                        tool_name,
+                        tool_input: _,
+                        explanation,
+                        ..
+                    } => {
                         println!();
-                        println!("  {}⚠  Approval required:{}", yellow(use_styles), reset(use_styles));
+                        println!(
+                            "  {}⚠  Approval required:{}",
+                            yellow(use_styles),
+                            reset(use_styles)
+                        );
                         println!("  Tool: {}\n  Reason: {}", tool_name, explanation);
                         print!("  Allow? [y/N]: ");
                         io::stdout().flush().ok();
@@ -959,12 +1009,21 @@ async fn run_agent(
                             } else {
                                 ApprovalChoice::Deny
                             };
-                            let _ = state.run_manager.command(&run_id, RunCommand::Approve { prompt_id, choice });
+                            let _ = state
+                                .run_manager
+                                .command(&run_id, RunCommand::Approve { prompt_id, choice });
                         }
                     }
-                    RunEvent::RunCompleted { .. } => { println!("\n"); break; }
+                    RunEvent::RunCompleted { .. } => {
+                        println!("\n");
+                        break;
+                    }
                     RunEvent::RunCancelled { .. } => {
-                        println!("\n  {}⏹  Run cancelled.{}", dim(use_styles), reset(use_styles));
+                        println!(
+                            "\n  {}⏹  Run cancelled.{}",
+                            dim(use_styles),
+                            reset(use_styles)
+                        );
                         break;
                     }
                     RunEvent::RunFailed { error } => {
@@ -1062,7 +1121,6 @@ fn apply_repl_outcome(
         }
     }
 }
-
 
 #[cfg(test)]
 mod instruction_merge_tests {

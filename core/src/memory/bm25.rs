@@ -11,11 +11,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 use tantivy::{
-    doc,
-    collector::TopDocs,
-    query::QueryParser,
-    schema::*,
-    Index, IndexWriter, TantivyDocument,
+    Index, IndexWriter, TantivyDocument, collector::TopDocs, doc, query::QueryParser, schema::*,
 };
 
 /// In-memory BM25 search index wrapping tantivy.
@@ -37,10 +33,18 @@ impl BM25Index {
 
         let index = Index::create_in_ram(schema.clone());
         let writer = Arc::new(Mutex::new(
-            index.writer(50_000_000).context("failed to create tantivy writer")?,
+            index
+                .writer(50_000_000)
+                .context("failed to create tantivy writer")?,
         ));
 
-        Ok(Self { index, schema, content_field, id_field, writer })
+        Ok(Self {
+            index,
+            schema,
+            content_field,
+            id_field,
+            writer,
+        })
     }
 
     /// Build index from existing records. Faster than inserting one by one.
@@ -88,8 +92,7 @@ impl BM25Index {
             .reader()
             .context("failed to get tantivy reader")?;
         let searcher = reader.searcher();
-        let query_parser =
-            QueryParser::for_index(&self.index, vec![self.content_field]);
+        let query_parser = QueryParser::for_index(&self.index, vec![self.content_field]);
         let query = query_parser
             .parse_query(query)
             .context("failed to parse tantivy query")?;
@@ -113,10 +116,7 @@ impl BM25Index {
 
     /// Rebuild index from disk (SQLite) on startup.
     /// `root_dir` is for tantivy's mmap directory — unused since we use in-RAM index.
-    pub fn rebuild(
-        _dir: &Path,
-        records: &[(String, String)],
-    ) -> Result<Self> {
+    pub fn rebuild(_dir: &Path, records: &[(String, String)]) -> Result<Self> {
         Self::from_records(records)
     }
 }

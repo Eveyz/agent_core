@@ -14,10 +14,7 @@ const CHANNEL_CAPACITY: usize = 256;
 
 /// Directories and file patterns to ignore when watching.
 fn should_ignore(path: &Path) -> bool {
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     matches!(
         name,
         ".git"
@@ -57,9 +54,7 @@ impl PreviewWatcher {
             },
         )?;
 
-        debouncer
-            .watcher()
-            .watch(&root, RecursiveMode::Recursive)?;
+        debouncer.watcher().watch(&root, RecursiveMode::Recursive)?;
 
         let reload_tx_task = reload_tx.clone();
         tauri::async_runtime::spawn(async move {
@@ -87,7 +82,10 @@ impl PreviewWatcher {
                             *r += 1;
                             *r
                         };
-                        let _ = reload_tx_task.send(ReloadNotification { revision: rev, paths });
+                        let _ = reload_tx_task.send(ReloadNotification {
+                            revision: rev,
+                            paths,
+                        });
                     }
                     Err(e) => {
                         eprintln!("preview watcher error: {e}");

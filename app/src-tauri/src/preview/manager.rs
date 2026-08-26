@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use parking_lot::RwLock;
-use tauri::{AppHandle, Emitter, Manager, WebviewUrl};
 use tauri::webview::WebviewWindowBuilder;
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl};
 use tokio::sync::{broadcast, Mutex};
 use uuid::Uuid;
 
@@ -113,8 +113,8 @@ impl PreviewManager {
                 .ok_or_else(|| anyhow!("framework preview requires approved_command"))?;
             validate_framework_command(cmd)?;
 
-            let child_listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-                .await?;
+            let child_listener =
+                tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
             let child_port = child_listener.local_addr()?.port();
             drop(child_listener);
 

@@ -8,7 +8,6 @@ use crate::permission::ApprovalChoice;
 use crate::types::Message;
 use serde::{Deserialize, Serialize};
 
-
 /// A queued steering message with identity metadata.
 ///
 /// Wraps a user [`Message`] with a frontend-supplied `id` (so the UI can

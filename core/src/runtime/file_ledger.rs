@@ -154,7 +154,10 @@ mod tests {
     fn observe_tools() {
         let mut led = FileLedger::new();
         led.observe_tool("read_file", r#"{"path":"/tmp/x.rs","offset":1}"#);
-        led.observe_tool("edit", r#"{"path":"/tmp/x.rs","old_string":"a","new_string":"b"}"#);
+        led.observe_tool(
+            "edit",
+            r#"{"path":"/tmp/x.rs","old_string":"a","new_string":"b"}"#,
+        );
         assert!(led.read.is_empty());
         assert_eq!(led.wrote, vec!["/tmp/x.rs".to_string()]);
     }

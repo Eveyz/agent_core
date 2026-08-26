@@ -1,8 +1,8 @@
 use crate::client::OpenAIClient;
-use crate::runtime::event::{Envelope, RunEvent};
 use crate::reflector::diff_observer::UserEditDiffEvent;
-use std::sync::atomic::{AtomicU64, Ordering};
+use crate::runtime::event::{Envelope, RunEvent};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::mpsc;
 
 pub struct DiffPreferenceEngine;
@@ -37,8 +37,11 @@ impl DiffPreferenceEngine {
                                     "preference": &preference
                                 }),
                                 danger_level: "low".into(),
-                                explanation: format!("Diff Observer extracted a new preference: {}", preference),
-                            }
+                                explanation: format!(
+                                    "Diff Observer extracted a new preference: {}",
+                                    preference
+                                ),
+                            },
                         });
                     }
                     Ok(None) => {}
@@ -50,7 +53,10 @@ impl DiffPreferenceEngine {
         });
     }
 
-    async fn analyze_diff(client: &OpenAIClient, diff: &UserEditDiffEvent) -> anyhow::Result<Option<String>> {
+    async fn analyze_diff(
+        client: &OpenAIClient,
+        diff: &UserEditDiffEvent,
+    ) -> anyhow::Result<Option<String>> {
         let prompt = format!(
             r#"You are a continuous learning engine. 
 The Agent edited a file, but the User immediately modified the file afterwards.
@@ -71,7 +77,12 @@ Format: {{"confidence": 0.9, "rule": "Use early returns instead of nested if sta
         let (response, _) = client.chat_completion(&messages, &[]).await?;
 
         // Handle markdown json blocks occasionally returned by the model
-        let clean_response = response.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+        let clean_response = response
+            .trim()
+            .trim_start_matches("```json")
+            .trim_start_matches("```")
+            .trim_end_matches("```")
+            .trim();
 
         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(clean_response) {
             if let Some(conf) = parsed["confidence"].as_f64() {
@@ -84,7 +95,7 @@ Format: {{"confidence": 0.9, "rule": "Use early returns instead of nested if sta
                 }
             }
         }
-        
+
         Ok(None)
     }
 }

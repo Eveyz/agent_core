@@ -6,10 +6,10 @@
 //!
 //! Zero new crates; requires host `python3`/`python` and/or `node`.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use parking_lot::Mutex as ParkingMutex;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -266,8 +266,8 @@ impl Tool for ReplTool {
                 "interpreter": {
                     "type": "string",
                     "description": "Optional path to the python/node binary for this session \
-(e.g. .venv/bin/python, /path/to/conda/envs/foo/bin/python, or a specific node). \
-Omit to use PATH default (python3/python or node). Changing this resets the session."
+        (e.g. .venv/bin/python, /path/to/conda/envs/foo/bin/python, or a specific node). \
+        Omit to use PATH default (python3/python or node). Changing this resets the session."
                 },
                 "code": {
                     "type": "string",
@@ -328,8 +328,14 @@ Omit to use PATH default (python3/python or node). Changing this resets the sess
                     .get("code")
                     .and_then(|v| v.as_str())
                     .context("missing 'code' for action=exec")?;
-                self.exec(language, interpreter.as_deref(), code, timeout_secs, on_update)
-                    .await
+                self.exec(
+                    language,
+                    interpreter.as_deref(),
+                    code,
+                    timeout_secs,
+                    on_update,
+                )
+                .await
             }
             other => bail!("unknown action '{other}' (use exec, reset, or status)"),
         }
@@ -347,10 +353,7 @@ impl ReplTool {
                 s.pid.map(|p| p.to_string()).unwrap_or_else(|| "?".into()),
                 s.spawned_at.elapsed().as_secs()
             )),
-            None => Ok(format!(
-                "language={} alive=false",
-                language.as_str()
-            )),
+            None => Ok(format!("language={} alive=false", language.as_str())),
         }
     }
 
@@ -494,9 +497,9 @@ impl ReplTool {
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
 
-        let mut child = cmd.spawn().with_context(|| {
-            format!("{interpreter} not found or failed to start")
-        })?;
+        let mut child = cmd
+            .spawn()
+            .with_context(|| format!("{interpreter} not found or failed to start"))?;
 
         let stdin = child
             .stdin
@@ -606,11 +609,7 @@ fn truncate_output(mut s: String) -> String {
 
 fn bootstrap_args(language: Language) -> Vec<String> {
     match language {
-        Language::Python => vec![
-            "-u".into(),
-            "-c".into(),
-            PYTHON_BOOTSTRAP.trim().into(),
-        ],
+        Language::Python => vec!["-u".into(), "-c".into(), PYTHON_BOOTSTRAP.trim().into()],
         Language::Node => vec!["-e".into(), NODE_BOOTSTRAP.trim().into()],
     }
 }
@@ -674,8 +673,9 @@ fn resolve_interpreter(
     }
 
     match language {
-        Language::Python => resolve_binary(&["python3", "python"])
-            .context("python3/python not found on PATH (pass interpreter= to a venv/conda/uv python)"),
+        Language::Python => resolve_binary(&["python3", "python"]).context(
+            "python3/python not found on PATH (pass interpreter= to a venv/conda/uv python)",
+        ),
         Language::Node => resolve_binary(&["node"])
             .context("node not found on PATH (pass interpreter= to a specific node binary)"),
     }
@@ -805,10 +805,7 @@ mod tests {
             }))
             .await
             .unwrap_err();
-        assert!(
-            err.to_string().contains("timed out"),
-            "got: {err}"
-        );
+        assert!(err.to_string().contains("timed out"), "got: {err}");
         // Fresh session should work
         let out = t
             .execute(json!({"language": "python", "code": "1 + 1"}))
@@ -857,7 +854,10 @@ mod tests {
             .execute(json!({"language": "python", "action": "status"}))
             .await
             .unwrap();
-        assert!(status.contains(&py), "status should show interpreter, got: {status}");
+        assert!(
+            status.contains(&py),
+            "status should show interpreter, got: {status}"
+        );
     }
 
     #[tokio::test]

@@ -107,10 +107,7 @@ impl ExecutionState {
             return;
         }
 
-        let all_done = list
-            .items
-            .iter()
-            .all(|i| i.status == TodoStatus::Completed);
+        let all_done = list.items.iter().all(|i| i.status == TodoStatus::Completed);
         if all_done {
             self.phase = if self.phase == ExecutionPhase::Done {
                 ExecutionPhase::Done
@@ -184,10 +181,7 @@ impl ExecutionState {
         match self.phase {
             ExecutionPhase::Execute | ExecutionPhase::Verify => {
                 !list.items.is_empty()
-                    && list
-                        .items
-                        .iter()
-                        .any(|i| i.status != TodoStatus::Completed)
+                    && list.items.iter().any(|i| i.status != TodoStatus::Completed)
             }
             ExecutionPhase::Done => false,
             ExecutionPhase::Clarify | ExecutionPhase::Plan => false,
@@ -250,11 +244,7 @@ impl ExecutionState {
                             "NEXT: act with tools now. Use todo_write only if the task is clearly multi-step \
                              (or ask_user if unclear)\n",
                         );
-                    } else if list
-                        .items
-                        .iter()
-                        .all(|i| i.status == TodoStatus::Completed)
-                    {
+                    } else if list.items.iter().all(|i| i.status == TodoStatus::Completed) {
                         out.push_str("NEXT: verify results, then finish\n");
                     }
                 }
@@ -363,10 +353,13 @@ pub fn parse_exit_code(result: &str) -> Option<i32> {
 }
 
 /// Parse tool success into a short artifact fact (best-effort).
-pub fn artifact_from_tool(name: &str, args_json: &str, result: &str, is_error: bool) -> Option<String> {
-    if is_error
-        || result.starts_with("Aborted")
-        || result.starts_with("Interrupted by user steer")
+pub fn artifact_from_tool(
+    name: &str,
+    args_json: &str,
+    result: &str,
+    is_error: bool,
+) -> Option<String> {
+    if is_error || result.starts_with("Aborted") || result.starts_with("Interrupted by user steer")
     {
         return None;
     }

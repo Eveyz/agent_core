@@ -34,7 +34,8 @@ impl AgentMode {
     /// (Segment 2: PRINCIPLES).
     pub fn system_prompt_override(&self) -> &'static str {
         match self {
-            Self::Ask => "\
+            Self::Ask => {
+                "\
 MODE: Ask — Read-only Q&A.
 You can read files, use git status/diff/log/show, search the web,
 search memory, and spawn read-only subagents.
@@ -42,9 +43,11 @@ You CANNOT write or edit files, run shell commands, or manage todo/plan tools.
 Answer questions thoroughly by reading source code and documentation.
 When the answer is ready, respond in plain text and stop.
 If the user wants a written plan or code changes, tell them to switch to Plan or Build mode.
-Do not invent or call tools that are not in your available tool list.",
+Do not invent or call tools that are not in your available tool list."
+            }
 
-            Self::Plan => "\
+            Self::Plan => {
+                "\
 MODE: Plan — Research & plan mode.
 You can read files, search the web, spawn read-only subagents for research,
 and write planning artifacts with write_file.
@@ -54,13 +57,16 @@ When research is enough, write (or overwrite) `plan.md` via write_file.
 Optional artifact names: `plan.md`, `implementation_plan.md`, `walkthrough.md`, `task.md`.
 Do not modify project source files.
 When the plan file is written, summarize briefly and stop so the user can review.
-Suggest switching to Build mode only after they accept the plan.",
+Suggest switching to Build mode only after they accept the plan."
+            }
 
-            Self::Build => "\
+            Self::Build => {
+                "\
 MODE: Build — Full access.
 You can read, write, edit files, execute shell commands, commit
 to git, create todo plans, and spawn subagents. Skip todo_write for
-simple 1–2 step tasks; use it only for complex multi-step work.",
+simple 1–2 step tasks; use it only for complex multi-step work."
+            }
         }
     }
 
@@ -127,10 +133,7 @@ mod tests {
             "todo_delete",
             "todo_read",
         ] {
-            assert!(
-                removed.contains(&name),
-                "Ask must remove {name}"
-            );
+            assert!(removed.contains(&name), "Ask must remove {name}");
         }
     }
 
@@ -141,11 +144,15 @@ mod tests {
             !removed.contains(&"write_file"),
             "Plan must keep write_file for plan.md"
         );
-        for name in ["todo_write", "todo_read", "edit", "shell", "repl", "git_commit"] {
-            assert!(
-                removed.contains(&name),
-                "Plan must remove {name}"
-            );
+        for name in [
+            "todo_write",
+            "todo_read",
+            "edit",
+            "shell",
+            "repl",
+            "git_commit",
+        ] {
+            assert!(removed.contains(&name), "Plan must remove {name}");
         }
     }
 

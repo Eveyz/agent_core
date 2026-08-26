@@ -4,12 +4,12 @@ use crate::permission::{
     ApprovalChoice, ApprovalScope, PermissionDecision, PermissionPolicy, ToolPermissionPattern,
     WhitelistEntry,
 };
-use crate::runtime::input::{
-    format_answers_for_model, parse_ask_user_args, validate_answers, ClarificationAnswers,
-    InputResolver,
-};
-use crate::runtime::tool_scheduler::{classify_resources, DepGraph, SchedNode};
 use crate::runtime::ApprovalResolver;
+use crate::runtime::input::{
+    ClarificationAnswers, InputResolver, format_answers_for_model, parse_ask_user_args,
+    validate_answers,
+};
+use crate::runtime::tool_scheduler::{DepGraph, SchedNode, classify_resources};
 use crate::tools::{ToolRegistry, ToolUpdateFn};
 use crate::types::{AgentEvent, ToolCall, ToolExecutionMode};
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -899,7 +899,7 @@ mod empty_success_tests {
     use crate::tools::Tool;
     use crate::types::{FunctionCall, ToolCall, ToolExecutionMode};
     use async_trait::async_trait;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     /// Tool that succeeds with an empty string — same shape as `mkdir` / `true`.
     struct SilentOkTool;

@@ -40,7 +40,10 @@ impl<'a> InputBar<'a> {
         let col = lines.last().map(|l| l.width()).unwrap_or(0) as u16;
         let y = area.y + 1 + row.saturating_sub(state.input_scroll as u16);
         let x = area.x + 4 + col; // border + prompt
-        (x.min(area.x + area.width.saturating_sub(1)), y.min(area.y + area.height.saturating_sub(1)))
+        (
+            x.min(area.x + area.width.saturating_sub(1)),
+            y.min(area.y + area.height.saturating_sub(1)),
+        )
     }
 }
 

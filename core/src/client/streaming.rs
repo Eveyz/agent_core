@@ -789,7 +789,10 @@ mod tool_preparing_tests {
             arguments_delta: Some(r#"""#.into()),
         });
         assert!(n3.is_some());
-        assert_eq!(n3.as_ref().unwrap().hint_path.as_deref(), Some("src/main.rs"));
+        assert_eq!(
+            n3.as_ref().unwrap().hint_path.as_deref(),
+            Some("src/main.rs")
+        );
 
         // Content deltas — no further notify
         let n4 = acc.push(StreamEvent::ToolCallDelta {

@@ -1,8 +1,8 @@
 //! `agverse-gateway` — remote host for Agverse agents.
 
-use agverse_gateway::{agents_dir, router, AgentStore, AppState};
-use agent_core::{load_or_init_default, Brain, RunManager, SessionManager};
-use anyhow::{bail, Context, Result};
+use agent_core::{Brain, RunManager, SessionManager, load_or_init_default};
+use agverse_gateway::{AgentStore, AppState, agents_dir, router};
+use anyhow::{Context, Result, bail};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -28,8 +28,8 @@ async fn main() -> Result<()> {
 
     let bind = std::env::var("AGVERSE_GATEWAY_BIND").unwrap_or_else(|_| "127.0.0.1:8787".into());
     let addr: SocketAddr = bind.parse().context("invalid AGVERSE_GATEWAY_BIND")?;
-    let public_base_url = std::env::var("AGVERSE_GATEWAY_PUBLIC_URL")
-        .unwrap_or_else(|_| format!("http://{addr}"));
+    let public_base_url =
+        std::env::var("AGVERSE_GATEWAY_PUBLIC_URL").unwrap_or_else(|_| format!("http://{addr}"));
 
     let config_path = std::env::var("AGVERSE_CONFIG")
         .ok()
@@ -39,10 +39,9 @@ async fn main() -> Result<()> {
 
     let brain = Brain::from_config(config)?;
     let session_db = agent_core::paths::get_memory_db_path();
-    let session_storage = agent_core::memory::storage::Storage::new(
-        session_db.to_string_lossy().as_ref(),
-    )
-    .context("open session DB")?;
+    let session_storage =
+        agent_core::memory::storage::Storage::new(session_db.to_string_lossy().as_ref())
+            .context("open session DB")?;
     let session_manager = Arc::new(SessionManager::new(session_storage));
     let run_manager = RunManager::new(brain).with_session_manager(session_manager.clone());
 

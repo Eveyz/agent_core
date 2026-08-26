@@ -42,9 +42,11 @@ impl<'a> PagerModal<'a> {
 impl<'a> Widget for PagerModal<'a> {
     fn render(self, screen: Rect, buf: &mut Buffer) {
         let (title, lines, scroll) = match &self.state.modal {
-            crate::tui::state::ModalState::Pager { title, lines, scroll } => {
-                (title.as_str(), lines.as_slice(), *scroll)
-            }
+            crate::tui::state::ModalState::Pager {
+                title,
+                lines,
+                scroll,
+            } => (title.as_str(), lines.as_slice(), *scroll),
             _ => return,
         };
         let h = screen.height.saturating_sub(4).max(10);
@@ -53,7 +55,9 @@ impl<'a> Widget for PagerModal<'a> {
         Clear.render(area, buf);
         let mut out = vec![Line::from(Span::styled(
             format!(" {title} "),
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         ))];
         out.push(Line::raw(""));
         let visible = h.saturating_sub(4) as usize;

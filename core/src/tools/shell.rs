@@ -5,8 +5,8 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 use super::{Tool, ToolUpdateFn};
-use crate::runtime::platform_shell::{self, shell_command};
 use crate::runtime::ProcessSupervisor;
+use crate::runtime::platform_shell::{self, shell_command};
 use crate::types::EventSender;
 
 /// Shell tool with optional process supervision.
@@ -290,10 +290,7 @@ impl ShellTool {
             .kill_on_drop(true)
             .spawn()
             .with_context(|| {
-                format!(
-                    "failed to spawn {} command",
-                    platform_shell::shell_label()
-                )
+                format!("failed to spawn {} command", platform_shell::shell_label())
             })?;
 
         let stdout_handle = child.stdout.take();
@@ -392,11 +389,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_shell_nonzero_exit_code_is_propagated() {
-        let out = tool()
-            .execute(json!({"command": "exit 42"}))
-            .await
-            .unwrap();
-        assert!(out.contains("42"), "exit code 42 should be in output: {out}");
+        let out = tool().execute(json!({"command": "exit 42"})).await.unwrap();
+        assert!(
+            out.contains("42"),
+            "exit code 42 should be in output: {out}"
+        );
     }
 
     #[tokio::test]
@@ -444,9 +441,7 @@ mod tests {
             let normalized_tmp = tmp_str.replace('/', "\\").to_lowercase();
             assert!(
                 normalized_out.contains(&normalized_tmp)
-                    || normalized_out.contains(
-                        &normalized_tmp.trim_end_matches('\\').to_string()
-                    ),
+                    || normalized_out.contains(&normalized_tmp.trim_end_matches('\\').to_string()),
                 "pwd should report temp dir: out={out}, tmp={tmp_str}"
             );
         }
@@ -481,9 +476,7 @@ mod tests {
             let normalized_tmp = tmp_str.replace('/', "\\").to_lowercase();
             assert!(
                 normalized_out.contains(&normalized_tmp)
-                    || normalized_out.contains(
-                        &normalized_tmp.trim_end_matches('\\').to_string()
-                    ),
+                    || normalized_out.contains(&normalized_tmp.trim_end_matches('\\').to_string()),
                 "default working_dir should apply: out={out}, tmp={tmp_str}"
             );
         }
@@ -494,7 +487,10 @@ mod tests {
             }
             let t = ShellTool::with_default_working_dir(Some("/tmp".to_string()));
             let out = t.execute(json!({"command": "pwd"})).await.unwrap();
-            assert!(out.contains("/tmp"), "default working_dir should apply: {out}");
+            assert!(
+                out.contains("/tmp"),
+                "default working_dir should apply: {out}"
+            );
         }
     }
 

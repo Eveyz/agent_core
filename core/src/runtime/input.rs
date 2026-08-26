@@ -60,7 +60,11 @@ impl InputResolver {
         }
     }
 
-    pub fn insert(&self, prompt_id: String, tx: tokio::sync::oneshot::Sender<ClarificationAnswers>) {
+    pub fn insert(
+        &self,
+        prompt_id: String,
+        tx: tokio::sync::oneshot::Sender<ClarificationAnswers>,
+    ) {
         self.inner.lock().insert(prompt_id, tx);
     }
 
@@ -176,7 +180,9 @@ pub fn parse_ask_user_args(args: &serde_json::Value) -> Result<ClarificationRequ
                 .and_then(|v| v.as_str())
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
-                .ok_or_else(|| format!("option '{oid}' in question '{id}' needs a non-empty label"))?;
+                .ok_or_else(|| {
+                    format!("option '{oid}' in question '{id}' needs a non-empty label")
+                })?;
             options.push(ClarificationOption { id: oid, label });
         }
 
@@ -219,10 +225,7 @@ pub fn validate_answers(
             q.options.iter().map(|o| o.id.as_str()).collect();
         for oid in &selected {
             if !valid_ids.contains(oid.as_str()) {
-                return Err(format!(
-                    "question '{}' has unknown option id '{oid}'",
-                    q.id
-                ));
+                return Err(format!("question '{}' has unknown option id '{oid}'", q.id));
             }
         }
         cleaned.answers.insert(q.id.clone(), selected);

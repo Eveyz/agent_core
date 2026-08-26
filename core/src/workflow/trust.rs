@@ -16,8 +16,7 @@ impl TrustMode {
         base: &PermissionConfig,
         agent_def: &AgentDef,
     ) -> PermissionConfig {
-        let mut config =
-            crate::agent_registry::build_permission_config(agent_def, base);
+        let mut config = crate::agent_registry::build_permission_config(agent_def, base);
         match self {
             TrustMode::Trusted => {
                 config.mode = PermissionMode::Yolo;

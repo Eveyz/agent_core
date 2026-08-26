@@ -4,11 +4,11 @@
 //! so the "spawn a Run and forward its events" concern has a single home.
 
 use crate::state::CliState;
-use agent_core::runtime::event::RunEvent;
 use agent_core::RunCommand;
+use agent_core::runtime::event::RunEvent;
 use std::sync::Arc;
-use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::Mutex as TokioMutex;
+use tokio::sync::mpsc::UnboundedSender;
 
 use super::state::AppEvent;
 
@@ -38,8 +38,8 @@ pub fn spawn_run(
                     workspace,
                 )
             });
-            let prompt = workflow_authoring
-                .then(|| crate::workflow_authoring::authoring_prompt(&input));
+            let prompt =
+                workflow_authoring.then(|| crate::workflow_authoring::authoring_prompt(&input));
             let run_input = prompt.as_deref().unwrap_or(&input);
             let created = match state
                 .run_manager
@@ -58,7 +58,9 @@ pub fn spawn_run(
             {
                 Ok(c) => c,
                 Err(e) => {
-                    let _ = tx.send(AppEvent::Run(RunEvent::RunFailed { error: e.to_string() }));
+                    let _ = tx.send(AppEvent::Run(RunEvent::RunFailed {
+                        error: e.to_string(),
+                    }));
                     return;
                 }
             };
@@ -68,7 +70,9 @@ pub fn spawn_run(
                 .command(&created.run_id, RunCommand::Start)
                 .await
             {
-                let _ = tx.send(AppEvent::Run(RunEvent::RunFailed { error: e.to_string() }));
+                let _ = tx.send(AppEvent::Run(RunEvent::RunFailed {
+                    error: e.to_string(),
+                }));
                 state.current_run_id = None;
                 return;
             }
@@ -80,7 +84,9 @@ pub fn spawn_run(
             match state.run_manager.subscribe(&run_id).await {
                 Ok(rx) => rx,
                 Err(e) => {
-                    let _ = tx.send(AppEvent::Run(RunEvent::RunFailed { error: e.to_string() }));
+                    let _ = tx.send(AppEvent::Run(RunEvent::RunFailed {
+                        error: e.to_string(),
+                    }));
                     drop(state);
                     let mut state = cli.lock().await;
                     state.current_run_id = None;
@@ -155,7 +161,11 @@ pub async fn resolve_approval(
 }
 
 /// Resolve a pending `InputRequested` with a single free-text answer.
-pub async fn resolve_answer(cli: &Arc<TokioMutex<CliState>>, prompt_id: &str, answer: String) -> bool {
+pub async fn resolve_answer(
+    cli: &Arc<TokioMutex<CliState>>,
+    prompt_id: &str,
+    answer: String,
+) -> bool {
     let state = cli.lock().await;
     let run_id = state.current_run_id.clone();
     let mut answers = std::collections::HashMap::new();

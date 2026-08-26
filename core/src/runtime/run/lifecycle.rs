@@ -174,7 +174,8 @@ impl Run {
             // ── Hot-reload configs ─────────────────────────────────
             // Ensure the active run dynamically picks up config changes
             // (e.g. user changes permission level mid-conversation).
-            self.permission_policy.update_from_config(&self.brain.config.permissions);
+            self.permission_policy
+                .update_from_config(&self.brain.config.permissions);
 
             // Re-render and update the tool catalog in context.
             // Cache the rendered string using the registry fingerprint to avoid
@@ -182,7 +183,10 @@ impl Run {
             let fp = self.registry.registry_fingerprint();
             let perm_mode = format!("{:?}", self.permission_policy.mode());
             let cache_key = format!("{perm_mode}|{fp}");
-            let needs_rebuild = self.tool_catalog_cache.as_ref().map_or(true, |(k, _)| k != &cache_key);
+            let needs_rebuild = self
+                .tool_catalog_cache
+                .as_ref()
+                .map_or(true, |(k, _)| k != &cache_key);
             if needs_rebuild {
                 let tool_defs = self.registry.tool_definitions();
                 let danger_map = super::build_danger_map(&tool_defs, &self.permission_policy);
@@ -218,8 +222,7 @@ impl Run {
                     // still has incomplete steps (goal-pinned or not).
                     if self.should_block_premature_final() {
                         self.execution.note_final_blocked();
-                        self.goal_continue_nudges =
-                            self.goal_continue_nudges.saturating_add(1);
+                        self.goal_continue_nudges = self.goal_continue_nudges.saturating_add(1);
                         let step = self
                             .execution
                             .active_step_id
@@ -243,9 +246,10 @@ impl Run {
                             let todos = self.session_todos();
                             let list = todos.lock();
                             !list.items.is_empty()
-                                && list.items.iter().all(|i| {
-                                    i.status == crate::todo::TodoStatus::Completed
-                                })
+                                && list
+                                    .items
+                                    .iter()
+                                    .all(|i| i.status == crate::todo::TodoStatus::Completed)
                         };
                         if all_done && self.execution.phase == ExecutionPhase::Verify {
                             self.execution.mark_verified_done();
@@ -475,7 +479,11 @@ impl Run {
         }
     }
 
-    pub(super) fn resolve_approval(&mut self, prompt_id: &str, choice: crate::permission::ApprovalChoice) {
+    pub(super) fn resolve_approval(
+        &mut self,
+        prompt_id: &str,
+        choice: crate::permission::ApprovalChoice,
+    ) {
         // Try the per-Run resolver first (used when ToolOrchestrator has
         // approval_resolver set, which is the new default path).
         if self.approval_resolver.resolve(prompt_id, choice.clone()) {
@@ -490,22 +498,22 @@ impl Run {
     }
 
     pub(super) fn resolve_input(&mut self, prompt_id: &str, answer: &str) {
-        let answers: crate::runtime::input::ClarificationAnswers =
-            match serde_json::from_str(answer) {
-                Ok(a) => a,
-                Err(e) => {
-                    // Accept a bare `{ "q": ["a"] }` map as answers.
-                    match serde_json::from_str::<std::collections::HashMap<String, Vec<String>>>(
-                        answer,
-                    ) {
-                        Ok(map) => crate::runtime::input::ClarificationAnswers { answers: map },
-                        Err(_) => {
-                            tracing::warn!(prompt_id, error = %e, "invalid clarification answer JSON");
-                            return;
-                        }
+        let answers: crate::runtime::input::ClarificationAnswers = match serde_json::from_str(
+            answer,
+        ) {
+            Ok(a) => a,
+            Err(e) => {
+                // Accept a bare `{ "q": ["a"] }` map as answers.
+                match serde_json::from_str::<std::collections::HashMap<String, Vec<String>>>(answer)
+                {
+                    Ok(map) => crate::runtime::input::ClarificationAnswers { answers: map },
+                    Err(_) => {
+                        tracing::warn!(prompt_id, error = %e, "invalid clarification answer JSON");
+                        return;
                     }
                 }
-            };
+            }
+        };
 
         if self.input_resolver.resolve(prompt_id, answers.clone()) {
             self.emit(RunEvent::InputResolved {
@@ -583,7 +591,10 @@ impl Run {
                 }
                 match other {
                     UserIntent::PlanPark => {
-                        let _ = self.brain.todo_lists.park_active(self.session_id.as_deref());
+                        let _ = self
+                            .brain
+                            .todo_lists
+                            .park_active(self.session_id.as_deref());
                         self.emit_plans_updated();
                         self.execution.set_resume_hint(
                             "Active plan parked. Answer the user; do not advance parked steps."
@@ -602,7 +613,10 @@ impl Run {
                         use crate::todo::ResumeTarget;
                         match intent.resume_target().unwrap_or(ResumeTarget::Unspecified) {
                             ResumeTarget::PlanId(id) => {
-                                match self.brain.todo_lists.activate(self.session_id.as_deref(), &id)
+                                match self
+                                    .brain
+                                    .todo_lists
+                                    .activate(self.session_id.as_deref(), &id)
                                 {
                                     Ok(()) => {
                                         let list = self
@@ -656,12 +670,15 @@ impl Run {
                         }
                     }
                     UserIntent::Detour { .. } => {
-                        let has_active_incomplete = self.brain.todo_lists.with_active(
-                            self.session_id.as_deref(),
-                            |list| list.has_incomplete(),
-                        );
+                        let has_active_incomplete = self
+                            .brain
+                            .todo_lists
+                            .with_active(self.session_id.as_deref(), |list| list.has_incomplete());
                         if has_active_incomplete {
-                            let _ = self.brain.todo_lists.park_active(self.session_id.as_deref());
+                            let _ = self
+                                .brain
+                                .todo_lists
+                                .park_active(self.session_id.as_deref());
                             self.emit_plans_updated();
                         }
                     }

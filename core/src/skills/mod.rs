@@ -1607,14 +1607,16 @@ Skill body for {}"#,
         fs::write(nested.join("request.json"), "{}").unwrap();
         let mut mgr = SkillManager::new(dir.path().to_path_buf());
         mgr.scan().unwrap();
-        assert!(!mgr
-            .discover_assets("deep")
-            .iter()
-            .any(|(path, _)| path.ends_with("request.json")));
-        assert!(mgr
-            .discover_resources("deep")
-            .iter()
-            .any(|(path, _)| path == "references/api/v2/examples/request.json"));
+        assert!(
+            !mgr.discover_assets("deep")
+                .iter()
+                .any(|(path, _)| path.ends_with("request.json"))
+        );
+        assert!(
+            mgr.discover_resources("deep")
+                .iter()
+                .any(|(path, _)| path == "references/api/v2/examples/request.json")
+        );
     }
 
     #[test]

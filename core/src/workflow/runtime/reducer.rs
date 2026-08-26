@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashSet, VecDeque};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde_json::{Map, Value};
 
 use super::model::{

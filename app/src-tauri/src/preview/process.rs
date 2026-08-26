@@ -132,7 +132,10 @@ impl FrameworkProcess {
                 let mut lines = reader.lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     logs_stdout.lock().push("stdout", line.clone());
-                    if line.contains("Local:") || line.contains("ready") || line.contains("listening") {
+                    if line.contains("Local:")
+                        || line.contains("ready")
+                        || line.contains("listening")
+                    {
                         let _ = ready_tx_stdout.send(true);
                     }
                 }
@@ -261,22 +264,10 @@ pub fn detect_framework(workspace: &Path) -> FrameworkDetection {
         });
 
     let (suggested_program, suggested_args) = match pm.as_deref() {
-        Some("pnpm") => (
-            Some("pnpm".into()),
-            vec!["run".into(), "dev".into()],
-        ),
-        Some("yarn") => (
-            Some("yarn".into()),
-            vec!["run".into(), "dev".into()],
-        ),
-        Some("bun") => (
-            Some("bun".into()),
-            vec!["run".into(), "dev".into()],
-        ),
-        Some("npm") => (
-            Some("npm".into()),
-            vec!["run".into(), "dev".into()],
-        ),
+        Some("pnpm") => (Some("pnpm".into()), vec!["run".into(), "dev".into()]),
+        Some("yarn") => (Some("yarn".into()), vec!["run".into(), "dev".into()]),
+        Some("bun") => (Some("bun".into()), vec!["run".into(), "dev".into()]),
+        Some("npm") => (Some("npm".into()), vec!["run".into(), "dev".into()]),
         _ => (None, vec![]),
     };
 

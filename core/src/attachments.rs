@@ -6,7 +6,7 @@
 //! `agverse://sessions/<session_id>/<prompt_id>/images/<sha256>.<ext>` URL.
 
 use crate::types::ImageAttachment;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
@@ -116,10 +116,7 @@ pub fn reuse_session_image(
         .and_then(|n| n.to_str())
         .ok_or_else(|| anyhow::anyhow!("invalid attachment filename"))?
         .to_string();
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("png");
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("png");
     let mime = ext_to_mime(ext);
     let sha256 = filename
         .split_once('.')
@@ -164,12 +161,11 @@ mod tests {
     #[test]
     fn attachment_url_roundtrip_shape() {
         let url = attachment_url("sess-1", "prompt-1", "abcd.png");
-        assert_eq!(
-            url,
-            "agverse://sessions/sess-1/prompt-1/images/abcd.png"
-        );
+        assert_eq!(url, "agverse://sessions/sess-1/prompt-1/images/abcd.png");
         let resolved = resolve_attachment_ref(&url).unwrap();
-        assert!(resolved.ends_with("sessions/sess-1/prompt-1/images/abcd.png")
-            || resolved.ends_with("sessions\\sess-1\\prompt-1\\images\\abcd.png"));
+        assert!(
+            resolved.ends_with("sessions/sess-1/prompt-1/images/abcd.png")
+                || resolved.ends_with("sessions\\sess-1\\prompt-1\\images\\abcd.png")
+        );
     }
 }

@@ -51,9 +51,9 @@ impl Tool for WriteFileTool {
 
         if let Some(parent) = resolved_path.parent() {
             if !parent.as_os_str().is_empty() {
-                tokio::fs::create_dir_all(parent)
-                    .await
-                    .with_context(|| format!("failed to create parent dirs for: {resolved_path_str}"))?;
+                tokio::fs::create_dir_all(parent).await.with_context(|| {
+                    format!("failed to create parent dirs for: {resolved_path_str}")
+                })?;
             }
         }
 
@@ -130,9 +130,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_write_file_missing_params_errors() {
-        let res1 = WriteFileTool
-            .execute(json!({"content": "x"}))
-            .await;
+        let res1 = WriteFileTool.execute(json!({"content": "x"})).await;
         assert!(res1.is_err());
         let res2 = WriteFileTool
             .execute(json!({"path": "/tmp/whatever"}))

@@ -206,14 +206,18 @@ mod tests {
         );
         assert_eq!(handoff.status, HandoffStatus::Incomplete);
         assert!(!handoff.context.sufficient);
-        assert!(handoff
-            .context
-            .missing
-            .contains(&"terminal completion".to_string()));
+        assert!(
+            handoff
+                .context
+                .missing
+                .contains(&"terminal completion".to_string())
+        );
         assert!(handoff.context.detail_available);
-        assert!(handoff
-            .render_for_parent()
-            .contains("context_sufficient: false"));
+        assert!(
+            handoff
+                .render_for_parent()
+                .contains("context_sufficient: false")
+        );
     }
 
     #[test]
@@ -258,6 +262,9 @@ mod tests {
         );
         assert_eq!(handoff.runtime_id, "runtime-4");
         assert!(handoff.context.detail_available);
-        assert_eq!(handoff.transcript_ref.as_deref(), Some("/tmp/runtime-4.transcript.json"));
+        assert_eq!(
+            handoff.transcript_ref.as_deref(),
+            Some("/tmp/runtime-4.transcript.json")
+        );
     }
 }

@@ -11,12 +11,12 @@ use crate::client::OpenAIClient;
 use crate::config::ModelConfig;
 use crate::context::Context;
 use crate::runtime::EventGuard;
-use crate::runtime::supervisor::ProcessSupervisor;
-use crate::tools::ToolRegistry;
 use crate::runtime::agent_loop::{
-    apply_compact, promote_thinking_to_text, LoopPolicy, ModelCall, StreamCallbacks, StreamPartial,
+    LoopPolicy, ModelCall, StreamCallbacks, StreamPartial, apply_compact, promote_thinking_to_text,
 };
 use crate::runtime::event::RunEvent;
+use crate::runtime::supervisor::ProcessSupervisor;
+use crate::tools::ToolRegistry;
 use crate::types::{AgentEvent, EventSender, Message, MessageDelta};
 use transcript::{TranscriptOutcome, TranscriptRecorder};
 

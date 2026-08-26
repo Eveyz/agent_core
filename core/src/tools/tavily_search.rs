@@ -81,7 +81,9 @@ Use this whenever you need to find up-to-date information on the internet."
 
             match resp {
                 Ok(r) if r.status().is_success() => {
-                    let response: Value = r.json().await
+                    let response: Value = r
+                        .json()
+                        .await
                         .context("Failed to parse Tavily JSON response")?;
                     // ── Parse and format ─────────────────────────
                     let mut output = String::new();
@@ -100,7 +102,10 @@ Use this whenever you need to find up-to-date information on the internet."
                             let content = res["content"].as_str().unwrap_or("No content");
                             output.push_str(&format!(
                                 "{}. **{}**\nURL: {}\nContent: {}\n\n",
-                                i + 1, title, url, content
+                                i + 1,
+                                title,
+                                url,
+                                content
                             ));
                         }
                     } else {

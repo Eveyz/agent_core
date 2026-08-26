@@ -113,10 +113,7 @@ fn generate_token() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 32];
     rand::rng().fill_bytes(&mut bytes);
-    base64::Engine::encode(
-        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-        bytes,
-    )
+    base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, bytes)
 }
 
 fn build_router(state: GatewayState) -> Router {
@@ -125,9 +122,7 @@ fn build_router(state: GatewayState) -> Router {
         .route("/p/{token}/__agverse/reload", get(reload_ws))
         .fallback_service(tower::service_fn(move |req: Request<Body>| {
             let state = state_for_fallback.clone();
-            async move {
-                Ok::<_, Infallible>(handle_http_request(state, req).await)
-            }
+            async move { Ok::<_, Infallible>(handle_http_request(state, req).await) }
         }))
         .with_state(state)
 }
@@ -178,8 +173,7 @@ fn validate_host(headers: &HeaderMap, expected_port: u16) -> bool {
         .get(header::HOST)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    host == format!("127.0.0.1:{expected_port}")
-        || host == format!("localhost:{expected_port}")
+    host == format!("127.0.0.1:{expected_port}") || host == format!("localhost:{expected_port}")
 }
 
 async fn reload_ws(
@@ -238,7 +232,9 @@ async fn serve_static(
         Ok(p) => p,
         Err(_) => {
             if is_spa_navigation(headers) {
-                if let Ok(p) = resolve_under_root(&state.root, "index.html", PathPolicyOptions::default()) {
+                if let Ok(p) =
+                    resolve_under_root(&state.root, "index.html", PathPolicyOptions::default())
+                {
                     return serve_file(&p, true).await;
                 }
             }
@@ -308,10 +304,8 @@ async fn serve_file(path: &Path, inject_reload: bool) -> Response {
         resp.headers_mut().insert(header::CONTENT_TYPE, ct);
     }
     if is_html || path.extension().and_then(|e| e.to_str()) == Some("map") {
-        resp.headers_mut().insert(
-            header::CACHE_CONTROL,
-            HeaderValue::from_static("no-store"),
-        );
+        resp.headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     }
     resp
 }
@@ -359,7 +353,8 @@ async fn proxy_request(
 
     match rb.send().await {
         Ok(resp) => {
-            let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+            let status =
+                StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
             let mut builder = Response::builder().status(status);
             for (k, v) in resp.headers().iter() {
                 if k != header::SET_COOKIE && k != header::TRANSFER_ENCODING {
@@ -369,7 +364,9 @@ async fn proxy_request(
                 }
             }
             let bytes = resp.bytes().await.unwrap_or_default();
-            let mut response = builder.body(Body::from(bytes)).unwrap_or_else(|_| not_found());
+            let mut response = builder
+                .body(Body::from(bytes))
+                .unwrap_or_else(|_| not_found());
             apply_security_headers(&mut response, &[]);
             response
         }
@@ -381,7 +378,8 @@ fn apply_security_headers(resp: &mut Response, extra_connect: &[&str]) {
     let csp = default_preview_csp(extra_connect);
     resp.headers_mut().insert(
         header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_str(&csp).unwrap_or_else(|_| HeaderValue::from_static("default-src 'none'")),
+        HeaderValue::from_str(&csp)
+            .unwrap_or_else(|_| HeaderValue::from_static("default-src 'none'")),
     );
     resp.headers_mut().insert(
         header::HeaderName::from_static("x-content-type-options"),

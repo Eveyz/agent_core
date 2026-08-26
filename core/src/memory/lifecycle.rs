@@ -14,9 +14,7 @@ pub struct LifecycleReport {
 impl MemoryManager {
     /// Run proactive forgetting and archival promotion.
     pub fn run_lifecycle(&self) -> Result<LifecycleReport> {
-        let pruned = self
-            .recall()
-            .prune_cold_memories(0.08, 0.35, 200)?;
+        let pruned = self.recall().prune_cold_memories(0.08, 0.35, 200)?;
         let promoted = self
             .recall()
             .promote_to_archival(self.archival(), 0.85, 50)?;

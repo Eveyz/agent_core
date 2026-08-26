@@ -546,8 +546,8 @@ mod tests {
 
     #[test]
     fn test_tool_pattern_matches_command() {
-        let pat =
-            ToolPermissionPattern::simple("shell").with_commands(vec!["git".into(), "cargo".into()]);
+        let pat = ToolPermissionPattern::simple("shell")
+            .with_commands(vec!["git".into(), "cargo".into()]);
         assert!(pat.matches_command("git status"));
         assert!(pat.matches_command("cargo build"));
         assert!(!pat.matches_command("rm -rf /"));
@@ -564,7 +564,8 @@ mod tests {
 
     #[test]
     fn test_whitelist_entry_once_consumed() {
-        let entry = WhitelistEntry::new(ToolPermissionPattern::simple("shell"), ApprovalScope::Once);
+        let entry =
+            WhitelistEntry::new(ToolPermissionPattern::simple("shell"), ApprovalScope::Once);
         // Once scope is valid before being matched; the whitelist consumes
         // (removes) the entry on first match rather than invalidating it
         // in place. See whitelist.rs `query()`.
@@ -584,13 +585,25 @@ mod tests {
             .with_hosts(vec!["example.com".into()])
             .with_paths(vec!["/safe/**".into()]);
         assert!(!pattern.matches_invocation(
-            "webfetch", None, &[], Some("example.com"), DangerLevel::Network
+            "webfetch",
+            None,
+            &[],
+            Some("example.com"),
+            DangerLevel::Network
         ));
         assert!(!pattern.matches_invocation(
-            "webfetch", None, &["/safe/a"], None, DangerLevel::Network
+            "webfetch",
+            None,
+            &["/safe/a"],
+            None,
+            DangerLevel::Network
         ));
         assert!(!pattern.matches_invocation(
-            "webfetch", None, &["/safe/a", "/unsafe/b"], Some("example.com"), DangerLevel::Network
+            "webfetch",
+            None,
+            &["/safe/a", "/unsafe/b"],
+            Some("example.com"),
+            DangerLevel::Network
         ));
     }
 
@@ -598,7 +611,19 @@ mod tests {
     fn maximum_danger_is_enforced() {
         let mut pattern = ToolPermissionPattern::simple("shell");
         pattern.max_danger = Some(DangerLevel::ReadOnly);
-        assert!(pattern.matches_invocation("shell", Some("git status"), &[], None, DangerLevel::ReadOnly));
-        assert!(!pattern.matches_invocation("shell", Some("git status"), &[], None, DangerLevel::System));
+        assert!(pattern.matches_invocation(
+            "shell",
+            Some("git status"),
+            &[],
+            None,
+            DangerLevel::ReadOnly
+        ));
+        assert!(!pattern.matches_invocation(
+            "shell",
+            Some("git status"),
+            &[],
+            None,
+            DangerLevel::System
+        ));
     }
 }

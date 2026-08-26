@@ -28,8 +28,7 @@ const THINKING_CLOSE: &str = "</think>";
 pub const THINKING_BODY_MAX_CHARS: usize = 4_096;
 /// Max chars of partial assistant text injected on stream retry.
 pub const PARTIAL_TEXT_MAX_CHARS: usize = 2_048;
-pub const NO_STATUS_ACKNOWLEDGEMENT: &str =
-    "Output no preamble or status acknowledgement.";
+pub const NO_STATUS_ACKNOWLEDGEMENT: &str = "Output no preamble or status acknowledgement.";
 
 /// Embed thinking into assistant content for live context / Chat Completions compat.
 /// Empty thinking returns `text` unchanged. Format matches frontend `entriesToMessages`.
@@ -79,13 +78,11 @@ pub fn strip_thinking_in_content(content: &str) -> String {
 /// Also clears structured reasoning (text + opaque blobs) on those historical
 /// assistants. Active-loop blobs are left intact for provider round-trip.
 pub fn strip_historical_thinking(messages: &mut [Message]) -> usize {
-    let last_user = messages.iter().enumerate().rev().find_map(|(i, m)| {
-        if m.role == Role::User {
-            Some(i)
-        } else {
-            None
-        }
-    });
+    let last_user = messages
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(i, m)| if m.role == Role::User { Some(i) } else { None });
     let Some(last_user) = last_user else {
         return 0;
     };
@@ -353,8 +350,8 @@ mod tests {
             name: Some("test_tool".into()),
             model: None,
             metadata: None,
-        reasoning: None,
-        images: None,
+            reasoning: None,
+            images: None,
         }
     }
 
@@ -458,10 +455,7 @@ mod tests {
         assert!(args.len() > policy::TOOL_ARG_MAX_CHARS);
         let mut msg = make_assistant_with_named_args("write_file", &args);
         assert!(!truncate_tool_args(&mut msg));
-        assert_eq!(
-            msg.tool_calls.as_ref().unwrap()[0].function.arguments,
-            args
-        );
+        assert_eq!(msg.tool_calls.as_ref().unwrap()[0].function.arguments, args);
     }
 
     #[test]
@@ -499,8 +493,8 @@ mod tests {
             name: Some("skill_load".into()),
             model: None,
             metadata: None,
-        reasoning: None,
-        images: None,
+            reasoning: None,
+            images: None,
         };
         assert!(!truncate_tool_result(&mut msg));
         assert_eq!(msg.content.unwrap(), big);
@@ -517,8 +511,8 @@ mod tests {
             name: Some("skill_load".into()),
             model: None,
             metadata: None,
-        reasoning: None,
-        images: None,
+            reasoning: None,
+            images: None,
         };
         let normal_msg = make_tool_msg(&big); // name: "test_tool" → Incidental → truncated
         let mut msgs = vec![skill_msg, normal_msg];
@@ -540,8 +534,8 @@ mod tests {
             name: Some("read_file".into()),
             model: None,
             metadata: None,
-        reasoning: None,
-        images: None,
+            reasoning: None,
+            images: None,
         };
         assert!(truncate_tool_result(&mut msg));
         let c = msg.content.unwrap();
@@ -613,10 +607,7 @@ mod tests {
     #[test]
     fn wrap_thinking_embeds_tags() {
         assert_eq!(wrap_thinking("", "hi"), "hi");
-        assert_eq!(
-            wrap_thinking("reason", "hi"),
-            "<think>reason</think>\nhi"
-        );
+        assert_eq!(wrap_thinking("reason", "hi"), "<think>reason</think>\nhi");
         assert_eq!(wrap_thinking("reason", ""), "<think>reason</think>");
     }
 
@@ -655,7 +646,11 @@ mod tests {
             "historical thinking stripped"
         );
         assert!(
-            msgs[3].content.as_ref().unwrap().contains("<think>active reason</think>"),
+            msgs[3]
+                .content
+                .as_ref()
+                .unwrap()
+                .contains("<think>active reason</think>"),
             "active loop thinking kept"
         );
     }

@@ -114,7 +114,12 @@ impl ArchivalMemory {
         }
     }
 
-    pub fn search_by_vector(&self, query_embedding: &[f32], query_text: &str, top_k: usize) -> Result<Vec<ArchivalRecord>> {
+    pub fn search_by_vector(
+        &self,
+        query_embedding: &[f32],
+        query_text: &str,
+        top_k: usize,
+    ) -> Result<Vec<ArchivalRecord>> {
         let db = self.storage.conn();
 
         // FTS5 pre-filter: collect candidate rowids
@@ -124,7 +129,9 @@ impl ArchivalMemory {
             if let Ok(mut stmt) = db.prepare_cached(
                 "SELECT rowid FROM archival_memory_fts WHERE archival_memory_fts MATCH ?1 LIMIT 50",
             ) {
-                if let Ok(rows) = stmt.query_map(rusqlite::params![fts_query], |row| row.get::<_, i64>(0)) {
+                if let Ok(rows) =
+                    stmt.query_map(rusqlite::params![fts_query], |row| row.get::<_, i64>(0))
+                {
                     for row in rows.flatten() {
                         candidates.insert(row);
                     }
@@ -133,9 +140,9 @@ impl ArchivalMemory {
         }
 
         // Always include recent records for recency
-        if let Ok(mut stmt) = db.prepare_cached(
-            "SELECT rowid FROM archival_memory ORDER BY created_at DESC LIMIT 100",
-        ) {
+        if let Ok(mut stmt) = db
+            .prepare_cached("SELECT rowid FROM archival_memory ORDER BY created_at DESC LIMIT 100")
+        {
             if let Ok(rows) = stmt.query_map([], |row| row.get::<_, i64>(0)) {
                 for row in rows.flatten() {
                     candidates.insert(row);
@@ -148,7 +155,9 @@ impl ArchivalMemory {
         }
 
         let rowids: Vec<i64> = candidates.into_iter().collect();
-        let placeholders = rowids.iter().enumerate()
+        let placeholders = rowids
+            .iter()
+            .enumerate()
             .map(|(i, _)| format!("?{}", i + 1))
             .collect::<Vec<_>>()
             .join(", ");
@@ -158,9 +167,8 @@ impl ArchivalMemory {
             placeholders
         );
 
-        let params: Vec<&dyn rusqlite::ToSql> = rowids.iter()
-            .map(|r| r as &dyn rusqlite::ToSql)
-            .collect();
+        let params: Vec<&dyn rusqlite::ToSql> =
+            rowids.iter().map(|r| r as &dyn rusqlite::ToSql).collect();
 
         let mut stmt = db.prepare(&sql)?;
         let mut scored: Vec<(f32, ArchivalRecord)> = Vec::new();

@@ -14,10 +14,10 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::client::OpenAIClient;
-use crate::memory::agverse_md::{
-    self, classify_fact, normalize_section_name, scope_for_section, FactDisposition, FactScope,
-};
 use crate::memory::MemoryManager;
+use crate::memory::agverse_md::{
+    self, FactDisposition, FactScope, classify_fact, normalize_section_name, scope_for_section,
+};
 use crate::memory::storage::Storage;
 use crate::types::Message;
 
@@ -925,7 +925,9 @@ async fn persist_reflection_output(
     }
 
     let project_cwd = repository.session_cwd(&batch.session_id)?;
-    let project_path = project_cwd.as_ref().map(|cwd| PathBuf::from(cwd).join("agverse.md"));
+    let project_path = project_cwd
+        .as_ref()
+        .map(|cwd| PathBuf::from(cwd).join("agverse.md"));
 
     let existing_global = read_md_or_empty(agverse_path)?;
     let existing_project = match &project_path {

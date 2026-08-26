@@ -42,9 +42,11 @@ impl<'a> SessionListModal<'a> {
 impl<'a> Widget for SessionListModal<'a> {
     fn render(self, screen: Rect, buf: &mut Buffer) {
         let (sessions, selected) = match &self.state.modal {
-            crate::tui::state::ModalState::SessionList { sessions, selected, filter: _ } => {
-                (sessions.as_slice(), *selected)
-            }
+            crate::tui::state::ModalState::SessionList {
+                sessions,
+                selected,
+                filter: _,
+            } => (sessions.as_slice(), *selected),
             _ => return,
         };
         let h = (sessions.len() + 5).min(20) as u16;
@@ -53,7 +55,9 @@ impl<'a> Widget for SessionListModal<'a> {
         let mut lines = vec![
             Line::from(Span::styled(
                 " Sessions ",
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             )),
             Line::raw(""),
         ];
@@ -83,6 +87,8 @@ impl<'a> Widget for SessionListModal<'a> {
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(TOOL_COLOR))
             .style(Style::default().bg(CODE_BG));
-        Paragraph::new(Text::from(lines)).block(block).render(area, buf);
+        Paragraph::new(Text::from(lines))
+            .block(block)
+            .render(area, buf);
     }
 }

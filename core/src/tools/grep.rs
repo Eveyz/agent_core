@@ -53,14 +53,7 @@ impl Tool for GrepTool {
 
         let mut results: Vec<String> = Vec::new();
         let search_root = crate::paths::resolve_tool_path(path, None, None, working_dir);
-        search_path(
-            &search_root,
-            &regex,
-            include,
-            &mut results,
-            max_results,
-        )
-        .await?;
+        search_path(&search_root, &regex, include, &mut results, max_results).await?;
 
         if results.is_empty() {
             return Ok("No matches found.".to_string());
@@ -147,8 +140,7 @@ mod tests {
     fn setup_fixture() -> PathBuf {
         // Use a per-test unique subdir with a process-local counter to avoid
         // races between parallel tests sharing /tmp.
-        static COUNTER: std::sync::atomic::AtomicU64 =
-            std::sync::atomic::AtomicU64::new(0);
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
             "grep_tool_tests_{}",
             COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)

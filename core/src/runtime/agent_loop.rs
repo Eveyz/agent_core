@@ -55,11 +55,7 @@ impl LoopPolicy {
     }
 
     pub fn max_stream_attempts(&self) -> u32 {
-        if self.recovery {
-            6
-        } else {
-            3
-        }
+        if self.recovery { 6 } else { 3 }
     }
 
     pub fn stream_idle_timeout(&self) -> Option<Duration> {
@@ -67,11 +63,7 @@ impl LoopPolicy {
     }
 
     pub fn request_backoff_base_ms(&self) -> u64 {
-        if self.recovery {
-            1_000
-        } else {
-            500
-        }
+        if self.recovery { 1_000 } else { 500 }
     }
 
     pub fn stream_backoff_base_ms(&self) -> u64 {

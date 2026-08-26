@@ -1,4 +1,4 @@
-use super::state::{AppState, ModalState, APPROVAL_CHOICES};
+use super::state::{APPROVAL_CHOICES, AppState, ModalState};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -178,7 +178,10 @@ pub fn handle_key(key: KeyEvent, state: &mut AppState) -> Result<()> {
             // multiline: move within input first
             if let Some(prev_nl) = state.input[..state.cursor_pos].rfind('\n') {
                 let col = state.cursor_pos - prev_nl - 1;
-                let line_start = state.input[..prev_nl].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                let line_start = state.input[..prev_nl]
+                    .rfind('\n')
+                    .map(|i| i + 1)
+                    .unwrap_or(0);
                 let prev_len = prev_nl - line_start;
                 state.cursor_pos = line_start + col.min(prev_len);
             } else {

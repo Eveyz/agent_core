@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
@@ -204,11 +204,7 @@ fn parse_sse_data(event_text: &str) -> Option<String> {
             data.push_str(value.trim());
         }
     }
-    if data.is_empty() {
-        None
-    } else {
-        Some(data)
-    }
+    if data.is_empty() { None } else { Some(data) }
 }
 
 #[cfg(test)]

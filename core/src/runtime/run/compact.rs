@@ -320,7 +320,8 @@ impl Run {
         // Invalidate queued snapshot writers before taking the shared lock.
         // A writer already holding the lock completes first; this commit then
         // replaces it. A queued writer observes the newer generation and skips.
-        self.session_snapshot_gen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.session_snapshot_gen
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let snapshot_lock = self.session_snapshot_lock.clone();
         match tokio::task::spawn_blocking(move || {
             let _guard = snapshot_lock

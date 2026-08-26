@@ -29,27 +29,61 @@ pub fn render_diff_output(
     for raw in diff_text.lines() {
         // --- / +++ file headers
         if raw.starts_with("--- ") {
-            flush_context(&mut pending_context, lines, pad, inner, empty_prefix, content_width);
+            flush_context(
+                &mut pending_context,
+                lines,
+                pad,
+                inner,
+                empty_prefix,
+                content_width,
+            );
             let path = raw.strip_prefix("--- ").unwrap_or(raw);
-            lines.push(diff_line(pad, &format!("--- {}", path), inner,
-                Style::default().fg(Color::Red).bg(CODE_BG)));
+            lines.push(diff_line(
+                pad,
+                &format!("--- {}", path),
+                inner,
+                Style::default().fg(Color::Red).bg(CODE_BG),
+            ));
             continue;
         }
         if raw.starts_with("+++ ") {
-            flush_context(&mut pending_context, lines, pad, inner, empty_prefix, content_width);
+            flush_context(
+                &mut pending_context,
+                lines,
+                pad,
+                inner,
+                empty_prefix,
+                content_width,
+            );
             let path = raw.strip_prefix("+++ ").unwrap_or(raw);
-            lines.push(diff_line(pad, &format!("+++ {}", path), inner,
-                Style::default().fg(Color::Green).bg(CODE_BG)));
+            lines.push(diff_line(
+                pad,
+                &format!("+++ {}", path),
+                inner,
+                Style::default().fg(Color::Green).bg(CODE_BG),
+            ));
             continue;
         }
         // @@ hunk header
         if raw.starts_with("@@") {
-            flush_context(&mut pending_context, lines, pad, inner, empty_prefix, content_width);
+            flush_context(
+                &mut pending_context,
+                lines,
+                pad,
+                inner,
+                empty_prefix,
+                content_width,
+            );
             if let Some((o, n)) = parse_hunk_header(raw) {
                 old_line = o;
                 new_line = n;
             }
-            lines.push(diff_line(pad, raw, inner, Style::default().fg(Color::DarkGray).bg(CODE_BG)));
+            lines.push(diff_line(
+                pad,
+                raw,
+                inner,
+                Style::default().fg(Color::DarkGray).bg(CODE_BG),
+            ));
             continue;
         }
 
@@ -62,19 +96,53 @@ pub fn render_diff_output(
 
         match sign {
             "-" => {
-                flush_context(&mut pending_context, lines, pad, inner, empty_prefix, content_width);
+                flush_context(
+                    &mut pending_context,
+                    lines,
+                    pad,
+                    inner,
+                    empty_prefix,
+                    content_width,
+                );
                 deletions += 1;
                 let num = format!("{:>4}", old_line);
                 let style = Style::default().fg(Color::White).bg(Color::Rgb(60, 30, 30));
-                push_wrapped_diff_line(lines, pad, inner, empty_prefix, content_width, &num, sign, content, style);
+                push_wrapped_diff_line(
+                    lines,
+                    pad,
+                    inner,
+                    empty_prefix,
+                    content_width,
+                    &num,
+                    sign,
+                    content,
+                    style,
+                );
                 old_line += 1;
             }
             "+" => {
-                flush_context(&mut pending_context, lines, pad, inner, empty_prefix, content_width);
+                flush_context(
+                    &mut pending_context,
+                    lines,
+                    pad,
+                    inner,
+                    empty_prefix,
+                    content_width,
+                );
                 additions += 1;
                 let num = format!("{:>4}", new_line);
                 let style = Style::default().fg(Color::White).bg(Color::Rgb(30, 60, 30));
-                push_wrapped_diff_line(lines, pad, inner, empty_prefix, content_width, &num, sign, content, style);
+                push_wrapped_diff_line(
+                    lines,
+                    pad,
+                    inner,
+                    empty_prefix,
+                    content_width,
+                    &num,
+                    sign,
+                    content,
+                    style,
+                );
                 new_line += 1;
             }
             " " => {
@@ -84,13 +152,32 @@ pub fn render_diff_output(
                 new_line += 1;
             }
             _ => {
-                flush_context(&mut pending_context, lines, pad, inner, empty_prefix, content_width);
-                lines.push(diff_line(pad, raw, inner, Style::default().fg(Color::White).bg(CODE_BG)));
+                flush_context(
+                    &mut pending_context,
+                    lines,
+                    pad,
+                    inner,
+                    empty_prefix,
+                    content_width,
+                );
+                lines.push(diff_line(
+                    pad,
+                    raw,
+                    inner,
+                    Style::default().fg(Color::White).bg(CODE_BG),
+                ));
             }
         }
     }
 
-    flush_context(&mut pending_context, lines, pad, inner, empty_prefix, content_width);
+    flush_context(
+        &mut pending_context,
+        lines,
+        pad,
+        inner,
+        empty_prefix,
+        content_width,
+    );
 
     // Stats footer
     if additions > 0 || deletions > 0 {
@@ -122,15 +209,40 @@ fn flush_context(
 
     if total <= MAX_CTX * 2 {
         for (num, content) in pending.drain(..) {
-            push_wrapped_diff_line(lines, pad, inner, empty_prefix, content_width, &num, sign, &content, style);
+            push_wrapped_diff_line(
+                lines,
+                pad,
+                inner,
+                empty_prefix,
+                content_width,
+                &num,
+                sign,
+                &content,
+                style,
+            );
         }
     } else {
         for (idx, (num, content)) in pending.drain(..).enumerate() {
             if idx < MAX_CTX || idx >= total - MAX_CTX {
-                push_wrapped_diff_line(lines, pad, inner, empty_prefix, content_width, &num, sign, &content, style);
+                push_wrapped_diff_line(
+                    lines,
+                    pad,
+                    inner,
+                    empty_prefix,
+                    content_width,
+                    &num,
+                    sign,
+                    &content,
+                    style,
+                );
             } else if idx == MAX_CTX {
                 let folded = format!("  ... {} unchanged lines ...", total - MAX_CTX * 2);
-                lines.push(diff_line(pad, &folded, inner, Style::default().fg(Color::DarkGray).bg(CODE_BG)));
+                lines.push(diff_line(
+                    pad,
+                    &folded,
+                    inner,
+                    Style::default().fg(Color::DarkGray).bg(CODE_BG),
+                ));
             }
         }
     }
@@ -236,7 +348,17 @@ fn parse_hunk_header(line: &str) -> Option<(usize, usize)> {
     if parts.len() < 2 {
         return None;
     }
-    let old_start: usize = parts[0].trim_start_matches('-').split(',').next()?.parse().ok()?;
-    let new_start: usize = parts[1].trim_start_matches('+').split(',').next()?.parse().ok()?;
+    let old_start: usize = parts[0]
+        .trim_start_matches('-')
+        .split(',')
+        .next()?
+        .parse()
+        .ok()?;
+    let new_start: usize = parts[1]
+        .trim_start_matches('+')
+        .split(',')
+        .next()?
+        .parse()
+        .ok()?;
     Some((old_start, new_start))
 }
