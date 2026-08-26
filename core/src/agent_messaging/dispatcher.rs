@@ -16,6 +16,7 @@ pub trait AgentMessageExecutor: Send + Sync {
         &self,
         delivery: &ClaimedAgentMessage,
         cancel_token: CancellationToken,
+        execution_scope: Option<crate::ExecutionScope>,
     ) -> Result<String>;
 }
 
@@ -102,26 +103,41 @@ impl AgentInboxDispatcher {
         cancel_token: CancellationToken,
         lease: super::ActiveAgentRunLease,
     ) -> Result<()> {
-        if let Some(swarm) = &self.swarm
-            && let Err(error) = swarm.begin_turn(
-                &delivery.message.context_id,
-                &delivery.target_conversation.agent_id,
-                &delivery.task.id,
-                AgentRunLane::Peer,
-            )
-        {
-            lease.finish();
-            self.messaging.command(
-                &delivery.task.id,
-                AgentTaskCommand::NeedsAttention {
-                    reason: error.to_string(),
-                },
-            )?;
-            return Ok(());
+        let mut turn_lease = None;
+        if let Some(swarm) = &self.swarm {
+            match swarm
+                .begin_turn(
+                    &delivery.message.context_id,
+                    &delivery.target_conversation.agent_id,
+                    &delivery.task.id,
+                    AgentRunLane::Peer,
+                    &cancel_token,
+                )
+                .await
+            {
+                Ok(lease) => turn_lease = lease,
+                Err(error) => {
+                    lease.finish();
+                    self.messaging.command(
+                        &delivery.task.id,
+                        AgentTaskCommand::NeedsAttention {
+                            reason: error.to_string(),
+                        },
+                    )?;
+                    return Ok(());
+                }
+            }
         }
-        let execution = self.executor.execute(&delivery, cancel_token).await;
-        if let Some(swarm) = &self.swarm
-            && let Err(error) = swarm.finish_turn(&delivery.message.context_id, &delivery.task.id)
+        let execution_scope = turn_lease
+            .as_ref()
+            .map(|turn| turn.execution_scope().clone());
+        let execution = self
+            .executor
+            .execute(&delivery, cancel_token, execution_scope)
+            .await;
+        if let Some(turn_lease) = turn_lease
+            && let Some(swarm) = &self.swarm
+            && let Err(error) = swarm.finish_turn(turn_lease)
         {
             lease.finish();
             self.messaging.command(
@@ -307,6 +323,7 @@ mod tests {
             &self,
             _delivery: &ClaimedAgentMessage,
             cancel_token: CancellationToken,
+            _execution_scope: Option<crate::ExecutionScope>,
         ) -> Result<String> {
             self.started.notify_one();
             cancel_token.cancelled().await;
@@ -320,6 +337,7 @@ mod tests {
             &self,
             delivery: &ClaimedAgentMessage,
             _cancel_token: CancellationToken,
+            _execution_scope: Option<crate::ExecutionScope>,
         ) -> Result<String> {
             self.priorities
                 .lock()
@@ -335,6 +353,7 @@ mod tests {
             &self,
             delivery: &ClaimedAgentMessage,
             _cancel_token: CancellationToken,
+            _execution_scope: Option<crate::ExecutionScope>,
         ) -> Result<String> {
             if delivery.task.recipient_agent_id == "debugger" {
                 self.debugger_started.notify_one();
@@ -352,6 +371,7 @@ mod tests {
             &self,
             delivery: &ClaimedAgentMessage,
             _cancel_token: CancellationToken,
+            _execution_scope: Option<crate::ExecutionScope>,
         ) -> Result<String> {
             self.deliveries.lock().unwrap().push(delivery.message.kind);
             Ok(match delivery.message.kind {

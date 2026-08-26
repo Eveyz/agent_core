@@ -12,10 +12,19 @@ pub fn get_memory_db_path() -> PathBuf {
     get_agverse_dir().join("memory.db")
 }
 
-
 /// Gets the run event logs directory. Usually `~/.agverse/runs/`.
 pub fn get_runs_dir() -> PathBuf {
     get_agverse_dir().join("runs")
+}
+
+/// Managed swarm workspaces. Usually `~/.agverse/swarms/`.
+pub fn swarms_dir() -> PathBuf {
+    get_agverse_dir().join("swarms")
+}
+
+/// Scratch workspace for one swarm run: `…/swarms/<run_id>/workspace`.
+pub fn swarm_workspace_dir(run_id: &str) -> PathBuf {
+    swarms_dir().join(run_id).join("workspace")
 }
 
 /// Gets the reflector skills directory. Usually `~/.agverse/skills/`.
@@ -162,10 +171,17 @@ mod tests {
         let session = session_dir(sid);
         assert!(session.ends_with("sessions/sess-a") || session.ends_with("sessions\\sess-a"));
         assert_eq!(prompt_dir(sid, pid), session.join(pid));
-        assert_eq!(prompt_images_dir(sid, pid), session.join(pid).join("images"));
+        assert_eq!(
+            prompt_images_dir(sid, pid),
+            session.join(pid).join("images")
+        );
         assert_eq!(
             session_messages_snapshot_path(sid),
             session.join("messages.json")
+        );
+        assert!(
+            swarm_workspace_dir("run-1").ends_with("swarms/run-1/workspace")
+                || swarm_workspace_dir("run-1").ends_with("swarms\\run-1\\workspace")
         );
     }
 

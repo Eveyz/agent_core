@@ -153,6 +153,11 @@ impl Storage {
         storage.add_column_if_not_exists("agent_swarm_runs", "completion_task_id", "TEXT")?;
         storage.add_column_if_not_exists("agent_swarm_runs", "completion_turn_id", "TEXT")?;
         storage.add_column_if_not_exists(
+            "agent_swarm_runs",
+            "workspace_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        storage.add_column_if_not_exists(
             "agent_message_tasks",
             "worker_id",
             "TEXT NOT NULL DEFAULT ''",
@@ -617,11 +622,26 @@ impl Storage {
                 updated_at TEXT NOT NULL,
                 completed_at TEXT,
                 completion_task_id TEXT,
-                completion_turn_id TEXT
+                completion_turn_id TEXT,
+                workspace_id TEXT NOT NULL DEFAULT ''
             );
 
             CREATE INDEX IF NOT EXISTS idx_agent_swarm_runs_project
                 ON agent_swarm_runs(project_id, updated_at);
+
+            CREATE TABLE IF NOT EXISTS agent_swarm_workspaces (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL UNIQUE REFERENCES agent_swarm_runs(id) ON DELETE CASCADE,
+                kind TEXT NOT NULL,
+                canonical_root TEXT NOT NULL,
+                lock_key TEXT NOT NULL,
+                ownership TEXT NOT NULL,
+                cleanup_policy TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agent_swarm_workspaces_lock
+                ON agent_swarm_workspaces(lock_key);
 
             CREATE TABLE IF NOT EXISTS agent_swarm_active_turns (
                 run_id TEXT NOT NULL REFERENCES agent_swarm_runs(id) ON DELETE CASCADE,

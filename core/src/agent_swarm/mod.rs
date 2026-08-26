@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -7,6 +7,7 @@ use parking_lot::Mutex;
 use rusqlite::{OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     AgentMessage, AgentMessaging, DeliveryReceipt, MessageKind, MessagePart, SendAgentMessage,
@@ -15,11 +16,19 @@ use crate::{
     tools::{Tool, ToolRegistry},
 };
 
+mod workspace;
+pub use workspace::{
+    CleanupPolicy, ExecutionScope, FinalizeOutcome, FinalizeReport, SwarmWorkspaceManager,
+    TurnAccess, TurnWorkspaceLease, WorkspaceBinding, WorkspaceKind, WorkspaceOwnership,
+    classify_turn_access,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SwarmStatus {
     Running,
     Completing,
+    Cancelling,
     Completed,
     Cancelled,
     NeedsAttention,
@@ -30,6 +39,7 @@ impl SwarmStatus {
         match self {
             Self::Running => "running",
             Self::Completing => "completing",
+            Self::Cancelling => "cancelling",
             Self::Completed => "completed",
             Self::Cancelled => "cancelled",
             Self::NeedsAttention => "needs_attention",
@@ -40,6 +50,7 @@ impl SwarmStatus {
         match value {
             "running" => Ok(Self::Running),
             "completing" => Ok(Self::Completing),
+            "cancelling" => Ok(Self::Cancelling),
             "completed" => Ok(Self::Completed),
             "cancelled" => Ok(Self::Cancelled),
             "needs_attention" => Ok(Self::NeedsAttention),
@@ -71,6 +82,7 @@ pub struct SwarmRun {
     pub completed_at: Option<String>,
     pub completion_task_id: Option<String>,
     pub completion_turn_id: Option<String>,
+    pub workspace_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,7 +151,9 @@ pub struct SwarmCoordinator {
     storage: Storage,
     messaging: AgentMessaging,
     active_runs: crate::ActiveAgentRuns,
+    workspace: SwarmWorkspaceManager,
     commands: Arc<Mutex<()>>,
+    lock_waiters: Arc<Mutex<HashMap<String, Vec<(String, CancellationToken)>>>>,
 }
 
 #[derive(Clone)]
@@ -290,8 +304,15 @@ impl SwarmCoordinator {
             storage,
             messaging,
             active_runs,
+            workspace: SwarmWorkspaceManager::new(crate::paths::swarms_dir()),
             commands: Arc::new(Mutex::new(())),
+            lock_waiters: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    pub fn with_scratch_root(mut self, scratch_root: std::path::PathBuf) -> Self {
+        self.workspace = self.workspace.with_scratch_root(scratch_root);
+        self
     }
 
     pub fn start(&self, command: StartSwarm) -> Result<SwarmRun> {
@@ -324,6 +345,7 @@ impl SwarmCoordinator {
             completed_at: None,
             completion_task_id: None,
             completion_turn_id: None,
+            workspace_id: String::new(),
         };
         let mut db = self.storage.conn();
         let tx = db.transaction()?;
@@ -331,8 +353,9 @@ impl SwarmCoordinator {
             "INSERT INTO agent_swarm_runs
              (id, project_id, root_agent_id, goal, status, max_messages, messages_used,
               max_turns, turns_used, max_hops, hops_used, summary, error,
-              created_at, updated_at, completed_at, completion_task_id, completion_turn_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, 0, ?8, 0, '', '', ?9, ?9, NULL, NULL, NULL)",
+              created_at, updated_at, completed_at, completion_task_id, completion_turn_id,
+              workspace_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, 0, ?8, 0, '', '', ?9, ?9, NULL, NULL, NULL, '')",
             params![
                 run.id,
                 run.project_id,
@@ -345,6 +368,7 @@ impl SwarmCoordinator {
                 now
             ],
         )?;
+        let binding = self.workspace.provision(&tx, &run.id, &run.project_id)?;
         tx.execute(
             "INSERT INTO agent_swarm_participants (run_id, agent_id, joined_at) VALUES (?1, ?2, ?3)",
             params![run.id, run.root_agent_id, now],
@@ -353,10 +377,21 @@ impl SwarmCoordinator {
             &tx,
             &run.id,
             "swarm_started",
-            &serde_json::json!({ "goal": run.goal, "root_agent_id": run.root_agent_id }),
+            &serde_json::json!({
+                "goal": run.goal,
+                "root_agent_id": run.root_agent_id,
+                "workspace_id": binding.id,
+                "workspace_kind": match binding.kind {
+                    WorkspaceKind::Scratch => "scratch",
+                    WorkspaceKind::ProjectRoot => "project_root",
+                },
+                "canonical_root": binding.canonical_root,
+            }),
             &now,
         )?;
         tx.commit()?;
+        let mut run = run;
+        run.workspace_id = binding.id;
         Ok(run)
     }
 
@@ -366,9 +401,10 @@ impl SwarmCoordinator {
         let command_allowed = match (&run.status, &command) {
             (SwarmStatus::Running, _) => true,
             (
-                SwarmStatus::Completing | SwarmStatus::NeedsAttention,
+                SwarmStatus::Completing | SwarmStatus::NeedsAttention | SwarmStatus::Cancelling,
                 SwarmCommand::Cancel { .. },
             ) => true,
+            (SwarmStatus::Cancelled, SwarmCommand::Cancel { .. }) => true,
             (SwarmStatus::NeedsAttention, SwarmCommand::Intervene { .. }) => true,
             // Let `intervene` own the lifecycle-specific validation so terminal
             // runs retain the stable "cannot be reopened" error contract.
@@ -484,16 +520,79 @@ impl SwarmCoordinator {
 
     /// Records the start of a peer-agent turn when `context_id` belongs to a swarm.
     /// Non-swarm message contexts are deliberately ignored for compatibility.
-    pub fn begin_turn(
+    ///
+    /// Waits for the workspace lock outside `commands` so a holder can still
+    /// `finish_turn`. Durable accounting is written only after the lock is granted.
+    pub async fn begin_turn(
         &self,
         context_id: &str,
         agent_id: &str,
         turn_id: &str,
         lane: crate::AgentRunLane,
-    ) -> Result<()> {
+        cancel: &CancellationToken,
+    ) -> Result<Option<TurnWorkspaceLease>> {
+        let (binding, access) = {
+            let _guard = self.commands.lock();
+            let Some(run) = self.try_run(context_id)? else {
+                return Ok(None);
+            };
+            if run.status != SwarmStatus::Running {
+                bail!("swarm run '{context_id}' is not running");
+            }
+            if run.turns_used >= run.max_turns {
+                self.needs_attention(&run.id, "turn budget exhausted")?;
+                bail!("swarm turn budget exhausted");
+            }
+            let mut db = self.storage.conn();
+            let tx = db.transaction()?;
+            let binding = self.workspace.binding_for_run(&tx, &run.id)?;
+            tx.commit()?;
+            drop(db);
+            let agent = agent_registry::get(&self.storage, agent_id)
+                .with_context(|| format!("agent '{agent_id}' does not exist"))?;
+            (binding, authorize_turn_access(&agent))
+        };
+
+        self.register_lock_waiter(&binding.run_id, turn_id, cancel.clone());
+        let acquire = self
+            .workspace
+            .begin_turn(&binding, &binding.run_id, turn_id, access);
+        let lease = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                self.unregister_lock_waiter(&binding.run_id, turn_id);
+                bail!("swarm turn cancelled while waiting for workspace lock");
+            }
+            result = acquire => {
+                self.unregister_lock_waiter(&binding.run_id, turn_id);
+                result?
+            }
+        };
+
+        let recorded = self.record_granted_turn(context_id, agent_id, turn_id, lane);
+        match recorded {
+            Ok(true) => Ok(Some(lease)),
+            Ok(false) => {
+                drop(lease);
+                Ok(None)
+            }
+            Err(error) => {
+                drop(lease);
+                Err(error)
+            }
+        }
+    }
+
+    fn record_granted_turn(
+        &self,
+        context_id: &str,
+        agent_id: &str,
+        turn_id: &str,
+        lane: crate::AgentRunLane,
+    ) -> Result<bool> {
         let _guard = self.commands.lock();
         let Some(run) = self.try_run(context_id)? else {
-            return Ok(());
+            return Ok(false);
         };
         if run.status != SwarmStatus::Running {
             bail!("swarm run '{context_id}' is not running");
@@ -512,9 +611,12 @@ impl SwarmCoordinator {
         )?;
         if inserted == 0 {
             tx.commit()?;
-            return Ok(());
+            bail!("turn '{turn_id}' is already active in swarm '{}'", run.id);
         }
-        tx.execute("UPDATE agent_swarm_runs SET turns_used = turns_used + 1, updated_at = ?1 WHERE id = ?2", params![now, run.id])?;
+        tx.execute(
+            "UPDATE agent_swarm_runs SET turns_used = turns_used + 1, updated_at = ?1 WHERE id = ?2",
+            params![now, run.id],
+        )?;
         append_event(
             &tx,
             &run.id,
@@ -523,53 +625,33 @@ impl SwarmCoordinator {
             &now,
         )?;
         tx.commit()?;
-        Ok(())
+        Ok(true)
     }
 
-    pub fn finish_turn(&self, context_id: &str, turn_id: &str) -> Result<()> {
+    pub fn finish_turn(&self, lease: TurnWorkspaceLease) -> Result<()> {
         let _guard = self.commands.lock();
         let now = Utc::now().to_rfc3339();
         let mut db = self.storage.conn();
         let tx = db.transaction()?;
-        let completion = tx
-            .query_row(
-                "SELECT status, completion_turn_id, summary FROM agent_swarm_runs WHERE id = ?1",
-                params![context_id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, Option<String>>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                },
-            )
-            .optional()?;
-        let removed = tx.execute(
-            "DELETE FROM agent_swarm_active_turns WHERE run_id = ?1 AND turn_id = ?2",
-            params![context_id, turn_id],
-        )?;
-        if removed == 1
-            && completion.as_ref().is_some_and(|(status, completion_turn_id, _)| {
-                status == "completing" && completion_turn_id.as_deref() == Some(turn_id)
-            })
-        {
-            tx.execute(
-                "UPDATE agent_swarm_runs SET status = 'completed', updated_at = ?1, completed_at = ?1 WHERE id = ?2",
-                params![now, context_id],
-            )?;
-            append_event(
-                &tx,
-                context_id,
-                "swarm_completed",
-                &serde_json::json!({
-                    "completion_turn_id": turn_id,
-                    "summary": completion.as_ref().map(|(_, _, summary)| summary.as_str()).unwrap_or_default(),
-                }),
-                &now,
-            )?;
-        }
+        finish_turn_record(&tx, lease.run_id(), lease.turn_id(), &now)?;
         tx.commit()?;
+        drop(lease);
         Ok(())
+    }
+
+    pub fn finalize_workspace(
+        &self,
+        run_id: &str,
+        outcome: FinalizeOutcome,
+    ) -> Result<FinalizeReport> {
+        let _guard = self.commands.lock();
+        let run = self.run(run_id)?;
+        let mut db = self.storage.conn();
+        let tx = db.transaction()?;
+        let binding = self.workspace.binding_for_run(&tx, run_id)?;
+        tx.commit()?;
+        self.workspace
+            .finalize(run.status.as_str(), &binding, outcome)
     }
 
     pub fn finalize_completion(&self, context_id: &str, task_id: &str) -> Result<()> {
@@ -609,7 +691,7 @@ impl SwarmCoordinator {
                 SwarmStatus::Running | SwarmStatus::Completing | SwarmStatus::NeedsAttention => {
                     self.needs_attention(context_id, reason)?;
                 }
-                SwarmStatus::Completed | SwarmStatus::Cancelled => {}
+                SwarmStatus::Cancelling | SwarmStatus::Completed | SwarmStatus::Cancelled => {}
             }
         }
         Ok(())
@@ -630,7 +712,7 @@ impl SwarmCoordinator {
              LEFT JOIN agent_swarm_active_turns AS turn ON turn.run_id = run.id
              WHERE (run.status = 'running'
                     AND (task.status IN ('needs_attention', 'failed') OR turn.turn_id IS NOT NULL))
-                OR run.status = 'completing'",
+                OR run.status IN ('completing', 'cancelling')",
         )?;
         let interrupted = statement
             .query_map([], |row| {
@@ -656,6 +738,18 @@ impl SwarmCoordinator {
                     run_id,
                     "swarm_completed",
                     &serde_json::json!({ "recovered": true }),
+                    &now,
+                )?;
+            } else if status == "cancelling" {
+                tx.execute(
+                    "UPDATE agent_swarm_runs SET status = 'cancelled', updated_at = ?1, completed_at = ?1 WHERE id = ?2",
+                    params![now, run_id],
+                )?;
+                append_event(
+                    &tx,
+                    run_id,
+                    "swarm_cancelled",
+                    &serde_json::json!({ "reason": reason, "recovered": true }),
                     &now,
                 )?;
             } else {
@@ -875,7 +969,10 @@ impl SwarmCoordinator {
         } else {
             SwarmStatus::Completed
         };
-        let completion_turn_id = current_task_id.is_none().then_some(current_turn_id).flatten();
+        let completion_turn_id = current_task_id
+            .is_none()
+            .then_some(current_turn_id)
+            .flatten();
         let mut db = self.storage.conn();
         let tx = db.transaction()?;
         tx.execute("UPDATE agent_swarm_runs SET status = ?1, summary = ?2, updated_at = ?3, completed_at = CASE WHEN ?1 = 'completed' THEN ?3 ELSE NULL END, completion_task_id = ?4, completion_turn_id = ?5 WHERE id = ?6", params![next_status.as_str(), summary, now, current_task_id, completion_turn_id, run.id])?;
@@ -895,6 +992,9 @@ impl SwarmCoordinator {
     }
 
     fn cancel(&self, run: &SwarmRun, reason: &str) -> Result<()> {
+        if run.status == SwarmStatus::Cancelled {
+            return Ok(());
+        }
         let now = Utc::now().to_rfc3339();
         let mut db = self.storage.conn();
         let tx = db.transaction()?;
@@ -909,18 +1009,28 @@ impl SwarmCoordinator {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         drop(active_statement);
-        tx.execute(
-            "DELETE FROM agent_swarm_active_turns WHERE run_id = ?1",
-            params![run.id],
-        )?;
-        tx.execute("UPDATE agent_swarm_runs SET status = 'cancelled', error = ?1, updated_at = ?2, completed_at = ?2 WHERE id = ?3", params![reason, now, run.id])?;
-        append_event(
-            &tx,
-            &run.id,
-            "swarm_cancelled",
-            &serde_json::json!({ "reason": reason }),
-            &now,
-        )?;
+        let next_status = if active_turns.is_empty() {
+            SwarmStatus::Cancelled
+        } else {
+            SwarmStatus::Cancelling
+        };
+        if run.status != SwarmStatus::Cancelling || next_status == SwarmStatus::Cancelled {
+            tx.execute(
+                "UPDATE agent_swarm_runs SET status = ?1, error = ?2, updated_at = ?3, completed_at = CASE WHEN ?1 = 'cancelled' THEN ?3 ELSE NULL END WHERE id = ?4",
+                params![next_status.as_str(), reason, now, run.id],
+            )?;
+            append_event(
+                &tx,
+                &run.id,
+                if next_status == SwarmStatus::Cancelled {
+                    "swarm_cancelled"
+                } else {
+                    "swarm_cancelling"
+                },
+                &serde_json::json!({ "reason": reason }),
+                &now,
+            )?;
+        }
         tx.commit()?;
         drop(db);
         for task in cancelled
@@ -933,6 +1043,7 @@ impl SwarmCoordinator {
         for (turn_id, agent_id) in active_turns {
             self.active_runs.cancel_run(&agent_id, &turn_id);
         }
+        self.cancel_lock_waiters(&run.id);
         Ok(())
     }
 
@@ -991,31 +1102,125 @@ impl SwarmCoordinator {
 
     fn run(&self, run_id: &str) -> Result<SwarmRun> {
         let db = self.storage.conn();
-        db.query_row(
-            "SELECT id, project_id, root_agent_id, goal, status, max_messages, messages_used,
-                    max_turns, turns_used, max_hops, hops_used, summary, error,
-                    created_at, updated_at, completed_at, completion_task_id, completion_turn_id
-             FROM agent_swarm_runs WHERE id = ?1",
-            params![run_id],
-            run_from_row,
-        )
-        .optional()?
-        .with_context(|| format!("swarm run '{run_id}' not found"))
+        db.query_row(RUN_SELECT, params![run_id], run_from_row)
+            .optional()?
+            .with_context(|| format!("swarm run '{run_id}' not found"))
     }
 
     fn try_run(&self, run_id: &str) -> Result<Option<SwarmRun>> {
         let db = self.storage.conn();
-        db.query_row(
-            "SELECT id, project_id, root_agent_id, goal, status, max_messages, messages_used,
-                    max_turns, turns_used, max_hops, hops_used, summary, error,
-                    created_at, updated_at, completed_at, completion_task_id, completion_turn_id
-             FROM agent_swarm_runs WHERE id = ?1",
-            params![run_id],
-            run_from_row,
-        )
-        .optional()
-        .map_err(Into::into)
+        db.query_row(RUN_SELECT, params![run_id], run_from_row)
+            .optional()
+            .map_err(Into::into)
     }
+
+    fn register_lock_waiter(&self, run_id: &str, turn_id: &str, cancel: CancellationToken) {
+        self.lock_waiters
+            .lock()
+            .entry(run_id.to_string())
+            .or_default()
+            .push((turn_id.to_string(), cancel));
+    }
+
+    fn unregister_lock_waiter(&self, run_id: &str, turn_id: &str) {
+        let mut waiters = self.lock_waiters.lock();
+        if let Some(list) = waiters.get_mut(run_id) {
+            list.retain(|(id, _)| id != turn_id);
+            if list.is_empty() {
+                waiters.remove(run_id);
+            }
+        }
+    }
+
+    fn cancel_lock_waiters(&self, run_id: &str) {
+        let waiters = self.lock_waiters.lock().remove(run_id).unwrap_or_default();
+        for (_, token) in waiters {
+            token.cancel();
+        }
+    }
+}
+
+fn authorize_turn_access(agent: &agent_registry::AgentDef) -> TurnAccess {
+    if agent.tools.is_empty() || !agent.skills.is_empty() {
+        return TurnAccess::ReadWrite;
+    }
+    classify_turn_access(&agent.tools)
+}
+
+const RUN_SELECT: &str =
+    "SELECT id, project_id, root_agent_id, goal, status, max_messages, messages_used,
+                    max_turns, turns_used, max_hops, hops_used, summary, error,
+                    created_at, updated_at, completed_at, completion_task_id, completion_turn_id,
+                    workspace_id
+             FROM agent_swarm_runs WHERE id = ?1";
+
+fn finish_turn_record(
+    tx: &rusqlite::Transaction<'_>,
+    context_id: &str,
+    turn_id: &str,
+    now: &str,
+) -> Result<()> {
+    let completion = tx
+        .query_row(
+            "SELECT status, completion_turn_id, summary FROM agent_swarm_runs WHERE id = ?1",
+            params![context_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    let removed = tx.execute(
+        "DELETE FROM agent_swarm_active_turns WHERE run_id = ?1 AND turn_id = ?2",
+        params![context_id, turn_id],
+    )?;
+    let remaining: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM agent_swarm_active_turns WHERE run_id = ?1",
+        params![context_id],
+        |row| row.get(0),
+    )?;
+    if removed == 1
+        && completion
+            .as_ref()
+            .is_some_and(|(status, completion_turn_id, _)| {
+                status == "completing" && completion_turn_id.as_deref() == Some(turn_id)
+            })
+    {
+        tx.execute(
+            "UPDATE agent_swarm_runs SET status = 'completed', updated_at = ?1, completed_at = ?1 WHERE id = ?2",
+            params![now, context_id],
+        )?;
+        append_event(
+            tx,
+            context_id,
+            "swarm_completed",
+            &serde_json::json!({
+                "completion_turn_id": turn_id,
+                "summary": completion.as_ref().map(|(_, _, summary)| summary.as_str()).unwrap_or_default(),
+            }),
+            now,
+        )?;
+    } else if remaining == 0
+        && completion
+            .as_ref()
+            .is_some_and(|(status, _, _)| status == "cancelling")
+    {
+        tx.execute(
+            "UPDATE agent_swarm_runs SET status = 'cancelled', updated_at = ?1, completed_at = ?1 WHERE id = ?2",
+            params![now, context_id],
+        )?;
+        append_event(
+            tx,
+            context_id,
+            "swarm_cancelled",
+            &serde_json::json!({ "completion_turn_id": turn_id }),
+            now,
+        )?;
+    }
+    Ok(())
 }
 
 fn append_event(
@@ -1096,6 +1301,7 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<SwarmRun> {
         completed_at: row.get(15)?,
         completion_task_id: row.get(16)?,
         completion_turn_id: row.get(17)?,
+        workspace_id: row.get(18)?,
     })
 }
 

@@ -60,10 +60,18 @@ export interface AgentConversation {
   updated_at: string;
 }
 
+export interface AgentConversationToolCall {
+  id: string;
+  function: { name: string; arguments: string };
+}
+
 export interface AgentConversationMessage {
   role: string;
   content: string;
   model?: string;
+  tool_calls?: AgentConversationToolCall[];
+  tool_call_id?: string;
+  name?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -114,7 +122,7 @@ export type AgentConversationApproval =
 export interface AgentSwarmRun {
   id: string;
   goal: string;
-  status: 'running' | 'completing' | 'completed' | 'cancelled' | 'needs_attention';
+  status: 'running' | 'completing' | 'cancelling' | 'completed' | 'cancelled' | 'needs_attention';
   max_messages: number;
   messages_used: number;
   max_turns: number;

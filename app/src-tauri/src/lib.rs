@@ -218,6 +218,7 @@ impl agent_core::AgentMessageExecutor for DesktopAgentMessageExecutor {
         &self,
         delivery: &agent_core::ClaimedAgentMessage,
         cancel_token: agent_core::CancellationToken,
+        execution_scope: Option<agent_core::ExecutionScope>,
     ) -> anyhow::Result<String> {
         let agent =
             agent_core::agent_registry::get(&self.storage, &delivery.target_conversation.agent_id)?;
@@ -293,7 +294,7 @@ impl agent_core::AgentMessageExecutor for DesktopAgentMessageExecutor {
                 agent,
                 input: input.clone(),
                 session_id: delivery.target_conversation.session_id.clone(),
-                working_dir: None,
+                working_dir: execution_scope.map(|scope| scope.cwd),
                 workflow_run_id: None,
                 trigger: trigger.to_string(),
                 permission_config,
@@ -486,8 +487,8 @@ mod workflow_command_tests {
 #[cfg(test)]
 mod agent_conversation_routing_tests {
     use super::{
-        AgentConversationRoute, agent_conversation_route, completed_coordination_output,
-        coordinated_review_request,
+        agent_conversation_route, completed_coordination_output, coordinated_review_request,
+        AgentConversationRoute,
     };
 
     #[test]
@@ -1368,10 +1369,7 @@ async fn get_session_plans(
     session_id: String,
 ) -> Result<PlansSnapshotDto, String> {
     let manager = state.run_manager.lock().await;
-    Ok(plans_snapshot_dto(
-        manager.todo_store(),
-        &session_id,
-    ))
+    Ok(plans_snapshot_dto(manager.todo_store(), &session_id))
 }
 
 /// Resume a parked plan (or resolve continue if plan_id empty).
@@ -1422,10 +1420,7 @@ async fn clear_session_plans(
 ) -> Result<PlansSnapshotDto, String> {
     let manager = state.run_manager.lock().await;
     manager.todo_store().clear_session(&session_id);
-    Ok(plans_snapshot_dto(
-        manager.todo_store(),
-        &session_id,
-    ))
+    Ok(plans_snapshot_dto(manager.todo_store(), &session_id))
 }
 
 /// Get the state of a Run.
@@ -2620,8 +2615,8 @@ async fn load_agent_conversation_view(
             .latest_for_agent_project(&conversation.agent_id, &conversation.project_id)
             .map_err(|error| error.to_string())?;
         let approvals = agent_conversation_runtime.pending_for_conversation(&conversation_id);
-        let pending_messages = agent_conversation_runtime
-            .pending_messages_for_conversation(&conversation_id);
+        let pending_messages =
+            agent_conversation_runtime.pending_messages_for_conversation(&conversation_id);
         let session = session_manager
             .resume(&session_id)
             .map_err(|error| error.to_string())?
@@ -2651,7 +2646,10 @@ async fn run_agent_conversation_turn(
     orchestration_context: Option<String>,
     expose_swarm_tools: bool,
     pending_user_input: Option<String>,
-) -> Result<agent_core::agent_registry::CustomAgentRunResult, String> {
+) -> (
+    Result<agent_core::agent_registry::CustomAgentRunResult, String>,
+    Option<agent_core::TurnWorkspaceLease>,
+) {
     let brain = {
         let run_manager = state.run_manager.lock().await;
         run_manager.brain().clone()
@@ -2663,8 +2661,12 @@ async fn run_agent_conversation_turn(
         move || agent_core::agent_registry::get(&storage, &agent_id)
     })
     .await
-    .map_err(|error| format!("load custom agent task failed: {error}"))?
-    .map_err(|error| error.to_string())?;
+    .map_err(|error| format!("load custom agent task failed: {error}"))
+    .and_then(|result| result.map_err(|error| error.to_string()));
+    let agent = match agent {
+        Ok(agent) => agent,
+        Err(error) => return (Err(error), None),
+    };
     let permission_config =
         agent_core::agent_registry::build_permission_config(&agent, &brain.config().permissions);
     let runner = agent_core::agent_registry::CustomAgentRunner::new(
@@ -2673,8 +2675,7 @@ async fn run_agent_conversation_turn(
         state.session_manager.clone(),
     );
     let cancel_token = agent_core::CancellationToken::new();
-    let active_turn_id = swarm_turn_id
-        .unwrap_or_else(|| format!("user:{}", uuid::Uuid::new_v4()));
+    let active_turn_id = swarm_turn_id.unwrap_or_else(|| format!("user:{}", uuid::Uuid::new_v4()));
     // Register the contact turn before waiting for the per-agent execution
     // lane so a queued user message remains observable after switching away.
     let approval_turn = state.agent_conversation_runtime.begin_forwarding_turn(
@@ -2693,15 +2694,30 @@ async fn run_agent_conversation_turn(
             cancel_token.clone(),
         )
         .await;
+    let mut workspace_lease = None;
+    let mut working_dir = None;
     if let Some(run_id) = &swarm_run_id {
-        if let Err(error) = state.swarm_coordinator.begin_turn(
-            run_id,
-            &conversation.agent_id,
-            &active_turn_id,
-            agent_core::AgentRunLane::User,
-        ) {
-            lease.finish();
-            return Err(error.to_string());
+        match state
+            .swarm_coordinator
+            .begin_turn(
+                run_id,
+                &conversation.agent_id,
+                &active_turn_id,
+                agent_core::AgentRunLane::User,
+                &cancel_token,
+            )
+            .await
+        {
+            Ok(lease) => {
+                if let Some(lease) = lease {
+                    working_dir = Some(lease.execution_scope().cwd.clone());
+                    workspace_lease = Some(lease);
+                }
+            }
+            Err(error) => {
+                lease.finish();
+                return (Err(error.to_string()), None);
+            }
         }
     }
     let swarm_context = (if expose_swarm_tools {
@@ -2710,29 +2726,33 @@ async fn run_agent_conversation_turn(
         None
     })
     .and_then(|run_id| {
-        state.swarm_coordinator.snapshot(&run_id).ok().map(|snapshot| {
-            agent_core::SwarmToolContext {
-                run_id: run_id.clone(),
-                agent_id: conversation.agent_id.clone(),
-                // A user-authored turn starts a new delegation lineage inside
-                // the existing swarm; peer-delivery turns inherit their hop.
-                next_hop: 1,
-                effect_scope_id: format!(
-                    "user-turn:{}:{}",
-                    conversation.agent_id, snapshot.run.turns_used
-                ),
-                active_task_id: None,
-                active_turn_id: Some(active_turn_id.clone()),
-                coordinator: state.swarm_coordinator.clone(),
-            }
-        })
+        state
+            .swarm_coordinator
+            .snapshot(&run_id)
+            .ok()
+            .map(|snapshot| {
+                agent_core::SwarmToolContext {
+                    run_id: run_id.clone(),
+                    agent_id: conversation.agent_id.clone(),
+                    // A user-authored turn starts a new delegation lineage inside
+                    // the existing swarm; peer-delivery turns inherit their hop.
+                    next_hop: 1,
+                    effect_scope_id: format!(
+                        "user-turn:{}:{}",
+                        conversation.agent_id, snapshot.run.turns_used
+                    ),
+                    active_task_id: None,
+                    active_turn_id: Some(active_turn_id.clone()),
+                    coordinator: state.swarm_coordinator.clone(),
+                }
+            })
     });
     let result = runner
         .run(agent_core::agent_registry::CustomAgentInvocation {
             agent,
             input,
             session_id: conversation.session_id.clone(),
-            working_dir: None,
+            working_dir,
             workflow_run_id: None,
             trigger: trigger.to_string(),
             permission_config,
@@ -2749,7 +2769,7 @@ async fn run_agent_conversation_turn(
         .await;
     drop(approval_turn);
     lease.finish();
-    result.map_err(|error| error.to_string())
+    (result.map_err(|error| error.to_string()), workspace_lease)
 }
 
 async fn append_agent_conversation_user_message(
@@ -2802,7 +2822,8 @@ async fn open_agent_conversation(
         state.agent_conversation_runtime.clone(),
         state.session_manager.clone(),
         conversation,
-    ).await
+    )
+    .await
 }
 
 #[tauri::command]
@@ -2856,7 +2877,7 @@ async fn command_agent_swarm(
         .open_conversation(&snapshot.run.root_agent_id, Some(&snapshot.run.project_id))
         .map_err(|error| error.to_string())?;
     let turn_id = format!("user:{}", uuid::Uuid::new_v4());
-    let result = run_agent_conversation_turn(
+    let (result, workspace_lease) = run_agent_conversation_turn(
         &state,
         &app_handle,
         &conversation,
@@ -2870,40 +2891,45 @@ async fn command_agent_swarm(
         None,
     )
     .await;
-    let outcome = (|| -> Result<(), String> { match result {
-        Ok(result) => {
-            let current = state
-                .swarm_coordinator
-                .snapshot(&snapshot.run.id)
-                .map_err(|error| error.to_string())?;
-            if current.run.status == agent_core::SwarmStatus::Running
-                && current.run.root_agent_id == conversation.agent_id
-                && current.run.messages_used == snapshot.run.messages_used
-            {
-                let _ = state.swarm_coordinator.command(
-                    &current.run.id,
-                    agent_core::SwarmCommand::Complete {
-                        agent_id: conversation.agent_id,
-                        summary: result.output,
-                        current_task_id: None,
-                        current_turn_id: Some(turn_id.clone()),
-                    },
-                );
+    let outcome = (|| -> Result<(), String> {
+        match result {
+            Ok(result) => {
+                let current = state
+                    .swarm_coordinator
+                    .snapshot(&snapshot.run.id)
+                    .map_err(|error| error.to_string())?;
+                if current.run.status == agent_core::SwarmStatus::Running
+                    && current.run.root_agent_id == conversation.agent_id
+                    && current.run.messages_used == snapshot.run.messages_used
+                {
+                    let _ = state.swarm_coordinator.command(
+                        &current.run.id,
+                        agent_core::SwarmCommand::Complete {
+                            agent_id: conversation.agent_id,
+                            summary: result.output,
+                            current_task_id: None,
+                            current_turn_id: Some(turn_id.clone()),
+                        },
+                    );
+                }
+                Ok(())
             }
-            Ok(())
+            Err(error) => {
+                state
+                    .swarm_coordinator
+                    .mark_needs_attention(&snapshot.run.id, &error)
+                    .map_err(|mark_error| mark_error.to_string())?;
+                Err(error)
+            }
         }
-        Err(error) => {
-            state
-                .swarm_coordinator
-                .mark_needs_attention(&snapshot.run.id, &error)
-                .map_err(|mark_error| mark_error.to_string())?;
-            Err(error)
-        }
-    } })();
-    let finish = state
-        .swarm_coordinator
-        .finish_turn(&snapshot.run.id, &turn_id)
-        .map_err(|error| error.to_string());
+    })();
+    let finish = match workspace_lease {
+        Some(lease) => state
+            .swarm_coordinator
+            .finish_turn(lease)
+            .map_err(|error| error.to_string()),
+        None => Ok(()),
+    };
     outcome?;
     finish?;
     state
@@ -2922,19 +2948,28 @@ fn start_or_continue_agent_swarm(
     {
         if matches!(
             snapshot.run.status,
-            agent_core::SwarmStatus::Running | agent_core::SwarmStatus::NeedsAttention
+            agent_core::SwarmStatus::Running
+                | agent_core::SwarmStatus::NeedsAttention
+                | agent_core::SwarmStatus::Completing
+                | agent_core::SwarmStatus::Cancelling
         ) {
-            return Ok(coordinator
-                .command(
-                    &snapshot.run.id,
-                    agent_core::SwarmCommand::Intervene {
-                        instruction: instruction.to_string(),
-                        max_messages: None,
-                        max_turns: None,
-                        max_hops: None,
-                    },
-                )?
-                .run);
+            if matches!(
+                snapshot.run.status,
+                agent_core::SwarmStatus::Running | agent_core::SwarmStatus::NeedsAttention
+            ) {
+                return Ok(coordinator
+                    .command(
+                        &snapshot.run.id,
+                        agent_core::SwarmCommand::Intervene {
+                            instruction: instruction.to_string(),
+                            max_messages: None,
+                            max_turns: None,
+                            max_hops: None,
+                        },
+                    )?
+                    .run);
+            }
+            return Ok(snapshot.run);
         }
     }
     coordinator.start(agent_core::StartSwarm {
@@ -2998,13 +3033,17 @@ async fn send_agent_conversation_message(
         .map_err(|error| error.to_string())?;
     let turn_id = format!("user:{}", uuid::Uuid::new_v4());
     let pending_user_input = input.clone();
-    let result = run_agent_conversation_turn(
+    let (result, workspace_lease) = run_agent_conversation_turn(
         &state,
         &app_handle,
         &source,
         input,
         None,
-        if recipient.is_some() { "agent_chat_coordination" } else { "agent_chat" },
+        if recipient.is_some() {
+            "agent_chat_coordination"
+        } else {
+            "agent_chat"
+        },
         Some(swarm.id.clone()),
         Some(turn_id.clone()),
         orchestration_context,
@@ -3013,86 +3052,89 @@ async fn send_agent_conversation_message(
     )
     .await;
     let mut deliveries = Vec::new();
-    let outcome = (|| -> Result<(), String> { match result {
-        Ok(result) => {
-            let mut snapshot = state
-                .swarm_coordinator
-                .snapshot(&swarm.id)
-                .map_err(|error| error.to_string())?;
-            if let Some(recipient) = &recipient {
-                let completed_output = match completed_coordination_output(
-                    result.success,
-                    &result.output,
-                ) {
-                    Ok(output) => output,
-                    Err(error) => {
-                        state
-                            .swarm_coordinator
-                            .mark_needs_attention(&swarm.id, error)
-                            .map_err(|mark_error| mark_error.to_string())?;
-                        return Err(error.to_string());
-                    }
-                };
-                let idempotency_key = format!(
-                    "agent-chat-handoff:{}:{}:{}",
-                    swarm.id, turn_id, recipient.id
-                );
-                snapshot = state
+    let outcome = (|| -> Result<(), String> {
+        match result {
+            Ok(result) => {
+                let mut snapshot = state
                     .swarm_coordinator
-                    .command(
-                        &swarm.id,
-                        agent_core::SwarmCommand::Send {
-                            from_agent_id: source.agent_id.clone(),
-                            to_agent_id: recipient.id.clone(),
-                            parts: coordinated_review_request(completed_output),
-                            idempotency_key: idempotency_key.clone(),
-                            priority,
-                            hop_count: 1,
-                        },
-                    )
+                    .snapshot(&swarm.id)
                     .map_err(|error| error.to_string())?;
-                let handoff_message_id = snapshot
-                    .messages
-                    .iter()
-                    .find(|message| message.idempotency_key == idempotency_key)
-                    .ok_or_else(|| "coordinated handoff was not persisted".to_string())?
-                    .id
-                    .clone();
-                deliveries.push(
-                    messaging
-                        .delivery(&handoff_message_id)
-                        .map_err(|error| error.to_string())?,
-                );
-                state
-                    .agent_dispatcher
-                    .route_peer_message(&recipient.id, priority);
-            } else if snapshot.run.status == agent_core::SwarmStatus::Running
-                && snapshot.run.messages_used == 0
-            {
-                let _ = state.swarm_coordinator.command(
-                    &swarm.id,
-                    agent_core::SwarmCommand::Complete {
-                        agent_id: source.agent_id.clone(),
-                        summary: result.output,
-                        current_task_id: None,
-                        current_turn_id: Some(turn_id.clone()),
-                    },
-                );
+                if let Some(recipient) = &recipient {
+                    let completed_output =
+                        match completed_coordination_output(result.success, &result.output) {
+                            Ok(output) => output,
+                            Err(error) => {
+                                state
+                                    .swarm_coordinator
+                                    .mark_needs_attention(&swarm.id, error)
+                                    .map_err(|mark_error| mark_error.to_string())?;
+                                return Err(error.to_string());
+                            }
+                        };
+                    let idempotency_key = format!(
+                        "agent-chat-handoff:{}:{}:{}",
+                        swarm.id, turn_id, recipient.id
+                    );
+                    snapshot = state
+                        .swarm_coordinator
+                        .command(
+                            &swarm.id,
+                            agent_core::SwarmCommand::Send {
+                                from_agent_id: source.agent_id.clone(),
+                                to_agent_id: recipient.id.clone(),
+                                parts: coordinated_review_request(completed_output),
+                                idempotency_key: idempotency_key.clone(),
+                                priority,
+                                hop_count: 1,
+                            },
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let handoff_message_id = snapshot
+                        .messages
+                        .iter()
+                        .find(|message| message.idempotency_key == idempotency_key)
+                        .ok_or_else(|| "coordinated handoff was not persisted".to_string())?
+                        .id
+                        .clone();
+                    deliveries.push(
+                        messaging
+                            .delivery(&handoff_message_id)
+                            .map_err(|error| error.to_string())?,
+                    );
+                    state
+                        .agent_dispatcher
+                        .route_peer_message(&recipient.id, priority);
+                } else if snapshot.run.status == agent_core::SwarmStatus::Running
+                    && snapshot.run.messages_used == 0
+                {
+                    let _ = state.swarm_coordinator.command(
+                        &swarm.id,
+                        agent_core::SwarmCommand::Complete {
+                            agent_id: source.agent_id.clone(),
+                            summary: result.output,
+                            current_task_id: None,
+                            current_turn_id: Some(turn_id.clone()),
+                        },
+                    );
+                }
+                Ok(())
             }
-            Ok(())
+            Err(error) => {
+                state
+                    .swarm_coordinator
+                    .mark_needs_attention(&swarm.id, &error)
+                    .map_err(|mark_error| mark_error.to_string())?;
+                Err(error)
+            }
         }
-        Err(error) => {
-            state
-                .swarm_coordinator
-                .mark_needs_attention(&swarm.id, &error)
-                .map_err(|mark_error| mark_error.to_string())?;
-            Err(error)
-        }
-    } })();
-    let finish = state
-        .swarm_coordinator
-        .finish_turn(&swarm.id, &turn_id)
-        .map_err(|error| error.to_string());
+    })();
+    let finish = match workspace_lease {
+        Some(lease) => state
+            .swarm_coordinator
+            .finish_turn(lease)
+            .map_err(|error| error.to_string()),
+        None => Ok(()),
+    };
     outcome?;
     finish?;
     let view = load_agent_conversation_view(

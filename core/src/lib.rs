@@ -1,6 +1,6 @@
 pub mod agent_messaging;
-pub mod agent_swarm;
 pub mod agent_registry;
+pub mod agent_swarm;
 pub mod attachments;
 pub mod background;
 pub mod client;
@@ -38,14 +38,15 @@ pub mod worktree;
 
 pub use agent_messaging::dispatcher::{AgentInboxDispatcher, AgentMessageExecutor};
 pub use agent_messaging::{
-    AGENT_MESSAGE_SCHEMA_V1, AgentConversation, AgentMessage, AgentMessageEvent, AgentMessageTask,
-    AgentMessaging, AgentTaskCommand, AgentTaskStatus, ClaimedAgentMessage, DeliveryReceipt,
-    ActiveAgentRunLease, ActiveAgentRuns, AgentRunLane, MAX_AGENT_MESSAGE_HOPS, MessageKind,
+    AGENT_MESSAGE_SCHEMA_V1, ActiveAgentRunLease, ActiveAgentRuns, AgentConversation, AgentMessage,
+    AgentMessageEvent, AgentMessageTask, AgentMessaging, AgentRunLane, AgentTaskCommand,
+    AgentTaskStatus, ClaimedAgentMessage, DeliveryReceipt, MAX_AGENT_MESSAGE_HOPS, MessageKind,
     MessageObservation, MessagePart, PeerMessageRoute, SendAgentMessage,
 };
 pub use agent_swarm::{
-    CompleteSwarmTool, SendAgentMessageTool, StartSwarm, SwarmCommand, SwarmCoordinator,
-    SwarmEvent, SwarmObservation, SwarmRun, SwarmSnapshot, SwarmStatus, SwarmToolContext,
+    CompleteSwarmTool, ExecutionScope, FinalizeOutcome, FinalizeReport, SendAgentMessageTool,
+    StartSwarm, SwarmCommand, SwarmCoordinator, SwarmEvent, SwarmObservation, SwarmRun,
+    SwarmSnapshot, SwarmStatus, SwarmToolContext, TurnAccess, TurnWorkspaceLease,
     register_swarm_tools,
 };
 pub use config::{
@@ -69,9 +70,9 @@ pub use model_capabilities::{
 pub use tokio_util::sync::CancellationToken;
 pub use tools::{Tool, ToolRegistry, ToolUpdateFn, build_tool_by_name};
 pub use types::{
-    AgentState, EventReceiver, EventSender, FunctionCall, FunctionSchema,
-    ImageAttachment, Message, MessageDelta, ReasoningState, Role, StreamEvent, ToolCall,
-    ToolDefinition, ToolExecutionMode, ToolResultRecord,
+    AgentState, EventReceiver, EventSender, FunctionCall, FunctionSchema, ImageAttachment, Message,
+    MessageDelta, ReasoningState, Role, StreamEvent, ToolCall, ToolDefinition, ToolExecutionMode,
+    ToolResultRecord,
 };
 
 // New harness modules
@@ -105,11 +106,11 @@ pub use project::{
 };
 pub use reflector::{Digester, Reflector, Suggestion, SuggestionAction, SuggestionKind};
 pub use runtime::{
-    ApprovalResolver, Brain, ChildId, ClarificationAnswers, ClarificationOption,
+    ApprovalResolver, Brain, CacheStatus, ChildId, ClarificationAnswers, ClarificationOption,
     ClarificationQuestion, ClarificationRequest, CreateRunRequest, CreateRunResult, Envelope,
-    EventGuard, EventLog, ExecutionPhase, ExecutionState, ExtraToolContext, InputResolver, ProcessSupervisor, Run,
-    RunCommand, RunEvent, RunHandle, RunId, RunManager, RunState, STEER_MID_RUN_PREFIX, SteerEntry,
-    SupervisedChild, UserIntent, CacheStatus, parse_user_intent,
+    EventGuard, EventLog, ExecutionPhase, ExecutionState, ExtraToolContext, InputResolver,
+    ProcessSupervisor, Run, RunCommand, RunEvent, RunHandle, RunId, RunManager, RunState,
+    STEER_MID_RUN_PREFIX, SteerEntry, SupervisedChild, UserIntent, parse_user_intent,
 };
 pub use rusqlite;
 pub use session::{

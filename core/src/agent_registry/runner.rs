@@ -151,13 +151,25 @@ impl CustomAgentRunner {
 
         let restored_messages = if context_mode == CustomAgentContextMode::ResumeSession {
             let restored = self.session_manager.resume(&session_id)?;
-            if working_dir.is_none() {
+            let session_cwd = restored
+                .as_ref()
+                .map(|session| session.meta.cwd.clone())
+                .unwrap_or_default();
+            if swarm_context.is_none() && working_dir.is_none() {
                 working_dir = restored.as_ref().map(|session| session.meta.cwd.clone());
             }
-            restored.map(|session| session.messages).unwrap_or_default()
+            (
+                restored.map(|session| session.messages).unwrap_or_default(),
+                session_cwd,
+            )
         } else {
-            Vec::new()
+            (Vec::new(), String::new())
         };
+        let (restored_messages, session_cwd) = restored_messages;
+        let is_swarm_turn = swarm_context.is_some();
+        if is_swarm_turn {
+            working_dir = Some(require_swarm_working_dir(working_dir.as_deref())?);
+        }
 
         let mut subagent_config = super::build_subagent_config(&agent);
         subagent_config.working_dir = working_dir.clone().map(Into::into);
@@ -308,7 +320,11 @@ impl CustomAgentRunner {
             self.session_manager.save(
                 Some(&session_id),
                 &messages,
-                working_dir.as_deref().unwrap_or(""),
+                if is_swarm_turn {
+                    &session_cwd
+                } else {
+                    working_dir.as_deref().unwrap_or("")
+                },
                 &model_config.model_id,
             )?;
         }
@@ -337,6 +353,18 @@ impl CustomAgentRunner {
             model_used: model_config.model_id,
         })
     }
+}
+
+fn require_swarm_working_dir(working_dir: Option<&str>) -> Result<String> {
+    let cwd = working_dir.map(str::trim).unwrap_or_default();
+    if cwd.is_empty() {
+        anyhow::bail!("swarm turns require a bound execution workspace");
+    }
+    let path = std::path::Path::new(cwd);
+    if !path.is_absolute() {
+        anyhow::bail!("swarm execution workspace must be an absolute path");
+    }
+    Ok(cwd.to_string())
 }
 
 fn build_agent_memory_store(brain: &Brain, storage: Storage) -> AgentMemoryStore {
