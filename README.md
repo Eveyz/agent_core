@@ -4,14 +4,14 @@
 
 | Surface | Binary / app | What it is |
 | -------- | ------------ | ---------- |
-| **Desktop** | Agverse (Tauri + React) | Full GUI with streaming chat, skills, workflows |
+| **Desktop** | Agverse (Tauri + React) | Full GUI with streaming chat, saved agents, swarms, skills, workflows |
 | **CLI** | `ageverse` | Interactive REPL |
 | **TUI** | `ageverse --tui` | Full-screen terminal UI |
 | **Gateway** | `agverse-gateway` | Remote HTTP control plane (Axum) |
 
 Repo name: **`agent_core`**. Shared library crate: `agent_core`. CLI package: `agent-cli` → binary **`ageverse`**.
 
-> Early / `0.1.0` — APIs and UI will change. Design internals: [`docs/DESIGN.md`](docs/DESIGN.md).
+> Early / `0.1.0` — APIs and UI will change. Architecture notes: [`docs/index.md`](docs/index.md).
 
 ---
 
@@ -25,6 +25,7 @@ Most agent CLIs glue a chat UI to an HTTP client. Agverse treats the **model win
 - **Permission policy** — sandbox → modes → rules; five-tier human approvals
 - **Durable runs** — crash-friendly sessions, SQLite memory, append-only run logs
 - **MCP & skills** — remote tools + on-disk skill packs with live refresh
+- **Saved agents & swarms** — durable in-app messaging between named agents; a swarm binds one execution workspace for the run, not the chat session's cwd
 - **Workflows** — agent-driven durable workflows and `@workflow` mentions
 - **Eval harness** — contract / golden suites + Harbor adapter
 
@@ -117,6 +118,19 @@ See [`gateway/README.md`](gateway/README.md).
 
 ---
 
+## Agents and swarms
+
+The desktop **Agents** page is a contact list of saved agents. A conversation is history. A **swarm** is a bounded coordination run: one root agent, a goal, message/turn/hop budgets, and a workspace that is bound when the swarm starts and does not change for the life of the run.
+
+| Swarm | Execution workspace |
+| ----- | ------------------- |
+| Project | The project's canonical directory. Only one non-terminal swarm may occupy a given path. |
+| Ad hoc | Managed scratch under `~/.agverse/swarms/<run_id>/workspace` |
+
+Turns execute only after they hold a workspace lease. Agents whose tools are only `read_file` / `grep` / `glob` may run in parallel; anything else (inherit-all tools, skills, or unknown names) waits for exclusive write access. Cancelling a swarm waits for in-flight turns and unblocks lock waiters. The lock covers swarm execution only — not ordinary chat, the editor, or your shell.
+
+---
+
 ## Repository layout
 
 ```
@@ -127,7 +141,7 @@ agent_core/
 ├── app/               # Desktop UI (React/Vite + Tauri)
 ├── evals/             # Contract / golden harness suites
 ├── ageverse_harbor/   # Harbor benchmark adapter
-├── docs/              # ADRs, plans, design deep dive
+├── docs/              # ADRs, plans, process
 ├── config.toml        # Sample config
 └── Cargo.toml         # Workspace
 ```
@@ -199,6 +213,7 @@ Details: [`evals/README.md`](evals/README.md).
 | `~/.agverse/agverse.md` | Human-editable global notes |
 | `~/.agverse/sessions/<id>/` | Crash snapshots, tool spills, artifacts |
 | `~/.agverse/runs/<run_id>.jsonl` | Append-only run event logs |
+| `~/.agverse/swarms/<run_id>/workspace` | Managed scratch workspace for an ad-hoc swarm |
 | `~/.agverse/skills/` | Skill packs |
 
 ---
@@ -207,7 +222,6 @@ Details: [`evals/README.md`](evals/README.md).
 
 | Doc | Topic |
 | --- | ----- |
-| [`docs/DESIGN.md`](docs/DESIGN.md) | Architecture & design deep dive |
 | [`docs/index.md`](docs/index.md) | ADR / PLAN / RFC index |
 | [`docs/README_PROCESS.md`](docs/README_PROCESS.md) | Doc lifecycle |
 | [`evals/README.md`](evals/README.md) | Eval harness |
